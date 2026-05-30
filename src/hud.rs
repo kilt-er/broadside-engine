@@ -97,16 +97,35 @@ pub fn compose_scene(board: &Board, lane: &LaneGeometry, view_angle_rad: f32) ->
 
     for (cell_idx, slot) in board.cells.iter().enumerate() {
         if let Some(ship) = slot {
-            push_heat_bar(&mut out, ship, cell_idx, lane);
-            push_shield_pips(&mut out, ship, cell_idx, lane);
-            push_queue_glyphs(&mut out, ship, cell_idx, lane);
-            push_status_badges(&mut out, ship, cell_idx, lane);
+            push_heat_bar(&mut out, ship, cell_idx, lane, view_angle_rad);
+            push_shield_pips(&mut out, ship, cell_idx, lane, view_angle_rad);
+            push_queue_glyphs(&mut out, ship, cell_idx, lane, view_angle_rad);
+            push_status_badges(&mut out, ship, cell_idx, lane, view_angle_rad);
         }
     }
 
     push_view_angle_overlay(&mut out, view_angle_rad);
 
     out
+}
+
+/// On-screen silhouette bounding box for a ship at the current view angle.
+/// Returns `(width, total_h)` so overlay helpers (heat bar, shield pips,
+/// queue glyphs, status badges) can position consistently against the
+/// current silhouette regardless of stance or angle.
+fn ship_bbox(ship: &Ship, view_angle_rad: f32) -> (f32, f32) {
+    let stance = match ship.orientation {
+        Orientation::BowOn { .. } => Stance::BowOn,
+        Orientation::Broadside => Stance::Broadside,
+    };
+    let (width, depth_dim) = match stance {
+        Stance::BowOn => (FRIGATE_DIMS.length, FRIGATE_DIMS.beam),
+        Stance::Broadside => (FRIGATE_DIMS.beam, FRIGATE_DIMS.length),
+    };
+    let cos_a = view_angle_rad.cos();
+    let sin_a = view_angle_rad.sin();
+    let total_h = FRIGATE_DIMS.height * cos_a + depth_dim * sin_a;
+    (width, total_h)
 }
 
 #[inline]
@@ -422,9 +441,11 @@ fn push_ship(
     // side-view height projection and the top-down depth projection.
     let total_h = FRIGATE_DIMS.height * cos_a + depth_dim * sin_a;
     let cx = p.x;
-    // Anchor at the BASE on the lane line; silhouette extends upward.
-    let base_y = p.y;
-    let top_y = base_y - total_h;
+    // Silhouette is CENTERED on the lane line: half above, half below.
+    // The lane bisects the ship vertically at every angle.
+    let half_h = total_h / 2.0;
+    let top_y = p.y - half_h;
+    let base_y = p.y + half_h;
 
     match stance {
         Stance::BowOn => push_bow_on_silhouette(
@@ -700,12 +721,19 @@ fn push_projectile(out: &mut Vec<DrawCommand>, proj: &Projectile, lane: &LaneGeo
  * Per-ship overlays: heat bar, shield pips, queue glyphs, status badges.
  * ============================================================================= */
 
-fn push_heat_bar(out: &mut Vec<DrawCommand>, ship: &Ship, cell_idx: usize, lane: &LaneGeometry) {
+fn push_heat_bar(
+    out: &mut Vec<DrawCommand>,
+    ship: &Ship,
+    cell_idx: usize,
+    lane: &LaneGeometry,
+    view_angle_rad: f32,
+) {
     let p = cell_to_screen(cell_idx as u32, lane);
+    let (width, _total_h) = ship_bbox(ship, view_angle_rad);
     let max_h = 32.0;
     let bar_w = 4.0;
-    // To the right of the ship hull. Ship half-length is FRIGATE_DIMS.length / 2.
-    let bar_x = p.x + FRIGATE_DIMS.length / 2.0 + 8.0;
+    // To the right of the ship hull. Ship width depends on stance.
+    let bar_x = p.x + width / 2.0 + 8.0;
     let bar_y = lane.center_y;
     // Background.
     push_sprite(out, SpriteInstance::axis_aligned(
@@ -731,11 +759,17 @@ fn push_heat_bar(out: &mut Vec<DrawCommand>, ship: &Ship, cell_idx: usize, lane:
 
 /// Shield pips: four sides of the hull each show one pip per held charge.
 /// Bow / stern pips sit horizontally just past the hull edges; port /
-/// starboard pips sit above and below the hull at the center.
-fn push_shield_pips(out: &mut Vec<DrawCommand>, ship: &Ship, cell_idx: usize, lane: &LaneGeometry) {
+/// starboard pips sit above and below the hull at the silhouette's
+/// current vertical extent.
+fn push_shield_pips(
+    out: &mut Vec<DrawCommand>,
+    ship: &Ship,
+    cell_idx: usize,
+    lane: &LaneGeometry,
+    view_angle_rad: f32,
+) {
     let p = cell_to_screen(cell_idx as u32, lane);
-    let length = FRIGATE_DIMS.length;
-    let height = FRIGATE_DIMS.height;
+    let (width, total_h) = ship_bbox(ship, view_angle_rad);
     let pip = 2.5;
     let pad = 6.0;
     let bow_fore = matches!(ship.orientation, Orientation::BowOn { bow: LaneEnd::Fore });
@@ -747,16 +781,16 @@ fn push_shield_pips(out: &mut Vec<DrawCommand>, ship: &Ship, cell_idx: usize, la
     let zones = [
         // (zone, base position, stacking direction)
         (HullZone::Bow,
-         Point2 { x: p.x + bow_sign * (length / 2.0 + pad), y: lane.center_y },
+         Point2 { x: p.x + bow_sign * (width / 2.0 + pad), y: lane.center_y },
          Point2 { x: bow_sign * (pip * 2.0 + 1.0), y: 0.0 }),
         (HullZone::Stern,
-         Point2 { x: p.x - bow_sign * (length / 2.0 + pad), y: lane.center_y },
+         Point2 { x: p.x - bow_sign * (width / 2.0 + pad), y: lane.center_y },
          Point2 { x: -bow_sign * (pip * 2.0 + 1.0), y: 0.0 }),
         (HullZone::Starboard,
-         Point2 { x: p.x, y: lane.center_y + height / 2.0 + pad },
+         Point2 { x: p.x, y: lane.center_y + total_h / 2.0 + pad },
          Point2 { x: 0.0, y: pip * 2.0 + 1.0 }),
         (HullZone::Port,
-         Point2 { x: p.x, y: lane.center_y - height / 2.0 - pad },
+         Point2 { x: p.x, y: lane.center_y - total_h / 2.0 - pad },
          Point2 { x: 0.0, y: -(pip * 2.0 + 1.0) }),
     ];
     for (zone, base, step) in zones {
@@ -782,17 +816,20 @@ fn push_queue_glyphs(
     ship: &Ship,
     cell_idx: usize,
     lane: &LaneGeometry,
+    view_angle_rad: f32,
 ) {
     if ship.queue.is_empty() {
         return;
     }
     let p = cell_to_screen(cell_idx as u32, lane);
+    let (_width, total_h) = ship_bbox(ship, view_angle_rad);
     let glyph_size = 12.0;
     let spacing = glyph_size * 2.4;
     let n = ship.queue.len() as f32;
     let total_w = (n - 1.0).max(0.0) * spacing;
     let start_x = p.x - total_w / 2.0;
-    let glyph_y = lane.center_y - FRIGATE_DIMS.height / 2.0 - 40.0;
+    // Above the silhouette's top edge, with a small visual gap.
+    let glyph_y = lane.center_y - total_h / 2.0 - 28.0;
     for (i, action_id) in ship.queue.iter().enumerate() {
         let archetype = archetype_of_mount(ship, action_id).unwrap_or(WeaponArchetype::Beam);
         let cell_uv = archetype_to_glyph(archetype);
@@ -827,15 +864,18 @@ fn push_status_badges(
     ship: &Ship,
     cell_idx: usize,
     lane: &LaneGeometry,
+    view_angle_rad: f32,
 ) {
     if ship.statuses.is_empty() {
         return;
     }
     let p = cell_to_screen(cell_idx as u32, lane);
+    let (width, total_h) = ship_bbox(ship, view_angle_rad);
     let size = 8.0;
     let spacing = size * 2.4;
-    let start_x = p.x - FRIGATE_DIMS.length / 2.0;
-    let y = lane.center_y - FRIGATE_DIMS.height / 2.0 - 20.0;
+    let start_x = p.x - width / 2.0;
+    // Just above the silhouette's top edge, beneath the queue glyph row.
+    let y = lane.center_y - total_h / 2.0 - 10.0;
     for (i, status) in ship.statuses.iter().enumerate() {
         let cell_uv = status_to_badge(status);
         push_sprite(out, SpriteInstance::axis_aligned(
