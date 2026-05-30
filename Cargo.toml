@@ -13,7 +13,7 @@ license = "MIT OR Apache-2.0"
 default = []
 # Enable when the renderer crate / wgpu pipeline is being built. Pulls in
 # wgpu, winit, pollster, bytemuck.
-render = ["dep:wgpu", "dep:winit", "dep:pollster", "dep:bytemuck"]
+render = ["dep:wgpu", "dep:winit", "dep:pollster", "dep:bytemuck", "dep:image"]
 # Enable for the runtime ECS / logging surface (hecs world, env_logger).
 # Resolver and content don't need this for type-check builds.
 runtime = ["dep:hecs", "dep:log", "dep:env_logger"]
@@ -34,6 +34,10 @@ pollster = { version = "0.3", optional = true }
 bytemuck = { version = "1", features = ["derive"], optional = true }
 log = { version = "0.4", optional = true }
 env_logger = { version = "0.11", optional = true }
+# PNG decode/encode for sprite sheets and the SPRITE_SPEC.md reference
+# renders. PNG-only to keep the dep small; `default-features = false`
+# drops jpeg/gif/etc.
+image = { version = "0.25", default-features = false, features = ["png"], optional = true }
 
 # Runnable demo: opens a window and renders a Broadside scene using the
 # gfx / atlas / hud modules. The library is the canonical home for renderer
@@ -43,6 +47,15 @@ env_logger = { version = "0.11", optional = true }
 [[bin]]
 name = "broadside"
 path = "src/bin/broadside.rs"
+required-features = ["render", "runtime"]
+
+# Offline tool: renders the procedural ship silhouette at each scrub angle
+# to a PNG under docs/sprite-refs/. Bruce uses these as templates when
+# painting real PNG sprites. Pure CPU rasterizer; no wgpu/winit. The bin
+# still pulls `image` via the render feature.
+[[bin]]
+name = "render_refs"
+path = "src/bin/render_refs.rs"
 required-features = ["render", "runtime"]
 
 [dev-dependencies]
