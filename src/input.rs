@@ -636,7 +636,7 @@ mod tests {
         };
 
         let content = DemoContent::default();
-        execute_queue(0, &mut board, &content);
+        execute_queue("p", &mut board, &content);
 
         let p = board.cells[0].as_ref().unwrap();
         assert_eq!(p.heat, 1, "synthetic vent should dump 3 heat (4 -> 1)");

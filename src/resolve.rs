@@ -108,9 +108,15 @@ fn emit(board: &mut Board, hook: Hook, build: impl FnOnce(&mut HookContext)) {
 
 /// One full round. Mirrors `resolveRound` in `resolve.ts`.
 pub fn resolve_round(board: &mut Board, content: &dyn Content) {
-    // 1 - player queue, bottom -> top.
-    if let Some(player_cell) = ships_of(board).iter().find_map(|s| (s.faction == Faction::Player).then_some(s.cell)) {
-        execute_queue(player_cell, board, content);
+    // 1 - player queue, bottom -> top. Identify the player by id so a
+    // movement effect mid-queue doesn't strand `execute_queue` at the
+    // pre-move cell — see the rationale on `execute_queue` itself.
+    let player_id: Option<String> = ships_of(board)
+        .iter()
+        .find(|s| s.faction == Faction::Player)
+        .map(|s| s.id.clone());
+    if let Some(id) = player_id {
+        execute_queue(&id, board, content);
     }
 
     // 2 - advance every live projectile by its speed, resolve impacts. This
@@ -129,13 +135,23 @@ pub fn resolve_round(board: &mut Board, content: &dyn Content) {
         advance_projectile(&id, board, content);
     }
 
-    // 3 - enemy phase, in telegraphed initiative order.
-    for enemy_cell in enemy_initiative(board) {
+    // 3 - enemy phase, in telegraphed initiative order. Snapshot ids up
+    // front so movement / destroys during one enemy's queue can't reshuffle
+    // the remaining enemies' identification. An enemy that gets destroyed
+    // before its turn just no-ops via the lookup below.
+    let enemy_ids: Vec<String> = enemy_initiative(board)
+        .into_iter()
+        .filter_map(|c| board.cells[c].as_ref().map(|s| s.id.clone()))
+        .collect();
+    for enemy_id in &enemy_ids {
+        let Some(enemy_cell) = find_cell_by_id(board, enemy_id) else {
+            continue; // destroyed earlier in the phase
+        };
         if skips_turn(board, enemy_cell) {
             continue;
         }
         decide_enemy_action(enemy_cell, board, content); // TODO(broadside-content): AI fills the queue
-        execute_queue(enemy_cell, board, content);
+        execute_queue(enemy_id, board, content);
     }
 
     // 4 - end of turn.
@@ -147,22 +163,31 @@ pub fn resolve_round(board: &mut Board, content: &dyn Content) {
  * ========================================================================== */
 
 /// Execute a ship's queued actions in order. Mirrors `executeQueue` in
-/// `resolve.ts`. The ship is identified by lane `cell` rather than a borrow
-/// because effects (movement, destroys) can mutate the board's cell vector
-/// underneath us.
-pub fn execute_queue(ship_cell: usize, board: &mut Board, content: &dyn Content) {
+/// `resolve.ts`. The ship is identified by `ship_id` (not by cell index)
+/// because effects mid-queue can move the ship — DISPLACE_SELF, swaps,
+/// pushed-by-collision — and a stale cell index would either find the
+/// wrong ship, an empty cell (early-returning the loop), or in pathological
+/// cases another ship that drifted into the original cell.
+///
+/// The TS engine papers over this with JS object identity: `for (const
+/// actionId of ship.queue)` iterates over a list captured up front while
+/// `ship.cell` updates implicitly as effects fire. The Rust port uses
+/// `ship_id` as the analog and re-resolves id → current cell at every
+/// read inside the loop (gate, targeting, effect application, heat /
+/// cooldown bookkeeping, emit).
+pub fn execute_queue(ship_id: &str, board: &mut Board, content: &dyn Content) {
     // Chain-kill window starts here. `destroy()` increments
     // `destroys_this_window`; `detect_chain` reads it after the queue runs.
     // Each `execute_queue` call is one window, and so is each ordnance-phase
     // pass — both reset to 0 on entry.
     board.destroys_this_window = 0;
 
-    // The queue is copied out up front because applying an effect can mutate
-    // the ship (e.g. clearing `lockedOut`, repositioning), and we need a
-    // stable iteration order. Matches the TS `for (const actionId of
-    // ship.queue)` which is also stable across mutations to the ship object.
-    let queue: Vec<String> = match board.cells[ship_cell].as_ref() {
-        Some(s) => s.queue.clone(),
+    // Snapshot the queue up front. Matches the TS `for (const actionId of
+    // ship.queue)` which iterates a stable list across mutations to the
+    // ship object — even if the ship moves, the action-id strings are still
+    // consumed in order.
+    let queue: Vec<String> = match find_cell_by_id(board, ship_id) {
+        Some(c) => board.cells[c].as_ref().map(|s| s.queue.clone()).unwrap_or_default(),
         None => return,
     };
 
@@ -174,13 +199,19 @@ pub fn execute_queue(ship_cell: usize, board: &mut Board, content: &dyn Content)
             None => continue, // TS: `if (!a) continue` — unknown action ids are skipped silently.
         };
 
-        // Read the gating state from the ship without holding a borrow.
-        let Some(ship) = board.cells[ship_cell].as_ref() else {
+        // Re-resolve the ship's current cell at the top of every iteration.
+        // A prior effect (DISPLACE_SELF, push, swap) may have moved the ship.
+        let Some(ship_cell) = find_cell_by_id(board, ship_id) else {
             // The ship was destroyed by a prior effect in this very queue.
-            // TS happens to silently no-op the rest because `ship.queue` was
-            // already iterated; matching that here.
+            // TS silently no-ops the rest because subsequent reads of the
+            // ship reference would hit a null occupant; we match that here.
             return;
         };
+
+        // Read the gating state from the ship at its CURRENT cell.
+        let ship = board.cells[ship_cell]
+            .as_ref()
+            .expect("find_cell_by_id located an occupant");
         // Overheated: only free / zero-heat actions can fire.
         if ship.locked_out && action.cost.heat > 0 {
             continue;
@@ -190,7 +221,7 @@ pub fn execute_queue(ship_cell: usize, board: &mut Board, content: &dyn Content)
             continue;
         }
 
-        // Resolve targeting (uses the board to walk lane cells).
+        // Resolve targeting against the CURRENT cell.
         let cells = resolve_targeting(&action, board, ship_cell);
         // The "nothing bore" gate: arc-required actions with no targets eat
         // nothing — cooldown is NOT reset and heat is NOT spent.
@@ -199,37 +230,61 @@ pub fn execute_queue(ship_cell: usize, board: &mut Board, content: &dyn Content)
         }
 
         // Apply each effect. `apply_effect` may mutate cells / ordnance / etc.
+        // The `source_cell` for THIS action's effects is the iteration-start
+        // cell (the gun's position at fire time). Movement triggered by this
+        // action shifts the ship for the NEXT iteration's reads, not for the
+        // current effect chain.
         for fx in &action.effects {
             apply_effect(fx, &action, ship_cell, &cells, board, content);
         }
 
-        // Heat + cooldown bookkeeping. The TS resets `cooldowns[actionId]`
-        // unconditionally once the action passed the arc gate — hit or miss
-        // on individual effects. We match that exactly.
-        if let Some(ship) = board.cells[ship_cell].as_mut() {
-            ship.heat += action.cost.heat;
-            if ship.heat >= ship.heat_max {
-                ship.locked_out = true; // overheat -> lockout until vent
+        // Heat + cooldown bookkeeping happen AFTER effects, against the ship
+        // at its post-effect cell. The TS resets `cooldowns[actionId]`
+        // unconditionally once the action passed the arc gate (hit or miss
+        // on individual effects); we match that exactly, but only if the
+        // ship still exists (a self-destruct or reactor-breach splash could
+        // have killed it).
+        if let Some(post_cell) = find_cell_by_id(board, ship_id) {
+            if let Some(ship) = board.cells[post_cell].as_mut() {
+                ship.heat += action.cost.heat;
+                if ship.heat >= ship.heat_max {
+                    ship.locked_out = true; // overheat -> lockout until vent
+                }
+                ship.cooldowns.insert(action_id.clone(), action.cost.cooldown_max);
             }
-            ship.cooldowns.insert(action_id.clone(), action.cost.cooldown_max);
+            emit(board, Hook::OnDamageDealt, |ctx| {
+                ctx.source_cell = Some(post_cell);
+            });
         }
-
-        emit(board, Hook::OnDamageDealt, |ctx| {
-            ctx.source_cell = Some(ship_cell);
-        });
     }
 
+    // Chain-kill check uses the ship's final cell, if it survived.
     if detect_chain(board) {
+        let final_cell = find_cell_by_id(board, ship_id);
         emit(board, Hook::OnChainKill, |ctx| {
-            ctx.source_cell = Some(ship_cell);
+            ctx.source_cell = final_cell;
         });
     }
 
     // Clear the queue. The ship may have been destroyed during effect
     // application; only clear if it still exists.
-    if let Some(ship) = board.cells[ship_cell].as_mut() {
-        ship.queue.clear();
+    if let Some(post_cell) = find_cell_by_id(board, ship_id) {
+        if let Some(ship) = board.cells[post_cell].as_mut() {
+            ship.queue.clear();
+        }
     }
+}
+
+/// Locate the lane cell occupied by the ship whose `id` matches. `None` if
+/// no live ship on the board has that id (destroyed mid-queue, never
+/// existed). The TS engine identifies ships by object reference; this is
+/// the Rust analog — call it whenever a hand-off across a board-mutating
+/// call needs to re-locate a known ship.
+fn find_cell_by_id(board: &Board, ship_id: &str) -> Option<usize> {
+    board
+        .cells
+        .iter()
+        .position(|c| c.as_ref().map(|s| s.id == ship_id).unwrap_or(false))
 }
 
 /* =============================================================================
@@ -1704,12 +1759,139 @@ mod tests {
             fn spawn_projectile(&self, _: &str, _: &Ship) -> Projectile { unreachable!() }
         }
         let content = OneAction(pulse_laser());
-        execute_queue(0, &mut board, &content);
+        execute_queue("frigate", &mut board, &content);
         let p = board.cells[0].as_ref().unwrap();
         assert_eq!(p.heat, 6, "heat should be 5 + 1");
         assert!(p.locked_out, "heat at heat_max triggers lockout");
         assert_eq!(p.cooldowns.get("pulse_laser").copied(), Some(0));
         assert!(p.queue.is_empty(), "queue should be cleared after execution");
+    }
+
+    /// Regression for task #52: three queued THRUST actions all execute,
+    /// even though each one moves the ship to a different cell. Pre-fix,
+    /// `execute_queue` keyed off a stale `ship_cell: usize` parameter,
+    /// so the second iteration's gate read `board.cells[0]` after the
+    /// ship had moved away and bailed via early-return — only the FIRST
+    /// thrust ran. Post-fix the loop re-resolves the ship's current
+    /// cell via `find_cell_by_id` at every read.
+    ///
+    /// Scenario mirrors tester's repro for `tests/controls.rs::three_thrusts_then_commit_moves_three_cells`:
+    /// player at cell 0 (bow=fore, so THRUST moves +1 / fore), 7-cell lane,
+    /// three `__thrust` actions queued. After one `execute_queue` call,
+    /// the ship is at cell 3 and the queue is drained.
+    #[test]
+    fn execute_queue_keeps_executing_after_ship_moves() {
+        // A bare-bones DISPLACE_SELF THRUST action with no falloff /
+        // targeting concerns. `direction: None` -> resolver derives step
+        // from bow (Fore), so cell advances by +1.
+        let thrust = Action {
+            id: "__thrust".into(),
+            name: "Thrust".into(),
+            archetype: WeaponArchetype::Movement,
+            cost: ActionCost { heat: 0, cooldown_max: 0, advances_turn: true },
+            targeting: Targeting {
+                pattern: TargetingPattern::SELF,
+                band: vec![RangeBand::PointBlank],
+                optimal_band: RangeBand::PointBlank,
+                requires_arc: None,
+                facing_relative: false,
+                hits_all: false,
+            },
+            effects: vec![Effect::DISPLACE_SELF {
+                mode: MovementMode::THRUST,
+                distance: 1,
+                direction: None,
+            }],
+            r#mod: None,
+            icon: None,
+        };
+        struct OneAction(Action);
+        impl Content for OneAction {
+            fn action(&self, id: &str) -> Option<&Action> {
+                (id == "__thrust").then_some(&self.0)
+            }
+            fn spawn_projectile(&self, _: &str, _: &Ship) -> Projectile { unreachable!() }
+        }
+
+        let mut player = make_ship("frigate", Faction::Player, 0, 10, LaneEnd::Fore);
+        player.queue = vec!["__thrust".into(), "__thrust".into(), "__thrust".into()];
+        let mut board = make_board(7, vec![
+            Some(player), None, None, None, None, None, None,
+        ]);
+
+        execute_queue("frigate", &mut board, &OneAction(thrust));
+
+        // Pre-fix this would be cell 1 (only first thrust ran).
+        let cell_of_frigate = board
+            .cells
+            .iter()
+            .position(|c| c.as_ref().map(|s| s.id == "frigate").unwrap_or(false))
+            .expect("frigate still on the board");
+        assert_eq!(cell_of_frigate, 3, "all three queued thrusts should fire");
+
+        // Queue must be drained — pre-fix the third clear was gated on
+        // the (now stale) starting cell and silently skipped.
+        let p = board.cells[cell_of_frigate].as_ref().unwrap();
+        assert!(p.queue.is_empty(), "queue should be cleared after execute_queue completes");
+    }
+
+    /// Edge-clamp companion to task #52's three-thrust regression: a
+    /// short queue at the lane's fore edge bumps the ship to the last
+    /// cell and stops. Without the ship-by-id fix, this test passed
+    /// spuriously (only the first thrust ran, but the first thrust DID
+    /// land at the clamp cell), so it didn't actually exercise the bug —
+    /// adding it here as the explicit clamp check, distinct from the
+    /// movement-counts check above.
+    #[test]
+    fn execute_queue_thrust_chain_clamps_at_lane_edge() {
+        let thrust = Action {
+            id: "__thrust".into(),
+            name: "Thrust".into(),
+            archetype: WeaponArchetype::Movement,
+            cost: ActionCost { heat: 0, cooldown_max: 0, advances_turn: true },
+            targeting: Targeting {
+                pattern: TargetingPattern::SELF,
+                band: vec![RangeBand::PointBlank],
+                optimal_band: RangeBand::PointBlank,
+                requires_arc: None,
+                facing_relative: false,
+                hits_all: false,
+            },
+            effects: vec![Effect::DISPLACE_SELF {
+                mode: MovementMode::THRUST,
+                distance: 1,
+                direction: None,
+            }],
+            r#mod: None,
+            icon: None,
+        };
+        struct OneAction(Action);
+        impl Content for OneAction {
+            fn action(&self, id: &str) -> Option<&Action> {
+                (id == "__thrust").then_some(&self.0)
+            }
+            fn spawn_projectile(&self, _: &str, _: &Ship) -> Projectile { unreachable!() }
+        }
+
+        // Start at cell 5 with three thrusts: 5 -> 6 (last cell), 6 -> 6
+        // (clamped, no movement), 6 -> 6 (clamped). All three actions
+        // execute, but the last two are no-ops on position.
+        let mut player = make_ship("frigate", Faction::Player, 5, 10, LaneEnd::Fore);
+        player.queue = vec!["__thrust".into(), "__thrust".into(), "__thrust".into()];
+        let mut board = make_board(7, vec![
+            None, None, None, None, None, Some(player), None,
+        ]);
+
+        execute_queue("frigate", &mut board, &OneAction(thrust));
+
+        let cell_of_frigate = board
+            .cells
+            .iter()
+            .position(|c| c.as_ref().map(|s| s.id == "frigate").unwrap_or(false))
+            .expect("frigate still on the board");
+        assert_eq!(cell_of_frigate, 6, "thrust chain clamps at last lane cell");
+        let p = board.cells[cell_of_frigate].as_ref().unwrap();
+        assert!(p.queue.is_empty(), "queue should be cleared even when later moves no-op");
     }
 
     /// 'Nothing bore' gate: a forward arc looking at an empty lane does not
@@ -1730,7 +1912,7 @@ mod tests {
             fn spawn_projectile(&self, _: &str, _: &Ship) -> Projectile { unreachable!() }
         }
         let content = OneAction(pulse_laser());
-        execute_queue(0, &mut board, &content);
+        execute_queue("frigate", &mut board, &content);
         let p = board.cells[0].as_ref().unwrap();
         assert_eq!(p.heat, 0, "heat must NOT advance when no target bears");
         assert!(!p.cooldowns.contains_key("pulse_laser"));
@@ -1943,7 +2125,7 @@ mod tests {
             fn action(&self, _: &str) -> Option<&Action> { None }
             fn spawn_projectile(&self, _: &str, _: &Ship) -> Projectile { unreachable!() }
         }
-        execute_queue(0, &mut board, &Empty);
+        execute_queue("frigate", &mut board, &Empty);
         assert_eq!(board.destroys_this_window, 0,
             "execute_queue must reset destroys_this_window on entry");
     }
@@ -2688,7 +2870,7 @@ mod tests {
             fn spawn_projectile(&self, _: &str, _: &Ship) -> Projectile { unreachable!() }
         }
         let content = OneAction(chain_lance);
-        execute_queue(0, &mut board, &content);
+        execute_queue("frigate", &mut board, &content);
 
         // Both ships should be gone, and OnChainKill should have fired once.
         assert!(board.cells[2].is_none(), "scout was killed");
