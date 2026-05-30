@@ -124,17 +124,32 @@ fn push_parallax(out: &mut Vec<SpriteInstance>, _lane: &LaneGeometry) {
     let w = VIRTUAL_W as f32;
     let h = VIRTUAL_H as f32;
 
-    // Far stars — tiled densely across the top 75% of the canvas.
-    push_tiled(out, atlas::PARALLAX_FAR_STARS, [0.0, 0.0, w, h * 0.75], 64.0, WHITE);
-
-    // Nebula band — three wide patches across the upper half, slight horizontal stride.
-    let nebula_y = h * 0.18;
-    for i in 0..5 {
-        let x = (i as f32) * (w / 4.0) - 32.0;
+    // Far stars — three sparse 32x32 patches across the upper canvas. Each
+    // atlas cell contains ~12 pixel stars, so three placements give ~36
+    // visible stars total. Bruce's feedback was that the previous tiled
+    // density (hundreds of stars) competed with the lane for foreground
+    // attention; this cut makes the lane the visual anchor.
+    let star_alpha = 0.55;
+    let star_tint = [1.0, 1.0, 1.0, star_alpha];
+    for &(fx, fy) in &[(0.18_f32, 0.12), (0.55, 0.30), (0.85, 0.18)] {
         out.push(SpriteInstance::axis_aligned(
-            [x + 64.0, nebula_y],
+            [fx * w, fy * h],
+            [32.0, 32.0],
+            star_tint,
+            atlas::cell_uvs(atlas::PARALLAX_FAR_STARS),
+        ));
+    }
+
+    // Nebula band — three wide patches in the upper half, mostly behind the
+    // distant planet.
+    let nebula_tint = [1.0, 1.0, 1.0, 0.75];
+    let nebula_y = h * 0.20;
+    for i in 0..3 {
+        let x = w * (0.20 + (i as f32) * 0.30);
+        out.push(SpriteInstance::axis_aligned(
+            [x, nebula_y],
             [80.0, 32.0],
-            WHITE,
+            nebula_tint,
             atlas::cell_uvs(atlas::PARALLAX_NEBULA),
         ));
     }
@@ -147,42 +162,27 @@ fn push_parallax(out: &mut Vec<SpriteInstance>, _lane: &LaneGeometry) {
         atlas::cell_uvs(atlas::PARALLAX_DISTANT_PLANET),
     ));
 
-    // Mid stars — tiled, slightly less dense than far stars.
-    push_tiled(out, atlas::PARALLAX_MID_STARS, [0.0, h * 0.10, w, h * 0.55], 80.0, WHITE);
-
-    // Foreground dust — tiled across the lower 25% of the canvas in front of
-    // the lane (drawn before the lane plate, so it underlies; later slices
-    // can move this above for true foreground parallax).
-    push_tiled(out, atlas::PARALLAX_FOREGROUND_DUST, [0.0, h * 0.75, w, h * 0.25], 96.0, WHITE);
-}
-
-/// Tile one atlas cell across a screen-rect `[x, y, w, h]` with a given tile
-/// pitch. Half-size is `tile_size / 2`. Edge tiles may extend past the rect
-/// — the shader handles that fine; clamping inside the cell would require a
-/// scissor.
-fn push_tiled(
-    out: &mut Vec<SpriteInstance>,
-    cell: (u32, u32),
-    rect: [f32; 4],
-    tile_size: f32,
-    tint: [f32; 4],
-) {
-    let [rect_x, rect_y, rect_w, rect_h] = rect;
-    let half = tile_size / 2.0;
-    let mut y = rect_y + half;
-    while y < rect_y + rect_h + half {
-        let mut x = rect_x + half;
-        while x < rect_x + rect_w + half {
-            out.push(SpriteInstance::axis_aligned(
-                [x, y],
-                [half, half],
-                tint,
-                atlas::cell_uvs(cell),
-            ));
-            x += tile_size;
-        }
-        y += tile_size;
+    // Mid stars — two patches; each cell carries ~12 stars, so this is ~24
+    // visible mid-distance stars total.
+    let mid_tint = [1.0, 1.0, 1.0, 0.70];
+    for &(fx, fy) in &[(0.32_f32, 0.45), (0.68, 0.55)] {
+        out.push(SpriteInstance::axis_aligned(
+            [fx * w, fy * h],
+            [32.0, 32.0],
+            mid_tint,
+            atlas::cell_uvs(atlas::PARALLAX_MID_STARS),
+        ));
     }
+
+    // Foreground dust — one sparse patch low on the canvas, in front of the
+    // lane. Single placement so it reads as a subtle near-camera detail
+    // rather than a curtain of motes.
+    out.push(SpriteInstance::axis_aligned(
+        [w * 0.40, h * 0.88],
+        [32.0, 32.0],
+        [1.0, 1.0, 1.0, 0.55],
+        atlas::cell_uvs(atlas::PARALLAX_FOREGROUND_DUST),
+    ));
 }
 
 /* =============================================================================
