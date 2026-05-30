@@ -12,10 +12,15 @@
 //!                  emitted by the analysis doc's "Copy JSON" button).
 //! - [`geometry`] — spatial primitives: orientation, arcs, range bands,
 //!                  directional shield absorption (mirrors `engine/geometry.ts`).
+//! - [`resolve`]  — the combat resolver: four-phase round, arc/heat/cooldown
+//!                  gate, damage pipeline, ordnance advance (mirrors
+//!                  `engine/resolve.ts`). Content / AI effect bodies are
+//!                  stubbed pending the content slice.
 //!
-//! The resolver, content effect bodies, AI, and rendering live in sibling
-//! modules added by other teammates.
+//! Content effect bodies, AI, and rendering live in sibling modules added by
+//! other teammates.
 
 pub mod types;
 pub mod catalog;
 pub mod geometry;
+pub mod resolve;

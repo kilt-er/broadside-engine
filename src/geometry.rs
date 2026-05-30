@@ -5,9 +5,7 @@
 //! content lookups — just geometry. The TypeScript engine is the canonical
 //! reference; when this port and the TS disagree, the TS is right.
 
-use std::collections::HashMap;
-
-use crate::types::{Arc, HullZone, LaneEnd, Orientation, RangeBand, ShieldFace, Ship};
+use crate::types::{Arc, HullZone, LaneEnd, Orientation, RangeBand, ShieldFace, ShieldProfile, Ship};
 
 /// `fore` is toward higher cell index; `opposite(fore) = aft` and vice versa.
 pub fn opposite(end: LaneEnd) -> LaneEnd {
@@ -157,13 +155,13 @@ pub fn absorb_shield(face: &mut ShieldFace, dmg: i32) -> i32 {
 /// The starting Frigate's hull: strong bow (2), weak stern (0), medium flanks (1).
 /// Mirrors `defaultShieldProfile` in `geometry.ts` and matches the shape used
 /// throughout `demo.ts`.
-pub fn default_shield_profile() -> HashMap<HullZone, ShieldFace> {
-    let mut m = HashMap::with_capacity(4);
-    m.insert(HullZone::Bow, ShieldFace { armour: 2, charge: 0 });
-    m.insert(HullZone::Stern, ShieldFace { armour: 0, charge: 0 });
-    m.insert(HullZone::Port, ShieldFace { armour: 1, charge: 0 });
-    m.insert(HullZone::Starboard, ShieldFace { armour: 1, charge: 0 });
-    m
+pub fn default_shield_profile() -> ShieldProfile {
+    ShieldProfile {
+        bow: ShieldFace { armour: 2, charge: 0 },
+        stern: ShieldFace { armour: 0, charge: 0 },
+        port: ShieldFace { armour: 1, charge: 0 },
+        starboard: ShieldFace { armour: 1, charge: 0 },
+    }
 }
 
 /* =============================================================================
@@ -317,10 +315,9 @@ mod tests {
     #[test]
     fn default_shield_profile_matches_the_doc() {
         let p = default_shield_profile();
-        assert_eq!(p[&HullZone::Bow], ShieldFace { armour: 2, charge: 0 });
-        assert_eq!(p[&HullZone::Stern], ShieldFace { armour: 0, charge: 0 });
-        assert_eq!(p[&HullZone::Port], ShieldFace { armour: 1, charge: 0 });
-        assert_eq!(p[&HullZone::Starboard], ShieldFace { armour: 1, charge: 0 });
-        assert_eq!(p.len(), 4);
+        assert_eq!(*p.face(HullZone::Bow), ShieldFace { armour: 2, charge: 0 });
+        assert_eq!(*p.face(HullZone::Stern), ShieldFace { armour: 0, charge: 0 });
+        assert_eq!(*p.face(HullZone::Port), ShieldFace { armour: 1, charge: 0 });
+        assert_eq!(*p.face(HullZone::Starboard), ShieldFace { armour: 1, charge: 0 });
     }
 }
