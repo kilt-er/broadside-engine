@@ -221,6 +221,27 @@ fn cascading_reactor_breaches_chain_correctly() {
         }
     });
 
+    // Per reviewer's follow-up: also subscribe to OnDamageTaken so the
+    // FULL event order across the cascade is observed, not just the
+    // lethal log. A port that reordered destroy() to emit OnLethal
+    // BEFORE the splash would still produce the same lethal log and
+    // final hulls, but the event_order would flip from
+    // `[damage(2), damage(3), lethal(2), lethal(1)]` to
+    // `[damage(2), lethal(2), damage(3), lethal(1)]` — caught here.
+    let event_order: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+    let order_d = Rc::clone(&event_order);
+    board.bus.on(Hook::OnDamageTaken, move |ctx: &mut HookContext| {
+        if let Some(c) = ctx.target_cell {
+            order_d.borrow_mut().push(format!("damage({c})"));
+        }
+    });
+    let order_l = Rc::clone(&event_order);
+    board.bus.on(Hook::OnLethal, move |ctx: &mut HookContext| {
+        if let Some(c) = ctx.target_cell {
+            order_l.borrow_mut().push(format!("lethal({c})"));
+        }
+    });
+
     destroy(1, &mut board);
 
     // Both ReactorBreach ships died: cell 1 (the original) and cell 2
@@ -239,6 +260,24 @@ fn cascading_reactor_breaches_chain_correctly() {
         *lethal_log.borrow(),
         vec![2, 1],
         "tiny's OnLethal fires before breacher's (DFS chain through destroy)",
+    );
+
+    // Full event order across the cascade. The shape derives from
+    // `destroy()`'s body at resolve.rs:757-784: splash THEN OnLethal.
+    // Walking the trace:
+    //   1. destroy(1) splashes 2 -> apply_damage(2) -> damage(2) emit, tiny dies
+    //   2. apply_damage(2) calls destroy(2)
+    //   3. destroy(2) splashes 2 -> apply_damage(3) -> damage(3) emit
+    //      (neighbour survives at 8 hp; no further chain)
+    //   4. destroy(2) emits OnLethal(2)
+    //   5. control unwinds to destroy(1); destroy(1) emits OnLethal(1)
+    // Final: [damage(2), damage(3), lethal(2), lethal(1)].
+    assert_eq!(
+        *event_order.borrow(),
+        vec!["damage(2)", "damage(3)", "lethal(2)", "lethal(1)"],
+        "full event-order through the cascade. If a port moves destroy()'s \
+         OnLethal emit before the splash, this becomes \
+         [damage(2), lethal(2), damage(3), lethal(1)]",
     );
 
     // Chain-window counter saw both deaths.

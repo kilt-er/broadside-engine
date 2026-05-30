@@ -246,8 +246,61 @@ fn dual_damage_mixed_none_and_some_true_keeps_falloff_on() {
     assert_eq!(hull, 6, "Some(true) is the default-on form, not the bypass form");
 }
 
+/// Boundary check: drive the load-bearing mixed-predicate scenario through
+/// the full `execute_queue` -> `apply_effect` -> `apply_damage` pipeline,
+/// not by calling `apply_damage` twice by hand.
+///
+/// The other tests in this file call `apply_damage` directly, which is the
+/// inner correctness boundary. This test exists so that a future refactor
+/// to `apply_effect`'s DAMAGE arm (e.g. batching, short-circuiting after
+/// the first effect, moving the action-level predicate into the per-effect
+/// match) shows up here. Per reviewer's follow-up note on commit 96ecd6c.
+///
+/// Setup: attacker at cell 0 with the dual-DAMAGE pulse_laser queued
+/// (Some(false) + None mix). Target at cell 5 (Long range, delta 2 from
+/// Close optimal). With the action-level predicate aggregating correctly,
+/// BOTH apply_damage calls bypass falloff, landing raw 4 each. Two effects
+/// -> two apply_damage invocations -> total 8 damage. Naked target with
+/// hull 10 ends at 2. (Same expected outcome as
+/// dual_damage_mixed_predicate_aggregates_at_action_level, but routed
+/// through the resolver's effect-dispatch boundary instead of bypassing it.)
+#[test]
+fn dual_damage_mixed_predicate_through_execute_queue() {
+    let mut attacker = naked_ship("frigate", Faction::Player, 0, 10);
+    attacker.queue = vec!["dual".into()];
+    let target = naked_ship("scout", Faction::Enemy, 5, 10);
+    let mut board = empty_board(
+        7,
+        vec![Some(attacker), None, None, None, None, Some(target), None],
+    );
+
+    // Content impl that returns the dual-DAMAGE weapon under id "dual".
+    struct DualContent(Action);
+    impl Content for DualContent {
+        fn action(&self, id: &str) -> Option<&Action> {
+            (id == "dual").then_some(&self.0)
+        }
+        fn spawn_projectile(&self, _: &str, _: &Ship) -> Projectile {
+            panic!("spawn_projectile not used in this test");
+        }
+    }
+    let content = DualContent(dual_damage_weapon(RangeBand::Close, 4, [Some(false), None]));
+
+    broadside_engine::resolve::execute_queue(0, &mut board, &content);
+
+    let hull = board.cells[5].as_ref().unwrap().hull;
+    assert_eq!(
+        hull, 2,
+        "execute_queue should drive both DAMAGE effects through apply_effect, \
+         each calling apply_damage which independently sees the action-level \
+         Some(false) and bypasses falloff. hull == 6 would mean apply_effect \
+         short-circuited after one effect; hull == 4 would mean the predicate \
+         dropped its action-level aggregation",
+    );
+}
+
 /// Avoid the unused-import warning on `Content` / `NoContent` (kept for
-/// future apply_effect-driven tests in this file).
+/// other apply_effect-driven tests in this file).
 #[test]
 fn no_content_constructible() {
     let _: &dyn Content = &NoContent;
