@@ -32,18 +32,17 @@ pub fn distance(a: usize, b: usize) -> usize {
 
 /* ---- range bands ----------------------------------------------------------- */
 
-/// The canonical band ordering. Indexes here drive `band_falloff`'s delta math
-/// and MUST match `RangeBand`'s declaration order in `types.rs`.
-const BAND_ORDER: [RangeBand; 5] = [
-    RangeBand::PointBlank,
-    RangeBand::Close,
-    RangeBand::Mid,
-    RangeBand::Long,
-    RangeBand::Extreme,
-];
-
+/// Index of `b` in the canonical band ordering used by `band_falloff`'s delta
+/// math. The exhaustive match here is the drift guard: adding a [`RangeBand`]
+/// variant without extending this function fails to compile.
 fn band_index(b: RangeBand) -> usize {
-    BAND_ORDER.iter().position(|x| *x == b).expect("BAND_ORDER covers every RangeBand")
+    match b {
+        RangeBand::PointBlank => 0,
+        RangeBand::Close => 1,
+        RangeBand::Mid => 2,
+        RangeBand::Long => 3,
+        RangeBand::Extreme => 4,
+    }
 }
 
 /// Bucket a cell distance into a range band. Matches the doc's band ruler.
@@ -205,6 +204,10 @@ mod tests {
         assert_eq!(range_band(0, 5), RangeBand::Long);
         assert_eq!(range_band(0, 6), RangeBand::Long);
         assert_eq!(range_band(0, 7), RangeBand::Extreme);
+        // Extreme is unbounded above — the `else` branch covers every larger
+        // distance too. Asserted explicitly so a future refactor that adds
+        // a cap can't silently change behavior at the boundary.
+        assert_eq!(range_band(0, 8), RangeBand::Extreme);
     }
 
     #[test]
