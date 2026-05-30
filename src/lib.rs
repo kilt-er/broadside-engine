@@ -16,6 +16,9 @@
 //!                  gate, damage pipeline, ordnance advance (mirrors
 //!                  `engine/resolve.ts`). Content / AI effect bodies are
 //!                  stubbed pending the content slice.
+//! - [`perspective`] — screen-space lane projection, ship sprite polygons,
+//!   beam endpoints. The only module that knows about screen coordinates;
+//!   consumed by the renderer (mirrors `engine/perspective.ts`).
 //!
 //! Content effect bodies, AI, and rendering live in sibling modules added by
 //! other teammates.
@@ -23,4 +26,5 @@
 pub mod types;
 pub mod catalog;
 pub mod geometry;
+pub mod perspective;
 pub mod resolve;
