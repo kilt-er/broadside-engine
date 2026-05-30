@@ -5,6 +5,16 @@
 //! The JSON shape is canonical — see `broadside-engine/engine/types.ts` and
 //! the `Catalog` definition there. This module only exposes thin convenience
 //! wrappers; type-driven deserialization handles the rest.
+//!
+//! # Catalog → Content seam
+//!
+//! [`crate::types::Catalog::actions`] is a `Vec<Action>` to match the JSON
+//! wire shape (a JSON array). The TS resolver's `Content.actions` is
+//! `Record<string, Action>`, i.e. an `id -> Action` map. The resolver crate
+//! should build a `HashMap<String, Action>` from `catalog.actions` **once
+//! at startup** and own that as its `Content` struct — not re-scan the
+//! `Vec` per fire, and not duplicate-store the map on `Catalog`. This
+//! file is the load shape; the resolver crate defines the runtime indexing.
 
 use std::fs;
 use std::io;
@@ -13,7 +23,11 @@ use std::path::Path;
 use crate::types::Catalog;
 
 /// Errors loading a catalog from disk.
+///
+/// Marked `#[non_exhaustive]` so downstream `match`es get a warning when a
+/// new variant (e.g. a `BadSchema(String)` validation failure) is added.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum LoadError {
     Io(io::Error),
     Parse(serde_json::Error),
@@ -105,5 +119,20 @@ mod tests {
         assert_eq!(cat.meta.schema, "broadside.v0");
         assert_eq!(cat.actions.len(), 1);
         assert_eq!(cat.actions[0].id, "pulse_laser");
+    }
+
+    #[test]
+    fn placeholder_sections_default_to_empty_when_absent() {
+        // Reviewer m4 + m3 follow-up: confirm `#[serde(default)]` on the
+        // placeholder `unknown[]`-typed sections actually omits cleanly.
+        // MINIMAL_CATALOG_JSON intentionally omits capitals/classes/fieldkit/
+        // sectors/commendations entirely; if the defaults regress, this test
+        // will fail with `missing field` parse errors.
+        let cat = load_from_bytes(MINIMAL_CATALOG_JSON.as_bytes()).expect("parses");
+        assert!(cat.capitals.is_empty());
+        assert!(cat.classes.is_empty());
+        assert!(cat.fieldkit.is_empty());
+        assert!(cat.sectors.is_empty());
+        assert!(cat.commendations.is_empty());
     }
 }
