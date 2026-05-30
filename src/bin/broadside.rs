@@ -149,10 +149,14 @@ fn render_example_board() -> Board {
     let mut cells: Vec<Option<Ship>> = (0..size).map(|_| None).collect();
 
     cells[0] = Some(player_ship(0));
-    cells[2] = Some(make_ship("enemy-2", Faction::Enemy, 2, Orientation::Broadside));
-    cells[3] = Some(make_ship("enemy-3", Faction::Enemy, 3, Orientation::BowOn { bow: LaneEnd::Aft }));
-    cells[5] = Some(make_ship("enemy-5", Faction::Enemy, 5, Orientation::BowOn { bow: LaneEnd::Fore }));
-    cells[6] = Some(make_ship("enemy-6", Faction::Enemy, 6, Orientation::BowOn { bow: LaneEnd::Fore }));
+    // Each enemy gets one Forward pulse_laser so the AI has something to
+    // score and queue. Without a mount, decide_enemy_action correctly
+    // returns nothing and the enemy looks inert; per bruce's playtest the
+    // demo needs visible enemy behaviour to read as a live game.
+    cells[2] = Some(enemy_ship("enemy-2", 2, Orientation::Broadside));
+    cells[3] = Some(enemy_ship("enemy-3", 3, Orientation::BowOn { bow: LaneEnd::Aft }));
+    cells[5] = Some(enemy_ship("enemy-5", 5, Orientation::BowOn { bow: LaneEnd::Fore }));
+    cells[6] = Some(enemy_ship("enemy-6", 6, Orientation::BowOn { bow: LaneEnd::Fore }));
 
     Board {
         size,
@@ -176,6 +180,19 @@ fn player_ship(cell: usize) -> Ship {
         Mount { id: "m2".into(), arc: TArc::Forward, weapon: "torpedo".into() },
     ];
     player
+}
+
+/// Enemy frigate: one Forward pulse_laser so the AI can actually queue an
+/// action. Without a mount, decide_enemy_action returns nothing and the
+/// enemy looks inert.
+fn enemy_ship(id: &str, cell: usize, orientation: Orientation) -> Ship {
+    let mut e = make_ship(id, Faction::Enemy, cell, orientation);
+    e.mounts = vec![Mount {
+        id: "m1".into(),
+        arc: TArc::Forward,
+        weapon: "pulse_laser".into(),
+    }];
+    e
 }
 
 fn make_ship(id: &str, faction: Faction, cell: usize, orientation: Orientation) -> Ship {
