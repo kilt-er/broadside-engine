@@ -27,8 +27,7 @@ glance what is documented vs. what is pending.*
 - [`src/types.rs`](#srctypesrs) — every type, no logic
 - [`src/geometry.rs`](#srcgeometryrs) — pure geometry: bands, arcs, facings, shields
 - [`src/perspective.rs`](#srcperspectivers) — screen-space projection: lane trapezoid, cell positions, ship sprite vertices
-- [`src/resolve.rs`](#srcresolvers) — the four-phase round, queue gate, damage pipeline, effect dispatch
-- [`src/effects.rs`](#srceffectsrs) — movement, modifiers, displacement (TS TODO bodies)
+- [`src/resolve.rs`](#srcresolvers) — the four-phase round, queue gate, damage pipeline, effect dispatch, all movement/AI/modifier bodies
 - [`src/content.rs`](#srccontentrs) — catalog loading, projectile spawn dispatch
 - [`src/ai.rs`](#srcairs) — enemy decision layer
 - [`src/bus.rs`](#srcbusrs) — event bus + hooks
@@ -2463,35 +2462,35 @@ No open items.
 
 ---
 
----
+## Effects layer — folded into `src/resolve.rs`
 
-## `src/effects.rs`
+*Navigational breadcrumb for readers who came looking for an `effects.rs` module.*
 
-*The bodies the TS source leaves as TODO comments inside `resolve.ts`: full movement
-mode implementations (`THRUST`, `BURN`, `SLIP`, `JUMP`, `TRACTOR_SWAP` with occupancy
-and collision rules), push/pull/swap with collision damage, and subsystem damage
-modifier math.*
+There is **no separate `src/effects.rs` file** in the Rust port. The five function
+bodies the TS source leaves as TODO comments inside `resolve.ts` — `apply_modifiers`,
+`resolve_self_move`, `resolve_target_move`, `decide_enemy_action`, and the per-effect
+arms of `apply_effect` — all live inside `src/resolve.rs` alongside the resolver they
+collaborate with. Documented in this file's [`src/resolve.rs`](#srcresolvers) section:
 
-**Mirrors:** TS keeps these inside `resolve.ts` as stubs (lines 371-393). The Rust port
-may split them into their own module for readability.
+- **`apply_modifiers`** — see the "fn apply_modifiers" sub-entry. Step 2 of the
+  damage pipeline; routes subsystem bonuses through `Content::damage_modifier`.
+- **`resolve_self_move`** — see the "Movement" sub-entry. All five `MovementMode`s
+  (THRUST / BURN / SLIP / JUMP / TRACTOR_SWAP) with collision damage routed through
+  the regular pipeline.
+- **`resolve_target_move`** — see the "Target displacement" sub-entry. Push / Pull /
+  Swap with the "source counts as occupant" rule.
+- **`decide_enemy_action`** — see the "AI" sub-entry. Scoring formula + visible-threat
+  fallback ladder.
+- **Per-effect dispatch** — see the "`fn apply_effect`" sub-entry covering all nine
+  `Effect` variants including the `DEPLOY` arm and the `BOARD` doc-stub.
 
-### Functions to document
-
-- **`fn apply_modifiers(dmg: i32, target: &Ship, band: RangeBand, board: &Board) -> i32`** —
-  sum of subsystem damage bonuses. *Mirrors `resolve.ts:371` (stub).*
-- **`fn resolve_self_move(ship: &mut Ship, mode: MovementMode, distance: i32,
-  board: &mut Board)`** — full path rules per mode. *Mirrors `resolve.ts:376` (partial
-  THRUST/BURN only).*
-- **`fn resolve_target_move(target: &mut Ship, mode: DisplaceMode, distance: i32,
-  board: &mut Board)`** — push/pull/swap with collision. *Mirrors `resolve.ts:390`
-  (stub).*
-
-### Drift watch list
-
-- **Module split** — if architect keeps these in `resolve.rs`, this section gets folded
-  into that file's entry. If they split into `effects.rs`, this stays.
-
-*Per-line walkthroughs pending Rust implementation.*
+**Why no split?** Content kept these bodies in `resolve.rs` because they share the
+resolver's private helpers (`dummy_weapon`, `add_status`, `cells_toward`,
+`bearing_direction`) and because routing them through `&dyn Content` already
+externalises the only state the TS would have wanted a separate module for
+(subsystem registry). Splitting would either duplicate the helpers or force them
+public for no benefit. The original `LINE_BY_LINE.md` skeleton's "effects.rs"
+heading predates this decision; folding it here removes the confusion.
 
 ---
 
@@ -2606,11 +2605,20 @@ are the first two tests to land. *Tracking under task #5.*
 - `tests/geometry.rs` — band falloff table, facing zone exhaustive cases, arc bearing
   exhaustive cases, shield absorption (charge consumption, armour subtraction, zero
   damage).
-- `tests/resolve.rs` — the four-phase round end-to-end on small boards. Demo scenario A
-  (weak stern, full damage gets through) and scenario B (strong bow, 2 reduced) ported
-  as deterministic assertions.
-- `tests/effects.rs` — each movement mode against boundary, occupancy, multi-step paths.
-- `tests/projectiles.rs` — torpedo across a 7-cell lane, dodge, point-defense kill.
+- `tests/event_chain.rs` — multi-ship cascades; the canonical
+  `cascading_reactor_breaches_chain_correctly` event-order test pins the
+  splash-before-OnLethal invariant (see the `destroy()` walkthrough in
+  [`src/resolve.rs`](#srcresolvers)).
+- `tests/pipeline.rs` — action-level `band_falloff` aggregation; pins the
+  predicate that one `Effect::DAMAGE { band_falloff: Some(false) }` on an action
+  disables falloff for the *whole* `apply_damage` call, not just that effect.
+- `tests/catalog_placeholders.rs` — catalog parses with the five `unknown[]`
+  placeholder sections (capitals/classes/fieldkit/sectors/commendations) absent.
+- `tests/catalog_smoke.rs` — smoke test against the canonical
+  `assets/broadside.catalog.json` exported by the analysis HTML.
+- `tests/proptest.rs` — randomised invariants for `band_falloff` (monotone
+  non-increasing with band distance, floored at 0) and `absorb_shield` (charge
+  consumption, armour subtraction, no-consume on zero damage).
 
 *Test entries get a "Worked example" block embedded into the relevant function
 walkthrough — when `apply_damage` is documented, the demo.ts scenario A trace lives

@@ -254,19 +254,33 @@ mirroring the TS module split:
 
 ```
 src/
-├── types.rs       // every TS type as Rust enums/structs; no logic
-├── geometry.rs    // pure functions: rangeBand, bandFalloff, facingZone, arcBears, ...
-├── resolve.rs     // resolveRound, executeQueue, applyDamage, applyEffect, advanceProjectile
+├── types.rs       // every TS type as Rust struct/enum + EventBus impl
+├── geometry.rs    // pure cell-space: rangeBand, bandFalloff, facingZone, arcBears, ...
+├── perspective.rs // pure screen-space: lane trapezoid, cell projection, ship sprite polys
+├── resolve.rs     // resolveRound, executeQueue, applyDamage, applyEffect,
+│                  // advanceProjectile, + movement bodies, + apply_modifiers,
+│                  // + decide_enemy_action (everything the TS scattered as TODOs)
 ├── content.rs     // catalog loading; Action lookup; spawnProjectile dispatch
-├── ai.rs          // decideEnemyAction (stubbed today, fills in lane-end threat objective)
-├── effects.rs    // resolveSelfMove, resolveTargetMove, applyModifiers (TS TODO bodies)
-├── bus.rs         // EventBus + Hook enum + HookContext
-└── gfx/           // wgpu renderer, atlas, HUD — separate from the simulation
+├── catalog.rs     // JSON catalog → typed records
+├── atlas.rs       // sprite atlas packing + UV lookup
+├── gfx.rs         // wgpu renderer
+├── hud.rs         // scene composition + HUD overlay
+└── bin/broadside.rs  // winit event loop entry point
 ```
 
-The simulation never imports from `gfx/`. The renderer reads `Board` and `Ship` state and
-listens to the event bus for kill / damage / vent animations. (HTML Part XIII
-implementation order #1–#8.)
+The simulation never imports from `gfx.rs` / `atlas.rs` / `hud.rs` / `bin/`. The
+renderer reads `Board` and `Ship` state and listens to the event bus for kill /
+damage / vent animations.
+
+The `EventBus`, `Hook` enum, and `HookContext` live in `types.rs` rather than a
+separate `bus.rs` — they're part of the type surface and have no logic beyond a
+small `on`/`emit` impl. The `Content` trait is in `resolve.rs` (the resolver's view
+of the catalog layer). `decide_enemy_action`, the movement-mode implementations,
+and the subsystem damage modifier sit alongside the resolver in `resolve.rs` rather
+than in their own `ai.rs` / `effects.rs` modules — they share the resolver's
+private helpers and routing them externally would force those helpers public.
+
+(HTML Part XIII implementation order #1–#8.)
 
 ---
 
