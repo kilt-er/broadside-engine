@@ -321,11 +321,23 @@ fn push_hazards(out: &mut Vec<DrawCommand>, board: &Board, lane: &LaneGeometry) 
  * polygon (length = beam, height = length / 3) without the bow taper.
  * ============================================================================= */
 
-/// Render one ship at its cell position. View-angle stacks an axonometric
-/// TOP face over the asymmetric FRONT face, with bow chevron on the top
-/// face for orientation cue at high angles. At angle=0 the top face
-/// collapses; the bow chevron is hidden and orientation reads from the
-/// front face's asymmetric silhouette (pointy bow, square stern).
+/// Render one ship as a **single silhouette** whose total vertical extent
+/// interpolates with view angle: `height * cos(θ) + beam * sin(θ)`. No
+/// horizontal seam splits the silhouette into "front face" + "top face"
+/// — the previous stacked-quad approach read as ships-tipping (bruce
+/// feedback on commit 2caa712). The silhouette is anchored at its BASE
+/// on the lane line and extends upward.
+///
+/// **Bow morph** for BowOn:
+/// - Bow-end taper width = `(length * 0.25) * cos(θ)`. At 0° full bow
+///   triangle; at 90° taper width is zero -> pure rectangle.
+/// - Chevron is overlaid near the bow end with alpha `sin(θ)` — invisible
+///   at side view, full at top-down. At intermediate angles both cues
+///   coexist.
+///
+/// **Broadside** uses no bow taper at any angle (both ends face
+/// off-lane). At low angles the bump on top is the readability cue; the
+/// chevron fades in pointing "up" (off-lane = bow) as `sin(θ)` grows.
 fn push_ship(
     out: &mut Vec<DrawCommand>,
     ship: &Ship,
@@ -348,176 +360,168 @@ fn push_ship(
 
     let cos_a = view_angle_rad.cos();
     let sin_a = view_angle_rad.sin();
-    // Stance swap: bow-on length runs along lane (on-screen width), beam is
-    // the depth axis (top-face vertical when foreshortened). Broadside is
-    // the reverse.
-    let (on_screen_w, top_depth_full) = match stance {
+
+    // Width along the lane is fixed (no horizontal foreshortening).
+    let (width, depth_dim) = match stance {
         Stance::BowOn => (FRIGATE_DIMS.length, FRIGATE_DIMS.beam),
         Stance::Broadside => (FRIGATE_DIMS.beam, FRIGATE_DIMS.length),
     };
-    let half_w = on_screen_w / 2.0;
-    let front_h = FRIGATE_DIMS.height * cos_a;
-    let half_front = front_h / 2.0;
-    let top_depth = top_depth_full * sin_a / 2.0;
-
+    // Total vertical extent under the camera-revolves model: sum of the
+    // side-view height projection and the top-down depth projection.
+    let total_h = FRIGATE_DIMS.height * cos_a + depth_dim * sin_a;
     let cx = p.x;
-    let cy = p.y;
-    // FRONT face occupies y ∈ [cy - half_front, cy + half_front], stacked
-    // on the lane waterline. TOP face sits above the front face top edge.
-    let front_top_y = cy - half_front;
-    let front_bot_y = cy + half_front;
-    let top_top_y = front_top_y - top_depth;
-    let top_bot_y = front_top_y;
+    // Anchor at the BASE on the lane line; silhouette extends upward.
+    let base_y = p.y;
+    let top_y = base_y - total_h;
 
-    // --- FRONT face ---
-    if front_h > 0.5 {
-        match stance {
-            Stance::BowOn => {
-                push_bow_on_front_face(out, cx, front_top_y, front_bot_y, on_screen_w, bow_fore, fill, stroke);
-            }
-            Stance::Broadside => {
-                push_broadside_front_face(out, cx, front_top_y, front_bot_y, on_screen_w, fill, stroke);
-            }
-        }
+    match stance {
+        Stance::BowOn => push_bow_on_silhouette(
+            out, cx, base_y, top_y, width, cos_a, bow_fore, fill, stroke,
+        ),
+        Stance::Broadside => push_broadside_silhouette(
+            out, cx, base_y, top_y, width, cos_a, fill, stroke,
+        ),
     }
 
-    // --- TOP face ---
-    if top_depth > 0.5 {
-        // Simple rectangle for the top face. Bow chevron sits on it.
-        push_polygon(out, PolygonInstance {
-            p0: [cx - half_w, top_top_y],
-            p1: [cx + half_w, top_top_y],
-            p2: [cx + half_w, top_bot_y],
-            p3: [cx - half_w, top_bot_y],
-            color: fill,
-            uv_min: atlas::cell_uvs(atlas::SOLID_WHITE).0,
-            uv_max: atlas::cell_uvs(atlas::SOLID_WHITE).1,
+    // Bow chevron — overlaid on the silhouette, alpha = sin(angle). Fades
+    // in as the camera tilts toward top-down.
+    if sin_a > 0.05 && total_h > 6.0 {
+        let chevron_size = 8.0;
+        let chevron_alpha = sin_a;
+        let mut chev_color = stroke;
+        chev_color[3] *= chevron_alpha;
+        let (chx, chy, chrot) = match stance {
+            Stance::BowOn => {
+                let off = width / 2.0 - chevron_size;
+                let sign = if bow_fore { 1.0 } else { -1.0 };
+                let chx = cx + sign * off;
+                // Position chevron in the upper-bow region of the silhouette.
+                let chy = top_y + total_h * 0.20;
+                let rot = if bow_fore { 0.0 } else { std::f32::consts::PI };
+                (chx, chy, rot)
+            }
+            Stance::Broadside => {
+                let chx = cx;
+                // Centered, near the top edge (the "off-lane bow" direction).
+                let chy = top_y + total_h * 0.20;
+                let rot = -std::f32::consts::FRAC_PI_2;
+                (chx, chy, rot)
+            }
+        };
+        push_sprite(out, SpriteInstance {
+            pos: [chx, chy],
+            half_size: [chevron_size, chevron_size],
+            color: chev_color,
+            uv_min: atlas::cell_uvs(atlas::BOW_CHEVRON).0,
+            uv_max: atlas::cell_uvs(atlas::BOW_CHEVRON).1,
+            rotation_rad: chrot,
+            _pad: [0.0; 3],
         });
-        // Top-face outline.
-        let corners = [
-            Point2 { x: cx - half_w, y: top_top_y },
-            Point2 { x: cx + half_w, y: top_top_y },
-            Point2 { x: cx + half_w, y: top_bot_y },
-            Point2 { x: cx - half_w, y: top_bot_y },
-        ];
-        for i in 0..4 {
-            push_line(out, corners[i], corners[(i + 1) % 4], 1.0, stroke);
-        }
-
-        // Bow chevron — atlas sprite on the top face, near the bow end.
-        // BowOn: x offset along the bow direction. Broadside: at the
-        // top-edge midpoint pointing UP (off-lane "bow direction").
-        if top_depth > 4.0 {
-            let chevron_size = 8.0;
-            let (chx, chy, chrot) = match stance {
-                Stance::BowOn => {
-                    let off = on_screen_w / 2.0 - chevron_size;
-                    let sign = if bow_fore { 1.0 } else { -1.0 };
-                    let chx = cx + sign * off;
-                    let chy = (top_top_y + top_bot_y) / 2.0;
-                    let rot = if bow_fore { 0.0 } else { std::f32::consts::PI };
-                    (chx, chy, rot)
-                }
-                Stance::Broadside => {
-                    let chx = cx;
-                    let chy = top_top_y + chevron_size;
-                    // Chevron points up (off-lane = bow direction).
-                    let rot = -std::f32::consts::FRAC_PI_2;
-                    (chx, chy, rot)
-                }
-            };
-            push_sprite(out, SpriteInstance {
-                pos: [chx, chy],
-                half_size: [chevron_size, chevron_size],
-                color: stroke,
-                uv_min: atlas::cell_uvs(atlas::BOW_CHEVRON).0,
-                uv_max: atlas::cell_uvs(atlas::BOW_CHEVRON).1,
-                rotation_rad: chrot,
-                _pad: [0.0; 3],
-            });
-        }
     }
 }
 
-/// Bow-on front face: asymmetric silhouette with pointy bow and square
-/// stern. `top_y` and `bot_y` give the front face's vertical span at the
-/// current view angle (so the face squishes vertically as the angle
-/// increases). `bow_fore = true` points the bow toward +x.
-fn push_bow_on_front_face(
+/// Single-silhouette bow-on hull. Bow-end taper width is
+/// `(length * 0.25) * cos(angle)`, so the bow triangle smoothly collapses
+/// to flat as the angle approaches PI/2. At cos=1 (side view) full bow
+/// triangle; at cos=0 (top down) pure rectangle.
+///
+/// The hull is rendered as one rectangle (stern body) + one degenerate
+/// quad (bow taper). When taper width is zero the bow quad collapses to a
+/// zero-area sliver and contributes no visible seam.
+#[allow(clippy::too_many_arguments)]
+fn push_bow_on_silhouette(
     out: &mut Vec<DrawCommand>,
     cx: f32,
+    base_y: f32,
     top_y: f32,
-    bot_y: f32,
     width: f32,
+    cos_a: f32,
     bow_fore: bool,
     fill: [f32; 4],
     stroke: [f32; 4],
 ) {
-    let hull_w = width * 0.75;
-    let bow_w = width * 0.25;
-    let mid_y = (top_y + bot_y) / 2.0;
+    let full_bow_w = width * 0.25;
+    let bow_w = full_bow_w * cos_a;
+    let body_w = width - bow_w;
+    let mid_y = (top_y + base_y) / 2.0;
     let sign = if bow_fore { 1.0 } else { -1.0 };
-    let stern_x = cx - sign * (hull_w / 2.0 + bow_w / 2.0);
-    let bow_corner_x = cx + sign * (hull_w / 2.0 - bow_w / 2.0);
-    let bow_tip_x = cx + sign * (hull_w / 2.0 + bow_w / 2.0);
+    // Stern edge x: the far end from the bow.
+    let stern_edge_x = cx - sign * width / 2.0;
+    // Bow corner: where the rectangle meets the triangle.
+    let bow_corner_x = cx - sign * width / 2.0 + sign * body_w;
+    // Bow tip: the far end on the bow side.
+    let bow_tip_x = cx + sign * width / 2.0;
 
-    // Square stern quad. Use min/max to handle bow_fore=false (sign=-1)
-    // cleanly — the quad always has bot-right > bot-left in screen coords.
-    let left = stern_x.min(bow_corner_x);
-    let right = stern_x.max(bow_corner_x);
+    let left = stern_edge_x.min(bow_corner_x);
+    let right = stern_edge_x.max(bow_corner_x);
+
+    // Stern body rectangle.
     push_polygon(out, PolygonInstance {
         p0: [left, top_y],
         p1: [right, top_y],
-        p2: [right, bot_y],
-        p3: [left, bot_y],
+        p2: [right, base_y],
+        p3: [left, base_y],
         color: fill,
         uv_min: atlas::cell_uvs(atlas::SOLID_WHITE).0,
         uv_max: atlas::cell_uvs(atlas::SOLID_WHITE).1,
     });
-    // Bow triangle as a degenerate quad (two coincident vertices at tip).
+    // Bow triangle (degenerate-quad with two coincident vertices at tip).
     push_polygon(out, PolygonInstance {
         p0: [bow_corner_x, top_y],
         p1: [bow_tip_x, mid_y],
         p2: [bow_tip_x, mid_y],
-        p3: [bow_corner_x, bot_y],
+        p3: [bow_corner_x, base_y],
         color: fill,
         uv_min: atlas::cell_uvs(atlas::SOLID_WHITE).0,
         uv_max: atlas::cell_uvs(atlas::SOLID_WHITE).1,
     });
 
-    // Outline strokes — silhouette edges.
-    push_line(out, Point2 { x: left, y: top_y }, Point2 { x: left, y: bot_y }, 1.0, stroke);
-    push_line(out, Point2 { x: left, y: top_y }, Point2 { x: bow_corner_x, y: top_y }, 1.0, stroke);
-    push_line(out, Point2 { x: left, y: bot_y }, Point2 { x: bow_corner_x, y: bot_y }, 1.0, stroke);
+    // Outline strokes around the full silhouette (no internal seam).
+    // Stern edge.
+    push_line(out, Point2 { x: stern_edge_x, y: top_y }, Point2 { x: stern_edge_x, y: base_y }, 1.0, stroke);
+    // Top edge (stern_edge_x -> bow_corner_x).
+    push_line(out, Point2 { x: stern_edge_x, y: top_y }, Point2 { x: bow_corner_x, y: top_y }, 1.0, stroke);
+    // Bottom edge.
+    push_line(out, Point2 { x: stern_edge_x, y: base_y }, Point2 { x: bow_corner_x, y: base_y }, 1.0, stroke);
+    // Bow taper edges. When cos_a is near 0 these collapse to a vertical
+    // line at bow_corner_x; that's fine — no visible seam because they
+    // coincide.
     push_line(out, Point2 { x: bow_corner_x, y: top_y }, Point2 { x: bow_tip_x, y: mid_y }, 1.0, stroke);
-    push_line(out, Point2 { x: bow_corner_x, y: bot_y }, Point2 { x: bow_tip_x, y: mid_y }, 1.0, stroke);
+    push_line(out, Point2 { x: bow_corner_x, y: base_y }, Point2 { x: bow_tip_x, y: mid_y }, 1.0, stroke);
 }
 
-/// Broadside front face: symmetric rectangle (both ends face off-lane) with
-/// a centered superstructure bump on top to read distinct from bow-on.
-fn push_broadside_front_face(
+/// Single-silhouette broadside hull: rectangle plus a centered
+/// superstructure bump perched on top. The bump's height interpolates
+/// with cos(angle) — taller at low angles (visible from the side),
+/// shorter at high angles (less prominent from above). No bow taper at
+/// any angle since both lengthwise ends face off-lane equally.
+#[allow(clippy::too_many_arguments)]
+fn push_broadside_silhouette(
     out: &mut Vec<DrawCommand>,
     cx: f32,
+    base_y: f32,
     top_y: f32,
-    bot_y: f32,
     width: f32,
+    cos_a: f32,
     fill: [f32; 4],
     stroke: [f32; 4],
 ) {
     let half_w = width / 2.0;
-    let height = bot_y - top_y;
+    let height = base_y - top_y;
     push_polygon(out, PolygonInstance {
         p0: [cx - half_w, top_y],
         p1: [cx + half_w, top_y],
-        p2: [cx + half_w, bot_y],
-        p3: [cx - half_w, bot_y],
+        p2: [cx + half_w, base_y],
+        p3: [cx - half_w, base_y],
         color: fill,
         uv_min: atlas::cell_uvs(atlas::SOLID_WHITE).0,
         uv_max: atlas::cell_uvs(atlas::SOLID_WHITE).1,
     });
     // Superstructure bump: short rectangle perched on top, centered.
+    // Height scales with cos(angle) so it reads strongly at side view and
+    // recedes at top-down (where the bump would be foreshortened away).
     let bump_w = width * 0.4;
-    let bump_h = height * 0.5;
+    let bump_h = height * 0.30 * cos_a.max(0.1);
     push_polygon(out, PolygonInstance {
         p0: [cx - bump_w / 2.0, top_y - bump_h],
         p1: [cx + bump_w / 2.0, top_y - bump_h],
@@ -532,8 +536,8 @@ fn push_broadside_front_face(
     let main = [
         Point2 { x: cx - half_w, y: top_y },
         Point2 { x: cx + half_w, y: top_y },
-        Point2 { x: cx + half_w, y: bot_y },
-        Point2 { x: cx - half_w, y: bot_y },
+        Point2 { x: cx + half_w, y: base_y },
+        Point2 { x: cx - half_w, y: base_y },
     ];
     for i in 0..4 {
         push_line(out, main[i], main[(i + 1) % 4], 1.0, stroke);
