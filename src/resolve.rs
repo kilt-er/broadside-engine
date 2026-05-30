@@ -617,8 +617,22 @@ pub fn apply_effect(
         }
 
         Effect::BOARD { .. } => {
-            // TODO(broadside-content): board-wide effects (mass card items,
-            // lightning analogs). TS has an empty body here.
+            // Intentional no-op. There is no concrete catalog Action that
+            // emits a BOARD effect today.
+            //
+            // The mass-* board-wide effects (mass_lock, mass_breach,
+            // mass_emp, sensor_pulse) are **field-kit Cards** in the
+            // analysis doc, not Actions — they live under
+            // `Catalog::fieldkit`, not `Catalog::actions`, and field-kit
+            // items are resolved by the (future) field-kit handler, not
+            // through `applyEffect`. See the analysis HTML's "Ordnance &
+            // Field Kit" section.
+            //
+            // When a real Action carrying a BOARD effect lands (e.g. a
+            // class signature or capital-ship ability), this arm gets
+            // wired then. The TS body at `resolve.ts:226-227` is also
+            // empty, so leaving this stubbed matches the canonical
+            // reference exactly.
         }
     }
 }
