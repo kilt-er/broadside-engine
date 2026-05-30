@@ -70,15 +70,17 @@ const VICTORY_TINT: [f32; 4] = [1.00, 0.80, 0.20, 0.45];
 /// polygons are interleaved in z-order; `Gfx::render` batches consecutive
 /// same-variant runs into single GPU draw calls.
 ///
-/// `view_angle_rad` controls the **ship-only** axonometric projection.
-/// `0.0` is pure side view (front face full, top face collapsed); `PI/2`
-/// is pure top-down (front face collapsed, top face full). The lane and
-/// parallax stay flat at all angles; only ship silhouettes are
-/// foreshortened.
+/// `view_angle_rad` drives the camera-revolves projection. `0.0` is pure
+/// side view (back wall full, floor collapsed, ships at full side
+/// silhouette); `PI/2` is pure top-down (back wall collapsed, floor full,
+/// ships as top-down rectangles). The **lane stays at `center_y` at
+/// every angle** — it's the horizon between the two parallax planes.
+/// Both planes anchor at the lane: back-wall vertical extent =
+/// `back_wall_h × cos(θ)`, floor vertical extent = `floor_h × sin(θ)`.
 pub fn compose_scene(board: &Board, lane: &LaneGeometry, view_angle_rad: f32) -> Vec<DrawCommand> {
     let mut out = Vec::with_capacity(256);
 
-    push_parallax(&mut out, lane);
+    push_parallax(&mut out, lane, view_angle_rad);
     push_lane(&mut out, lane);
     push_range_band_ticks(&mut out, board, lane);
     push_hazards(&mut out, board, lane);
@@ -118,76 +120,126 @@ fn push_polygon(out: &mut Vec<DrawCommand>, p: PolygonInstance) {
 }
 
 /* =============================================================================
- * Parallax — two halves: sky above the lane, floor below.
+ * Parallax — two planes anchored at the lane, foreshortened by view angle.
  *
- * Wang-hash LCG places individual star sprites at deterministic positions
- * each frame so the field stays stable across resizes. Nebula and distant
- * planet are atlas-sampled at fixed positions in the upper half.
+ * Back wall (above the lane) vertical extent on screen =
+ *   back_wall_h * cos(angle).
+ * Floor (below the lane) vertical extent =
+ *   floor_h * sin(angle).
+ *
+ * Both planes' near edges sit on the lane line (the horizon). At
+ * angle = 0 the back wall fills the full upper half of canvas and the
+ * floor collapses to a line. At angle = PI/2 the back wall collapses and
+ * the floor fills the lower half. At intermediate angles both are
+ * partially visible, foreshortened.
+ *
+ * Content (nebula, planet, stars, dust) is placed at fractional positions
+ * within the current plane bounds, so it slides toward / away from the
+ * lane line as the camera tilts.
  * ============================================================================= */
 
-fn push_parallax(out: &mut Vec<DrawCommand>, lane: &LaneGeometry) {
+fn push_parallax(out: &mut Vec<DrawCommand>, lane: &LaneGeometry, view_angle_rad: f32) {
     use crate::gfx::{VIRTUAL_H, VIRTUAL_W};
     let w = VIRTUAL_W as f32;
     let h = VIRTUAL_H as f32;
     let horizon = lane.center_y;
+    let cos_a = view_angle_rad.cos();
+    let sin_a = view_angle_rad.sin();
+    // Full-extent reference heights at the extreme angles. The back wall
+    // covers everything above the lane at 0°; the floor covers everything
+    // below the lane at 90°.
+    let back_wall_h_full = horizon;
+    let floor_h_full = h - horizon;
+    let back_wall_h = back_wall_h_full * cos_a;
+    let floor_h = floor_h_full * sin_a;
 
-    // --- Sky (upper half) ---
-    // Nebula patches across the upper third.
-    for i in 0..3 {
-        let x = w * (0.18 + (i as f32) * 0.32);
-        let y = horizon - h * 0.32 + (i as f32 - 1.0) * 8.0;
-        push_sprite(out, SpriteInstance::axis_aligned(
-            [x, y],
-            [110.0, 44.0],
-            [1.0, 1.0, 1.0, 0.55],
-            atlas::cell_uvs(atlas::PARALLAX_NEBULA),
-        ));
-    }
-    // Distant planet — single big sphere in the upper-right.
-    push_sprite(out, SpriteInstance::axis_aligned(
-        [w * 0.82, horizon - h * 0.30],
-        [54.0, 54.0],
-        WHITE,
-        atlas::cell_uvs(atlas::PARALLAX_DISTANT_PLANET),
-    ));
+    // --- BACK WALL (above lane, full at 0°, collapses at 90°) ---
+    if back_wall_h > 0.5 {
+        // Sky band rect: y from (horizon - back_wall_h) to horizon.
+        let sky_band = [0.0_f32, horizon - back_wall_h, w, back_wall_h];
 
-    // Far stars — 60 single-pixel sprites scattered across the sky region.
-    let sky_band = [0.0_f32, 0.0, w, horizon - 8.0];
-    for i in 0..60u32 {
-        let (sx, sy) = lcg_canvas_pos(i ^ 0xA53F_C1B5, sky_band);
-        let alpha = 0.35 + 0.25 * lcg_unit(i ^ 0x1234_5678);
+        // Nebula patches across the upper third of the back wall.
+        for i in 0..3 {
+            let x = w * (0.18 + (i as f32) * 0.32);
+            // Place at ~25% down from the wall's top edge.
+            let y = (horizon - back_wall_h) + back_wall_h * 0.25 + (i as f32 - 1.0) * 8.0;
+            push_sprite(out, SpriteInstance::axis_aligned(
+                [x, y],
+                // Nebula width is fixed; vertical extent also fixed (these
+                // are atlas-sampled at a baked size). They slide with the
+                // wall but don't compress with it.
+                [110.0, 44.0],
+                [1.0, 1.0, 1.0, 0.55],
+                atlas::cell_uvs(atlas::PARALLAX_NEBULA),
+            ));
+        }
+
+        // Distant planet — upper-right, ~30% down from the wall's top edge.
+        let planet_size = 54.0;
         push_sprite(out, SpriteInstance::axis_aligned(
-            [sx, sy],
-            [0.5, 0.5],
-            [1.0, 1.0, 1.0, alpha],
-            atlas::cell_uvs(atlas::SOLID_WHITE),
+            [w * 0.82, (horizon - back_wall_h) + back_wall_h * 0.30],
+            [planet_size, planet_size],
+            WHITE,
+            atlas::cell_uvs(atlas::PARALLAX_DISTANT_PLANET),
         ));
-    }
-    // Mid stars — 24 slightly larger and brighter.
-    let mid_band = [0.0_f32, horizon - h * 0.40, w, h * 0.32];
-    for i in 0..24u32 {
-        let (sx, sy) = lcg_canvas_pos(i ^ 0x5F37_DEAD, mid_band);
-        let alpha = 0.55 + 0.30 * lcg_unit(i ^ 0xBEEF_C0DE);
-        push_sprite(out, SpriteInstance::axis_aligned(
-            [sx, sy],
-            [1.0, 1.0],
-            [1.0, 1.0, 1.0, alpha],
-            atlas::cell_uvs(atlas::SOLID_WHITE),
-        ));
+
+        // Far stars — 60 single-pixel sprites scattered across the wall.
+        for i in 0..60u32 {
+            let (sx, sy) = lcg_canvas_pos(i ^ 0xA53F_C1B5, sky_band);
+            let alpha = 0.35 + 0.25 * lcg_unit(i ^ 0x1234_5678);
+            push_sprite(out, SpriteInstance::axis_aligned(
+                [sx, sy],
+                [0.5, 0.5],
+                [1.0, 1.0, 1.0, alpha],
+                atlas::cell_uvs(atlas::SOLID_WHITE),
+            ));
+        }
+        // Mid stars — 24 brighter dots near the top of the wall.
+        let mid_band = [
+            0.0_f32,
+            horizon - back_wall_h * 0.95,
+            w,
+            (back_wall_h * 0.50).max(1.0),
+        ];
+        for i in 0..24u32 {
+            let (sx, sy) = lcg_canvas_pos(i ^ 0x5F37_DEAD, mid_band);
+            let alpha = 0.55 + 0.30 * lcg_unit(i ^ 0xBEEF_C0DE);
+            push_sprite(out, SpriteInstance::axis_aligned(
+                [sx, sy],
+                [1.0, 1.0],
+                [1.0, 1.0, 1.0, alpha],
+                atlas::cell_uvs(atlas::SOLID_WHITE),
+            ));
+        }
     }
 
-    // --- Floor (lower half) ---
-    // Subtle dust patches.
-    let floor_band = [0.0_f32, horizon + 8.0, w, h - horizon - 8.0];
-    for i in 0..18u32 {
-        let (sx, sy) = lcg_canvas_pos(i ^ 0x71BD_8842, floor_band);
-        let alpha = 0.25 + 0.20 * lcg_unit(i ^ 0x6655_AABB);
-        push_sprite(out, SpriteInstance::axis_aligned(
-            [sx, sy],
-            [1.0, 1.0],
-            [0.85, 0.85, 1.0, alpha],
-            atlas::cell_uvs(atlas::SOLID_WHITE),
-        ));
+    // --- FLOOR (below lane, collapses at 0°, full at 90°) ---
+    if floor_h > 0.5 {
+        let floor_band = [0.0_f32, horizon, w, floor_h];
+        // Subtle dust speckles. Density also rises with sin(angle) — the
+        // floor "fills in" as the camera tilts down.
+        let dust_count = (18.0 * (0.4 + 0.6 * sin_a)).round() as u32;
+        for i in 0..dust_count {
+            let (sx, sy) = lcg_canvas_pos(i ^ 0x71BD_8842, floor_band);
+            let alpha = 0.25 + 0.20 * lcg_unit(i ^ 0x6655_AABB);
+            push_sprite(out, SpriteInstance::axis_aligned(
+                [sx, sy],
+                [1.0, 1.0],
+                [0.85, 0.85, 1.0, alpha],
+                atlas::cell_uvs(atlas::SOLID_WHITE),
+            ));
+        }
+        // Foreground dust tile sample at low-center of the floor for a
+        // subtle near-camera detail. Hidden at low angles where the floor
+        // is edge-on.
+        if sin_a > 0.2 {
+            push_sprite(out, SpriteInstance::axis_aligned(
+                [w * 0.40, horizon + floor_h * 0.75],
+                [32.0, 32.0],
+                [1.0, 1.0, 1.0, 0.55 * sin_a],
+                atlas::cell_uvs(atlas::PARALLAX_FOREGROUND_DUST),
+            ));
+        }
     }
 }
 
