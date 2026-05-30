@@ -138,19 +138,20 @@ fn push_parallax(out: &mut Vec<DrawCommand>, _lane: &LaneGeometry) {
     let w = VIRTUAL_W as f32;
     let h = VIRTUAL_H as f32;
 
-    // Far stars — three sparse 32x32 patches across the upper canvas. Each
-    // atlas cell contains ~12 pixel stars, so three placements give ~36
-    // visible stars total. Bruce's feedback was that the previous tiled
-    // density (hundreds of stars) competed with the lane for foreground
-    // attention; this cut makes the lane the visual anchor.
-    let star_alpha = 0.55;
-    let star_tint = [1.0, 1.0, 1.0, star_alpha];
-    for &(fx, fy) in &[(0.18_f32, 0.12), (0.55, 0.30), (0.85, 0.18)] {
+    // Far stars — 36 single-pixel sprites spread deterministically across
+    // the upper 75% of the canvas via a Wang-hash LCG. Same indices every
+    // frame so the layout is stable. Tinted SOLID_WHITE so each instance is
+    // one bright dot rather than a tiled atlas patch (which clustered
+    // visibly in bruce's previous re-run).
+    let far_band = [0.0_f32, 0.0, w, h * 0.75];
+    for i in 0..36u32 {
+        let (sx, sy) = lcg_canvas_pos(i ^ 0xA53F_C1B5, far_band);
+        let alpha = 0.40 + 0.20 * lcg_unit(i ^ 0x1234_5678);
         push_sprite(out, SpriteInstance::axis_aligned(
-            [fx * w, fy * h],
-            [32.0, 32.0],
-            star_tint,
-            atlas::cell_uvs(atlas::PARALLAX_FAR_STARS),
+            [sx, sy],
+            [0.5, 0.5],
+            [1.0, 1.0, 1.0, alpha],
+            atlas::cell_uvs(atlas::SOLID_WHITE),
         ));
     }
 
@@ -176,15 +177,18 @@ fn push_parallax(out: &mut Vec<DrawCommand>, _lane: &LaneGeometry) {
         atlas::cell_uvs(atlas::PARALLAX_DISTANT_PLANET),
     ));
 
-    // Mid stars — two patches; each cell carries ~12 stars, so this is ~24
-    // visible mid-distance stars total.
-    let mid_tint = [1.0, 1.0, 1.0, 0.70];
-    for &(fx, fy) in &[(0.32_f32, 0.45), (0.68, 0.55)] {
+    // Mid stars — 24 single-pixel sprites spread across the canvas body.
+    // Slightly larger (1 virtual px) and brighter alpha than far stars so
+    // they read as one parallax layer closer.
+    let mid_band = [0.0_f32, h * 0.10, w, h * 0.65];
+    for i in 0..24u32 {
+        let (sx, sy) = lcg_canvas_pos(i ^ 0x5F37_DEAD, mid_band);
+        let alpha = 0.55 + 0.30 * lcg_unit(i ^ 0xBEEF_C0DE);
         push_sprite(out, SpriteInstance::axis_aligned(
-            [fx * w, fy * h],
-            [32.0, 32.0],
-            mid_tint,
-            atlas::cell_uvs(atlas::PARALLAX_MID_STARS),
+            [sx, sy],
+            [1.0, 1.0],
+            [1.0, 1.0, 1.0, alpha],
+            atlas::cell_uvs(atlas::SOLID_WHITE),
         ));
     }
 
@@ -197,6 +201,34 @@ fn push_parallax(out: &mut Vec<DrawCommand>, _lane: &LaneGeometry) {
         [1.0, 1.0, 1.0, 0.55],
         atlas::cell_uvs(atlas::PARALLAX_FOREGROUND_DUST),
     ));
+}
+
+/// Deterministic two-axis position inside a screen rect `[x, y, w, h]`.
+/// Same seed every frame -> identical layout, so stars don't twinkle into
+/// new positions on resize / repaint.
+fn lcg_canvas_pos(seed: u32, rect: [f32; 4]) -> (f32, f32) {
+    let [rx, ry, rw, rh] = rect;
+    let hx = wang_hash(seed);
+    let hy = wang_hash(seed.wrapping_add(0x9E37_79B9));
+    let fx = (hx as f32) / (u32::MAX as f32);
+    let fy = (hy as f32) / (u32::MAX as f32);
+    (rx + fx * rw, ry + fy * rh)
+}
+
+/// Scalar uniform-in-[0,1] hash for per-star alpha jitter.
+fn lcg_unit(seed: u32) -> f32 {
+    (wang_hash(seed) as f32) / (u32::MAX as f32)
+}
+
+/// Wang 32-bit hash. Good enough mixing for visual placement.
+fn wang_hash(mut x: u32) -> u32 {
+    x = (x ^ 61).wrapping_mul(0x27D4_EB2D);
+    x ^= x >> 16;
+    x = x.wrapping_mul(0x85EB_CA6B);
+    x ^= x >> 13;
+    x = x.wrapping_mul(0xC2B2_AE35);
+    x ^= x >> 16;
+    x
 }
 
 /* =============================================================================
