@@ -423,6 +423,7 @@ pub fn tutorial_lines() -> &'static [&'static str] {
         "[Tab] flip",
         "[V] vent",
         "[R/Space] commit turn",
+        "[ [ ] ] rotate camera",
         "[Enter] restart",
         "[Esc] quit",
     ]

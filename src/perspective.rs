@@ -1,10 +1,12 @@
 //! Screen-space lane geometry: a flat horizontal strip bisecting the canvas.
 //!
-//! After bruce's view-angle eval (spike branch `spike/view-angles`, abandoned),
-//! the renderer dropped the trapezoid + military-axonometric projection that
-//! mirrored `broadside-engine/engine/perspective.ts`. The new model is the
-//! simplest readable shape: a horizontal lane, cells evenly spaced left to
-//! right, side-view ships anchored at their cell positions.
+//! The lane is a horizontal line at `LaneGeometry::center_y`; cells are
+//! evenly spaced left to right between `x_left` and `x_right`. The ship
+//! sprite math in `hud.rs` rotates around the lane using a `view_angle`
+//! parameter, so ships morph from pure side-view (θ = 0) to pure top-down
+//! (θ = π/2) while the lane itself stays flat. Both parallax planes — sky
+//! above the lane, floor below — foreshorten with the same angle so the
+//! background reads as a revolving camera.
 //!
 //! This is the only module that knows about screen coordinates; everything
 //! else lives in lane-cell space.

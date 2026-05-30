@@ -628,8 +628,9 @@ fn push_broadside_silhouette(
 
 /* =============================================================================
  * View-angle HUD overlay — horizontal bar in the top-right showing the
- * current angle as a fill proportional to angle / (PI/2). Same pattern as
- * the spike's HUD bar but on the flat-scene compose path.
+ * current camera angle as a fill proportional to angle / (PI/2). Seven
+ * tick marks under the bar mark each fixed scrub step (0, 15, 30, 45, 60,
+ * 75, 90 degrees).
  * ============================================================================= */
 
 fn push_view_angle_overlay(out: &mut Vec<DrawCommand>, view_angle_rad: f32) {

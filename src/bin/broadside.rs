@@ -16,7 +16,7 @@
 //! | `V` | `Vent` | Queue synthetic `__vent` |
 //! | `R` / `Space` | `CommitTurn` | Run `resolve_round`; re-renders next frame |
 //! | `Enter` | `Restart` | Reset the board to its initial state |
-//! | `[` / `]` | (debug) | Cycle ship-rotation angle through `[0,15,30,45,60,75,90]°` |
+//! | `[` / `]` | rotate camera | Cycle through `[0, 15, 30, 45, 60, 75, 90]°` |
 //! | `Esc` | exit | Close the window |
 //!
 //! Run with:
@@ -213,11 +213,12 @@ fn make_ship(id: &str, faction: Faction, cell: usize, orientation: Orientation) 
  * App + event loop.
  * ========================================================================== */
 
-/// Seven fixed view angles in degrees for the ship-rotation scrubber.
-/// Lane stays flat at all angles; only the ship sprite math is angle-driven.
-/// Default index 3 = 45° — the natural isometric middle.
-const SHIP_ANGLE_STEPS_DEG: [f32; 7] = [0.0, 15.0, 30.0, 45.0, 60.0, 75.0, 90.0];
-const SHIP_ANGLE_DEFAULT_INDEX: usize = 3;
+/// Seven fixed camera view angles in degrees, scrubbed via `[` / `]`. The
+/// lane stays flat at every angle; ship silhouettes and parallax planes
+/// foreshorten with the angle so the scene reads as a camera revolving
+/// around the lane. Default index 3 = 45° — the natural isometric middle.
+const CAMERA_ANGLE_STEPS_DEG: [f32; 7] = [0.0, 15.0, 30.0, 45.0, 60.0, 75.0, 90.0];
+const CAMERA_ANGLE_DEFAULT_INDEX: usize = 3;
 
 struct App {
     window: Option<Arc<Window>>,
@@ -225,8 +226,8 @@ struct App {
     board: Board,
     lane: LaneGeometry,
     content: DemoContent,
-    /// Index into `SHIP_ANGLE_STEPS_DEG`. Cycled by `[` and `]`.
-    ship_angle_idx: usize,
+    /// Index into `CAMERA_ANGLE_STEPS_DEG`. Cycled by `[` and `]`.
+    camera_angle_idx: usize,
 }
 
 impl App {
@@ -237,7 +238,7 @@ impl App {
             board: render_example_board(),
             lane: demo_lane(),
             content: DemoContent::default(),
-            ship_angle_idx: SHIP_ANGLE_DEFAULT_INDEX,
+            camera_angle_idx: CAMERA_ANGLE_DEFAULT_INDEX,
         }
     }
 }
@@ -276,18 +277,18 @@ impl ApplicationHandler for App {
                     event_loop.exit();
                     return;
                 }
-                // `[` / `]` cycle through the seven ship-rotation angles.
-                // Handled before the canonical key-to-intent lookup since
-                // they're not part of the production binding table.
+                // `[` / `]` cycle the camera angle. Handled before the
+                // canonical key-to-intent lookup so they remain a renderer-
+                // owned binding, not part of the content key map.
                 if code == KeyCode::BracketLeft {
-                    self.ship_angle_idx = self.ship_angle_idx.saturating_sub(1);
-                    log::info!("ship view angle: {}°", SHIP_ANGLE_STEPS_DEG[self.ship_angle_idx]);
+                    self.camera_angle_idx = self.camera_angle_idx.saturating_sub(1);
+                    log::info!("camera angle: {}°", CAMERA_ANGLE_STEPS_DEG[self.camera_angle_idx]);
                     if let Some(w) = self.window.as_ref() { w.request_redraw(); }
                     return;
                 }
                 if code == KeyCode::BracketRight {
-                    self.ship_angle_idx = (self.ship_angle_idx + 1).min(SHIP_ANGLE_STEPS_DEG.len() - 1);
-                    log::info!("ship view angle: {}°", SHIP_ANGLE_STEPS_DEG[self.ship_angle_idx]);
+                    self.camera_angle_idx = (self.camera_angle_idx + 1).min(CAMERA_ANGLE_STEPS_DEG.len() - 1);
+                    log::info!("camera angle: {}°", CAMERA_ANGLE_STEPS_DEG[self.camera_angle_idx]);
                     if let Some(w) = self.window.as_ref() { w.request_redraw(); }
                     return;
                 }
@@ -313,7 +314,7 @@ impl ApplicationHandler for App {
             WindowEvent::RedrawRequested => {
                 // Inline the angle read to avoid a &self borrow that
                 // would conflict with the &mut self.gfx held above.
-                let angle = SHIP_ANGLE_STEPS_DEG[self.ship_angle_idx].to_radians();
+                let angle = CAMERA_ANGLE_STEPS_DEG[self.camera_angle_idx].to_radians();
                 let instances = hud::compose_scene(&self.board, &self.lane, angle);
                 match gfx.render(&instances) {
                     Ok(()) => {}
