@@ -843,10 +843,52 @@ fn apply_modifiers(dmg: i32, _target_cell: usize, _band: RangeBand, _board: &Boa
     dmg
 }
 
-/// TODO(broadside-content): full THRUST/BURN/SLIP/JUMP/TRACTOR_SWAP with
-/// occupancy + collision rules. TS body kept verbatim: simple step-loop in
-/// the bow direction with occupancy checks.
-fn resolve_self_move(ship_cell: usize, _mode: MovementMode, distance: i32, board: &mut Board) {
+/// Resolve a `DISPLACE_SELF` effect: move the ship at `ship_cell` according
+/// to `mode` and `distance`. Returns silently if the cell is empty.
+///
+/// # Mode semantics (analysis.html § Movement modes)
+///
+/// - `THRUST` — exactly 1 cell; blocked by occupancy. `distance` is ignored
+///   beyond the first step (the TS catalog only ever uses `distance: 1` for
+///   THRUST, but if a content author passes something larger we treat it as
+///   THRUST is canonically one cell anyway).
+/// - `BURN` — multi-cell; stops at first ship or wall. Collision damage on
+///   stop.
+/// - `SLIP` — passes through ships, lands in the **first free cell beyond**
+///   the requested distance. If the lane runs out before a free cell is
+///   found, the ship piles up at the edge and eats collision damage equal to
+///   the overflow.
+/// - `JUMP` — blink-drive; ignores the path entirely. Final landing cell is
+///   `ship_cell + step * distance`. If that cell is off-board, the jump
+///   clamps to the edge and eats collision damage equal to the overflow.
+///   If the final cell is occupied, the jump fails (no-op) — telepathy
+///   "ignores the path" so there is nothing to collide with mid-move.
+/// - `TRACTOR_SWAP` — trades cells with the first adjacent occupant in the
+///   bow direction. No collision damage (it is a tractor swap, not a ram).
+///
+/// # Collision rule
+///
+/// When `BURN` or `THRUST` is blocked, the ship stops one cell short of the
+/// obstacle (which may be another ship OR the board edge) and takes
+/// `remaining_distance × 1` collision damage, routed through the regular
+/// damage pipeline so the directional shield still mediates. The damage is
+/// attributed via [`dummy_weapon()`] with `bandFalloff: false`, so the raw
+/// collision amount lands without range scaling.
+///
+/// # Direction
+///
+/// Movement runs in the ship's "bow" direction:
+///   `BowOn { bow: Fore }` -> step +1
+///   `BowOn { bow: Aft }`  -> step -1
+///   `Broadside`           -> step +1 (arbitrary; broadside ships rarely
+///                            queue a DISPLACE_SELF effect, and the design
+///                            doc gives no preference; matches TS).
+fn resolve_self_move(
+    ship_cell: usize,
+    mode: MovementMode,
+    distance: i32,
+    board: &mut Board,
+) {
     let Some(ship) = board.cells[ship_cell].as_ref() else {
         return;
     };
@@ -854,25 +896,167 @@ fn resolve_self_move(ship_cell: usize, _mode: MovementMode, distance: i32, board
         Orientation::BowOn { bow: LaneEnd::Aft } => -1,
         _ => 1,
     };
-    let mut c = ship_cell as i32;
-    for _ in 0..distance {
-        let next = c + step;
-        if next < 0 || (next as usize) >= board.size {
-            break;
+    let size = board.size as i32;
+    let start = ship_cell as i32;
+
+    // Per-mode landing computation. `landing` is the cell to settle in;
+    // `collision_dmg` is non-zero when the move was capped by a block.
+    let (landing, collision_dmg): (i32, i32) = match mode {
+        MovementMode::THRUST => {
+            // Always one step. Distance argument is ignored; THRUST is
+            // canonically 1.
+            let next = start + step;
+            if next < 0 || next >= size {
+                // Wall blocks: stop in place, take 1 collision.
+                (start, 1)
+            } else if board.cells[next as usize].is_some() {
+                // Occupant blocks: stop in place, take 1 collision.
+                (start, 1)
+            } else {
+                (next, 0)
+            }
         }
-        if board.cells[next as usize].is_some() {
-            break;
+
+        MovementMode::BURN => {
+            // Walk one cell at a time, stop at first occupant or wall.
+            let mut c = start;
+            let mut steps_taken = 0;
+            for _ in 0..distance {
+                let next = c + step;
+                if next < 0 || next >= size {
+                    break;
+                }
+                if board.cells[next as usize].is_some() {
+                    break;
+                }
+                c = next;
+                steps_taken += 1;
+            }
+            let remaining = distance - steps_taken;
+            (c, remaining.max(0))
         }
-        c = next;
+
+        MovementMode::SLIP => {
+            // Look distance cells ahead, then keep going until a free cell
+            // is found OR we run off the lane. SLIP can land beyond
+            // `start + step * distance` if every cell in that range is
+            // occupied — that is what "lands in first free cell beyond"
+            // means.
+            let mut c = start;
+            let mut scanned = 0;
+            let mut found_free = false;
+            // First pass: cover the `distance` cells we're slipping THROUGH.
+            // We don't stop at occupants — we pass through them.
+            while scanned < distance {
+                let next = c + step;
+                if next < 0 || next >= size {
+                    break;
+                }
+                c = next;
+                scanned += 1;
+            }
+            // Did the distance-cells-ahead landing happen to be free? If
+            // not, keep walking until we find a free cell or hit the edge.
+            loop {
+                if c < 0 || c >= size {
+                    break;
+                }
+                if board.cells[c as usize].is_none() {
+                    found_free = true;
+                    break;
+                }
+                let next = c + step;
+                if next < 0 || next >= size {
+                    break;
+                }
+                c = next;
+            }
+            if found_free {
+                (c, 0)
+            } else {
+                // The lane ran out before a free cell appeared. Clamp to
+                // the edge and bill collision damage equal to the cells
+                // that DID NOT land — i.e. the requested distance minus
+                // however many we actually advanced before getting stuck.
+                let edge = if step > 0 { size - 1 } else { 0 };
+                let advanced = (edge - start) * step; // always >= 0
+                let remaining = (distance - advanced).max(1);
+                (edge, remaining)
+            }
+        }
+
+        MovementMode::JUMP => {
+            // Blink-drive. Compute the target cell directly; no path scan.
+            let raw_target = start + step * distance;
+            if raw_target < 0 {
+                // Off-board aft: clamp to 0, charge overflow as collision.
+                (0, -raw_target)
+            } else if raw_target >= size {
+                // Off-board fore: clamp to edge, charge overflow.
+                (size - 1, raw_target - (size - 1))
+            } else if board.cells[raw_target as usize].is_some() {
+                // Target cell occupied: jump fails. No move, no damage —
+                // JUMP "ignores the path entirely" so there is nothing
+                // physical to collide with.
+                (start, 0)
+            } else {
+                (raw_target, 0)
+            }
+        }
+
+        MovementMode::TRACTOR_SWAP => {
+            // Swap with the first adjacent occupant in the bow direction.
+            // Coordinated with team-lead: the analysis doc says
+            // TRACTOR_SWAP "trades cells with a target" and the only
+            // DISPLACE_SELF carrier today is the Frigate's Slip signature
+            // / the Carrier's Swap-Toss, both of which target the ship
+            // directly fore-of-bow. If there is no adjacent occupant, the
+            // swap fails silently — there is nothing to trade with.
+            let adj = start + step;
+            if adj < 0 || adj >= size {
+                return;
+            }
+            let adj = adj as usize;
+            if board.cells[adj].is_none() {
+                return;
+            }
+            // Perform the swap. Both ships' `cell` fields update; the cells
+            // vector's contents swap by index.
+            let source_ship = board.cells[ship_cell].take();
+            let other_ship = board.cells[adj].take();
+            if let Some(mut s) = source_ship {
+                s.cell = adj;
+                board.cells[adj] = Some(s);
+            }
+            if let Some(mut o) = other_ship {
+                o.cell = ship_cell;
+                board.cells[ship_cell] = Some(o);
+            }
+            return;
+        }
+    };
+
+    let final_cell = landing as usize;
+    // Move the ship into the landing cell. Skip the vec swap if we didn't
+    // actually move — the cell value still needs to be updated on the ship
+    // record, but since `cell == ship_cell` there's nothing to copy.
+    if landing != start {
+        let mut ship = board
+            .cells[ship_cell]
+            .take()
+            .expect("source still occupied at start");
+        ship.cell = final_cell;
+        board.cells[final_cell] = Some(ship);
     }
-    let final_cell = c as usize;
-    if final_cell == ship_cell {
-        return;
+
+    // Apply collision damage AFTER the move is committed, so the directional
+    // shield reads against the ship's new (post-move) orientation. The
+    // collision arrives from the direction we were travelling — i.e. from
+    // beyond the landing cell — so `atk_cell` is one further in `step`.
+    if collision_dmg > 0 {
+        let phantom_atk = (landing + step).clamp(0, size - 1) as usize;
+        apply_damage(final_cell, collision_dmg, phantom_atk, &dummy_weapon(), board);
     }
-    // Move the ship: take from old cell, update `cell`, place in new cell.
-    let mut ship = board.cells[ship_cell].take().expect("source still occupied at start");
-    ship.cell = final_cell;
-    board.cells[final_cell] = Some(ship);
 }
 
 /// TODO(broadside-content): push/pull/swap with collision damage; mirror
@@ -1332,6 +1516,163 @@ mod tests {
         resolve_round(&mut board, &Empty);
         assert_eq!(board.destroys_this_window, 0,
             "the ordnance-phase reset must zero the counter");
+    }
+
+    /* ---- self-movement modes --------------------------------------------- */
+
+    fn no_armour_profile() -> ShieldProfile {
+        ShieldProfile {
+            bow: crate::types::ShieldFace { armour: 0, charge: 0 },
+            stern: crate::types::ShieldFace { armour: 0, charge: 0 },
+            port: crate::types::ShieldFace { armour: 0, charge: 0 },
+            starboard: crate::types::ShieldFace { armour: 0, charge: 0 },
+        }
+    }
+
+    /// THRUST moves the ship exactly one cell in the bow direction when
+    /// unblocked.
+    #[test]
+    fn self_move_thrust_advances_one_cell_when_clear() {
+        let ship = make_ship("s", Faction::Player, 2, 10, LaneEnd::Fore);
+        let mut board = make_board(7, vec![
+            None, None, Some(ship), None, None, None, None,
+        ]);
+        super::resolve_self_move(2, MovementMode::THRUST, 1, &mut board);
+        assert!(board.cells[2].is_none(), "vacated origin");
+        assert_eq!(board.cells[3].as_ref().map(|s| s.cell), Some(3));
+    }
+
+    /// THRUST into an occupied cell stays in place and takes 1 collision
+    /// damage (remaining_distance × 1 = 1).
+    #[test]
+    fn self_move_thrust_blocked_takes_one_collision() {
+        let mut ship = make_ship("s", Faction::Player, 2, 5, LaneEnd::Fore);
+        ship.shield_profile = no_armour_profile();
+        let blocker = make_ship("b", Faction::Enemy, 3, 5, LaneEnd::Fore);
+        let mut board = make_board(7, vec![
+            None, None, Some(ship), Some(blocker), None, None, None,
+        ]);
+        super::resolve_self_move(2, MovementMode::THRUST, 1, &mut board);
+        // Did not move.
+        assert!(board.cells[2].is_some());
+        // Hull: 5 - 1 = 4 (collision damage routed through dummy_weapon, no
+        // falloff, no armour on the test profile).
+        assert_eq!(board.cells[2].as_ref().unwrap().hull, 4);
+    }
+
+    /// THRUST into the wall stays in place and takes 1 collision damage.
+    #[test]
+    fn self_move_thrust_at_wall_takes_one_collision() {
+        let mut ship = make_ship("s", Faction::Player, 6, 5, LaneEnd::Fore);
+        ship.shield_profile = no_armour_profile();
+        let mut board = make_board(7, vec![
+            None, None, None, None, None, None, Some(ship),
+        ]);
+        super::resolve_self_move(6, MovementMode::THRUST, 1, &mut board);
+        assert_eq!(board.cells[6].as_ref().unwrap().hull, 4);
+    }
+
+    /// BURN advances up to `distance` cells when clear.
+    #[test]
+    fn self_move_burn_advances_full_distance_when_clear() {
+        let ship = make_ship("s", Faction::Player, 1, 10, LaneEnd::Fore);
+        let mut board = make_board(7, vec![
+            None, Some(ship), None, None, None, None, None,
+        ]);
+        super::resolve_self_move(1, MovementMode::BURN, 3, &mut board);
+        assert!(board.cells[1].is_none());
+        assert_eq!(board.cells[4].as_ref().map(|s| s.cell), Some(4));
+        // No collision: hull intact.
+        assert_eq!(board.cells[4].as_ref().unwrap().hull, 10);
+    }
+
+    /// BURN stops at the first occupant, eats remaining-distance collision.
+    #[test]
+    fn self_move_burn_stops_at_blocker_and_takes_collision() {
+        let mut ship = make_ship("s", Faction::Player, 1, 10, LaneEnd::Fore);
+        ship.shield_profile = no_armour_profile();
+        let blocker = make_ship("b", Faction::Enemy, 4, 5, LaneEnd::Fore);
+        let mut board = make_board(7, vec![
+            None, Some(ship), None, None, Some(blocker), None, None,
+        ]);
+        super::resolve_self_move(1, MovementMode::BURN, 5, &mut board);
+        // Stopped at cell 3 (one short of the blocker at 4).
+        // Steps taken: 2 (1->2, 2->3). Requested: 5. Remaining: 3.
+        assert!(board.cells[3].is_some());
+        assert_eq!(board.cells[3].as_ref().unwrap().hull, 10 - 3);
+    }
+
+    /// SLIP passes through ships and lands in the first free cell.
+    #[test]
+    fn self_move_slip_passes_through_to_first_free_cell() {
+        let ship = make_ship("s", Faction::Player, 0, 10, LaneEnd::Fore);
+        let blocker_a = make_ship("a", Faction::Enemy, 1, 5, LaneEnd::Fore);
+        let blocker_b = make_ship("b", Faction::Enemy, 2, 5, LaneEnd::Fore);
+        let mut board = make_board(7, vec![
+            Some(ship), Some(blocker_a), Some(blocker_b), None, None, None, None,
+        ]);
+        super::resolve_self_move(0, MovementMode::SLIP, 2, &mut board);
+        // SLIP scans 2 cells (lands at 2), finds it occupied, walks forward
+        // to 3 which is free.
+        assert!(board.cells[0].is_none());
+        assert_eq!(board.cells[3].as_ref().map(|s| s.cell), Some(3));
+        assert_eq!(board.cells[3].as_ref().unwrap().hull, 10);
+    }
+
+    /// JUMP teleports to the target cell when free; no collision.
+    #[test]
+    fn self_move_jump_teleports_to_free_target() {
+        let ship = make_ship("s", Faction::Player, 0, 10, LaneEnd::Fore);
+        let mut board = make_board(7, vec![
+            Some(ship), None, None, None, None, None, None,
+        ]);
+        super::resolve_self_move(0, MovementMode::JUMP, 4, &mut board);
+        assert!(board.cells[0].is_none());
+        assert_eq!(board.cells[4].as_ref().map(|s| s.cell), Some(4));
+        assert_eq!(board.cells[4].as_ref().unwrap().hull, 10);
+    }
+
+    /// JUMP onto an occupied cell silently fails (no move, no damage).
+    #[test]
+    fn self_move_jump_onto_occupied_is_noop() {
+        let ship = make_ship("s", Faction::Player, 0, 10, LaneEnd::Fore);
+        let blocker = make_ship("b", Faction::Enemy, 4, 5, LaneEnd::Fore);
+        let mut board = make_board(7, vec![
+            Some(ship), None, None, None, Some(blocker), None, None,
+        ]);
+        super::resolve_self_move(0, MovementMode::JUMP, 4, &mut board);
+        assert!(board.cells[0].is_some(), "jump failed; ship stayed home");
+        assert_eq!(board.cells[0].as_ref().unwrap().hull, 10);
+    }
+
+    /// JUMP off the board clamps to the edge and bills collision overflow.
+    #[test]
+    fn self_move_jump_off_board_clamps_with_overflow_collision() {
+        let mut ship = make_ship("s", Faction::Player, 4, 10, LaneEnd::Fore);
+        ship.shield_profile = no_armour_profile();
+        let mut board = make_board(7, vec![
+            None, None, None, None, Some(ship), None, None,
+        ]);
+        super::resolve_self_move(4, MovementMode::JUMP, 5, &mut board);
+        // Target = 4 + 5 = 9; clamped to 6; overflow = 9 - 6 = 3.
+        assert!(board.cells[6].is_some());
+        assert_eq!(board.cells[6].as_ref().unwrap().hull, 10 - 3);
+    }
+
+    /// TRACTOR_SWAP trades cells with the first adjacent occupant.
+    #[test]
+    fn self_move_tractor_swap_trades_with_adjacent() {
+        let ship = make_ship("s", Faction::Player, 2, 10, LaneEnd::Fore);
+        let other = make_ship("o", Faction::Enemy, 3, 5, LaneEnd::Fore);
+        let mut board = make_board(7, vec![
+            None, None, Some(ship), Some(other), None, None, None,
+        ]);
+        super::resolve_self_move(2, MovementMode::TRACTOR_SWAP, 1, &mut board);
+        assert_eq!(board.cells[2].as_ref().map(|s| s.id.clone()), Some("o".into()));
+        assert_eq!(board.cells[3].as_ref().map(|s| s.id.clone()), Some("s".into()));
+        // Cells updated to match new positions.
+        assert_eq!(board.cells[2].as_ref().unwrap().cell, 2);
+        assert_eq!(board.cells[3].as_ref().unwrap().cell, 3);
     }
 
     /// End-to-end: two lethal hits inside one `execute_queue` window cause
