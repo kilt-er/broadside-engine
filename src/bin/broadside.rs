@@ -27,7 +27,7 @@ use winit::window::{Window, WindowId};
 use broadside_engine::geometry::default_shield_profile;
 use broadside_engine::gfx::{Gfx, VIRTUAL_H, VIRTUAL_W};
 use broadside_engine::hud;
-use broadside_engine::perspective::DEFAULT_LANE;
+use broadside_engine::perspective::{LaneGeometry, DEFAULT_LANE};
 use broadside_engine::types::{
     Arc as TArc, Board, EventBus, Faction, LaneEnd, Mount, Orientation, Projectile, Ship,
 };
@@ -36,14 +36,21 @@ struct App {
     window: Option<Arc<Window>>,
     gfx: Option<Gfx>,
     board: Board,
+    lane: LaneGeometry,
 }
 
 impl App {
     fn new() -> Self {
+        // DEFAULT_LANE is tuned for a 660×240 viewport; the engine's virtual
+        // canvas is 1320×480 (2× of that, for integer-scale crispness). Scale
+        // the lane uniformly so it covers the full canvas instead of just the
+        // top-left quadrant.
+        let lane = DEFAULT_LANE.scaled((VIRTUAL_W as f32) / 660.0);
         Self {
             window: None,
             gfx: None,
             board: render_example_board(),
+            lane,
         }
     }
 }
@@ -147,7 +154,7 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::RedrawRequested => {
-                let instances = hud::compose_scene(&self.board, &DEFAULT_LANE);
+                let instances = hud::compose_scene(&self.board, &self.lane);
                 match gfx.render(&instances) {
                     Ok(()) => {}
                     Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {

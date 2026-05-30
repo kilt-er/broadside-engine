@@ -67,7 +67,8 @@ pub struct LaneGeometry {
 /// Default geometry tuned for a ~660×240 viewport. Mirrors `DEFAULT_LANE` in
 /// `perspective.ts` byte-for-byte. The gfx layer either bumps the engine's
 /// virtual resolution to a superset of 660×240 or supplies its own retuned
-/// `LaneGeometry`; the math here is viewport-agnostic.
+/// `LaneGeometry` via [`LaneGeometry::scaled`]; the math here is
+/// viewport-agnostic.
 pub const DEFAULT_LANE: LaneGeometry = LaneGeometry {
     front_start: Point2 { x: 35.0, y: 217.0 },
     front_end: Point2 { x: 615.0, y: 162.0 },
@@ -77,6 +78,25 @@ pub const DEFAULT_LANE: LaneGeometry = LaneGeometry {
     scale_near: 1.0,
     scale_far: 0.55,
 };
+
+impl LaneGeometry {
+    /// Uniformly scale every screen-space coordinate by `s` while leaving
+    /// `cell_count` / `scale_near` / `scale_far` alone. Used to map a design-
+    /// doc geometry (660×240) onto a larger virtual canvas (1320×480 etc.)
+    /// without retuning the per-sprite scale gradient.
+    pub fn scaled(&self, s: f32) -> Self {
+        let scale_pt = |p: Point2| Point2 { x: p.x * s, y: p.y * s };
+        Self {
+            front_start: scale_pt(self.front_start),
+            front_end: scale_pt(self.front_end),
+            back_start: scale_pt(self.back_start),
+            back_end: scale_pt(self.back_end),
+            cell_count: self.cell_count,
+            scale_near: self.scale_near,
+            scale_far: self.scale_far,
+        }
+    }
+}
 
 /* ---- cell → screen --------------------------------------------------------- */
 
@@ -439,6 +459,22 @@ mod tests {
         let actual_back = (fp[2].y - fp[3].y) / (fp[2].x - fp[3].x);
         assert!(approx_eq(actual_front, front_slope, 1e-4));
         assert!(approx_eq(actual_back, back_slope, 1e-4));
+    }
+
+    #[test]
+    fn scaled_doubles_every_coordinate_but_preserves_cell_count() {
+        let g = DEFAULT_LANE.scaled(2.0);
+        assert!(approx_eq(g.front_start.x, 70.0, 1e-3));
+        assert!(approx_eq(g.front_start.y, 434.0, 1e-3));
+        assert!(approx_eq(g.front_end.x, 1230.0, 1e-3));
+        assert!(approx_eq(g.front_end.y, 324.0, 1e-3));
+        assert_eq!(g.cell_count, DEFAULT_LANE.cell_count);
+        assert!(approx_eq(g.scale_near, DEFAULT_LANE.scale_near, 1e-6));
+        assert!(approx_eq(g.scale_far, DEFAULT_LANE.scale_far, 1e-6));
+        // Slope is invariant under uniform scale.
+        let near_default = cell_to_screen(0, &DEFAULT_LANE);
+        let near_scaled = cell_to_screen(0, &g);
+        assert!(approx_eq(near_default.rotation_rad, near_scaled.rotation_rad, 1e-6));
     }
 
     #[test]
