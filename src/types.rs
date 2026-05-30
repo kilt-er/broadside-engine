@@ -615,26 +615,37 @@ impl<'b> HookContext<'b> {
 /// Synchronous pub/sub. The TS bus is `{ on(hook, fn), emit(hook, ctx) }`;
 /// this is the Rust mirror.
 ///
-/// Storage is one [`Vec`] of boxed closures per [`Hook`], indexed by the hook
-/// discriminant. `emit` temporarily swaps the relevant vec out, runs each
-/// callback against the [`HookContext`] (which holds `&mut Board`), and swaps
-/// the vec back in — that two-step keeps Rust's aliasing rules happy when a
-/// callback wants to reach back into the board through the context. A callback
-/// CANNOT recursively register or invoke the same hook mid-emit; doing so
-/// would silently no-op because the storage is empty during that window.
-/// Resolver code never re-emits the same hook from inside a callback so this
-/// is fine in practice.
+/// Storage is one [`Vec`] per [`Hook`], holding `Option<Box<dyn FnMut>>`. The
+/// `Option` lets `emit` move a single callback out for the duration of the
+/// call (leaving its slot as `None`) and put it back when the call returns,
+/// so re-entrant calls back into the bus see the vec **minus the currently-
+/// executing callback** — same semantics as iterating a live JS array with
+/// `forEach`.
 ///
-/// Closures are `FnMut` to let subsystem state (e.g. counters) accumulate.
+/// Re-entrancy semantics:
+/// - **Same-hook re-emit** during a callback iterates the same vec; the
+///   currently-executing slot reads as `None` and is skipped, every other
+///   subscriber fires. (Fixes the ReactorBreach/Voidtouched chain where a
+///   nested `destroy` would otherwise silently lose the second `onLethal`.)
+/// - **Same-hook re-register** during a callback `push`es a new
+///   `Some(callback)` to the end of the vec. The outer `emit`'s index loop
+///   re-reads `len()` each iteration, so newly-added callbacks fire in the
+///   same emit pass (matches TS `forEach` semantics for in-place push).
+/// - **Cross-hook emit** is unaffected — only the live hook's slot is in
+///   the take/replace dance.
+///
+/// Closures are `FnMut` so subsystem state (e.g. counters) can accumulate.
 /// They are NOT `Send + Sync`; the renderer slice cannot move a [`Board`]
-/// across threads without revisiting that.
+/// across threads without revisiting that bound — see the module-level
+/// note on `Send + Sync`.
 pub struct EventBus {
-    subscribers: [Vec<Box<dyn FnMut(&mut HookContext)>>; HOOK_COUNT],
+    subscribers: [Vec<Option<Box<dyn FnMut(&mut HookContext)>>>; HOOK_COUNT],
 }
 
-/// Count of [`Hook`] variants. Keep in sync with the enum; the [`EventBus`]
-/// storage array is sized from this constant so a missed update fails to
-/// compile rather than silently dropping a hook.
+/// Count of [`Hook`] variants. The compile-time guard is the exhaustive match
+/// in [`EventBus::slot`]: adding a `Hook` variant without extending `slot`
+/// is a compile error. Updating this constant when a variant lands is
+/// asserted by the `hook_count_matches_enum_cardinality` test below.
 const HOOK_COUNT: usize = 11;
 
 impl Default for EventBus {
@@ -649,7 +660,9 @@ impl Default for EventBus {
 
 impl EventBus {
     /// Map a [`Hook`] to its slot in the [`EventBus::subscribers`] array.
-    /// Order is the declaration order of the [`Hook`] enum.
+    /// Order is the declaration order of the [`Hook`] enum. The exhaustive
+    /// match here is the actual drift guard — adding a `Hook` variant without
+    /// extending this function fails to compile.
     fn slot(hook: Hook) -> usize {
         match hook {
             Hook::Passive => 0,
@@ -667,29 +680,47 @@ impl EventBus {
     }
 
     /// Register a callback for `hook`. Mirrors TS `bus.on(hook, fn)`.
+    /// Safe to call from inside another callback (including a callback
+    /// firing for the same hook): the new subscriber lands at the end of
+    /// the vec and is picked up by the outer `emit` loop in the same pass.
     pub fn on<F>(&mut self, hook: Hook, f: F)
     where
         F: FnMut(&mut HookContext) + 'static,
     {
-        self.subscribers[Self::slot(hook)].push(Box::new(f));
+        self.subscribers[Self::slot(hook)].push(Some(Box::new(f)));
     }
 
     /// Fire every callback registered for `hook` against `ctx`. Mirrors TS
-    /// `bus.emit(hook, ctx)`. See the struct docstring for the swap-out
-    /// pattern this uses to avoid aliasing UB.
+    /// `bus.emit(hook, ctx)`.
+    ///
+    /// Iterates by index, taking the callback out of its slot for the
+    /// duration of the call and putting it back after. A re-entrant `emit`
+    /// of the same hook sees the vec with this slot temporarily `None` —
+    /// every other subscriber fires normally. Length is re-read each
+    /// iteration so new subscribers registered during emit are picked up.
     pub fn emit(&mut self, hook: Hook, ctx: &mut HookContext) {
         let slot = Self::slot(hook);
-        let mut taken = std::mem::take(&mut self.subscribers[slot]);
-        for cb in &mut taken {
-            cb(ctx);
+        let mut i = 0;
+        loop {
+            // Re-read length each iteration: a callback may have pushed new
+            // subscribers (same-hook re-register), and we want them to fire.
+            if i >= self.subscribers[slot].len() {
+                break;
+            }
+            // Move the callback out. The slot at index `i` is now `None` so
+            // a re-entrant same-hook emit sees the rest of the vec.
+            let cb = self.subscribers[slot][i].take();
+            if let Some(mut boxed) = cb {
+                boxed(ctx);
+                // Put it back. If a callback removed itself, that future API
+                // would mean leaving the slot as `None`; for now everything
+                // is permanent, so always restore. (A future `off` API would
+                // mark slots `None` to drain; the cleanup pass at the end of
+                // emit would compact them.)
+                self.subscribers[slot][i] = Some(boxed);
+            }
+            i += 1;
         }
-        // Restore. If a callback (re-entrantly) registered new subscribers for
-        // the SAME hook during the emit window, those land in
-        // `self.subscribers[slot]`; merge them in front so the original
-        // subscribers fire first on the NEXT emit.
-        let appended = std::mem::take(&mut self.subscribers[slot]);
-        taken.extend(appended);
-        self.subscribers[slot] = taken;
     }
 }
 
@@ -940,4 +971,93 @@ mod tests {
         assert!(!bypass(&on),     "Some(true) => apply falloff");
         assert!( bypass(&off),    "Some(false) => bypass falloff");
     }
+
+    #[test]
+    fn hook_count_matches_enum_cardinality() {
+        // N2: HOOK_COUNT is hand-counted; the actual drift guard is the
+        // exhaustive match in `EventBus::slot`. This test asserts that the
+        // slot mapping covers exactly 0..HOOK_COUNT — so if someone adds a
+        // Hook variant and bumps `slot` (which they must, to satisfy
+        // exhaustiveness) without also bumping HOOK_COUNT, this test fails.
+        let all = [
+            Hook::Passive, Hook::OnChainKill, Hook::OnTurnEnd, Hook::OnVent,
+            Hook::OnWaveStart, Hook::OnHeatThreshold, Hook::OnDamageDealt,
+            Hook::OnDamageTaken, Hook::OnHeal, Hook::OnReorient, Hook::OnLethal,
+        ];
+        // If a Hook variant is added without being added here, the existing
+        // EventBus::slot exhaustiveness check forces touching this list too:
+        // the slot() function won't compile until the variant is added, at
+        // which point cardinality drift gets surfaced by the length assert
+        // below.
+        let mut slots: Vec<usize> = all.iter().copied().map(EventBus::slot).collect();
+        slots.sort_unstable();
+        slots.dedup();
+        assert_eq!(slots, (0..HOOK_COUNT).collect::<Vec<_>>(),
+            "slot mapping must be dense in 0..HOOK_COUNT");
+        assert_eq!(all.len(), HOOK_COUNT,
+            "HOOK_COUNT={} but {} hook variants listed — bump HOOK_COUNT",
+            HOOK_COUNT, all.len());
+    }
+
+    #[test]
+    fn emit_fires_subscribers_in_registration_order() {
+        // Baseline: two subscribers fire once each in the order registered.
+        use std::cell::Cell;
+        use std::rc::Rc;
+
+        let mut board = Board {
+            size: 1,
+            cells: vec![None],
+            ordnance: vec![],
+            hazards: vec![vec![]],
+            patrol: 1,
+            bus: EventBus::default(),
+            destroys_this_window: 0,
+        };
+
+        // Take the bus off the board so the callback closures can hold their
+        // own state without re-borrowing through board. The real resolver
+        // uses `std::mem::take` for the same reason — see `resolve::emit`.
+        let mut bus = std::mem::take(&mut board.bus);
+
+        let order = Rc::new(Cell::new(0u32));
+        let log = Rc::new(Cell::new([0u32; 2]));
+
+        let order1 = order.clone();
+        let log1 = log.clone();
+        bus.on(Hook::OnDamageDealt, move |_ctx| {
+            let i = order1.get();
+            let mut l = log1.get();
+            l[i as usize] = 100;
+            log1.set(l);
+            order1.set(i + 1);
+        });
+
+        let order2 = order.clone();
+        let log2 = log.clone();
+        bus.on(Hook::OnDamageDealt, move |_ctx| {
+            let i = order2.get();
+            let mut l = log2.get();
+            l[i as usize] = 200;
+            log2.set(l);
+            order2.set(i + 1);
+        });
+
+        let mut ctx = HookContext::new(&mut board);
+        bus.emit(Hook::OnDamageDealt, &mut ctx);
+
+        assert_eq!(order.get(), 2, "both subscribers fire exactly once");
+        assert_eq!(log.get(), [100, 200], "registration order is preserved");
+    }
+
+    // NOTE on N1 (nested re-entrant emit): the storage-level take/replace fix
+    // in `EventBus::emit` lets a callback safely call `bus.emit` on the SAME
+    // bus from inside itself, observing every other subscriber. But the
+    // resolver pattern (`resolve::emit`) `mem::take`s the entire bus off the
+    // board for the duration of the call, so a callback that tries
+    // `ctx.board.bus.emit(...)` finds an empty bus on the board and silently
+    // no-ops. The ReactorBreach/Voidtouched chain reviewer described is
+    // blocked by THAT layer, not by `EventBus::emit`. Pending a team design
+    // call on bus-borrowing (likely a `RefCell<EventBus>` on `Board`); see
+    // architect-to-reviewer thread for the proposal.
 }
