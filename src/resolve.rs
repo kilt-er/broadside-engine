@@ -28,7 +28,6 @@
 //! - [`resolve_target_move`] — push/pull/swap with collision damage. Currently
 //!   a no-op.
 //! - [`decide_enemy_action`] — AI decision layer. Currently a no-op.
-//! - [`detect_chain`] — chain-kill counting. Currently returns `false`.
 //! - The `BOARD` effect arm in [`apply_effect`] — currently a no-op.
 
 use crate::geometry::{absorb_shield, bears, direction_to, facing_zone, opposite, range_band};
@@ -91,11 +90,17 @@ pub fn resolve_round(board: &mut Board, content: &dyn Content) {
         execute_queue(player_cell, board, content);
     }
 
-    // 2 - advance every live projectile by its speed, resolve impacts.
+    // 2 - advance every live projectile by its speed, resolve impacts. This
+    // is its own chain-kill window — reset the counter so kills caused by
+    // ordnance impacts (e.g. multi-projectile torpedoes piercing low-hull
+    // enemies) are scored separately from the player's queue. The TS does not
+    // emit `onChainKill` from the ordnance phase itself (only `executeQueue`
+    // does); we match that and leave the emit gate to `executeQueue`.
     //
     // TS iterates a SHALLOW COPY of `board.ordnance` because each
     // `advanceProjectile` may remove its projectile from the live list. We do
     // the same: snapshot the ids, then advance each by id-lookup.
+    board.destroys_this_window = 0;
     let projectile_ids: Vec<String> = board.ordnance.iter().map(|p| p.id.clone()).collect();
     for id in projectile_ids {
         advance_projectile(&id, board, content);
@@ -123,6 +128,12 @@ pub fn resolve_round(board: &mut Board, content: &dyn Content) {
 /// because effects (movement, destroys) can mutate the board's cell vector
 /// underneath us.
 pub fn execute_queue(ship_cell: usize, board: &mut Board, content: &dyn Content) {
+    // Chain-kill window starts here. `destroy()` increments
+    // `destroys_this_window`; `detect_chain` reads it after the queue runs.
+    // Each `execute_queue` call is one window, and so is each ordnance-phase
+    // pass — both reset to 0 on entry.
+    board.destroys_this_window = 0;
+
     // The queue is copied out up front because applying an effect can mutate
     // the ship (e.g. clearing `lockedOut`, repositioning), and we need a
     // stable iteration order. Matches the TS `for (const actionId of
@@ -877,10 +888,17 @@ fn decide_enemy_action(_enemy_cell: usize, _board: &mut Board, _content: &dyn Co
     // intentionally empty — matches TS stub
 }
 
-/// TODO(broadside-content): count destroys within this execution window;
-/// `>=2` is a chain kill. TS body returns `false`.
-fn detect_chain(_board: &Board) -> bool {
-    false
+/// Was the just-finished execution window a chain kill? A "window" is one
+/// `execute_queue` call OR one ordnance-phase pass; both reset
+/// [`Board::destroys_this_window`] to zero at their start, and `destroy()`
+/// increments it. `>= 2` destroys in the same window means a chain.
+///
+/// Mirrors `detectChain` in `resolve.ts` (which is `TODO: count destroys
+/// within this execution window; >=2 is a chain kill.`). The counter is the
+/// runtime field architect added on `Board` for exactly this purpose; the
+/// resets are inserted at the two window boundaries above.
+fn detect_chain(board: &Board) -> bool {
+    board.destroys_this_window >= 2
 }
 
 /* =============================================================================
@@ -1255,5 +1273,135 @@ mod tests {
         spinal.targeting.hits_all = true;
         let cells = resolve_targeting(&spinal, &board, 0);
         assert_eq!(cells, vec![2, 4]);
+    }
+
+    /* ---- chain-kill window ------------------------------------------------ */
+
+    /// Two destroys in one window flips `detect_chain` to true. The counter is
+    /// what `destroy()` increments; `execute_queue` resets it on entry, so a
+    /// single window with two kills counts.
+    #[test]
+    fn detect_chain_fires_at_two_destroys_in_one_window() {
+        let mut board = make_board(7, vec![None, None, None, None, None, None, None]);
+        assert!(!detect_chain(&board));
+        board.destroys_this_window = 1;
+        assert!(!detect_chain(&board), "one destroy is not a chain");
+        board.destroys_this_window = 2;
+        assert!(detect_chain(&board));
+        board.destroys_this_window = 5;
+        assert!(detect_chain(&board), ">2 destroys still a chain");
+    }
+
+    /// `execute_queue` zeros the chain counter on entry, so a kill carried
+    /// over from a prior phase does NOT pollute the current window.
+    #[test]
+    fn execute_queue_resets_chain_window_on_entry() {
+        let attacker = make_ship("frigate", Faction::Player, 0, 10, LaneEnd::Fore);
+        let mut board = make_board(7, vec![
+            Some(attacker), None, None, None, None, None, None,
+        ]);
+        // Pre-populate the counter as if a prior phase had killed someone.
+        board.destroys_this_window = 3;
+
+        // Empty queue: execute_queue should still reset the counter on entry,
+        // and the post-queue detect_chain check must see the freshly-zeroed
+        // value, not the pre-populated 3.
+        struct Empty;
+        impl Content for Empty {
+            fn action(&self, _: &str) -> Option<&Action> { None }
+            fn spawn_projectile(&self, _: &str, _: &Ship) -> Projectile { unreachable!() }
+        }
+        execute_queue(0, &mut board, &Empty);
+        assert_eq!(board.destroys_this_window, 0,
+            "execute_queue must reset destroys_this_window on entry");
+    }
+
+    /// `resolve_round`'s ordnance phase also resets the window so an ordnance
+    /// chain is its own scoring epoch.
+    #[test]
+    fn resolve_round_resets_chain_window_for_ordnance_phase() {
+        // No ships, no ordnance — round runs cleanly. The ordnance phase
+        // reset still runs; the player-queue reset doesn't (no player ship).
+        let mut board = make_board(7, vec![None, None, None, None, None, None, None]);
+        board.destroys_this_window = 4;
+        struct Empty;
+        impl Content for Empty {
+            fn action(&self, _: &str) -> Option<&Action> { None }
+            fn spawn_projectile(&self, _: &str, _: &Ship) -> Projectile { unreachable!() }
+        }
+        resolve_round(&mut board, &Empty);
+        assert_eq!(board.destroys_this_window, 0,
+            "the ordnance-phase reset must zero the counter");
+    }
+
+    /// End-to-end: two lethal hits inside one `execute_queue` window cause
+    /// `OnChainKill` to fire. The wired event-bus path is what subsystems
+    /// like Chain Bounty subscribe to.
+    #[test]
+    fn execute_queue_emits_on_chain_kill_when_two_destroys_in_one_window() {
+        use std::cell::Cell;
+        use std::rc::Rc;
+
+        // Two squishy enemies adjacent to a spinal-piercing weapon; one shot
+        // should kill both.
+        let mut attacker = make_ship("frigate", Faction::Player, 0, 10, LaneEnd::Fore);
+        attacker.queue = vec!["chain_lance".into()];
+        let mut scout = make_ship("scout", Faction::Enemy, 2, 1, LaneEnd::Fore);
+        scout.shield_profile = ShieldProfile {
+            bow: crate::types::ShieldFace { armour: 0, charge: 0 },
+            stern: crate::types::ShieldFace { armour: 0, charge: 0 },
+            port: crate::types::ShieldFace { armour: 0, charge: 0 },
+            starboard: crate::types::ShieldFace { armour: 0, charge: 0 },
+        };
+        let mut gunboat = make_ship("gunboat", Faction::Enemy, 4, 1, LaneEnd::Fore);
+        gunboat.shield_profile = scout.shield_profile;
+        let mut board = make_board(7, vec![
+            Some(attacker), None, Some(scout), None, Some(gunboat), None, None,
+        ]);
+
+        // Subscribe to OnChainKill BEFORE we lose the bus mutability into
+        // execute_queue. Use Rc<Cell<u32>> to side-channel the count out.
+        let count = Rc::new(Cell::new(0u32));
+        let c2 = count.clone();
+        board.bus.on(Hook::OnChainKill, move |_ctx| {
+            c2.set(c2.get() + 1);
+        });
+
+        // Spinal-piercing weapon with bandFalloff:false so 1 damage lands raw
+        // on both targets, killing each (hull 1, armour 0, no charge).
+        let chain_lance = Action {
+            id: "chain_lance".into(),
+            name: "Chain Lance".into(),
+            archetype: WeaponArchetype::Beam,
+            cost: ActionCost { heat: 0, cooldown_max: 0, advances_turn: true },
+            targeting: Targeting {
+                pattern: TargetingPattern::SPINAL_LINE,
+                band: vec![
+                    RangeBand::PointBlank, RangeBand::Close, RangeBand::Mid,
+                    RangeBand::Long, RangeBand::Extreme,
+                ],
+                optimal_band: RangeBand::Mid,
+                requires_arc: Some(Arc::Forward),
+                facing_relative: true,
+                hits_all: true,
+            },
+            effects: vec![Effect::DAMAGE { amount: 1, band_falloff: Some(false) }],
+            r#mod: None,
+            icon: None,
+        };
+        struct OneAction(Action);
+        impl Content for OneAction {
+            fn action(&self, id: &str) -> Option<&Action> {
+                (id == "chain_lance").then_some(&self.0)
+            }
+            fn spawn_projectile(&self, _: &str, _: &Ship) -> Projectile { unreachable!() }
+        }
+        let content = OneAction(chain_lance);
+        execute_queue(0, &mut board, &content);
+
+        // Both ships should be gone, and OnChainKill should have fired once.
+        assert!(board.cells[2].is_none(), "scout was killed");
+        assert!(board.cells[4].is_none(), "gunboat was killed");
+        assert_eq!(count.get(), 1, "OnChainKill fires once for the window");
     }
 }
