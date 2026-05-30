@@ -1,0 +1,23 @@
+[package]
+name = "broadside-engine"
+version = "0.1.0"
+edition = "2021"
+description = "Rust port of the Broadside space-combat resolver — canonical reference: broadside-engine/engine/types.ts"
+repository = "https://github.com/kilt-er/broadside-engine"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Toolchain alignment with C:\Users\bruce\GameEngine\mvp. Declared at the
+# crate level (no workspace yet) so future workspace promotion is mechanical.
+# Only `serde` / `serde_json` are used by the types/catalog slice today;
+# the rest land when resolver, content, and renderer come online.
+hecs = "0.10"
+wgpu = "26"
+winit = "0.30"
+pollster = "0.3"
+bytemuck = { version = "1", features = ["derive"] }
+log = "0.4"
+env_logger = "0.11"

@@ -1,0 +1,18 @@
+//! # broadside-engine
+//!
+//! Rust port of the Broadside space-combat resolver. The canonical reference
+//! is `broadside-engine/engine/types.ts` in the source design repo; when this
+//! crate and the TypeScript engine disagree, the TypeScript is right.
+//!
+//! ## Module map
+//!
+//! - [`types`]   — the complete content + runtime type surface (mirrors
+//!                 `engine/types.ts`).
+//! - [`catalog`] — loader for `assets/broadside.catalog.json` (the JSON
+//!                 emitted by the analysis doc's "Copy JSON" button).
+//!
+//! Geometry, the resolver, content effect bodies, AI, and rendering live in
+//! sibling modules added by other teammates.
+
+pub mod types;
+pub mod catalog;
