@@ -44,3 +44,9 @@ env_logger = { version = "0.11", optional = true }
 name = "broadside"
 path = "src/bin/broadside.rs"
 required-features = ["render", "runtime"]
+
+[dev-dependencies]
+# Property-based testing for the band_falloff overflow / clamp invariant
+# and the absorb_shield (dmg, armour, charge) state machine. Avoid using
+# proptest elsewhere — enumerated tables are clearer for finite domains.
+proptest = "1"
