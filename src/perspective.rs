@@ -156,10 +156,14 @@ pub struct ShipDims {
 }
 
 /// Default Frigate hull. The TS reference uses `(56, 14, 6)`; the Rust
-/// renderer holds at 2x `(112, 28, 12)` after a 3x bump produced an
-/// offscreen-lane regression in bruce`s review. Reverted as a stop-gap
-/// while diagnosing — see commit log.
-pub const FRIGATE_DIMS: ShipDims = ShipDims { length: 112.0, beam: 28.0, height: 12.0 };
+/// renderer uses 3x `(168, 42, 18)` so the silhouette dominates the lane
+/// visually at the 1320x480 virtual canvas. Aspect ratio is unchanged so
+/// the military-axonometric projection still places the bow chevron at
+/// the correct relative position. Binaries that render at 3x must inset
+/// the LaneGeometry front edge by at least length / 2 = 84 design px on
+/// the near side so cell-0 ships do not clip past the canvas edge - see
+/// `bin/broadside.rs` for the demo s margin-aware lane construction.
+pub const FRIGATE_DIMS: ShipDims = ShipDims { length: 168.0, beam: 42.0, height: 18.0 };
 
 /// Which way the hull is turned. `BowOn` runs along the lane axis; `Broadside`
 /// runs perpendicular to it.

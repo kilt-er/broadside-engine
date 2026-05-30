@@ -27,7 +27,7 @@ use winit::window::{Window, WindowId};
 use broadside_engine::geometry::default_shield_profile;
 use broadside_engine::gfx::{Gfx, VIRTUAL_H, VIRTUAL_W};
 use broadside_engine::hud;
-use broadside_engine::perspective::{LaneGeometry, DEFAULT_LANE};
+use broadside_engine::perspective::{LaneGeometry, Point2, DEFAULT_LANE, FRIGATE_DIMS};
 use broadside_engine::types::{
     Arc as TArc, Board, EventBus, Faction, LaneEnd, Mount, Orientation, Projectile, Ship,
 };
@@ -41,17 +41,39 @@ struct App {
 
 impl App {
     fn new() -> Self {
-        // DEFAULT_LANE is tuned for a 660×240 viewport; the engine's virtual
-        // canvas is 1320×480 (2× of that, for integer-scale crispness). Scale
-        // the lane uniformly so it covers the full canvas instead of just the
-        // top-left quadrant.
-        let lane = DEFAULT_LANE.scaled((VIRTUAL_W as f32) / 660.0);
         Self {
             window: None,
             gfx: None,
             board: render_example_board(),
-            lane,
+            lane: demo_lane(),
         }
+    }
+}
+
+/// Build the demo's LaneGeometry from `DEFAULT_LANE`, scaled to the engine
+/// virtual canvas and inset on the near side so a cell-0 ship at scaleNear
+/// doesn't clip past the left edge.
+///
+/// At 3× FRIGATE_DIMS (`length = 168`) the player's half-length is 84
+/// design px. The uniformly-scaled `DEFAULT_LANE.scaled(2.0)` places
+/// `front_start` at x=70, which leaves only 70 design px on the left —
+/// a length-168 ship at cell 0 would clip 14 px off the canvas edge.
+///
+/// Fix: nudge `front_start` (and `back_start`) right by enough that the
+/// cell-0 sprite's left edge lands inside the canvas with comfortable
+/// margin. The fore end already has ~90 px of right-side breathing room
+/// at scaleFar=0.55, so we leave `front_end` / `back_end` alone.
+fn demo_lane() -> LaneGeometry {
+    let base = DEFAULT_LANE.scaled((VIRTUAL_W as f32) / 660.0);
+    // Comfortable margin = half-length + a small visual buffer. At 3× the
+    // half-length is 84; +8 px visual buffer = 92 px target near-edge.
+    let half_len_near = FRIGATE_DIMS.length / 2.0;
+    let target_near_x = half_len_near + 8.0;
+    let inset = (target_near_x - base.front_start.x).max(0.0);
+    LaneGeometry {
+        front_start: Point2 { x: base.front_start.x + inset, y: base.front_start.y },
+        back_start:  Point2 { x: base.back_start.x  + inset, y: base.back_start.y },
+        ..base
     }
 }
 
