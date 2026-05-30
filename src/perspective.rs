@@ -155,8 +155,13 @@ pub struct ShipDims {
     pub height: f32,
 }
 
-/// Default Frigate hull. Mirrors `FRIGATE_DIMS` in the TS.
-pub const FRIGATE_DIMS: ShipDims = ShipDims { length: 56.0, beam: 14.0, height: 6.0 };
+/// Default Frigate hull. The TS reference uses `(56, 14, 6)`; we scale 2x
+/// across the board (`112, 28, 12`) so the Rust renderer's ship silhouette
+/// dominates the lane visually at the 1320x480 virtual canvas, rather than
+/// reading as a small token sitting on top of the lane plate. Aspect ratio
+/// is unchanged so the military-axonometric projection still places the
+/// bow chevron at the correct relative position on the top face.
+pub const FRIGATE_DIMS: ShipDims = ShipDims { length: 112.0, beam: 28.0, height: 12.0 };
 
 /// Which way the hull is turned. `BowOn` runs along the lane axis; `Broadside`
 /// runs perpendicular to it.
@@ -367,35 +372,33 @@ mod tests {
 
     #[test]
     fn ship_sprite_bow_on_long_axis_runs_along_lane() {
-        // For a bow-on Frigate at cell 0 with scale 1.0: along-lane half-width
-        // is length/2 = 28 px, depth half is beam/2 = 7 px. Top-face top edge
-        // sits 1 * height + 7 = 13 px above the lane.
+        // For a bow-on Frigate at cell 0 with scale 1.0: front face is
+        // length x height, top face has depth = beam/2 in the unrotated frame.
         let cell = cell_to_screen(0, &DEFAULT_LANE);
         let s = ship_sprite(cell, FRIGATE_DIMS, Stance::BowOn);
-        // Front face: width 56, height 6, anchored at the lane y.
         let p0 = s.front_face[0];
         let p2 = s.front_face[2];
-        assert!(approx_eq(p2.x - p0.x, 56.0, 1e-3));
-        assert!(approx_eq(p0.y - p2.y, 6.0, 1e-3));
-        // Top face depth equals beam/2 = 7 in the unrotated frame.
+        assert!(approx_eq(p2.x - p0.x, FRIGATE_DIMS.length, 1e-3));
+        assert!(approx_eq(p0.y - p2.y, FRIGATE_DIMS.height, 1e-3));
         let t0 = s.top_face[0];
         let t3 = s.top_face[3];
-        assert!(approx_eq(t0.y - t3.y, 7.0, 1e-3));
+        assert!(approx_eq(t0.y - t3.y, FRIGATE_DIMS.beam / 2.0, 1e-3));
     }
 
     #[test]
     fn ship_sprite_broadside_rotates_dimensions_90_degrees() {
-        // For broadside: on-screen along-lane is beam (14), depth is length
-        // (56), so depth_offset = 28 in the unrotated frame.
+        // Broadside swaps the dimensions: on-screen along-lane is beam,
+        // depth is length, so depth_offset = length / 2 in the unrotated
+        // frame.
         let cell = cell_to_screen(0, &DEFAULT_LANE);
         let s = ship_sprite(cell, FRIGATE_DIMS, Stance::Broadside);
         let p0 = s.front_face[0];
         let p2 = s.front_face[2];
-        assert!(approx_eq(p2.x - p0.x, 14.0, 1e-3));
-        assert!(approx_eq(p0.y - p2.y, 6.0, 1e-3));
+        assert!(approx_eq(p2.x - p0.x, FRIGATE_DIMS.beam, 1e-3));
+        assert!(approx_eq(p0.y - p2.y, FRIGATE_DIMS.height, 1e-3));
         let t0 = s.top_face[0];
         let t3 = s.top_face[3];
-        assert!(approx_eq(t0.y - t3.y, 28.0, 1e-3));
+        assert!(approx_eq(t0.y - t3.y, FRIGATE_DIMS.length / 2.0, 1e-3));
     }
 
     #[test]
