@@ -566,10 +566,8 @@ pub fn apply_effect(
         }
 
         Effect::DISPLACE_TARGET { mode, distance } => {
-            // TODO(broadside-content): push/pull/swap with collision damage.
-            // Body below is the TS no-op stub.
             for &c in cells {
-                resolve_target_move(c, *mode, *distance, board);
+                resolve_target_move(c, source_cell, *mode, *distance, board);
             }
         }
 
@@ -1059,10 +1057,117 @@ fn resolve_self_move(
     }
 }
 
-/// TODO(broadside-content): push/pull/swap with collision damage; mirror
-/// `resolve_self_move`. TS body is a no-op stub.
-fn resolve_target_move(_target_cell: usize, _mode: crate::types::DisplaceMode, _distance: i32, _board: &mut Board) {
-    // intentionally empty — matches TS stub
+/// Resolve a `DISPLACE_TARGET` effect: move the ship at `target_cell` per
+/// `mode`. The source ship (the action's owner) is at `source_cell` — its
+/// position determines push/pull direction.
+///
+/// # Mode semantics
+///
+/// - `Push` — target moves AWAY from `source_cell`. Stops at first occupant
+///   or wall and takes `remaining_distance × 1` collision damage routed
+///   through [`dummy_weapon()`] so the directional shield mediates.
+/// - `Pull` — target moves TOWARD `source_cell`, stopping one cell short of
+///   the source itself OR at the first intervening occupant / wall.
+///   Collision rule applies the same way.
+/// - `Swap` — `target_cell` and `source_cell` exchange occupants. No
+///   collision damage (it is a controlled trade, not a ram). If either cell
+///   is empty the swap silently fails.
+///
+/// Mirrors what would have been `resolveTargetMove` in `resolve.ts` — the TS
+/// body was a stub.
+fn resolve_target_move(
+    target_cell: usize,
+    source_cell: usize,
+    mode: crate::types::DisplaceMode,
+    distance: i32,
+    board: &mut Board,
+) {
+    use crate::types::DisplaceMode;
+    if board.cells[target_cell].is_none() {
+        return;
+    }
+
+    let size = board.size as i32;
+    let start = target_cell as i32;
+    let src = source_cell as i32;
+
+    match mode {
+        DisplaceMode::Swap => {
+            // Trade cells. If source == target (degenerate), no-op.
+            if source_cell == target_cell {
+                return;
+            }
+            let a = board.cells[source_cell].take();
+            let b = board.cells[target_cell].take();
+            if let Some(mut s) = a {
+                s.cell = target_cell;
+                board.cells[target_cell] = Some(s);
+            }
+            if let Some(mut t) = b {
+                t.cell = source_cell;
+                board.cells[source_cell] = Some(t);
+            }
+        }
+
+        DisplaceMode::Push | DisplaceMode::Pull => {
+            // Direction depends on mode:
+            //   Push: target moves AWAY from source -> step = sign(target - source)
+            //   Pull: target moves TOWARD source     -> step = sign(source - target)
+            // Tie-breaker: if source == target (degenerate), pick +1 for both.
+            let step: i32 = match mode {
+                DisplaceMode::Push => match start.cmp(&src) {
+                    std::cmp::Ordering::Greater => 1,
+                    std::cmp::Ordering::Less => -1,
+                    std::cmp::Ordering::Equal => 1,
+                },
+                DisplaceMode::Pull => match src.cmp(&start) {
+                    std::cmp::Ordering::Greater => 1,
+                    std::cmp::Ordering::Less => -1,
+                    std::cmp::Ordering::Equal => 1,
+                },
+                _ => unreachable!(),
+            };
+
+            // Walk step-by-step. Stop at first occupant OR at the source
+            // cell (you cannot pull a target onto the source — they would
+            // share a cell). Pull therefore stops one cell short of source.
+            let mut c = start;
+            let mut steps_taken = 0;
+            for _ in 0..distance {
+                let next = c + step;
+                if next < 0 || next >= size {
+                    break;
+                }
+                if board.cells[next as usize].is_some() {
+                    // The source ship counts as an occupant too — pull
+                    // crashes the target into the operator, which is the
+                    // canonical collision behaviour. So we don't special-
+                    // case source here.
+                    break;
+                }
+                c = next;
+                steps_taken += 1;
+            }
+            let remaining = distance - steps_taken;
+            let landing = c as usize;
+
+            // Move the target if it actually moved.
+            if landing != target_cell {
+                let mut t = board
+                    .cells[target_cell]
+                    .take()
+                    .expect("target still occupied at start of move");
+                t.cell = landing;
+                board.cells[landing] = Some(t);
+            }
+
+            // Collision damage if we were blocked.
+            if remaining > 0 {
+                let phantom_atk = (c + step).clamp(0, size - 1) as usize;
+                apply_damage(landing, remaining, phantom_atk, &dummy_weapon(), board);
+            }
+        }
+    }
 }
 
 /// TODO(broadside-content): AI decision layer. Pick actions to maximise
@@ -1673,6 +1778,116 @@ mod tests {
         // Cells updated to match new positions.
         assert_eq!(board.cells[2].as_ref().unwrap().cell, 2);
         assert_eq!(board.cells[3].as_ref().unwrap().cell, 3);
+    }
+
+    /* ---- target displacement --------------------------------------------- */
+
+    /// Push moves the target AWAY from the source by `distance` when clear.
+    #[test]
+    fn target_move_push_advances_when_clear() {
+        let source = make_ship("src", Faction::Player, 0, 10, LaneEnd::Fore);
+        let target = make_ship("tgt", Faction::Enemy, 2, 5, LaneEnd::Fore);
+        let mut board = make_board(7, vec![
+            Some(source), None, Some(target), None, None, None, None,
+        ]);
+        super::resolve_target_move(2, 0, crate::types::DisplaceMode::Push, 2, &mut board);
+        // Target was at 2, source at 0, push direction is +1 (away from
+        // source). Should land at cell 4.
+        assert!(board.cells[2].is_none());
+        assert_eq!(board.cells[4].as_ref().map(|s| s.cell), Some(4));
+        assert_eq!(board.cells[4].as_ref().unwrap().hull, 5);
+    }
+
+    /// Push blocked by another ship: target stops one short, takes
+    /// remaining-distance collision.
+    #[test]
+    fn target_move_push_collides_with_intervening_ship() {
+        let source = make_ship("src", Faction::Player, 0, 10, LaneEnd::Fore);
+        let mut target = make_ship("tgt", Faction::Enemy, 2, 5, LaneEnd::Fore);
+        target.shield_profile = no_armour_profile();
+        let blocker = make_ship("blk", Faction::Enemy, 4, 5, LaneEnd::Fore);
+        let mut board = make_board(7, vec![
+            Some(source), None, Some(target), None, Some(blocker), None, None,
+        ]);
+        super::resolve_target_move(2, 0, crate::types::DisplaceMode::Push, 3, &mut board);
+        // Step is +1. Cells walked: 3 (free) -> at 3. Next would be 4, occupied.
+        // steps_taken=1, remaining=2 -> 2 collision damage.
+        assert!(board.cells[3].is_some());
+        assert_eq!(board.cells[3].as_ref().unwrap().hull, 5 - 2);
+    }
+
+    /// Push into a wall stops at the edge and takes overflow collision.
+    #[test]
+    fn target_move_push_at_wall_takes_collision() {
+        let source = make_ship("src", Faction::Player, 4, 10, LaneEnd::Fore);
+        let mut target = make_ship("tgt", Faction::Enemy, 6, 5, LaneEnd::Fore);
+        target.shield_profile = no_armour_profile();
+        let mut board = make_board(7, vec![
+            None, None, None, None, Some(source), None, Some(target),
+        ]);
+        super::resolve_target_move(6, 4, crate::types::DisplaceMode::Push, 3, &mut board);
+        // Target at 6, push +1 (away from source at 4). Cannot move
+        // (cell 7 off-board). steps_taken=0, remaining=3.
+        assert!(board.cells[6].is_some());
+        assert_eq!(board.cells[6].as_ref().unwrap().hull, 5 - 3);
+    }
+
+    /// Pull moves the target TOWARD the source by `distance` when clear.
+    #[test]
+    fn target_move_pull_advances_toward_source() {
+        let source = make_ship("src", Faction::Player, 6, 10, LaneEnd::Fore);
+        let target = make_ship("tgt", Faction::Enemy, 2, 5, LaneEnd::Fore);
+        let mut board = make_board(7, vec![
+            None, None, Some(target), None, None, None, Some(source),
+        ]);
+        super::resolve_target_move(2, 6, crate::types::DisplaceMode::Pull, 2, &mut board);
+        // Target at 2, source at 6, pull direction is +1 (toward source).
+        // Lands at cell 4.
+        assert!(board.cells[2].is_none());
+        assert_eq!(board.cells[4].as_ref().map(|s| s.cell), Some(4));
+        assert_eq!(board.cells[4].as_ref().unwrap().hull, 5);
+    }
+
+    /// Pull that overshoots into the source: target collides with source.
+    #[test]
+    fn target_move_pull_collides_with_source() {
+        let source = make_ship("src", Faction::Player, 3, 10, LaneEnd::Fore);
+        let mut target = make_ship("tgt", Faction::Enemy, 0, 5, LaneEnd::Fore);
+        target.shield_profile = no_armour_profile();
+        let mut board = make_board(7, vec![
+            Some(target), None, None, Some(source), None, None, None,
+        ]);
+        super::resolve_target_move(0, 3, crate::types::DisplaceMode::Pull, 5, &mut board);
+        // Pull direction +1 toward source at 3. Steps: 0->1, 1->2 (both free).
+        // 2->3 is source, blocks. steps_taken=2, remaining=3.
+        assert!(board.cells[2].is_some());
+        assert_eq!(board.cells[2].as_ref().unwrap().hull, 5 - 3);
+    }
+
+    /// Swap trades source and target cells.
+    #[test]
+    fn target_move_swap_trades_cells() {
+        let source = make_ship("src", Faction::Player, 0, 10, LaneEnd::Fore);
+        let target = make_ship("tgt", Faction::Enemy, 4, 5, LaneEnd::Fore);
+        let mut board = make_board(7, vec![
+            Some(source), None, None, None, Some(target), None, None,
+        ]);
+        super::resolve_target_move(4, 0, crate::types::DisplaceMode::Swap, 1, &mut board);
+        assert_eq!(board.cells[0].as_ref().map(|s| s.id.clone()), Some("tgt".into()));
+        assert_eq!(board.cells[4].as_ref().map(|s| s.id.clone()), Some("src".into()));
+        assert_eq!(board.cells[0].as_ref().unwrap().cell, 0);
+        assert_eq!(board.cells[4].as_ref().unwrap().cell, 4);
+    }
+
+    /// Push silently no-ops on an empty target cell.
+    #[test]
+    fn target_move_push_no_target_is_noop() {
+        let source = make_ship("src", Faction::Player, 0, 10, LaneEnd::Fore);
+        let mut board = make_board(7, vec![
+            Some(source), None, None, None, None, None, None,
+        ]);
+        super::resolve_target_move(3, 0, crate::types::DisplaceMode::Push, 2, &mut board);
+        assert!(board.cells[3].is_none(), "no target, no move");
     }
 
     /// End-to-end: two lethal hits inside one `execute_queue` window cause
