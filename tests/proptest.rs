@@ -19,6 +19,17 @@ use broadside_engine::geometry::{absorb_shield, band_falloff};
 use broadside_engine::types::{RangeBand, ShieldFace};
 use proptest::prelude::*;
 
+/// The five RangeBand variants in canonical declaration order. Mirrors the
+/// private `BAND_ORDER` in `src/geometry.rs:39-45`; kept local so the
+/// integration test doesn't depend on an exported constant.
+const ALL_BANDS: [RangeBand; 5] = [
+    RangeBand::PointBlank,
+    RangeBand::Close,
+    RangeBand::Mid,
+    RangeBand::Long,
+    RangeBand::Extreme,
+];
+
 /// Strategy producing one of the five `RangeBand` variants uniformly.
 fn any_band() -> impl Strategy<Value = RangeBand> {
     prop_oneof![
@@ -28,6 +39,11 @@ fn any_band() -> impl Strategy<Value = RangeBand> {
         Just(RangeBand::Long),
         Just(RangeBand::Extreme),
     ]
+}
+
+/// Index of `b` in [`ALL_BANDS`]. Used by monotonicity property below.
+fn band_idx(b: RangeBand) -> usize {
+    ALL_BANDS.iter().position(|&x| x == b).expect("ALL_BANDS covers every variant")
 }
 
 proptest! {
@@ -65,6 +81,39 @@ proptest! {
     ) {
         let out = band_falloff(raw, band, band);
         prop_assert_eq!(out, raw.max(0));
+    }
+
+    /// Monotonicity in delta: for fixed `raw >= 0` and fixed `optimal`, the
+    /// returned damage is non-increasing as `actual` moves further from
+    /// `optimal`. This pins that the factor table `[1, 0.66, 0.5, 0.33, 0.2]`
+    /// is monotonically non-increasing — a typo that swapped two entries
+    /// (e.g. `[1, 0.5, 0.66, ...]`) would make this property fail.
+    ///
+    /// The integration suite at `tests/geometry.rs` covers monotonicity for
+    /// `raw == 10`; this generalises to every non-negative raw.
+    #[test]
+    fn band_falloff_is_monotonically_non_increasing_in_delta(
+        raw in 0_i32..1_000_000_i32,
+        optimal in any_band(),
+    ) {
+        let opt_idx = band_idx(optimal) as i32;
+        // For every pair of bands (a, b), if a is closer to optimal than b,
+        // then band_falloff at a must be >= band_falloff at b.
+        for &a in &ALL_BANDS {
+            let d_a = (band_idx(a) as i32 - opt_idx).unsigned_abs();
+            let r_a = band_falloff(raw, a, optimal);
+            for &b in &ALL_BANDS {
+                let d_b = (band_idx(b) as i32 - opt_idx).unsigned_abs();
+                if d_a <= d_b {
+                    let r_b = band_falloff(raw, b, optimal);
+                    prop_assert!(
+                        r_a >= r_b,
+                        "monotonicity broken at raw={raw}, optimal={optimal:?}: \
+                         delta {d_a} ({a:?}) -> {r_a}, delta {d_b} ({b:?}) -> {r_b}",
+                    );
+                }
+            }
+        }
     }
 
     /// `absorb_shield` invariants:

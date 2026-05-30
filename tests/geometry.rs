@@ -34,7 +34,11 @@ use std::collections::HashMap;
  * ====================================================================== */
 
 /// Bare-bones ship for `bears` tests — only `cell` and `orientation` matter
-/// to that function. Everything else is filler picked to satisfy the type.
+/// to that function. Everything else is filler picked to satisfy the type:
+/// hull/heat are 1/0, mounts/queue/statuses/traits are empty, and
+/// `shield_profile` is `default_shield_profile()` (strong bow, weak stern,
+/// medium flanks) so tests that read the profile incidentally see the
+/// canonical Frigate layout.
 fn ship_at(cell: usize, orientation: Orientation) -> Ship {
     Ship {
         id: "test".into(),
