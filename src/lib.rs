@@ -24,6 +24,10 @@
 //!   blit. Pipeline scaffold only; scene content lives in [`hud`].
 //! - [`hud`]      — turns a [`types::Board`] into a back-to-front
 //!   `Vec<SpriteInstance>` for the renderer.
+//! - [`input`]    — framework-agnostic Key enum, canonical key->Intent
+//!   mapping for the Phase 1 demo, and `DemoContent` (a small `Content`
+//!   impl pre-loaded with the synthetic move/flip/vent actions and the
+//!   demo's mount weapons).
 //!
 //! Content effect bodies and AI live in sibling modules added by other
 //! teammates.
@@ -31,6 +35,7 @@
 pub mod types;
 pub mod catalog;
 pub mod geometry;
+pub mod input;
 pub mod perspective;
 pub mod resolve;
 
