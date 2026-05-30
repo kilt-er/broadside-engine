@@ -587,8 +587,8 @@ pub fn apply_effect(
             board.ordnance.push(p);
         }
 
-        Effect::DISPLACE_SELF { mode, distance } => {
-            resolve_self_move(source_cell, *mode, *distance, board, content);
+        Effect::DISPLACE_SELF { mode, distance, direction } => {
+            resolve_self_move(source_cell, *mode, *distance, *direction, board, content);
         }
 
         Effect::DISPLACE_TARGET { mode, distance } => {
@@ -955,25 +955,39 @@ fn apply_modifiers(
 ///
 /// # Direction
 ///
-/// Movement runs in the ship's "bow" direction:
-///   `BowOn { bow: Fore }` -> step +1
-///   `BowOn { bow: Aft }`  -> step -1
-///   `Broadside`           -> step +1 (arbitrary; broadside ships rarely
-///                            queue a DISPLACE_SELF effect, and the design
-///                            doc gives no preference; matches TS).
+/// `direction` is the **Rust-port extension** added for player UX (see
+/// [`Effect::DISPLACE_SELF`] doc). It overrides the bow-derived step:
+///
+/// - `Some(LaneEnd::Fore)` -> step +1
+/// - `Some(LaneEnd::Aft)`  -> step -1
+/// - `None` (the canonical TS semantics) — derive from `ship.orientation`:
+///     - `BowOn { bow: Fore }` -> step +1
+///     - `BowOn { bow: Aft }`  -> step -1
+///     - `Broadside`           -> step +1 (arbitrary; broadside ships rarely
+///                                queue a DISPLACE_SELF, and the design doc
+///                                gives no preference; matches TS).
+///
+/// AI / scripted moves pass `direction: None` so behaviour matches the TS
+/// engine bit-for-bit. Player synthetic Left/Right actions pass
+/// `Some(Aft)` / `Some(Fore)` so the arrow keys are lane-relative.
 fn resolve_self_move(
     ship_cell: usize,
     mode: MovementMode,
     distance: i32,
+    direction: Option<LaneEnd>,
     board: &mut Board,
     content: &dyn Content,
 ) {
     let Some(ship) = board.cells[ship_cell].as_ref() else {
         return;
     };
-    let step: i32 = match ship.orientation {
-        Orientation::BowOn { bow: LaneEnd::Aft } => -1,
-        _ => 1,
+    let step: i32 = match direction {
+        Some(LaneEnd::Fore) => 1,
+        Some(LaneEnd::Aft) => -1,
+        None => match ship.orientation {
+            Orientation::BowOn { bow: LaneEnd::Aft } => -1,
+            _ => 1,
+        },
     };
     let size = board.size as i32;
     let start = ship_cell as i32;
@@ -1971,7 +1985,7 @@ mod tests {
         let mut board = make_board(7, vec![
             None, None, Some(ship), None, None, None, None,
         ]);
-        super::resolve_self_move(2, MovementMode::THRUST, 1, &mut board, &NoContent);
+        super::resolve_self_move(2, MovementMode::THRUST, 1, None, &mut board, &NoContent);
         assert!(board.cells[2].is_none(), "vacated origin");
         assert_eq!(board.cells[3].as_ref().map(|s| s.cell), Some(3));
     }
@@ -1986,7 +2000,7 @@ mod tests {
         let mut board = make_board(7, vec![
             None, None, Some(ship), Some(blocker), None, None, None,
         ]);
-        super::resolve_self_move(2, MovementMode::THRUST, 1, &mut board, &NoContent);
+        super::resolve_self_move(2, MovementMode::THRUST, 1, None, &mut board, &NoContent);
         // Did not move.
         assert!(board.cells[2].is_some());
         // Hull: 5 - 1 = 4 (collision damage routed through dummy_weapon, no
@@ -2002,7 +2016,7 @@ mod tests {
         let mut board = make_board(7, vec![
             None, None, None, None, None, None, Some(ship),
         ]);
-        super::resolve_self_move(6, MovementMode::THRUST, 1, &mut board, &NoContent);
+        super::resolve_self_move(6, MovementMode::THRUST, 1, None, &mut board, &NoContent);
         assert_eq!(board.cells[6].as_ref().unwrap().hull, 4);
     }
 
@@ -2013,7 +2027,7 @@ mod tests {
         let mut board = make_board(7, vec![
             None, Some(ship), None, None, None, None, None,
         ]);
-        super::resolve_self_move(1, MovementMode::BURN, 3, &mut board, &NoContent);
+        super::resolve_self_move(1, MovementMode::BURN, 3, None, &mut board, &NoContent);
         assert!(board.cells[1].is_none());
         assert_eq!(board.cells[4].as_ref().map(|s| s.cell), Some(4));
         // No collision: hull intact.
@@ -2029,7 +2043,7 @@ mod tests {
         let mut board = make_board(7, vec![
             None, Some(ship), None, None, Some(blocker), None, None,
         ]);
-        super::resolve_self_move(1, MovementMode::BURN, 5, &mut board, &NoContent);
+        super::resolve_self_move(1, MovementMode::BURN, 5, None, &mut board, &NoContent);
         // Stopped at cell 3 (one short of the blocker at 4).
         // Steps taken: 2 (1->2, 2->3). Requested: 5. Remaining: 3.
         assert!(board.cells[3].is_some());
@@ -2045,7 +2059,7 @@ mod tests {
         let mut board = make_board(7, vec![
             Some(ship), Some(blocker_a), Some(blocker_b), None, None, None, None,
         ]);
-        super::resolve_self_move(0, MovementMode::SLIP, 2, &mut board, &NoContent);
+        super::resolve_self_move(0, MovementMode::SLIP, 2, None, &mut board, &NoContent);
         // SLIP scans 2 cells (lands at 2), finds it occupied, walks forward
         // to 3 which is free.
         assert!(board.cells[0].is_none());
@@ -2060,7 +2074,7 @@ mod tests {
         let mut board = make_board(7, vec![
             Some(ship), None, None, None, None, None, None,
         ]);
-        super::resolve_self_move(0, MovementMode::JUMP, 4, &mut board, &NoContent);
+        super::resolve_self_move(0, MovementMode::JUMP, 4, None, &mut board, &NoContent);
         assert!(board.cells[0].is_none());
         assert_eq!(board.cells[4].as_ref().map(|s| s.cell), Some(4));
         assert_eq!(board.cells[4].as_ref().unwrap().hull, 10);
@@ -2074,7 +2088,7 @@ mod tests {
         let mut board = make_board(7, vec![
             Some(ship), None, None, None, Some(blocker), None, None,
         ]);
-        super::resolve_self_move(0, MovementMode::JUMP, 4, &mut board, &NoContent);
+        super::resolve_self_move(0, MovementMode::JUMP, 4, None, &mut board, &NoContent);
         assert!(board.cells[0].is_some(), "jump failed; ship stayed home");
         assert_eq!(board.cells[0].as_ref().unwrap().hull, 10);
     }
@@ -2087,7 +2101,7 @@ mod tests {
         let mut board = make_board(7, vec![
             None, None, None, None, Some(ship), None, None,
         ]);
-        super::resolve_self_move(4, MovementMode::JUMP, 5, &mut board, &NoContent);
+        super::resolve_self_move(4, MovementMode::JUMP, 5, None, &mut board, &NoContent);
         // Target = 4 + 5 = 9; clamped to 6; overflow = 9 - 6 = 3.
         assert!(board.cells[6].is_some());
         assert_eq!(board.cells[6].as_ref().unwrap().hull, 10 - 3);
@@ -2101,12 +2115,75 @@ mod tests {
         let mut board = make_board(7, vec![
             None, None, Some(ship), Some(other), None, None, None,
         ]);
-        super::resolve_self_move(2, MovementMode::TRACTOR_SWAP, 1, &mut board, &NoContent);
+        super::resolve_self_move(2, MovementMode::TRACTOR_SWAP, 1, None, &mut board, &NoContent);
         assert_eq!(board.cells[2].as_ref().map(|s| s.id.clone()), Some("o".into()));
         assert_eq!(board.cells[3].as_ref().map(|s| s.id.clone()), Some("s".into()));
         // Cells updated to match new positions.
         assert_eq!(board.cells[2].as_ref().unwrap().cell, 2);
         assert_eq!(board.cells[3].as_ref().unwrap().cell, 3);
+    }
+
+    /// Direction override (Rust-port extension): a ship pointing bow=Fore
+    /// with `direction: Some(Aft)` moves toward lower cell indices, opposite
+    /// to its bow. Mirrors the synthetic Left arrow case from `input.rs`.
+    #[test]
+    fn self_move_thrust_honours_direction_override_aft() {
+        let ship = make_ship("p", Faction::Player, 3, 10, LaneEnd::Fore);
+        let mut board = make_board(7, vec![
+            None, None, None, Some(ship), None, None, None,
+        ]);
+        super::resolve_self_move(
+            3,
+            MovementMode::THRUST,
+            1,
+            Some(LaneEnd::Aft),
+            &mut board,
+            &NoContent,
+        );
+        assert!(board.cells[3].is_none(), "ship left cell 3");
+        assert_eq!(
+            board.cells[2].as_ref().map(|s| s.cell),
+            Some(2),
+            "ship moved aft despite bow=Fore",
+        );
+    }
+
+    /// Mirror: bow=Aft + override `Some(Fore)` moves toward higher indices.
+    /// Confirms the override fully replaces the bow-derived step, not merely
+    /// XORs with it.
+    #[test]
+    fn self_move_thrust_honours_direction_override_fore() {
+        let ship = make_ship("p", Faction::Player, 3, 10, LaneEnd::Aft);
+        let mut board = make_board(7, vec![
+            None, None, None, Some(ship), None, None, None,
+        ]);
+        super::resolve_self_move(
+            3,
+            MovementMode::THRUST,
+            1,
+            Some(LaneEnd::Fore),
+            &mut board,
+            &NoContent,
+        );
+        assert!(board.cells[3].is_none());
+        assert_eq!(
+            board.cells[4].as_ref().map(|s| s.cell),
+            Some(4),
+            "ship moved fore despite bow=Aft",
+        );
+    }
+
+    /// `direction: None` preserves the canonical TS bow-derived semantics —
+    /// existing AI / scripted moves are unaffected.
+    #[test]
+    fn self_move_thrust_no_direction_uses_bow() {
+        let ship = make_ship("p", Faction::Player, 3, 10, LaneEnd::Aft);
+        let mut board = make_board(7, vec![
+            None, None, None, Some(ship), None, None, None,
+        ]);
+        super::resolve_self_move(3, MovementMode::THRUST, 1, None, &mut board, &NoContent);
+        // bow=Aft -> step -1.
+        assert_eq!(board.cells[2].as_ref().map(|s| s.cell), Some(2));
     }
 
     /* ---- target displacement --------------------------------------------- */
@@ -2411,7 +2488,11 @@ mod tests {
                 facing_relative: false,
                 hits_all: false,
             },
-            effects: vec![Effect::DISPLACE_SELF { mode: MovementMode::BURN, distance: 3 }],
+            effects: vec![Effect::DISPLACE_SELF {
+                mode: MovementMode::BURN,
+                distance: 3,
+                direction: None,
+            }],
             r#mod: None,
             icon: None,
         };

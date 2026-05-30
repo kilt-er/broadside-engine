@@ -189,54 +189,49 @@ fn zero_cost() -> ActionCost {
     ActionCost { heat: 0, cooldown_max: 0, advances_turn: true }
 }
 
-/// Synthetic "move one cell aft" action. Lane-relative direction (`Aft`)
-/// rather than ship-relative — the player presses Left to move toward
-/// lane index 0 regardless of which way the bow is pointing. The
-/// resolver's `resolve_self_move` uses the ship's bow direction; for that
-/// to honour Left/Right as lane-relative, we encode a synthetic
-/// THRUST DISPLACE_SELF with `distance = -1` (negative distance = aft).
+/// Synthetic "move one cell left" action — **lane-relative**. Player
+/// presses Left → ship advances one cell toward the aft end of the lane
+/// (lower cell index) regardless of which way the bow is pointing.
 ///
-/// Wait: `Effect::DISPLACE_SELF::distance` is `i32` but `resolve_self_move`
-/// uses the bow direction as the step sign. Passing a negative distance
-/// only flips the move count, not the direction. So Left/Right cannot be
-/// honoured by a single distance value; they need direction control.
-///
-/// For Phase 1 we encode MoveLeft / MoveRight as THRUST with `distance: 1`
-/// and document the limitation: **the move goes in the ship's BOW
-/// direction**, not lane-left/right. The player Left key actually moves
-/// the ship toward `Aft` only when the ship is bow=aft. Renderer should
-/// label the key in the overlay as "thrust forward" to avoid surprising
-/// the player. We will revisit Left/Right as lane-relative in a future
-/// task once the AI/displacement layer supports targeted direction.
+/// Wired via `Effect::DISPLACE_SELF::direction = Some(LaneEnd::Aft)`, the
+/// Rust-port extension added by architect in task #50 step 1. With
+/// `direction: Some(...)`, `resolve_self_move` ignores `ship.orientation`
+/// and uses the absolute lane direction; that gives the player a
+/// predictable 2D-control scheme (Left always moves leftward on screen)
+/// while leaving AI / scripted movement free to keep the original
+/// orientation-relative behavior by passing `direction: None`.
 pub fn synthetic_move_left() -> Action {
     Action {
         id: SYNTHETIC_MOVE_LEFT.into(),
-        name: "Thrust Aft".into(),
+        name: "Move Left".into(),
         archetype: WeaponArchetype::Movement,
         cost: zero_cost(),
         targeting: self_targeting(),
-        // distance=1; resolver's resolve_self_move chooses direction from
-        // ship.orientation. See module-level note on the Phase 1
-        // simplification.
         effects: vec![Effect::DISPLACE_SELF {
             mode: MovementMode::THRUST,
             distance: 1,
+            direction: Some(crate::types::LaneEnd::Aft),
         }],
         r#mod: None,
         icon: None,
     }
 }
 
+/// Synthetic "move one cell right" action — **lane-relative**. Player
+/// presses Right → ship advances one cell toward the fore end of the lane
+/// (higher cell index) regardless of bow direction. See
+/// [`synthetic_move_left`] for the design rationale.
 pub fn synthetic_move_right() -> Action {
     Action {
         id: SYNTHETIC_MOVE_RIGHT.into(),
-        name: "Thrust Fore".into(),
+        name: "Move Right".into(),
         archetype: WeaponArchetype::Movement,
         cost: zero_cost(),
         targeting: self_targeting(),
         effects: vec![Effect::DISPLACE_SELF {
             mode: MovementMode::THRUST,
             distance: 1,
+            direction: Some(crate::types::LaneEnd::Fore),
         }],
         r#mod: None,
         icon: None,
@@ -424,7 +419,7 @@ impl Content for DemoContent {
 pub fn tutorial_lines() -> &'static [&'static str] {
     &[
         "[1/2/3] queue mount",
-        "[</>] thrust",
+        "[</>] move left/right",
         "[Tab] flip",
         "[V] vent",
         "[R/Space] commit turn",

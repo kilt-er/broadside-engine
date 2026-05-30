@@ -434,6 +434,21 @@ pub enum Effect {
     DISPLACE_SELF {
         mode: MovementMode,
         distance: i32,
+        /// **Rust-port extension** (not in TS `DISPLACE_SELF`). When `Some`,
+        /// overrides the ship-orientation-derived movement direction with an
+        /// absolute [`LaneEnd`]: `Some(Fore)` always moves toward higher cell
+        /// indices, `Some(Aft)` toward lower. When `None`, the resolver
+        /// derives direction from `ship.orientation` (the canonical TS
+        /// semantics: `BowOn { bow: Fore }` -> step +1, `BowOn { bow: Aft }`
+        /// -> step -1, `Broadside` -> step +1).
+        ///
+        /// Added for player-controlled lane-relative movement (Left arrow ->
+        /// `Some(Aft)`, Right arrow -> `Some(Fore)`); the surprise it solves
+        /// is "after a reorient, Left moves the ship rightward on screen."
+        /// AI / scripted actions continue to pass `None` and stay
+        /// bow-relative.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        direction: Option<LaneEnd>,
     },
     REORIENT {
         to: ReorientTo,
@@ -878,9 +893,46 @@ mod tests {
 
     #[test]
     fn effect_displace_self_parses_movement_mode() {
+        // Catalog form without the Rust-extension `direction` field — parses
+        // with `direction: None`, which preserves the canonical TS semantics
+        // (resolver derives direction from ship.orientation).
         let json = r#"{"kind":"DISPLACE_SELF","mode":"THRUST","distance":2}"#;
         let parsed: Effect = serde_json::from_str(json).unwrap();
-        assert_eq!(parsed, Effect::DISPLACE_SELF { mode: MovementMode::THRUST, distance: 2 });
+        assert_eq!(
+            parsed,
+            Effect::DISPLACE_SELF {
+                mode: MovementMode::THRUST,
+                distance: 2,
+                direction: None,
+            }
+        );
+    }
+
+    #[test]
+    fn effect_displace_self_roundtrips_direction_override() {
+        // With direction overridden: serializes the camelCase LaneEnd literal
+        // and round-trips equal. None case omits the field entirely (verified
+        // here by serializing back from a None and asserting the absence).
+        let with_dir = Effect::DISPLACE_SELF {
+            mode: MovementMode::THRUST,
+            distance: 1,
+            direction: Some(LaneEnd::Aft),
+        };
+        let s = serde_json::to_string(&with_dir).unwrap();
+        assert_eq!(s, r#"{"kind":"DISPLACE_SELF","mode":"THRUST","distance":1,"direction":"aft"}"#);
+        let parsed: Effect = serde_json::from_str(&s).unwrap();
+        assert_eq!(parsed, with_dir);
+
+        let without = Effect::DISPLACE_SELF {
+            mode: MovementMode::THRUST,
+            distance: 1,
+            direction: None,
+        };
+        let s2 = serde_json::to_string(&without).unwrap();
+        assert!(
+            !s2.contains("direction"),
+            "None direction must serialize to absent field, got {s2}",
+        );
     }
 
     #[test]
