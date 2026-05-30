@@ -45,3 +45,5 @@ pub mod atlas;
 pub mod gfx;
 #[cfg(feature = "render")]
 pub mod hud;
+#[cfg(all(feature = "render", feature = "runtime"))]
+pub mod sprites;

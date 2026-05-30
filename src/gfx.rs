@@ -367,6 +367,21 @@ pub struct Gfx {
     sprites: SpritePipeline,
     polygons: PolygonPipeline,
     blit: BlitPipeline,
+    /// Loaded ship sprite textures keyed by `<class>_<stance>_<view>` slug.
+    /// `gfx.rs` uploads each PNG to its own GPU texture; the textured-ship
+    /// render path (landing in a follow-up commit) will look up handles
+    /// here and supply them as side/top bindings.
+    ship_sprites: std::collections::HashMap<String, ShipSpriteEntry>,
+}
+
+/// One uploaded ship sprite. `dimensions` is the source PNG size in
+/// pixels so the renderer can compute the dest rect from the sprite's
+/// intended bbox in the SPRITE_SPEC table.
+struct ShipSpriteEntry {
+    #[allow(dead_code)]  // wired in the textured-ship pipeline (follow-up commit)
+    texture_view: wgpu::TextureView,
+    #[allow(dead_code)]
+    dimensions: (u32, u32),
 }
 
 struct SpritePipeline {
@@ -519,6 +534,7 @@ impl Gfx {
             sprites,
             polygons,
             blit,
+            ship_sprites: std::collections::HashMap::new(),
         };
 
         let view = ViewUniform {
@@ -543,6 +559,93 @@ impl Gfx {
     pub fn reconfigure(&mut self) {
         self.surface.configure(&self.device, &self.config);
         self.update_blit_uniform();
+    }
+
+    /// Walk `assets/sprites/` and upload any `<class>_<stance>_<view>.png`
+    /// files to GPU textures. Missing files are silently skipped (the
+    /// procedural silhouette renders as the fallback). Each successfully
+    /// loaded sprite is keyed by the same slug the SPRITE_SPEC defines.
+    ///
+    /// Returns the count of sprites loaded so the caller can log it. The
+    /// textured-ship render path (follow-up commit) looks up handles via
+    /// [`Gfx::has_ship_sprite`].
+    pub fn try_load_ship_sprites(&mut self, asset_dir: &std::path::Path) -> usize {
+        let classes = ["frigate", "scout", "gunboat"];
+        let stances = [
+            crate::sprites::SpriteStance::BowOnFore,
+            crate::sprites::SpriteStance::BowOnAft,
+            crate::sprites::SpriteStance::Broadside,
+        ];
+        let views = [
+            crate::sprites::SpriteView::Side,
+            crate::sprites::SpriteView::Top,
+        ];
+        let mut loaded = 0;
+        for class in &classes {
+            for &stance in &stances {
+                for &view in &views {
+                    if let Some(img) = crate::sprites::load_sprite(asset_dir, class, stance, view) {
+                        let slug = format!("{}_{}_{}", class, stance.slug(), view.slug());
+                        self.upload_ship_sprite(&slug, &img);
+                        loaded += 1;
+                    }
+                }
+            }
+        }
+        loaded
+    }
+
+    /// Internal: upload one decoded sprite image to a wgpu texture and
+    /// register it in `ship_sprites` under `slug`.
+    fn upload_ship_sprite(&mut self, slug: &str, img: &crate::sprites::SpriteImage) {
+        let size = wgpu::Extent3d {
+            width: img.width,
+            height: img.height,
+            depth_or_array_layers: 1,
+        };
+        let tex = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some(slug),
+            size,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        self.queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &tex,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &img.rgba,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(img.width * 4),
+                rows_per_image: Some(img.height),
+            },
+            size,
+        );
+        let texture_view = tex.create_view(&wgpu::TextureViewDescriptor::default());
+        self.ship_sprites.insert(
+            slug.to_string(),
+            ShipSpriteEntry { texture_view, dimensions: (img.width, img.height) },
+        );
+    }
+
+    /// True if a sprite has been loaded for the given class/stance/view.
+    /// The textured-ship path uses this to decide whether to render the
+    /// PNG or fall back to the procedural silhouette.
+    pub fn has_ship_sprite(
+        &self,
+        class: &str,
+        stance: crate::sprites::SpriteStance,
+        view: crate::sprites::SpriteView,
+    ) -> bool {
+        let slug = format!("{}_{}_{}", class, stance.slug(), view.slug());
+        self.ship_sprites.contains_key(&slug)
     }
 
     /// Compute the integer-scaled, letterboxed NDC quad that maps the

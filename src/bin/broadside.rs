@@ -252,7 +252,14 @@ impl ApplicationHandler for App {
                 VIRTUAL_H as f64,
             ));
         let window = Arc::new(event_loop.create_window(attrs).expect("create window"));
-        let gfx = pollster::block_on(Gfx::new(window.clone()));
+        let mut gfx = pollster::block_on(Gfx::new(window.clone()));
+        // Look for hand-painted ship sprites under `assets/sprites/`.
+        // Missing PNGs are silently skipped; the renderer falls back to
+        // the procedural silhouette. See docs/SPRITE_SPEC.md.
+        let loaded = gfx.try_load_ship_sprites(std::path::Path::new("assets"));
+        if loaded > 0 {
+            log::info!("loaded {} ship sprite PNG(s) from assets/sprites/", loaded);
+        }
         self.window = Some(window);
         self.gfx = Some(gfx);
     }
