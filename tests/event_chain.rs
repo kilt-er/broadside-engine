@@ -16,10 +16,10 @@
 //!
 //! This file proves the chain works end-to-end.
 
-use broadside_engine::resolve::destroy;
+use broadside_engine::resolve::{destroy, Content};
 use broadside_engine::types::{
-    Arc, Board, EventBus, Faction, Hook, HookContext, LaneEnd, Mount, Orientation, ShieldFace,
-    ShieldProfile, Ship, Trait,
+    Action, Arc, Board, EventBus, Faction, Hook, HookContext, LaneEnd, Mount, Orientation,
+    Projectile, ShieldFace, ShieldProfile, Ship, Trait,
 };
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -28,6 +28,18 @@ use std::rc::Rc;
 /* =========================================================================
  * Fixtures
  * ====================================================================== */
+
+/// Empty content. `destroy` now takes `&dyn Content` so the ReactorBreach
+/// splash routes its `apply_damage` calls through the full pipeline
+/// including subsystem modifiers. Default `damage_modifier` returns 0, so
+/// these tests' arithmetic is unchanged.
+struct NoContent;
+impl Content for NoContent {
+    fn action(&self, _id: &str) -> Option<&Action> { None }
+    fn spawn_projectile(&self, _: &str, _: &Ship) -> Projectile {
+        unreachable!("spawn_projectile not used in event_chain tests");
+    }
+}
 
 fn naked_ship_with_traits(
     id: &str,
@@ -140,7 +152,7 @@ fn reactor_breach_splashes_neighbour_then_emits_lethal() {
     });
 
     // Trigger.
-    destroy(1, &mut board);
+    destroy(1, &mut board, &NoContent);
 
     // Damage chain: one OnDamageTaken for cell 2 with amount 2.
     // (No splash to cell 0 because cell 0 is None.)
@@ -242,7 +254,7 @@ fn cascading_reactor_breaches_chain_correctly() {
         }
     });
 
-    destroy(1, &mut board);
+    destroy(1, &mut board, &NoContent);
 
     // Both ReactorBreach ships died: cell 1 (the original) and cell 2
     // (the one killed by the splash).

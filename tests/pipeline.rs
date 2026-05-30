@@ -147,8 +147,8 @@ fn dual_damage_both_absent_apply_falloff_to_each() {
 
     // Both effects route through apply_damage at distance 5 (long), delta
     // 2 from close, factor 0.5. Each lands floor(4 * 0.5) = 2 -> 10 - 4 = 6.
-    apply_damage(5, 4, 0, &weapon, &mut board);
-    apply_damage(5, 4, 0, &weapon, &mut board);
+    apply_damage(5, 4, 0, &weapon, &mut board, &NoContent);
+    apply_damage(5, 4, 0, &weapon, &mut board, &NoContent);
 
     let hull = board.cells[5].as_ref().unwrap().hull;
     assert_eq!(hull, 6, "two falloff-applied 2-damage hits leave 6 hull");
@@ -167,8 +167,8 @@ fn dual_damage_both_some_false_bypass_falloff() {
     );
     let weapon = dual_damage_weapon(RangeBand::Close, 4, [Some(false), Some(false)]);
 
-    apply_damage(5, 4, 0, &weapon, &mut board);
-    apply_damage(5, 4, 0, &weapon, &mut board);
+    apply_damage(5, 4, 0, &weapon, &mut board, &NoContent);
+    apply_damage(5, 4, 0, &weapon, &mut board, &NoContent);
 
     let hull = board.cells[5].as_ref().unwrap().hull;
     assert_eq!(hull, 2, "two raw 4-damage hits leave 2 hull");
@@ -196,8 +196,8 @@ fn dual_damage_mixed_predicate_aggregates_at_action_level() {
     );
     let weapon = dual_damage_weapon(RangeBand::Close, 4, [Some(false), None]);
 
-    apply_damage(5, 4, 0, &weapon, &mut board);
-    apply_damage(5, 4, 0, &weapon, &mut board);
+    apply_damage(5, 4, 0, &weapon, &mut board, &NoContent);
+    apply_damage(5, 4, 0, &weapon, &mut board, &NoContent);
 
     let hull = board.cells[5].as_ref().unwrap().hull;
     assert_eq!(
@@ -219,8 +219,8 @@ fn dual_damage_mixed_predicate_order_independent() {
     );
     let weapon = dual_damage_weapon(RangeBand::Close, 4, [None, Some(false)]);
 
-    apply_damage(5, 4, 0, &weapon, &mut board);
-    apply_damage(5, 4, 0, &weapon, &mut board);
+    apply_damage(5, 4, 0, &weapon, &mut board, &NoContent);
+    apply_damage(5, 4, 0, &weapon, &mut board, &NoContent);
 
     let hull = board.cells[5].as_ref().unwrap().hull;
     assert_eq!(hull, 2, "order of bandFalloff:Some(false) in effects must not matter");
@@ -239,8 +239,8 @@ fn dual_damage_mixed_none_and_some_true_keeps_falloff_on() {
     );
     let weapon = dual_damage_weapon(RangeBand::Close, 4, [None, Some(true)]);
 
-    apply_damage(5, 4, 0, &weapon, &mut board);
-    apply_damage(5, 4, 0, &weapon, &mut board);
+    apply_damage(5, 4, 0, &weapon, &mut board, &NoContent);
+    apply_damage(5, 4, 0, &weapon, &mut board, &NoContent);
 
     let hull = board.cells[5].as_ref().unwrap().hull;
     assert_eq!(hull, 6, "Some(true) is the default-on form, not the bypass form");

@@ -56,6 +56,29 @@ pub trait Content {
     /// captures. Boards aren't borrowed here to keep the resolver's call
     /// patterns straightforward.
     fn spawn_projectile(&self, kind: &str, owner: &Ship) -> Projectile;
+
+    /// Total additive subsystem damage modifier against `target` at `band`.
+    /// Called by [`apply_modifiers`] inside the canonical damage pipeline
+    /// **after** band falloff and **before** target-lock doubling. Concrete
+    /// `Content` impls scan their installed subsystem list and sum each
+    /// match's contribution — Marksman is `+1` flat, Point-Blank Doctrine
+    /// is `+2` when `band == PointBlank`, and so on.
+    ///
+    /// Default impl returns `0` so existing test / demo `Content` impls
+    /// don't need to be updated. The runtime subsystem registry lives on
+    /// the concrete `Content` type (not on [`Board`]) because:
+    ///
+    /// - `Board` is a runtime-state struct and architect deliberately kept
+    ///   it free of content-shaped fields; `SubsystemDef` is catalog-only.
+    /// - The bus path (subscribe to `OnDamageDealt`) doesn't work because
+    ///   that hook fires only at the END of `execute_queue`, AFTER
+    ///   `apply_damage` already ran — too late to influence the modifier
+    ///   step inside the pipeline.
+    ///
+    /// Team-lead approved this trait extension; architect notified.
+    fn damage_modifier(&self, _target: &Ship, _band: RangeBand, _board: &Board) -> i32 {
+        0
+    }
 }
 
 /* =============================================================================
@@ -216,7 +239,7 @@ pub fn execute_queue(ship_cell: usize, board: &mut Board, content: &dyn Content)
 /// Step a single projectile by its speed, resolving impacts. Mirrors
 /// `advanceProjectile` in `resolve.ts`. Identified by id rather than `&mut`
 /// because the projectile may remove itself from `board.ordnance` on impact.
-pub fn advance_projectile(projectile_id: &str, board: &mut Board, _content: &dyn Content) {
+pub fn advance_projectile(projectile_id: &str, board: &mut Board, content: &dyn Content) {
     let Some(idx) = board.ordnance.iter().position(|p| p.id == projectile_id) else {
         return;
     };
@@ -258,7 +281,7 @@ pub fn advance_projectile(projectile_id: &str, board: &mut Board, _content: &dyn
                 for fx in &payload {
                     match fx {
                         Effect::DAMAGE { amount, .. } => {
-                            apply_damage(impact_cell, *amount, impact_cell, &dummy, board);
+                            apply_damage(impact_cell, *amount, impact_cell, &dummy, board, content);
                         }
                         Effect::APPLY_STATUS { status, duration } => {
                             add_status(impact_cell, *status, *duration, board);
@@ -279,7 +302,7 @@ pub fn advance_projectile(projectile_id: &str, board: &mut Board, _content: &dyn
 
 /// End-of-turn bookkeeping: tick cooldowns, dissipate heat, tick statuses,
 /// emit the turn-end hook. Mirrors `endOfTurn` in `resolve.ts`.
-pub fn end_of_turn(board: &mut Board, _content: &dyn Content) {
+pub fn end_of_turn(board: &mut Board, content: &dyn Content) {
     // Collect the cells of every live ship up front so we can mutate them
     // by index without holding a borrow on `board.cells`.
     let cells: Vec<usize> = ships_of(board).iter().map(|s| s.cell).collect();
@@ -298,7 +321,7 @@ pub fn end_of_turn(board: &mut Board, _content: &dyn Content) {
                 s.locked_out = false;
             }
         }
-        tick_statuses(*c, board);
+        tick_statuses(*c, board, content);
     }
     emit(board, Hook::OnTurnEnd, |_ctx| {});
 }
@@ -417,12 +440,17 @@ pub fn resolve_targeting(a: &Action, board: &Board, ship_cell: usize) -> Vec<usi
 
 /// Apply `raw` damage from cell `atk_cell` to the ship at cell `target_cell`
 /// through the canonical pipeline. Mirrors `applyDamage` in `resolve.ts`.
+///
+/// `content` is needed for step 2 (subsystem damage modifiers); other steps
+/// only touch board state. The trait extension is documented at
+/// [`Content::damage_modifier`].
 pub fn apply_damage(
     target_cell: usize,
     raw: i32,
     atk_cell: usize,
     weapon: &Action,
     board: &mut Board,
+    content: &dyn Content,
 ) {
     // 1. Range band + optional falloff. The TS predicate is
     //    `effects.some(e => e.kind === "DAMAGE" && e.bandFalloff === false)`
@@ -444,8 +472,10 @@ pub fn apply_damage(
         crate::geometry::band_falloff(raw, band, weapon.targeting.optimal_band)
     };
 
-    // 2. Subsystem modifiers. Stubbed — content slice owns it.
-    dmg = apply_modifiers(dmg, target_cell, band, board);
+    // 2. Subsystem damage modifiers. Routed through Content so the runtime
+    //    subsystem registry stays on the content layer and doesn't leak
+    //    onto Board.
+    dmg = apply_modifiers(dmg, target_cell, band, board, content);
 
     // 3. Target-lock doubles the incoming hit and is consumed.
     if let Some(target) = board.cells[target_cell].as_mut() {
@@ -482,7 +512,7 @@ pub fn apply_damage(
         });
     }
     if killed {
-        destroy(target_cell, board);
+        destroy(target_cell, board, content);
     }
 }
 
@@ -505,7 +535,7 @@ pub fn apply_effect(
         Effect::DAMAGE { amount, .. } => {
             for &c in cells {
                 if board.cells[c].is_some() {
-                    apply_damage(c, *amount, source_cell, a, board);
+                    apply_damage(c, *amount, source_cell, a, board, content);
                 }
             }
         }
@@ -558,16 +588,12 @@ pub fn apply_effect(
         }
 
         Effect::DISPLACE_SELF { mode, distance } => {
-            // TODO(broadside-content): implement THRUST/BURN/SLIP/JUMP/
-            // TRACTOR_SWAP with proper collision rules. Body below is the TS
-            // stub verbatim — simple step-loop in the bow direction with
-            // occupancy checks.
-            resolve_self_move(source_cell, *mode, *distance, board);
+            resolve_self_move(source_cell, *mode, *distance, board, content);
         }
 
         Effect::DISPLACE_TARGET { mode, distance } => {
             for &c in cells {
-                resolve_target_move(c, source_cell, *mode, *distance, board);
+                resolve_target_move(c, source_cell, *mode, *distance, board, content);
             }
         }
 
@@ -725,8 +751,9 @@ pub fn add_status(cell: usize, kind: StatusKind, duration: i32, board: &mut Boar
 }
 
 /// Tick every status on the ship at `cell` by one turn; expire those whose
-/// duration reaches 0. Mirrors `tickStatuses` in `resolve.ts`.
-fn tick_statuses(cell: usize, board: &mut Board) {
+/// duration reaches 0. Mirrors `tickStatuses` in `resolve.ts`. Takes content
+/// because a hull-breach kill routes through [`destroy`].
+fn tick_statuses(cell: usize, board: &mut Board, content: &dyn Content) {
     let mut hull_breach_destroyed = false;
     if let Some(ship) = board.cells[cell].as_mut() {
         // Pre-tick effects: hullBreach does 1 damage per turn before its
@@ -747,7 +774,7 @@ fn tick_statuses(cell: usize, board: &mut Board) {
         ship.statuses.retain(|s| s.duration > 0);
     }
     if hull_breach_destroyed {
-        destroy(cell, board);
+        destroy(cell, board, content);
     }
 }
 
@@ -763,7 +790,11 @@ pub fn skips_turn(board: &Board, cell: usize) -> bool {
 /// Destroy the ship at `cell`. Mirrors `destroy` in `resolve.ts`. Reactor-
 /// breach trait deals 2 splash to both neighbours through the regular damage
 /// pipeline (with a dummy "_impact" action so falloff is skipped).
-pub fn destroy(cell: usize, board: &mut Board) {
+///
+/// `content` is threaded through so the splash hits go through the full
+/// damage pipeline including subsystem modifiers — a ReactorBreach hitting
+/// a flank could legitimately trigger a Marksman bonus.
+pub fn destroy(cell: usize, board: &mut Board, content: &dyn Content) {
     // Pull the ship out of the cell. Reactor-breach trait check needs the
     // traits list, which we capture before the cell is cleared.
     let Some(ship) = board.cells[cell].take() else {
@@ -782,7 +813,7 @@ pub fn destroy(cell: usize, board: &mut Board) {
             }
             let nc = nc as usize;
             if board.cells[nc].is_some() {
-                apply_damage(nc, 2, owner_cell, &dummy, board);
+                apply_damage(nc, 2, owner_cell, &dummy, board, content);
             }
         }
     }
@@ -835,10 +866,45 @@ fn dummy_weapon() -> Action {
  * Content slice replaces the bodies atomically when the real rules land.
  * ========================================================================== */
 
-/// TODO(broadside-content): sum subsystem damage bonuses (Marksman,
-/// Point-Blank Doctrine, ...). TS body: returns `dmg` unchanged.
-fn apply_modifiers(dmg: i32, _target_cell: usize, _band: RangeBand, _board: &Board) -> i32 {
-    dmg
+/// Step 2 of the damage pipeline: add subsystem damage modifiers to `dmg`.
+/// Mirrors the TS `applyModifiers` stub at `resolve.ts:371` ("sum subsystem
+/// damage bonuses (Marksman, Point-Blank Doctrine, ...)"); now wired through
+/// [`Content::damage_modifier`].
+///
+/// # Formula
+///
+/// `final_dmg = max(0, raw_falloff_dmg + Σ subsystem_bonus(target, band))`
+///
+/// - `raw_falloff_dmg` is the input from step 1 (post-falloff or raw if
+///   `bandFalloff:false`).
+/// - Subsystem bonuses are **additive** — there is no multiplicative tier —
+///   matching the analysis doc's flat numeric bonuses (Marksman +1, Point-
+///   Blank Doctrine +2 at pointBlank, etc.).
+/// - Negative modifiers are allowed in principle (e.g. a future "stealth"
+///   modifier might subtract); the result is clamped to `0` because step 4
+///   (directional shield) and the band-falloff floor both already enforce
+///   non-negative damage.
+/// - Target-lock doubling (step 3) is applied to the AFTER-modifier value
+///   per the TS comment at `resolve.ts:154-157`. So a +1 Marksman bonus
+///   followed by a 2× lock makes the final hit `2*(raw_falloff + 1)`, not
+///   `2*raw_falloff + 1`.
+///
+/// The default `Content::damage_modifier` impl returns 0, so this function
+/// is a pass-through for all current test / demo content. Concrete Content
+/// types that install subsystems (the real game loader, future tests)
+/// override it to scan their registry.
+fn apply_modifiers(
+    dmg: i32,
+    target_cell: usize,
+    band: RangeBand,
+    board: &Board,
+    content: &dyn Content,
+) -> i32 {
+    let Some(target) = board.cells[target_cell].as_ref() else {
+        return dmg;
+    };
+    let bonus = content.damage_modifier(target, band, board);
+    (dmg + bonus).max(0)
 }
 
 /// Resolve a `DISPLACE_SELF` effect: move the ship at `ship_cell` according
@@ -886,6 +952,7 @@ fn resolve_self_move(
     mode: MovementMode,
     distance: i32,
     board: &mut Board,
+    content: &dyn Content,
 ) {
     let Some(ship) = board.cells[ship_cell].as_ref() else {
         return;
@@ -1053,7 +1120,7 @@ fn resolve_self_move(
     // beyond the landing cell — so `atk_cell` is one further in `step`.
     if collision_dmg > 0 {
         let phantom_atk = (landing + step).clamp(0, size - 1) as usize;
-        apply_damage(final_cell, collision_dmg, phantom_atk, &dummy_weapon(), board);
+        apply_damage(final_cell, collision_dmg, phantom_atk, &dummy_weapon(), board, content);
     }
 }
 
@@ -1081,6 +1148,7 @@ fn resolve_target_move(
     mode: crate::types::DisplaceMode,
     distance: i32,
     board: &mut Board,
+    content: &dyn Content,
 ) {
     use crate::types::DisplaceMode;
     if board.cells[target_cell].is_none() {
@@ -1164,7 +1232,7 @@ fn resolve_target_move(
             // Collision damage if we were blocked.
             if remaining > 0 {
                 let phantom_atk = (c + step).clamp(0, size - 1) as usize;
-                apply_damage(landing, remaining, phantom_atk, &dummy_weapon(), board);
+                apply_damage(landing, remaining, phantom_atk, &dummy_weapon(), board, content);
             }
         }
     }
@@ -1505,7 +1573,7 @@ mod tests {
             Some(attacker), Some(scout), None, None, None, None, None,
         ]);
         let weapon = pulse_laser();
-        apply_damage(1, 4, 0, &weapon, &mut board);
+        apply_damage(1, 4, 0, &weapon, &mut board, &NoContent);
         let scout_hull = board.cells[1].as_ref().map(|s| s.hull);
         assert_eq!(scout_hull, Some(3));
     }
@@ -1521,7 +1589,7 @@ mod tests {
             Some(attacker), Some(scout), None, None, None, None, None,
         ]);
         let weapon = pulse_laser();
-        apply_damage(1, 4, 0, &weapon, &mut board);
+        apply_damage(1, 4, 0, &weapon, &mut board, &NoContent);
         let scout_hull = board.cells[1].as_ref().map(|s| s.hull);
         assert_eq!(scout_hull, Some(5));
     }
@@ -1537,7 +1605,7 @@ mod tests {
             Some(attacker), Some(scout), None, None, None, None, None,
         ]);
         let weapon = pulse_laser();
-        apply_damage(1, 4, 0, &weapon, &mut board);
+        apply_damage(1, 4, 0, &weapon, &mut board, &NoContent);
         let scout = board.cells[1].as_ref().unwrap();
         // distance 1 = pointBlank, optimal=close: floor(4 * 0.66) = 2.
         // 2 (post falloff) * 2 (target lock) = 4, stern armour 0 -> 4 lands.
@@ -1564,7 +1632,7 @@ mod tests {
         ]);
         let mut weapon = pulse_laser();
         weapon.effects = vec![Effect::DAMAGE { amount: 4, band_falloff: Some(false) }];
-        apply_damage(1, 4, 0, &weapon, &mut board);
+        apply_damage(1, 4, 0, &weapon, &mut board, &NoContent);
         assert!(board.cells[1].is_none(), "cell should be cleared after lethal damage");
         assert_eq!(board.destroys_this_window, 1);
     }
@@ -1631,7 +1699,7 @@ mod tests {
             Some(attacker), None, None, None, None, Some(scout), None,
         ]);
         let weapon = pulse_laser();
-        apply_damage(5, 4, 0, &weapon, &mut board);
+        apply_damage(5, 4, 0, &weapon, &mut board, &NoContent);
         // distance 5 -> long; delta from close (idx 1) to long (idx 3) = 2 ->
         // factor 0.5; floor(4 * 0.5) = 2; stern armour 0; 5 - 2 = 3.
         let scout_hull = board.cells[5].as_ref().map(|s| s.hull);
@@ -1649,7 +1717,7 @@ mod tests {
         ]);
         let mut weapon = pulse_laser();
         weapon.effects = vec![Effect::DAMAGE { amount: 4, band_falloff: Some(false) }];
-        apply_damage(5, 4, 0, &weapon, &mut board);
+        apply_damage(5, 4, 0, &weapon, &mut board, &NoContent);
         // No falloff, no armour -> 5 - 4 = 1.
         let scout_hull = board.cells[5].as_ref().map(|s| s.hull);
         assert_eq!(scout_hull, Some(1));
@@ -1870,7 +1938,7 @@ mod tests {
         let mut board = make_board(7, vec![
             None, None, Some(ship), None, None, None, None,
         ]);
-        super::resolve_self_move(2, MovementMode::THRUST, 1, &mut board);
+        super::resolve_self_move(2, MovementMode::THRUST, 1, &mut board, &NoContent);
         assert!(board.cells[2].is_none(), "vacated origin");
         assert_eq!(board.cells[3].as_ref().map(|s| s.cell), Some(3));
     }
@@ -1885,7 +1953,7 @@ mod tests {
         let mut board = make_board(7, vec![
             None, None, Some(ship), Some(blocker), None, None, None,
         ]);
-        super::resolve_self_move(2, MovementMode::THRUST, 1, &mut board);
+        super::resolve_self_move(2, MovementMode::THRUST, 1, &mut board, &NoContent);
         // Did not move.
         assert!(board.cells[2].is_some());
         // Hull: 5 - 1 = 4 (collision damage routed through dummy_weapon, no
@@ -1901,7 +1969,7 @@ mod tests {
         let mut board = make_board(7, vec![
             None, None, None, None, None, None, Some(ship),
         ]);
-        super::resolve_self_move(6, MovementMode::THRUST, 1, &mut board);
+        super::resolve_self_move(6, MovementMode::THRUST, 1, &mut board, &NoContent);
         assert_eq!(board.cells[6].as_ref().unwrap().hull, 4);
     }
 
@@ -1912,7 +1980,7 @@ mod tests {
         let mut board = make_board(7, vec![
             None, Some(ship), None, None, None, None, None,
         ]);
-        super::resolve_self_move(1, MovementMode::BURN, 3, &mut board);
+        super::resolve_self_move(1, MovementMode::BURN, 3, &mut board, &NoContent);
         assert!(board.cells[1].is_none());
         assert_eq!(board.cells[4].as_ref().map(|s| s.cell), Some(4));
         // No collision: hull intact.
@@ -1928,7 +1996,7 @@ mod tests {
         let mut board = make_board(7, vec![
             None, Some(ship), None, None, Some(blocker), None, None,
         ]);
-        super::resolve_self_move(1, MovementMode::BURN, 5, &mut board);
+        super::resolve_self_move(1, MovementMode::BURN, 5, &mut board, &NoContent);
         // Stopped at cell 3 (one short of the blocker at 4).
         // Steps taken: 2 (1->2, 2->3). Requested: 5. Remaining: 3.
         assert!(board.cells[3].is_some());
@@ -1944,7 +2012,7 @@ mod tests {
         let mut board = make_board(7, vec![
             Some(ship), Some(blocker_a), Some(blocker_b), None, None, None, None,
         ]);
-        super::resolve_self_move(0, MovementMode::SLIP, 2, &mut board);
+        super::resolve_self_move(0, MovementMode::SLIP, 2, &mut board, &NoContent);
         // SLIP scans 2 cells (lands at 2), finds it occupied, walks forward
         // to 3 which is free.
         assert!(board.cells[0].is_none());
@@ -1959,7 +2027,7 @@ mod tests {
         let mut board = make_board(7, vec![
             Some(ship), None, None, None, None, None, None,
         ]);
-        super::resolve_self_move(0, MovementMode::JUMP, 4, &mut board);
+        super::resolve_self_move(0, MovementMode::JUMP, 4, &mut board, &NoContent);
         assert!(board.cells[0].is_none());
         assert_eq!(board.cells[4].as_ref().map(|s| s.cell), Some(4));
         assert_eq!(board.cells[4].as_ref().unwrap().hull, 10);
@@ -1973,7 +2041,7 @@ mod tests {
         let mut board = make_board(7, vec![
             Some(ship), None, None, None, Some(blocker), None, None,
         ]);
-        super::resolve_self_move(0, MovementMode::JUMP, 4, &mut board);
+        super::resolve_self_move(0, MovementMode::JUMP, 4, &mut board, &NoContent);
         assert!(board.cells[0].is_some(), "jump failed; ship stayed home");
         assert_eq!(board.cells[0].as_ref().unwrap().hull, 10);
     }
@@ -1986,7 +2054,7 @@ mod tests {
         let mut board = make_board(7, vec![
             None, None, None, None, Some(ship), None, None,
         ]);
-        super::resolve_self_move(4, MovementMode::JUMP, 5, &mut board);
+        super::resolve_self_move(4, MovementMode::JUMP, 5, &mut board, &NoContent);
         // Target = 4 + 5 = 9; clamped to 6; overflow = 9 - 6 = 3.
         assert!(board.cells[6].is_some());
         assert_eq!(board.cells[6].as_ref().unwrap().hull, 10 - 3);
@@ -2000,7 +2068,7 @@ mod tests {
         let mut board = make_board(7, vec![
             None, None, Some(ship), Some(other), None, None, None,
         ]);
-        super::resolve_self_move(2, MovementMode::TRACTOR_SWAP, 1, &mut board);
+        super::resolve_self_move(2, MovementMode::TRACTOR_SWAP, 1, &mut board, &NoContent);
         assert_eq!(board.cells[2].as_ref().map(|s| s.id.clone()), Some("o".into()));
         assert_eq!(board.cells[3].as_ref().map(|s| s.id.clone()), Some("s".into()));
         // Cells updated to match new positions.
@@ -2018,7 +2086,7 @@ mod tests {
         let mut board = make_board(7, vec![
             Some(source), None, Some(target), None, None, None, None,
         ]);
-        super::resolve_target_move(2, 0, crate::types::DisplaceMode::Push, 2, &mut board);
+        super::resolve_target_move(2, 0, crate::types::DisplaceMode::Push, 2, &mut board, &NoContent);
         // Target was at 2, source at 0, push direction is +1 (away from
         // source). Should land at cell 4.
         assert!(board.cells[2].is_none());
@@ -2037,7 +2105,7 @@ mod tests {
         let mut board = make_board(7, vec![
             Some(source), None, Some(target), None, Some(blocker), None, None,
         ]);
-        super::resolve_target_move(2, 0, crate::types::DisplaceMode::Push, 3, &mut board);
+        super::resolve_target_move(2, 0, crate::types::DisplaceMode::Push, 3, &mut board, &NoContent);
         // Step is +1. Cells walked: 3 (free) -> at 3. Next would be 4, occupied.
         // steps_taken=1, remaining=2 -> 2 collision damage.
         assert!(board.cells[3].is_some());
@@ -2053,7 +2121,7 @@ mod tests {
         let mut board = make_board(7, vec![
             None, None, None, None, Some(source), None, Some(target),
         ]);
-        super::resolve_target_move(6, 4, crate::types::DisplaceMode::Push, 3, &mut board);
+        super::resolve_target_move(6, 4, crate::types::DisplaceMode::Push, 3, &mut board, &NoContent);
         // Target at 6, push +1 (away from source at 4). Cannot move
         // (cell 7 off-board). steps_taken=0, remaining=3.
         assert!(board.cells[6].is_some());
@@ -2068,7 +2136,7 @@ mod tests {
         let mut board = make_board(7, vec![
             None, None, Some(target), None, None, None, Some(source),
         ]);
-        super::resolve_target_move(2, 6, crate::types::DisplaceMode::Pull, 2, &mut board);
+        super::resolve_target_move(2, 6, crate::types::DisplaceMode::Pull, 2, &mut board, &NoContent);
         // Target at 2, source at 6, pull direction is +1 (toward source).
         // Lands at cell 4.
         assert!(board.cells[2].is_none());
@@ -2085,7 +2153,7 @@ mod tests {
         let mut board = make_board(7, vec![
             Some(target), None, None, Some(source), None, None, None,
         ]);
-        super::resolve_target_move(0, 3, crate::types::DisplaceMode::Pull, 5, &mut board);
+        super::resolve_target_move(0, 3, crate::types::DisplaceMode::Pull, 5, &mut board, &NoContent);
         // Pull direction +1 toward source at 3. Steps: 0->1, 1->2 (both free).
         // 2->3 is source, blocks. steps_taken=2, remaining=3.
         assert!(board.cells[2].is_some());
@@ -2100,7 +2168,7 @@ mod tests {
         let mut board = make_board(7, vec![
             Some(source), None, None, None, Some(target), None, None,
         ]);
-        super::resolve_target_move(4, 0, crate::types::DisplaceMode::Swap, 1, &mut board);
+        super::resolve_target_move(4, 0, crate::types::DisplaceMode::Swap, 1, &mut board, &NoContent);
         assert_eq!(board.cells[0].as_ref().map(|s| s.id.clone()), Some("tgt".into()));
         assert_eq!(board.cells[4].as_ref().map(|s| s.id.clone()), Some("src".into()));
         assert_eq!(board.cells[0].as_ref().unwrap().cell, 0);
@@ -2114,8 +2182,88 @@ mod tests {
         let mut board = make_board(7, vec![
             Some(source), None, None, None, None, None, None,
         ]);
-        super::resolve_target_move(3, 0, crate::types::DisplaceMode::Push, 2, &mut board);
+        super::resolve_target_move(3, 0, crate::types::DisplaceMode::Push, 2, &mut board, &NoContent);
         assert!(board.cells[3].is_none(), "no target, no move");
+    }
+
+    /* ---- subsystem modifiers --------------------------------------------- */
+
+    /// A Content impl that always returns a fixed damage modifier.
+    struct FixedModifier(i32);
+    impl Content for FixedModifier {
+        fn action(&self, _: &str) -> Option<&Action> { None }
+        fn spawn_projectile(&self, _: &str, _: &Ship) -> Projectile { unreachable!() }
+        fn damage_modifier(&self, _t: &Ship, _b: RangeBand, _board: &Board) -> i32 {
+            self.0
+        }
+    }
+
+    /// Default Content::damage_modifier returns 0, so dmg passes through.
+    #[test]
+    fn apply_modifiers_default_is_passthrough() {
+        let scout = make_ship("scout", Faction::Enemy, 1, 5, LaneEnd::Fore);
+        let board = make_board(7, vec![
+            None, Some(scout), None, None, None, None, None,
+        ]);
+        let out = super::apply_modifiers(4, 1, RangeBand::Close, &board, &NoContent);
+        assert_eq!(out, 4);
+    }
+
+    /// A Content impl that adds +1 damage applies the bonus before
+    /// target-lock / shield. End-to-end via apply_damage: 4 raw, no
+    /// falloff bypass so pointBlank<->close delta=1 -> floor(4*0.66)=2,
+    /// + 1 modifier = 3, no armour/charge -> hull drops by 3.
+    #[test]
+    fn apply_modifiers_adds_bonus_through_damage_pipeline() {
+        let attacker = make_ship("frigate", Faction::Player, 0, 10, LaneEnd::Fore);
+        let mut scout = make_ship("scout", Faction::Enemy, 1, 10, LaneEnd::Fore);
+        scout.shield_profile = no_armour_profile();
+        let mut board = make_board(7, vec![
+            Some(attacker), Some(scout), None, None, None, None, None,
+        ]);
+        let weapon = pulse_laser();
+        apply_damage(1, 4, 0, &weapon, &mut board, &FixedModifier(1));
+        let hull = board.cells[1].as_ref().unwrap().hull;
+        // 4 raw -> falloff close vs pointBlank delta=1 factor 0.66 -> floor(4*0.66)=2
+        // + 1 modifier = 3 -> stern armour 0 -> 3 lands. 10 - 3 = 7.
+        assert_eq!(hull, 7);
+    }
+
+    /// Negative modifiers clamp to 0 — no underflow into "heals on hit".
+    #[test]
+    fn apply_modifiers_negative_clamps_at_zero() {
+        let attacker = make_ship("frigate", Faction::Player, 0, 10, LaneEnd::Fore);
+        let mut scout = make_ship("scout", Faction::Enemy, 1, 10, LaneEnd::Fore);
+        scout.shield_profile = no_armour_profile();
+        let mut board = make_board(7, vec![
+            Some(attacker), Some(scout), None, None, None, None, None,
+        ]);
+        let weapon = pulse_laser();
+        // -100 modifier obliterates the 2-damage post-falloff hit.
+        apply_damage(1, 4, 0, &weapon, &mut board, &FixedModifier(-100));
+        let hull = board.cells[1].as_ref().unwrap().hull;
+        assert_eq!(hull, 10, "negative modifier must clamp; no healing on hit");
+    }
+
+    /// Target-lock applies AFTER the modifier per the TS comment at
+    /// resolve.ts:154-157. So +1 Marksman followed by 2x lock gives a
+    /// final hit of 2*(raw_falloff + 1), not 2*raw_falloff + 1.
+    #[test]
+    fn apply_modifiers_runs_before_target_lock() {
+        let attacker = make_ship("frigate", Faction::Player, 0, 10, LaneEnd::Fore);
+        let mut scout = make_ship("scout", Faction::Enemy, 1, 20, LaneEnd::Fore);
+        scout.shield_profile = no_armour_profile();
+        scout.statuses.push(Status { kind: StatusKind::TargetLock, duration: 5, face: None });
+        let mut board = make_board(7, vec![
+            Some(attacker), Some(scout), None, None, None, None, None,
+        ]);
+        let weapon = pulse_laser();
+        apply_damage(1, 4, 0, &weapon, &mut board, &FixedModifier(1));
+        let hull = board.cells[1].as_ref().unwrap().hull;
+        // 4 -> falloff factor 0.66 -> 2 -> +1 mod = 3 -> *2 lock = 6.
+        // 20 - 6 = 14. If lock ran before mod we'd get 2*2+1=5; 20-5=15.
+        assert_eq!(hull, 14,
+            "modifier must apply before target-lock doubling per TS pipeline order");
     }
 
     /* ---- enemy AI -------------------------------------------------------- */

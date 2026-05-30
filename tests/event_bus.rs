@@ -20,11 +20,11 @@
 //! `ctx.board.bus`, the assertion that nested emits no-op will fail and
 //! force a team discussion. That is the load-bearing point of this file.
 
-use broadside_engine::resolve::apply_damage;
+use broadside_engine::resolve::{apply_damage, Content};
 use broadside_engine::types::{
     Action, ActionCost, Arc, Board, Effect, EventBus, Faction, Hook, HookContext, LaneEnd, Mount,
-    Orientation, RangeBand, ShieldFace, ShieldProfile, Ship, Targeting, TargetingPattern,
-    WeaponArchetype,
+    Orientation, Projectile, RangeBand, ShieldFace, ShieldProfile, Ship, Targeting,
+    TargetingPattern, WeaponArchetype,
 };
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -33,6 +33,16 @@ use std::rc::Rc;
 /* =========================================================================
  * Fixtures
  * ====================================================================== */
+
+/// Empty content — these tests drive `apply_damage` directly and don't use
+/// content callbacks. The default `damage_modifier` (returns 0) is fine.
+struct NoContent;
+impl Content for NoContent {
+    fn action(&self, _id: &str) -> Option<&Action> { None }
+    fn spawn_projectile(&self, _: &str, _: &Ship) -> Projectile {
+        unreachable!("spawn_projectile not used in event_bus tests");
+    }
+}
 
 fn naked_ship(id: &str, faction: Faction, cell: usize, hull: i32) -> Ship {
     Ship {
@@ -165,7 +175,7 @@ fn callback_emit_through_ctx_board_bus_is_a_noop() {
     });
 
     // Trigger one outer OnDamageTaken via the canonical path.
-    apply_damage(1, 4, 0, &impact_weapon(4), &mut board);
+    apply_damage(1, 4, 0, &impact_weapon(4), &mut board, &NoContent);
 
     // A fired (counter +1 for A) and B fired (counter +1 for B) = 2.
     // Nested emit through ctx.board.bus is a no-op, so A's would-be
