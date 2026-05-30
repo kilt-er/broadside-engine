@@ -6,13 +6,16 @@
 //!
 //! ## Module map
 //!
-//! - [`types`]   — the complete content + runtime type surface (mirrors
-//!                 `engine/types.ts`).
-//! - [`catalog`] — loader for `assets/broadside.catalog.json` (the JSON
-//!                 emitted by the analysis doc's "Copy JSON" button).
+//! - [`types`]    — the complete content + runtime type surface (mirrors
+//!                  `engine/types.ts`).
+//! - [`catalog`]  — loader for `assets/broadside.catalog.json` (the JSON
+//!                  emitted by the analysis doc's "Copy JSON" button).
+//! - [`geometry`] — spatial primitives: orientation, arcs, range bands,
+//!                  directional shield absorption (mirrors `engine/geometry.ts`).
 //!
-//! Geometry, the resolver, content effect bodies, AI, and rendering live in
-//! sibling modules added by other teammates.
+//! The resolver, content effect bodies, AI, and rendering live in sibling
+//! modules added by other teammates.
 
 pub mod types;
 pub mod catalog;
+pub mod geometry;
