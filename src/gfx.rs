@@ -46,6 +46,10 @@ pub const VIRTUAL_H: u32 = 480;
 /// allocation; the buffer is reused frame-to-frame.
 const MAX_SPRITES: u64 = 4096;
 
+/// Maximum polygon instances in a frame. A 9-cell lane plate plus 9 ships ×
+/// 2 face polygons = ~27. 256 is plenty.
+const MAX_POLYGONS: u64 = 256;
+
 const OFFSCREEN_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 
 /// Deep-space ink — matches the analysis HTML `--ink` token (`#080c14`).
@@ -116,6 +120,65 @@ impl SpriteInstance {
             _pad: [0.0; 3],
         }
     }
+}
+
+/// A quad defined by four explicit virtual-pixel corner positions in CCW
+/// (with screen y-down: top-left, top-right, bottom-right, bottom-left).
+/// Used for shapes the rotation-around-center `SpriteInstance` cannot
+/// represent without pixel staircase, primarily the lane plate
+/// parallelograms and ship-face polygons under forced perspective.
+///
+/// The fragment shader still samples the atlas times the color tint, so a
+/// flat-color polygon uses `atlas::SOLID_WHITE`'s UVs and the desired
+/// color, while a textured polygon can sample any atlas cell.
+#[repr(C)]
+#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct PolygonInstance {
+    /// Top-left corner.
+    pub p0: [f32; 2],
+    /// Top-right corner.
+    pub p1: [f32; 2],
+    /// Bottom-right corner.
+    pub p2: [f32; 2],
+    /// Bottom-left corner.
+    pub p3: [f32; 2],
+    pub color: [f32; 4],
+    pub uv_min: [f32; 2],
+    pub uv_max: [f32; 2],
+}
+
+impl PolygonInstance {
+    /// Build a polygon from a `[Point2-shaped; 4]` corner array using the
+    /// SOLID_WHITE atlas cell so the `color` field is the visible tint.
+    /// Caller supplies the SOLID_WHITE uv rect to keep this module
+    /// decoupled from `crate::atlas`.
+    pub fn flat(corners: [[f32; 2]; 4], color: [f32; 4], solid_white_uv: ([f32; 2], [f32; 2])) -> Self {
+        Self {
+            p0: corners[0],
+            p1: corners[1],
+            p2: corners[2],
+            p3: corners[3],
+            color,
+            uv_min: solid_white_uv.0,
+            uv_max: solid_white_uv.1,
+        }
+    }
+}
+
+/// A draw command in back-to-front order. `Gfx::render` batches consecutive
+/// same-variant runs into single draw calls.
+#[derive(Copy, Clone, Debug)]
+pub enum DrawCommand {
+    Sprite(SpriteInstance),
+    Polygon(PolygonInstance),
+}
+
+impl From<SpriteInstance> for DrawCommand {
+    fn from(s: SpriteInstance) -> Self { DrawCommand::Sprite(s) }
+}
+
+impl From<PolygonInstance> for DrawCommand {
+    fn from(p: PolygonInstance) -> Self { DrawCommand::Polygon(p) }
 }
 
 #[repr(C)]
@@ -195,6 +258,68 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
 }
 "#;
 
+// Polygon shader. Each instance has four explicit corner positions; we expand
+// to 6 vertices (two triangles, indices 0-1-2 and 0-2-3) using
+// vertex_index % 6. The UV is barycentrically blended across the polygon
+// from uv_min (top-left) to uv_max (bottom-right) in the polygon's own
+// corner frame — so a textured polygon samples its full atlas cell across
+// its quad, with the same y-flip convention as SpriteInstance.
+const POLYGON_SHADER: &str = r#"
+struct ViewUniform {
+    px_to_ndc: vec2<f32>,
+    _pad: vec2<f32>,
+};
+@group(0) @binding(0) var<uniform> view: ViewUniform;
+@group(0) @binding(1) var atlas: texture_2d<f32>;
+@group(0) @binding(2) var atlas_samp: sampler;
+
+struct VsOut {
+    @builtin(position) clip: vec4<f32>,
+    @location(0) color: vec4<f32>,
+    @location(1) uv:    vec2<f32>,
+};
+
+@vertex
+fn vs_poly(
+    @builtin(vertex_index) v_idx: u32,
+    @location(0) i_p0:     vec2<f32>,
+    @location(1) i_p1:     vec2<f32>,
+    @location(2) i_p2:     vec2<f32>,
+    @location(3) i_p3:     vec2<f32>,
+    @location(4) i_color:  vec4<f32>,
+    @location(5) i_uv_min: vec2<f32>,
+    @location(6) i_uv_max: vec2<f32>,
+) -> VsOut {
+    // Two triangles: 0-1-2 and 0-2-3.
+    var corner_idx = array<u32, 6>(0u, 1u, 2u, 0u, 2u, 3u);
+    let c = corner_idx[v_idx];
+    var pixel: vec2<f32>;
+    var uv:    vec2<f32>;
+    // p0 = top-left   -> uv (uv_min.x, uv_max.y)  (Y-flip mirrors SpriteInstance)
+    // p1 = top-right  -> uv (uv_max.x, uv_max.y)
+    // p2 = bot-right  -> uv (uv_max.x, uv_min.y)
+    // p3 = bot-left   -> uv (uv_min.x, uv_min.y)
+    if (c == 0u) { pixel = i_p0; uv = vec2<f32>(i_uv_min.x, i_uv_max.y); }
+    else if (c == 1u) { pixel = i_p1; uv = vec2<f32>(i_uv_max.x, i_uv_max.y); }
+    else if (c == 2u) { pixel = i_p2; uv = vec2<f32>(i_uv_max.x, i_uv_min.y); }
+    else { pixel = i_p3; uv = vec2<f32>(i_uv_min.x, i_uv_min.y); }
+
+    let ndc_x = pixel.x * view.px_to_ndc.x - 1.0;
+    let ndc_y = 1.0 - pixel.y * view.px_to_ndc.y;
+    var o: VsOut;
+    o.clip = vec4<f32>(ndc_x, ndc_y, 0.0, 1.0);
+    o.color = i_color;
+    o.uv = uv;
+    return o;
+}
+
+@fragment
+fn fs_poly(in: VsOut) -> @location(0) vec4<f32> {
+    let s = textureSample(atlas, atlas_samp, in.uv);
+    return s * in.color;
+}
+"#;
+
 const BLIT_SHADER: &str = r#"
 struct BlitUniform {
     ndc_min: vec2<f32>,
@@ -231,8 +356,8 @@ fn fs_blit(in: VsOut) -> @location(0) vec4<f32> {
 "#;
 
 /// wgpu state owner. Builds the surface, virtual-res offscreen target, the
-/// procedural atlas texture, and both render pipelines on `new`. Renders one
-/// frame on `render` given a pre-built instance vector.
+/// procedural atlas texture, and all render pipelines on `new`. Renders one
+/// frame on `render` given a pre-built draw command list.
 pub struct Gfx {
     surface: wgpu::Surface<'static>,
     device: wgpu::Device,
@@ -240,6 +365,7 @@ pub struct Gfx {
     config: wgpu::SurfaceConfiguration,
     offscreen_view: wgpu::TextureView,
     sprites: SpritePipeline,
+    polygons: PolygonPipeline,
     blit: BlitPipeline,
 }
 
@@ -248,6 +374,16 @@ struct SpritePipeline {
     quad_vbuf: wgpu::Buffer,
     instance_vbuf: wgpu::Buffer,
     view_ubo: wgpu::Buffer,
+    bind_group: wgpu::BindGroup,
+}
+
+struct PolygonPipeline {
+    pipeline: wgpu::RenderPipeline,
+    instance_vbuf: wgpu::Buffer,
+    // view uniform and atlas bind group are shared with SpritePipeline at
+    // bind point 0 — same bgl layout, just bound from this pipeline's
+    // perspective. The bind group is owned by SpritePipeline; we keep a
+    // reference at construction time via shared underlying resources.
     bind_group: wgpu::BindGroup,
 }
 
@@ -371,6 +507,7 @@ impl Gfx {
         });
 
         let sprites = SpritePipeline::new(&device, &atlas_view, &atlas_sampler);
+        let polygons = PolygonPipeline::new(&device, &sprites.view_ubo, &atlas_view, &atlas_sampler);
         let blit = BlitPipeline::new(&device, format, &offscreen_view);
 
         let g = Self {
@@ -380,6 +517,7 @@ impl Gfx {
             config,
             offscreen_view,
             sprites,
+            polygons,
             blit,
         };
 
@@ -434,26 +572,75 @@ impl Gfx {
         self.queue.write_buffer(&self.blit.ubo, 0, bytemuck::bytes_of(&blit));
     }
 
-    /// Render one frame. `instances` is the full sprite list in back-to-front
-    /// draw order; the scene compositor in [`crate::hud`] builds it.
-    /// Truncated to [`MAX_SPRITES`] with a warn log if exceeded — the buffer
-    /// is sized once at startup.
-    pub fn render(&mut self, instances: &[SpriteInstance]) -> Result<(), wgpu::SurfaceError> {
-        let count = if instances.len() as u64 > MAX_SPRITES {
+    /// Render one frame. `commands` is the full draw command list in
+    /// back-to-front order; the scene compositor in [`crate::hud`] builds it.
+    /// Consecutive same-variant commands are batched into a single GPU draw.
+    /// Sprites and polygons each have their own buffer, sized once at startup
+    /// ([`MAX_SPRITES`] / [`MAX_POLYGONS`]).
+    pub fn render(&mut self, commands: &[DrawCommand]) -> Result<(), wgpu::SurfaceError> {
+        // Walk the commands once, splitting into contiguous batches by variant.
+        // For each batch we record (kind, offset, count) where offset is the
+        // index into the per-variant buffer the batch occupies.
+        let mut sprite_buf: Vec<SpriteInstance> = Vec::with_capacity(commands.len());
+        let mut polygon_buf: Vec<PolygonInstance> = Vec::with_capacity(commands.len());
+        // Each batch references one of the two buffers.
+        enum BatchKind {
+            Sprite,
+            Polygon,
+        }
+        struct Batch {
+            kind: BatchKind,
+            start: u32,
+            count: u32,
+        }
+        let mut batches: Vec<Batch> = Vec::new();
+        for cmd in commands {
+            match cmd {
+                DrawCommand::Sprite(s) => {
+                    if (sprite_buf.len() as u64) >= MAX_SPRITES {
+                        // Truncate silently; warn once outside the loop.
+                        continue;
+                    }
+                    let start = sprite_buf.len() as u32;
+                    sprite_buf.push(*s);
+                    match batches.last_mut() {
+                        Some(b) if matches!(b.kind, BatchKind::Sprite) => b.count += 1,
+                        _ => batches.push(Batch { kind: BatchKind::Sprite, start, count: 1 }),
+                    }
+                }
+                DrawCommand::Polygon(p) => {
+                    if (polygon_buf.len() as u64) >= MAX_POLYGONS {
+                        continue;
+                    }
+                    let start = polygon_buf.len() as u32;
+                    polygon_buf.push(*p);
+                    match batches.last_mut() {
+                        Some(b) if matches!(b.kind, BatchKind::Polygon) => b.count += 1,
+                        _ => batches.push(Batch { kind: BatchKind::Polygon, start, count: 1 }),
+                    }
+                }
+            }
+        }
+        if (commands.len() as u64) > MAX_SPRITES + MAX_POLYGONS {
             log::warn!(
-                "sprite instance count {} exceeds MAX_SPRITES {}; truncating",
-                instances.len(),
-                MAX_SPRITES
+                "draw command count {} exceeds MAX_SPRITES+MAX_POLYGONS {}; truncating",
+                commands.len(),
+                MAX_SPRITES + MAX_POLYGONS
             );
-            MAX_SPRITES as usize
-        } else {
-            instances.len()
-        };
-        if count > 0 {
+        }
+
+        if !sprite_buf.is_empty() {
             self.queue.write_buffer(
                 &self.sprites.instance_vbuf,
                 0,
-                bytemuck::cast_slice(&instances[..count]),
+                bytemuck::cast_slice(&sprite_buf),
+            );
+        }
+        if !polygon_buf.is_empty() {
+            self.queue.write_buffer(
+                &self.polygons.instance_vbuf,
+                0,
+                bytemuck::cast_slice(&polygon_buf),
             );
         }
 
@@ -467,10 +654,11 @@ impl Gfx {
                 label: Some("frame encoder"),
             });
 
-        // Pass 1: sprites → offscreen virtual-res target.
+        // Pass 1: walk batches in order; switch pipelines as the variant
+        // changes. One render pass, clear once.
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("sprites to offscreen"),
+                label: Some("scene to offscreen"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &self.offscreen_view,
                     resolve_target: None,
@@ -484,12 +672,22 @@ impl Gfx {
                 timestamp_writes: None,
                 occlusion_query_set: None,
             });
-            if count > 0 {
-                pass.set_pipeline(&self.sprites.pipeline);
-                pass.set_bind_group(0, &self.sprites.bind_group, &[]);
-                pass.set_vertex_buffer(0, self.sprites.quad_vbuf.slice(..));
-                pass.set_vertex_buffer(1, self.sprites.instance_vbuf.slice(..));
-                pass.draw(0..6, 0..(count as u32));
+            for b in &batches {
+                match b.kind {
+                    BatchKind::Sprite => {
+                        pass.set_pipeline(&self.sprites.pipeline);
+                        pass.set_bind_group(0, &self.sprites.bind_group, &[]);
+                        pass.set_vertex_buffer(0, self.sprites.quad_vbuf.slice(..));
+                        pass.set_vertex_buffer(1, self.sprites.instance_vbuf.slice(..));
+                        pass.draw(0..6, b.start..(b.start + b.count));
+                    }
+                    BatchKind::Polygon => {
+                        pass.set_pipeline(&self.polygons.pipeline);
+                        pass.set_bind_group(0, &self.polygons.bind_group, &[]);
+                        pass.set_vertex_buffer(0, self.polygons.instance_vbuf.slice(..));
+                        pass.draw(0..6, b.start..(b.start + b.count));
+                    }
+                }
             }
         }
 
@@ -666,6 +864,128 @@ impl SpritePipeline {
         });
 
         Self { pipeline, quad_vbuf, instance_vbuf, view_ubo, bind_group }
+    }
+}
+
+impl PolygonPipeline {
+    /// Build the polygon pipeline. Shares the sprite pipeline's view uniform
+    /// and atlas texture/sampler — same bind group layout, same resources,
+    /// just bound from this pipeline's perspective. The vertex buffer layout
+    /// describes a single `PolygonInstance` (no separate quad vertex buffer
+    /// — corners come from the instance directly).
+    fn new(
+        device: &wgpu::Device,
+        view_ubo: &wgpu::Buffer,
+        atlas_view: &wgpu::TextureView,
+        atlas_sampler: &wgpu::Sampler,
+    ) -> Self {
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("polygon shader"),
+            source: wgpu::ShaderSource::Wgsl(POLYGON_SHADER.into()),
+        });
+
+        let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("polygon bgl"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        });
+
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("polygon bg"),
+            layout: &bgl,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: view_ubo.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(atlas_view) },
+                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(atlas_sampler) },
+            ],
+        });
+
+        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("polygon layout"),
+            bind_group_layouts: &[&bgl],
+            push_constant_ranges: &[],
+        });
+
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("polygon pipeline"),
+            layout: Some(&layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_poly"),
+                compilation_options: Default::default(),
+                buffers: &[wgpu::VertexBufferLayout {
+                    array_stride: std::mem::size_of::<PolygonInstance>() as u64,
+                    step_mode: wgpu::VertexStepMode::Instance,
+                    attributes: &[
+                        wgpu::VertexAttribute { shader_location: 0, offset: 0,  format: wgpu::VertexFormat::Float32x2 }, // p0
+                        wgpu::VertexAttribute { shader_location: 1, offset: 8,  format: wgpu::VertexFormat::Float32x2 }, // p1
+                        wgpu::VertexAttribute { shader_location: 2, offset: 16, format: wgpu::VertexFormat::Float32x2 }, // p2
+                        wgpu::VertexAttribute { shader_location: 3, offset: 24, format: wgpu::VertexFormat::Float32x2 }, // p3
+                        wgpu::VertexAttribute { shader_location: 4, offset: 32, format: wgpu::VertexFormat::Float32x4 }, // color
+                        wgpu::VertexAttribute { shader_location: 5, offset: 48, format: wgpu::VertexFormat::Float32x2 }, // uv_min
+                        wgpu::VertexAttribute { shader_location: 6, offset: 56, format: wgpu::VertexFormat::Float32x2 }, // uv_max
+                    ],
+                }],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_poly"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: OFFSCREEN_FORMAT,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: None,
+                unclipped_depth: false,
+                polygon_mode: wgpu::PolygonMode::Fill,
+                conservative: false,
+            },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+            cache: None,
+        });
+
+        let instance_vbuf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("polygon instance vbuf"),
+            size: (std::mem::size_of::<PolygonInstance>() as u64) * MAX_POLYGONS,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        Self { pipeline, instance_vbuf, bind_group }
     }
 }
 

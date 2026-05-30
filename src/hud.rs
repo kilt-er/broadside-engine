@@ -1,5 +1,5 @@
 //! Scene compositor — turns a [`crate::types::Board`] into a back-to-front
-//! `Vec<SpriteInstance>` for [`crate::gfx::Gfx::render`].
+//! `Vec<DrawCommand>` for [`crate::gfx::Gfx::render`].
 //!
 //! ## Render order (back to front)
 //!
@@ -35,7 +35,7 @@
 
 use crate::atlas;
 use crate::geometry::range_band;
-use crate::gfx::SpriteInstance;
+use crate::gfx::{DrawCommand, PolygonInstance, SpriteInstance};
 use crate::perspective::{
     cell_footprint, cell_to_screen, fractional_cell_to_screen, ship_sprite, CellScreen,
     FacePoly, LaneGeometry, Point2, ShipSprite, Stance, FRIGATE_DIMS,
@@ -82,8 +82,10 @@ const VICTORY_TINT: [f32; 4] = [1.0, 0.80, 0.20, 0.45];
 
 /* ---- entry point ---------------------------------------------------------- */
 
-/// Build the full frame's sprite instance list, back-to-front.
-pub fn compose_scene(board: &Board, lane: &LaneGeometry) -> Vec<SpriteInstance> {
+/// Build the full frame's draw command list, back-to-front. Sprites and
+/// polygons are interleaved in z-order; `Gfx::render` batches consecutive
+/// same-variant runs into single GPU draw calls.
+pub fn compose_scene(board: &Board, lane: &LaneGeometry) -> Vec<DrawCommand> {
     let mut out = Vec::with_capacity(256);
 
     push_parallax(&mut out, lane);
@@ -111,6 +113,18 @@ pub fn compose_scene(board: &Board, lane: &LaneGeometry) -> Vec<SpriteInstance> 
     out
 }
 
+/// Push a sprite onto the draw list, wrapping it as `DrawCommand::Sprite`.
+#[inline]
+fn push_sprite(out: &mut Vec<DrawCommand>, s: SpriteInstance) {
+    out.push(DrawCommand::Sprite(s));
+}
+
+/// Push a polygon onto the draw list, wrapping it as `DrawCommand::Polygon`.
+#[inline]
+fn push_polygon(out: &mut Vec<DrawCommand>, p: PolygonInstance) {
+    out.push(DrawCommand::Polygon(p));
+}
+
 /* =============================================================================
  * Parallax — five strips of background detail tiled across the viewport.
  *
@@ -119,7 +133,7 @@ pub fn compose_scene(board: &Board, lane: &LaneGeometry) -> Vec<SpriteInstance> 
  * later slice can add per-frame offset for parallax motion.
  * ============================================================================= */
 
-fn push_parallax(out: &mut Vec<SpriteInstance>, _lane: &LaneGeometry) {
+fn push_parallax(out: &mut Vec<DrawCommand>, _lane: &LaneGeometry) {
     use crate::gfx::{VIRTUAL_H, VIRTUAL_W};
     let w = VIRTUAL_W as f32;
     let h = VIRTUAL_H as f32;
@@ -132,7 +146,7 @@ fn push_parallax(out: &mut Vec<SpriteInstance>, _lane: &LaneGeometry) {
     let star_alpha = 0.55;
     let star_tint = [1.0, 1.0, 1.0, star_alpha];
     for &(fx, fy) in &[(0.18_f32, 0.12), (0.55, 0.30), (0.85, 0.18)] {
-        out.push(SpriteInstance::axis_aligned(
+        push_sprite(out, SpriteInstance::axis_aligned(
             [fx * w, fy * h],
             [32.0, 32.0],
             star_tint,
@@ -146,7 +160,7 @@ fn push_parallax(out: &mut Vec<SpriteInstance>, _lane: &LaneGeometry) {
     let nebula_y = h * 0.20;
     for i in 0..3 {
         let x = w * (0.20 + (i as f32) * 0.30);
-        out.push(SpriteInstance::axis_aligned(
+        push_sprite(out, SpriteInstance::axis_aligned(
             [x, nebula_y],
             [80.0, 32.0],
             nebula_tint,
@@ -155,7 +169,7 @@ fn push_parallax(out: &mut Vec<SpriteInstance>, _lane: &LaneGeometry) {
     }
 
     // Distant planet — one big sphere at upper-right.
-    out.push(SpriteInstance::axis_aligned(
+    push_sprite(out, SpriteInstance::axis_aligned(
         [w * 0.78, h * 0.22],
         [44.0, 44.0],
         WHITE,
@@ -166,7 +180,7 @@ fn push_parallax(out: &mut Vec<SpriteInstance>, _lane: &LaneGeometry) {
     // visible mid-distance stars total.
     let mid_tint = [1.0, 1.0, 1.0, 0.70];
     for &(fx, fy) in &[(0.32_f32, 0.45), (0.68, 0.55)] {
-        out.push(SpriteInstance::axis_aligned(
+        push_sprite(out, SpriteInstance::axis_aligned(
             [fx * w, fy * h],
             [32.0, 32.0],
             mid_tint,
@@ -177,7 +191,7 @@ fn push_parallax(out: &mut Vec<SpriteInstance>, _lane: &LaneGeometry) {
     // Foreground dust — one sparse patch low on the canvas, in front of the
     // lane. Single placement so it reads as a subtle near-camera detail
     // rather than a curtain of motes.
-    out.push(SpriteInstance::axis_aligned(
+    push_sprite(out, SpriteInstance::axis_aligned(
         [w * 0.40, h * 0.88],
         [32.0, 32.0],
         [1.0, 1.0, 1.0, 0.55],
@@ -188,20 +202,13 @@ fn push_parallax(out: &mut Vec<SpriteInstance>, _lane: &LaneGeometry) {
 /* =============================================================================
  * Lane plate — the trapezoid from cell footprints.
  *
- * Drawn as one filled polygon per cell (parallelogram) plus a thin stroke
- * along the front edge. The parallelogram is decomposed into two triangles,
- * each rendered as an SpriteInstance with rotation_rad = 0 and pre-computed
- * vertex positions. Since our SpriteInstance is rectangle-shaped, we
- * approximate the parallelogram by drawing a tinted rectangle that covers
- * its bounding box — visually close enough at the lane's shallow tilt, and
- * avoids adding a polygon primitive to the GPU pipeline.
- *
- * For a proper parallelogram we'd need a separate "polygon" instance type or
- * a triangle-strip variant; slice-D ships the approximation, slice-F (if
- * needed) can promote to true polygons.
+ * Drawn as one true filled parallelogram per cell (using the
+ * `PolygonInstance` GPU primitive) plus a thin stroke along the front edge.
+ * `cell_footprint` supplies the four corners; we remap to the polygon
+ * corner convention in `push_quad_as_two_triangles`.
  * ============================================================================= */
 
-fn push_lane_plate(out: &mut Vec<SpriteInstance>, board: &Board, lane: &LaneGeometry) {
+fn push_lane_plate(out: &mut Vec<DrawCommand>, board: &Board, lane: &LaneGeometry) {
     for c in 0..board.size as u32 {
         if c >= lane.cell_count {
             break;
@@ -215,32 +222,31 @@ fn push_lane_plate(out: &mut Vec<SpriteInstance>, board: &Board, lane: &LaneGeom
     push_line_strip(out, p0, p1, 1.5, LANE_PLATE_STROKE);
 }
 
-/// Render a parallelogram by averaging into a tinted axis-aligned rectangle
-/// at the parallelogram's bounding box. Slice-D approximation; see the
-/// module comment above.
-fn push_quad_as_two_triangles(out: &mut Vec<SpriteInstance>, quad: [Point2; 4], color: [f32; 4]) {
-    let min_x = quad.iter().map(|p| p.x).fold(f32::INFINITY, f32::min);
-    let max_x = quad.iter().map(|p| p.x).fold(f32::NEG_INFINITY, f32::max);
-    let min_y = quad.iter().map(|p| p.y).fold(f32::INFINITY, f32::min);
-    let max_y = quad.iter().map(|p| p.y).fold(f32::NEG_INFINITY, f32::max);
-    out.push(SpriteInstance::axis_aligned(
-        [(min_x + max_x) / 2.0, (min_y + max_y) / 2.0],
-        [(max_x - min_x) / 2.0, (max_y - min_y) / 2.0],
-        color,
-        atlas::cell_uvs(atlas::SOLID_WHITE),
-    ));
+/// Emit a true filled parallelogram for `quad` (vertex order from
+/// `perspective::cell_footprint`: front-near, front-far, back-far,
+/// back-near). Maps to `PolygonInstance`'s top-left/top-right/bottom-right/
+/// bottom-left corner convention. Fixes the staircase the previous
+/// axis-aligned-bounding-box approximation produced when the lane tilts.
+fn push_quad_as_two_triangles(out: &mut Vec<DrawCommand>, quad: [Point2; 4], color: [f32; 4]) {
+    let corners = [
+        [quad[3].x, quad[3].y], // top-left  = back-near
+        [quad[2].x, quad[2].y], // top-right = back-far
+        [quad[1].x, quad[1].y], // bot-right = front-far
+        [quad[0].x, quad[0].y], // bot-left  = front-near
+    ];
+    push_polygon(out, PolygonInstance::flat(corners, color, atlas::cell_uvs(atlas::SOLID_WHITE)));
 }
 
 /// Draw a thin "line" from `a` to `b` as a rotated rectangle of the given
 /// thickness. `rotation_rad` is filled so the rect aligns with the line
 /// direction; the sprite shader handles the rotation.
-fn push_line_strip(out: &mut Vec<SpriteInstance>, a: Point2, b: Point2, thickness: f32, color: [f32; 4]) {
+fn push_line_strip(out: &mut Vec<DrawCommand>, a: Point2, b: Point2, thickness: f32, color: [f32; 4]) {
     let dx = b.x - a.x;
     let dy = b.y - a.y;
     let len = (dx * dx + dy * dy).sqrt();
     let cx = (a.x + b.x) / 2.0;
     let cy = (a.y + b.y) / 2.0;
-    out.push(SpriteInstance {
+    push_sprite(out, SpriteInstance {
         pos: [cx, cy],
         half_size: [len / 2.0, thickness / 2.0],
         color,
@@ -261,7 +267,7 @@ fn push_line_strip(out: &mut Vec<SpriteInstance>, a: Point2, b: Point2, thicknes
  * tick anchors the right edge).
  * ============================================================================= */
 
-fn push_range_band_ticks(out: &mut Vec<SpriteInstance>, board: &Board, lane: &LaneGeometry) {
+fn push_range_band_ticks(out: &mut Vec<DrawCommand>, board: &Board, lane: &LaneGeometry) {
     let Some(player) = board.cells.iter().flatten().find(|s| s.faction == Faction::Player) else {
         return;
     };
@@ -282,7 +288,7 @@ fn push_range_band_ticks(out: &mut Vec<SpriteInstance>, board: &Board, lane: &La
         // Short vertical tick just under the lane front edge.
         let tick_y = target_screen.y + 6.0;
         let tick_h = 4.0 * target_screen.scale;
-        out.push(SpriteInstance::axis_aligned(
+        push_sprite(out, SpriteInstance::axis_aligned(
             [target_screen.x, tick_y + tick_h / 2.0],
             [1.0, tick_h / 2.0],
             color,
@@ -298,7 +304,7 @@ fn push_range_band_ticks(out: &mut Vec<SpriteInstance>, board: &Board, lane: &La
  * their cell. A dedicated hazard sprite cell can replace this later.
  * ============================================================================= */
 
-fn push_hazards(out: &mut Vec<SpriteInstance>, board: &Board, lane: &LaneGeometry) {
+fn push_hazards(out: &mut Vec<DrawCommand>, board: &Board, lane: &LaneGeometry) {
     use crate::types::HazardKind;
     for cell_list in &board.hazards {
         for h in cell_list {
@@ -308,7 +314,7 @@ fn push_hazards(out: &mut Vec<SpriteInstance>, board: &Board, lane: &LaneGeometr
                 HazardKind::Drone => [0.40, 0.78, 0.55, 1.0],
                 HazardKind::Debris => [0.55, 0.50, 0.45, 1.0],
             };
-            out.push(SpriteInstance::axis_aligned(
+            push_sprite(out, SpriteInstance::axis_aligned(
                 [c.x, c.y - 3.0 * c.scale],
                 [3.0 * c.scale, 3.0 * c.scale],
                 color,
@@ -321,14 +327,14 @@ fn push_hazards(out: &mut Vec<SpriteInstance>, board: &Board, lane: &LaneGeometr
 /* =============================================================================
  * Ships — composed from face polygons + chevron + heat bar + shield pips.
  *
- * The face polygons come from perspective::ship_sprite (unrotated in the
- * screen frame) and are then rotated about the ship's pivot by the lane
- * slope. Slice-D bakes the rotation on the CPU so the sprite shader can use
- * its per-instance rotation field for true line-segment rotation (used by
- * push_line_strip) without conflating with polygon rotation.
+ * Face polygons come from perspective::ship_sprite (unrotated in the screen
+ * frame) and are then rotated about the ship's pivot by the lane slope on
+ * the CPU. The rotated corners go through the `PolygonInstance` GPU
+ * primitive, so the faces are true parallelograms — not axis-aligned
+ * bounding boxes — and follow the lane tilt cleanly.
  * ============================================================================= */
 
-fn push_ship(out: &mut Vec<SpriteInstance>, ship: &Ship, cell_idx: usize, lane: &LaneGeometry) {
+fn push_ship(out: &mut Vec<DrawCommand>, ship: &Ship, cell_idx: usize, lane: &LaneGeometry) {
     let cell = cell_to_screen(cell_idx as u32, lane);
     let stance = match ship.orientation {
         Orientation::BowOn { .. } => Stance::BowOn,
@@ -370,22 +376,21 @@ fn rotate_face(face: FacePoly, pivot: Point2, theta: f32) -> FacePoly {
     [rotate(face[0]), rotate(face[1]), rotate(face[2]), rotate(face[3])]
 }
 
-/// Approximate a face polygon as a tinted axis-aligned rectangle at its
-/// bounding box. Same approximation used by the lane plate; see module comment.
-fn push_face_quad(out: &mut Vec<SpriteInstance>, face: FacePoly, color: [f32; 4]) {
-    let min_x = face.iter().map(|p| p.x).fold(f32::INFINITY, f32::min);
-    let max_x = face.iter().map(|p| p.x).fold(f32::NEG_INFINITY, f32::max);
-    let min_y = face.iter().map(|p| p.y).fold(f32::INFINITY, f32::min);
-    let max_y = face.iter().map(|p| p.y).fold(f32::NEG_INFINITY, f32::max);
-    out.push(SpriteInstance::axis_aligned(
-        [(min_x + max_x) / 2.0, (min_y + max_y) / 2.0],
-        [(max_x - min_x) / 2.0, (max_y - min_y) / 2.0],
-        color,
-        atlas::cell_uvs(atlas::SOLID_WHITE),
-    ));
+/// Emit a true filled polygon for a ship face. `perspective::ship_sprite`
+/// returns FacePoly with vertex order bottom-left, bottom-right, top-right,
+/// top-left (CCW under screen y-down); we remap to PolygonInstance's
+/// top-left/top-right/bottom-right/bottom-left corner convention.
+fn push_face_quad(out: &mut Vec<DrawCommand>, face: FacePoly, color: [f32; 4]) {
+    let corners = [
+        [face[3].x, face[3].y], // top-left
+        [face[2].x, face[2].y], // top-right
+        [face[1].x, face[1].y], // bot-right
+        [face[0].x, face[0].y], // bot-left
+    ];
+    push_polygon(out, PolygonInstance::flat(corners, color, atlas::cell_uvs(atlas::SOLID_WHITE)));
 }
 
-fn push_face_outline(out: &mut Vec<SpriteInstance>, face: FacePoly, color: [f32; 4], thickness: f32) {
+fn push_face_outline(out: &mut Vec<DrawCommand>, face: FacePoly, color: [f32; 4], thickness: f32) {
     for i in 0..4 {
         let a = face[i];
         let b = face[(i + 1) % 4];
@@ -394,7 +399,7 @@ fn push_face_outline(out: &mut Vec<SpriteInstance>, face: FacePoly, color: [f32;
 }
 
 fn push_bow_chevron(
-    out: &mut Vec<SpriteInstance>,
+    out: &mut Vec<DrawCommand>,
     ship: &Ship,
     sprite: &ShipSprite,
     cell: CellScreen,
@@ -410,7 +415,7 @@ fn push_bow_chevron(
         sprite.rotation_rad,
     )[0];
     let stroke = if ship.faction == Faction::Player { PLAYER_STROKE } else { ENEMY_STROKE };
-    out.push(SpriteInstance {
+    push_sprite(out, SpriteInstance {
         pos: [tc.x, tc.y],
         half_size: [size, size],
         color: stroke,
@@ -421,13 +426,13 @@ fn push_bow_chevron(
     });
 }
 
-fn push_heat_bar(out: &mut Vec<SpriteInstance>, ship: &Ship, cell: CellScreen) {
+fn push_heat_bar(out: &mut Vec<DrawCommand>, ship: &Ship, cell: CellScreen) {
     let max_h = 18.0 * cell.scale;
     let bar_w = 2.0 * cell.scale;
     let bar_x = cell.x + 18.0 * cell.scale;
     let bar_y = cell.y - 14.0 * cell.scale;
     // Background.
-    out.push(SpriteInstance::axis_aligned(
+    push_sprite(out, SpriteInstance::axis_aligned(
         [bar_x, bar_y - max_h / 2.0],
         [bar_w / 2.0, max_h / 2.0],
         HEAT_BG,
@@ -438,7 +443,7 @@ fn push_heat_bar(out: &mut Vec<SpriteInstance>, ship: &Ship, cell: CellScreen) {
     if ratio > 0.0 {
         let fill_h = max_h * ratio;
         let color = if ship.locked_out { HEAT_LOCKOUT } else { HEAT_FILL };
-        out.push(SpriteInstance::axis_aligned(
+        push_sprite(out, SpriteInstance::axis_aligned(
             [bar_x, bar_y - fill_h / 2.0],
             [bar_w / 2.0, fill_h / 2.0],
             color,
@@ -450,7 +455,7 @@ fn push_heat_bar(out: &mut Vec<SpriteInstance>, ship: &Ship, cell: CellScreen) {
 /// Shield pips: one small pip per held `charge`, positioned by zone around
 /// the ship's pivot. Bow / stern follow the rotated bow direction; port /
 /// starboard sit perpendicular to it.
-fn push_shield_pips(out: &mut Vec<SpriteInstance>, ship: &Ship, sprite: &ShipSprite) {
+fn push_shield_pips(out: &mut Vec<DrawCommand>, ship: &Ship, sprite: &ShipSprite) {
     let pip_size = 1.5;
     let radius = 12.0;
     let bow = sprite.bow_dir;
@@ -470,7 +475,7 @@ fn push_shield_pips(out: &mut Vec<SpriteInstance>, ship: &Ship, sprite: &ShipSpr
             let offset = radius + (i as f32) * (pip_size * 2.0 + 1.0);
             let px = sprite.pivot.x + dir.x * offset;
             let py = sprite.pivot.y + dir.y * offset;
-            out.push(SpriteInstance::axis_aligned(
+            push_sprite(out, SpriteInstance::axis_aligned(
                 [px, py],
                 [pip_size, pip_size],
                 SHIELD_PIP_CHARGE,
@@ -488,7 +493,7 @@ fn push_shield_pips(out: &mut Vec<SpriteInstance>, ship: &Ship, sprite: &ShipSpr
  * orientation if the projectile is travelling aft (negative bow direction).
  * ============================================================================= */
 
-fn push_projectile(out: &mut Vec<SpriteInstance>, proj: &Projectile, lane: &LaneGeometry) {
+fn push_projectile(out: &mut Vec<DrawCommand>, proj: &Projectile, lane: &LaneGeometry) {
     let pos = fractional_cell_to_screen(proj.cell as f32, lane);
     // Choose missile vs torpedo from projectile kind; default to torpedo.
     let cell = if proj.kind.contains("missile") {
@@ -501,7 +506,7 @@ fn push_projectile(out: &mut Vec<SpriteInstance>, proj: &Projectile, lane: &Lane
         rot += std::f32::consts::PI; // flip horizontally
     }
     let scale = pos.scale;
-    out.push(SpriteInstance {
+    push_sprite(out, SpriteInstance {
         pos: [pos.x, pos.y - 6.0 * scale],
         half_size: [8.0 * scale, 4.0 * scale],
         color: WHITE,
@@ -522,7 +527,7 @@ fn push_projectile(out: &mut Vec<SpriteInstance>, proj: &Projectile, lane: &Lane
  * ============================================================================= */
 
 fn push_queue_glyphs(
-    out: &mut Vec<SpriteInstance>,
+    out: &mut Vec<DrawCommand>,
     ship: &Ship,
     cell_idx: usize,
     lane: &LaneGeometry,
@@ -540,7 +545,7 @@ fn push_queue_glyphs(
     for (i, action_id) in ship.queue.iter().enumerate() {
         let archetype = archetype_of_mount(ship, action_id).unwrap_or(WeaponArchetype::Beam);
         let cell_uv = archetype_to_glyph(archetype);
-        out.push(SpriteInstance::axis_aligned(
+        push_sprite(out, SpriteInstance::axis_aligned(
             [start_x + (i as f32) * spacing, glyph_y],
             [glyph_size, glyph_size],
             WHITE,
@@ -578,7 +583,7 @@ fn archetype_to_glyph(a: WeaponArchetype) -> (u32, u32) {
  * ============================================================================= */
 
 fn push_status_badges(
-    out: &mut Vec<SpriteInstance>,
+    out: &mut Vec<DrawCommand>,
     ship: &Ship,
     cell_idx: usize,
     lane: &LaneGeometry,
@@ -593,7 +598,7 @@ fn push_status_badges(
     let y = cell.y - 38.0 * cell.scale;
     for (i, status) in ship.statuses.iter().enumerate() {
         let cell_uv = status_to_badge(status);
-        out.push(SpriteInstance::axis_aligned(
+        push_sprite(out, SpriteInstance::axis_aligned(
             [start_x + (i as f32) * spacing, y],
             [size, size],
             WHITE,
@@ -626,14 +631,14 @@ pub enum WinState {
 }
 
 #[allow(dead_code)]
-pub fn push_end_state_overlay(out: &mut Vec<SpriteInstance>, state: WinState) {
+pub fn push_end_state_overlay(out: &mut Vec<DrawCommand>, state: WinState) {
     use crate::gfx::{VIRTUAL_H, VIRTUAL_W};
     let color = match state {
         WinState::Playing => return,
         WinState::Defeat => DEFEAT_TINT,
         WinState::Victory => VICTORY_TINT,
     };
-    out.push(SpriteInstance::axis_aligned(
+    push_sprite(out, SpriteInstance::axis_aligned(
         [VIRTUAL_W as f32 / 2.0, VIRTUAL_H as f32 / 2.0],
         [VIRTUAL_W as f32 / 2.0, VIRTUAL_H as f32 / 2.0],
         color,
@@ -759,7 +764,10 @@ mod tests {
         let scene = compose_scene(&board, &DEFAULT_LANE);
         // Find the torpedo sprite: it samples the TORPEDO atlas cell.
         let (mn, mx) = atlas::cell_uvs(atlas::TORPEDO);
-        let torpedo_idx = scene.iter().position(|s| s.uv_min == mn && s.uv_max == mx);
+        let torpedo_idx = scene.iter().position(|c| match c {
+            DrawCommand::Sprite(s) => s.uv_min == mn && s.uv_max == mx,
+            _ => false,
+        });
         assert!(torpedo_idx.is_some(), "torpedo sprite should be present");
     }
 
