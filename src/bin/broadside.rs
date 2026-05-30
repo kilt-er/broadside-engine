@@ -39,7 +39,7 @@ use broadside_engine::hud;
 use broadside_engine::input::{
     intent_to_action_id, key_to_intent, DemoContent, Intent, Key,
 };
-use broadside_engine::perspective::{LaneGeometry, Point2, DEFAULT_LANE, FRIGATE_DIMS};
+use broadside_engine::perspective::{LaneGeometry, DEFAULT_LANE};
 use broadside_engine::resolve::{resolve_round, Content};
 use broadside_engine::types::{
     Arc as TArc, Board, EventBus, Faction, LaneEnd, Mount, Orientation, ShieldFace,
@@ -127,19 +127,11 @@ fn append_to_player_queue(board: &mut Board, action_id: String) -> bool {
  * Initial scene + lane geometry.
  * ========================================================================== */
 
-/// Build the demo's LaneGeometry from `DEFAULT_LANE`, scaled to the engine
-/// virtual canvas and inset on the near side so a cell-0 ship at scaleNear
-/// doesn't clip past the left edge.
+/// Demo lane: just `DEFAULT_LANE`. The flat horizontal model has no
+/// foreshortening so no per-binary tuning is needed; the lane spans the
+/// canvas width centered vertically.
 fn demo_lane() -> LaneGeometry {
-    let base = DEFAULT_LANE.scaled((VIRTUAL_W as f32) / 660.0);
-    let half_len_near = FRIGATE_DIMS.length / 2.0;
-    let target_near_x = half_len_near + 8.0;
-    let inset = (target_near_x - base.front_start.x).max(0.0);
-    LaneGeometry {
-        front_start: Point2 { x: base.front_start.x + inset, y: base.front_start.y },
-        back_start:  Point2 { x: base.back_start.x  + inset, y: base.back_start.y },
-        ..base
-    }
+    DEFAULT_LANE
 }
 
 /// Mirrors the board state hard-coded in `render-example.ts`. Used as both
