@@ -1,0 +1,22 @@
+{
+  "_comment": "STRUCTURAL REFERENCE ONLY — empty skeleton. The real catalog is exported from broadside-analysis.html via the 'Copy JSON' button and dropped at assets/broadside.catalog.json. This .example.json variant exists so Catalog::load_from_path can be smoke-tested against a file with every required top-level key present, without committing interpretive numeric guesswork to the repo. All arrays are intentionally empty. See src/types.rs Catalog for the schema.",
+
+  "meta": {
+    "schema": "broadside.v0.example",
+    "lane": [0, 1, 2, 3, 4, 5, 6],
+    "newAxes": ["range", "orientation", "ordnance", "heat"],
+    "bands": ["pointBlank", "close", "mid", "long", "extreme"]
+  },
+
+  "actions": [],
+  "mods": [],
+  "subsystems": [],
+  "statuses": [],
+  "enemies": [],
+  "capitals": [],
+  "classes": [],
+  "fieldkit": [],
+  "sectors": [],
+  "patrols": [],
+  "commendations": []
+}
