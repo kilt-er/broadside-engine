@@ -1382,6 +1382,25 @@ fn decide_enemy_action(
         if cells.is_empty() {
             continue;
         }
+        // Friendly-fire filter (task #49): if every hostile-occupied cell
+        // in the target set is empty or holds a same-faction ship, skip
+        // this action. The geometry / damage pipeline still PERMITS
+        // friendly fire — the analysis doc's "Unfriendly Fire" subsystem
+        // makes player-forced friendly fire a designed mechanic — but
+        // the AI shouldn't elect to fire on allies unprompted. This
+        // filter catches the gunboat-fires-at-scout case in
+        // tests/demo_scenarios.rs (scenario B) without breaking the
+        // through-an-ally-to-hit-the-player case (which still keeps the
+        // action eligible because at least one target cell is hostile).
+        let any_hostile_target = cells.iter().any(|&c| {
+            board.cells[c]
+                .as_ref()
+                .map(|s| s.faction != Faction::Enemy)
+                .unwrap_or(false)
+        });
+        if !any_hostile_target {
+            continue;
+        }
 
         // 3. Score.
         let raw_damage: i32 = action.effects.iter().filter_map(|e| match e {
@@ -2425,6 +2444,84 @@ mod tests {
         let queue = board.cells[2].as_ref().unwrap().queue.clone();
         assert!(queue.is_empty(),
             "AI should skip the cooldown'd weapon and have no fallback to queue");
+    }
+
+    /// Friendly-fire filter (task #49): an enemy whose arc bears only on
+    /// another enemy ship in front of it must NOT queue the attack. The
+    /// damage geometry still permits friendly fire (the analysis doc's
+    /// "Unfriendly Fire" subsystem makes player-forced friendly fire a
+    /// designed mechanic), but the AI declines to fire on allies
+    /// unprompted.
+    ///
+    /// Reproduces tests/demo_scenarios.rs scenario B: gunboat at cell 4
+    /// bow=aft -> Forward arc bears aft. First occupant aft is the scout
+    /// at cell 1 (same Faction::Enemy). AI must SKIP this action.
+    #[test]
+    fn ai_skips_friendly_fire_only_target() {
+        let player = make_ship("p", Faction::Player, 0, 10, LaneEnd::Fore);
+        let scout = make_ship("scout", Faction::Enemy, 1, 5, LaneEnd::Aft);
+        let gunboat = enemy_with_weapon("gunboat", 4, "pulse_laser", Arc::Forward, LaneEnd::Aft);
+        let mut board = make_board(7, vec![
+            Some(player), Some(scout), None, None, Some(gunboat),
+            None, None,
+        ]);
+        let content = AiContent {
+            actions: HashMap::from([("pulse_laser".into(), {
+                let mut a = pulse_laser();
+                // Widen the band so range 3 (mid) is allowed; default
+                // pulse_laser is pointBlank/close/mid which already
+                // includes mid, but extending makes the intent explicit.
+                a.targeting.band = vec![
+                    RangeBand::PointBlank, RangeBand::Close, RangeBand::Mid,
+                    RangeBand::Long, RangeBand::Extreme,
+                ];
+                a
+            })]),
+        };
+        super::decide_enemy_action(4, &mut board, &content);
+        let queue = board.cells[4].as_ref().unwrap().queue.clone();
+        // Gunboat's only forward target is the scout (same faction).
+        // No fallback should queue pulse_laser; the BEAM resolves to a
+        // friendly-only cell set and gets rejected. With no other action
+        // available, the queue stays empty.
+        assert!(queue.is_empty(),
+            "AI must skip an action whose only target is a same-faction ship; \
+             got queue={queue:?}");
+    }
+
+    /// The friendly-fire filter must NOT block firing through an ally to
+    /// hit the player. SPINAL_LINE hits_all=true with an enemy ally
+    /// in cell N and the player beyond — the action still threatens the
+    /// player, so the AI should fire even though it grazes an ally.
+    /// (Today's pulse_laser is BEAM = first-target-only, so this scenario
+    /// uses a synthetic piercing variant.)
+    #[test]
+    fn ai_fires_through_ally_to_reach_player() {
+        let player = make_ship("p", Faction::Player, 0, 10, LaneEnd::Fore);
+        let ally = make_ship("ally", Faction::Enemy, 2, 5, LaneEnd::Fore);
+        let shooter = enemy_with_weapon("shooter", 4, "spinal", Arc::Forward, LaneEnd::Aft);
+        let mut board = make_board(7, vec![
+            Some(player), None, Some(ally), None, Some(shooter), None, None,
+        ]);
+        // Spinal piercing action: SPINAL_LINE with hits_all=true so it
+        // pierces through cell 2 (ally) to cell 0 (player).
+        let mut spinal = pulse_laser();
+        spinal.id = "spinal".into();
+        spinal.targeting.pattern = TargetingPattern::SPINAL_LINE;
+        spinal.targeting.hits_all = true;
+        spinal.targeting.band = vec![
+            RangeBand::PointBlank, RangeBand::Close, RangeBand::Mid,
+            RangeBand::Long, RangeBand::Extreme,
+        ];
+        let content = AiContent {
+            actions: HashMap::from([("spinal".into(), spinal)]),
+        };
+        super::decide_enemy_action(4, &mut board, &content);
+        let queue = board.cells[4].as_ref().unwrap().queue.clone();
+        // At least one cell in the target set is hostile (cell 0, the
+        // player); the friendly-fire filter must permit this.
+        assert_eq!(queue, vec!["spinal".to_string()],
+            "AI should fire through an ally when the line also threatens the player");
     }
 
     /// Lockout: when overheated, only zero-heat actions are eligible.
