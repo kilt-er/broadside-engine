@@ -27,7 +27,7 @@ use crate::atlas;
 use crate::geometry::range_band;
 use crate::gfx::{DrawCommand, PolygonInstance, SpriteInstance};
 use crate::perspective::{
-    cell_to_screen, fractional_cell_to_screen, LaneGeometry, Point2, FRIGATE_DIMS,
+    cell_to_screen, fractional_cell_to_screen, LaneGeometry, Point2, Stance, FRIGATE_DIMS,
 };
 use crate::types::{
     Board, Faction, HullZone, LaneEnd, Mount, Orientation, Projectile, RangeBand, Ship, Status,
@@ -69,7 +69,13 @@ const VICTORY_TINT: [f32; 4] = [1.00, 0.80, 0.20, 0.45];
 /// Build the full frame's draw command list, back-to-front. Sprites and
 /// polygons are interleaved in z-order; `Gfx::render` batches consecutive
 /// same-variant runs into single GPU draw calls.
-pub fn compose_scene(board: &Board, lane: &LaneGeometry) -> Vec<DrawCommand> {
+///
+/// `view_angle_rad` controls the **ship-only** axonometric projection.
+/// `0.0` is pure side view (front face full, top face collapsed); `PI/2`
+/// is pure top-down (front face collapsed, top face full). The lane and
+/// parallax stay flat at all angles; only ship silhouettes are
+/// foreshortened.
+pub fn compose_scene(board: &Board, lane: &LaneGeometry, view_angle_rad: f32) -> Vec<DrawCommand> {
     let mut out = Vec::with_capacity(256);
 
     push_parallax(&mut out, lane);
@@ -79,7 +85,7 @@ pub fn compose_scene(board: &Board, lane: &LaneGeometry) -> Vec<DrawCommand> {
 
     for (cell_idx, slot) in board.cells.iter().enumerate() {
         if let Some(ship) = slot {
-            push_ship(&mut out, ship, cell_idx, lane);
+            push_ship(&mut out, ship, cell_idx, lane, view_angle_rad);
         }
     }
 
@@ -95,6 +101,8 @@ pub fn compose_scene(board: &Board, lane: &LaneGeometry) -> Vec<DrawCommand> {
             push_status_badges(&mut out, ship, cell_idx, lane);
         }
     }
+
+    push_view_angle_overlay(&mut out, view_angle_rad);
 
     out
 }
@@ -313,7 +321,18 @@ fn push_hazards(out: &mut Vec<DrawCommand>, board: &Board, lane: &LaneGeometry) 
  * polygon (length = beam, height = length / 3) without the bow taper.
  * ============================================================================= */
 
-fn push_ship(out: &mut Vec<DrawCommand>, ship: &Ship, cell_idx: usize, lane: &LaneGeometry) {
+/// Render one ship at its cell position. View-angle stacks an axonometric
+/// TOP face over the asymmetric FRONT face, with bow chevron on the top
+/// face for orientation cue at high angles. At angle=0 the top face
+/// collapses; the bow chevron is hidden and orientation reads from the
+/// front face's asymmetric silhouette (pointy bow, square stern).
+fn push_ship(
+    out: &mut Vec<DrawCommand>,
+    ship: &Ship,
+    cell_idx: usize,
+    lane: &LaneGeometry,
+    view_angle_rad: f32,
+) {
     let p = cell_to_screen(cell_idx as u32, lane);
     let (fill, stroke) = if ship.faction == Faction::Player {
         (PLAYER_HULL_FILL, PLAYER_HULL_STROKE)
@@ -321,142 +340,255 @@ fn push_ship(out: &mut Vec<DrawCommand>, ship: &Ship, cell_idx: usize, lane: &La
         (ENEMY_HULL_FILL, ENEMY_HULL_STROKE)
     };
 
-    let stance_broadside = matches!(ship.orientation, Orientation::Broadside);
-    if stance_broadside {
-        push_broadside_silhouette(out, p, fill, stroke);
-    } else {
-        let bow_fore = matches!(ship.orientation, Orientation::BowOn { bow: LaneEnd::Fore });
-        push_bow_on_silhouette(out, p, bow_fore, fill, stroke);
+    let stance = match ship.orientation {
+        Orientation::BowOn { .. } => Stance::BowOn,
+        Orientation::Broadside => Stance::Broadside,
+    };
+    let bow_fore = matches!(ship.orientation, Orientation::BowOn { bow: LaneEnd::Fore });
+
+    let cos_a = view_angle_rad.cos();
+    let sin_a = view_angle_rad.sin();
+    // Stance swap: bow-on length runs along lane (on-screen width), beam is
+    // the depth axis (top-face vertical when foreshortened). Broadside is
+    // the reverse.
+    let (on_screen_w, top_depth_full) = match stance {
+        Stance::BowOn => (FRIGATE_DIMS.length, FRIGATE_DIMS.beam),
+        Stance::Broadside => (FRIGATE_DIMS.beam, FRIGATE_DIMS.length),
+    };
+    let half_w = on_screen_w / 2.0;
+    let front_h = FRIGATE_DIMS.height * cos_a;
+    let half_front = front_h / 2.0;
+    let top_depth = top_depth_full * sin_a / 2.0;
+
+    let cx = p.x;
+    let cy = p.y;
+    // FRONT face occupies y ∈ [cy - half_front, cy + half_front], stacked
+    // on the lane waterline. TOP face sits above the front face top edge.
+    let front_top_y = cy - half_front;
+    let front_bot_y = cy + half_front;
+    let top_top_y = front_top_y - top_depth;
+    let top_bot_y = front_top_y;
+
+    // --- FRONT face ---
+    if front_h > 0.5 {
+        match stance {
+            Stance::BowOn => {
+                push_bow_on_front_face(out, cx, front_top_y, front_bot_y, on_screen_w, bow_fore, fill, stroke);
+            }
+            Stance::Broadside => {
+                push_broadside_front_face(out, cx, front_top_y, front_bot_y, on_screen_w, fill, stroke);
+            }
+        }
+    }
+
+    // --- TOP face ---
+    if top_depth > 0.5 {
+        // Simple rectangle for the top face. Bow chevron sits on it.
+        push_polygon(out, PolygonInstance {
+            p0: [cx - half_w, top_top_y],
+            p1: [cx + half_w, top_top_y],
+            p2: [cx + half_w, top_bot_y],
+            p3: [cx - half_w, top_bot_y],
+            color: fill,
+            uv_min: atlas::cell_uvs(atlas::SOLID_WHITE).0,
+            uv_max: atlas::cell_uvs(atlas::SOLID_WHITE).1,
+        });
+        // Top-face outline.
+        let corners = [
+            Point2 { x: cx - half_w, y: top_top_y },
+            Point2 { x: cx + half_w, y: top_top_y },
+            Point2 { x: cx + half_w, y: top_bot_y },
+            Point2 { x: cx - half_w, y: top_bot_y },
+        ];
+        for i in 0..4 {
+            push_line(out, corners[i], corners[(i + 1) % 4], 1.0, stroke);
+        }
+
+        // Bow chevron — atlas sprite on the top face, near the bow end.
+        // BowOn: x offset along the bow direction. Broadside: at the
+        // top-edge midpoint pointing UP (off-lane "bow direction").
+        if top_depth > 4.0 {
+            let chevron_size = 8.0;
+            let (chx, chy, chrot) = match stance {
+                Stance::BowOn => {
+                    let off = on_screen_w / 2.0 - chevron_size;
+                    let sign = if bow_fore { 1.0 } else { -1.0 };
+                    let chx = cx + sign * off;
+                    let chy = (top_top_y + top_bot_y) / 2.0;
+                    let rot = if bow_fore { 0.0 } else { std::f32::consts::PI };
+                    (chx, chy, rot)
+                }
+                Stance::Broadside => {
+                    let chx = cx;
+                    let chy = top_top_y + chevron_size;
+                    // Chevron points up (off-lane = bow direction).
+                    let rot = -std::f32::consts::FRAC_PI_2;
+                    (chx, chy, rot)
+                }
+            };
+            push_sprite(out, SpriteInstance {
+                pos: [chx, chy],
+                half_size: [chevron_size, chevron_size],
+                color: stroke,
+                uv_min: atlas::cell_uvs(atlas::BOW_CHEVRON).0,
+                uv_max: atlas::cell_uvs(atlas::BOW_CHEVRON).1,
+                rotation_rad: chrot,
+                _pad: [0.0; 3],
+            });
+        }
     }
 }
 
-/// Side-view bow-on silhouette: a rectangle with one pointy end.
-/// `bow_fore = true` means the bow points right (toward higher cell idx).
-fn push_bow_on_silhouette(
+/// Bow-on front face: asymmetric silhouette with pointy bow and square
+/// stern. `top_y` and `bot_y` give the front face's vertical span at the
+/// current view angle (so the face squishes vertically as the angle
+/// increases). `bow_fore = true` points the bow toward +x.
+fn push_bow_on_front_face(
     out: &mut Vec<DrawCommand>,
-    anchor: Point2,
+    cx: f32,
+    top_y: f32,
+    bot_y: f32,
+    width: f32,
     bow_fore: bool,
     fill: [f32; 4],
     stroke: [f32; 4],
 ) {
-    let length = FRIGATE_DIMS.length;
-    let height = FRIGATE_DIMS.height;
-    let hull_w = length * 0.75;   // square part = 75% of total length
-    let bow_w = length * 0.25;    // triangular bow = 25%
-    let half_h = height / 2.0;
-    // Anchor at the lane line, hull centered vertically across it.
-    // Convention: ship's center is at anchor (so half sits above, half below
-    // the lane line). The lane line passes through the waterline visually.
-    let cx = anchor.x;
-    let cy = anchor.y;
+    let hull_w = width * 0.75;
+    let bow_w = width * 0.25;
+    let mid_y = (top_y + bot_y) / 2.0;
     let sign = if bow_fore { 1.0 } else { -1.0 };
     let stern_x = cx - sign * (hull_w / 2.0 + bow_w / 2.0);
     let bow_corner_x = cx + sign * (hull_w / 2.0 - bow_w / 2.0);
     let bow_tip_x = cx + sign * (hull_w / 2.0 + bow_w / 2.0);
 
-    // The hull is two quads stitched together at bow_corner_x:
-    //   - Square stern quad: stern_x to bow_corner_x, full height
-    //   - Bow triangle (approximated as a degenerate quad with bow tip
-    //     points coincident): bow_corner_x to bow_tip_x, taper to point
-    // PolygonInstance gives us 4-corner quads; we use two of them.
-
-    // Square stern quad.
+    // Square stern quad. Use min/max to handle bow_fore=false (sign=-1)
+    // cleanly — the quad always has bot-right > bot-left in screen coords.
+    let left = stern_x.min(bow_corner_x);
+    let right = stern_x.max(bow_corner_x);
     push_polygon(out, PolygonInstance {
-        p0: [stern_x.min(bow_corner_x), cy - half_h], // top-left
-        p1: [stern_x.max(bow_corner_x), cy - half_h], // top-right
-        p2: [stern_x.max(bow_corner_x), cy + half_h], // bot-right
-        p3: [stern_x.min(bow_corner_x), cy + half_h], // bot-left
+        p0: [left, top_y],
+        p1: [right, top_y],
+        p2: [right, bot_y],
+        p3: [left, bot_y],
         color: fill,
         uv_min: atlas::cell_uvs(atlas::SOLID_WHITE).0,
         uv_max: atlas::cell_uvs(atlas::SOLID_WHITE).1,
     });
-    // Bow triangle as a degenerate quad: two coincident points at the tip.
-    let (bow_inner, bow_outer) = if bow_fore {
-        (bow_corner_x, bow_tip_x)
-    } else {
-        (bow_corner_x, bow_tip_x)
-    };
+    // Bow triangle as a degenerate quad (two coincident vertices at tip).
     push_polygon(out, PolygonInstance {
-        p0: [bow_inner, cy - half_h], // top-inner
-        p1: [bow_outer, cy],          // tip top
-        p2: [bow_outer, cy],          // tip bot (coincident)
-        p3: [bow_inner, cy + half_h], // bot-inner
+        p0: [bow_corner_x, top_y],
+        p1: [bow_tip_x, mid_y],
+        p2: [bow_tip_x, mid_y],
+        p3: [bow_corner_x, bot_y],
         color: fill,
         uv_min: atlas::cell_uvs(atlas::SOLID_WHITE).0,
         uv_max: atlas::cell_uvs(atlas::SOLID_WHITE).1,
     });
 
-    // Outline strokes — four short line segments tracing the silhouette.
-    // Stern straight edges.
-    push_line(out, Point2 { x: stern_x.min(bow_corner_x), y: cy - half_h }, Point2 { x: stern_x.min(bow_corner_x), y: cy + half_h }, 1.0, stroke);
-    push_line(out, Point2 { x: stern_x.min(bow_corner_x), y: cy - half_h }, Point2 { x: bow_inner, y: cy - half_h }, 1.0, stroke);
-    push_line(out, Point2 { x: stern_x.min(bow_corner_x), y: cy + half_h }, Point2 { x: bow_inner, y: cy + half_h }, 1.0, stroke);
-    // Bow triangle edges.
-    push_line(out, Point2 { x: bow_inner, y: cy - half_h }, Point2 { x: bow_outer, y: cy }, 1.0, stroke);
-    push_line(out, Point2 { x: bow_inner, y: cy + half_h }, Point2 { x: bow_outer, y: cy }, 1.0, stroke);
+    // Outline strokes — silhouette edges.
+    push_line(out, Point2 { x: left, y: top_y }, Point2 { x: left, y: bot_y }, 1.0, stroke);
+    push_line(out, Point2 { x: left, y: top_y }, Point2 { x: bow_corner_x, y: top_y }, 1.0, stroke);
+    push_line(out, Point2 { x: left, y: bot_y }, Point2 { x: bow_corner_x, y: bot_y }, 1.0, stroke);
+    push_line(out, Point2 { x: bow_corner_x, y: top_y }, Point2 { x: bow_tip_x, y: mid_y }, 1.0, stroke);
+    push_line(out, Point2 { x: bow_corner_x, y: bot_y }, Point2 { x: bow_tip_x, y: mid_y }, 1.0, stroke);
 }
 
-/// Side-view broadside silhouette: a stubbier rectangle, taller than wide,
-/// with no bow taper (both ends face the viewer / are off-lane).
-fn push_broadside_silhouette(
+/// Broadside front face: symmetric rectangle (both ends face off-lane) with
+/// a centered superstructure bump on top to read distinct from bow-on.
+fn push_broadside_front_face(
     out: &mut Vec<DrawCommand>,
-    anchor: Point2,
+    cx: f32,
+    top_y: f32,
+    bot_y: f32,
+    width: f32,
     fill: [f32; 4],
     stroke: [f32; 4],
 ) {
-    // Broadside on a side-view scene: we're looking at the ship from one
-    // long flank, so its on-screen footprint is `length` wide × `height`
-    // tall (the same as bow-on but without the bow taper). We make it
-    // visually distinct from bow-on by adding a centered "superstructure"
-    // bump on top.
-    let length = FRIGATE_DIMS.length;
-    let height = FRIGATE_DIMS.height;
-    let half_w = length / 2.0;
-    let half_h = height / 2.0;
-    let cx = anchor.x;
-    let cy = anchor.y;
-
-    // Main hull rectangle.
+    let half_w = width / 2.0;
+    let height = bot_y - top_y;
     push_polygon(out, PolygonInstance {
-        p0: [cx - half_w, cy - half_h],
-        p1: [cx + half_w, cy - half_h],
-        p2: [cx + half_w, cy + half_h],
-        p3: [cx - half_w, cy + half_h],
+        p0: [cx - half_w, top_y],
+        p1: [cx + half_w, top_y],
+        p2: [cx + half_w, bot_y],
+        p3: [cx - half_w, bot_y],
         color: fill,
         uv_min: atlas::cell_uvs(atlas::SOLID_WHITE).0,
         uv_max: atlas::cell_uvs(atlas::SOLID_WHITE).1,
     });
-    // Superstructure bump: a smaller rectangle on top, centered.
-    let bump_w = length * 0.4;
+    // Superstructure bump: short rectangle perched on top, centered.
+    let bump_w = width * 0.4;
     let bump_h = height * 0.5;
     push_polygon(out, PolygonInstance {
-        p0: [cx - bump_w / 2.0, cy - half_h - bump_h],
-        p1: [cx + bump_w / 2.0, cy - half_h - bump_h],
-        p2: [cx + bump_w / 2.0, cy - half_h],
-        p3: [cx - bump_w / 2.0, cy - half_h],
+        p0: [cx - bump_w / 2.0, top_y - bump_h],
+        p1: [cx + bump_w / 2.0, top_y - bump_h],
+        p2: [cx + bump_w / 2.0, top_y],
+        p3: [cx - bump_w / 2.0, top_y],
         color: fill,
         uv_min: atlas::cell_uvs(atlas::SOLID_WHITE).0,
         uv_max: atlas::cell_uvs(atlas::SOLID_WHITE).1,
     });
 
-    // Outline — main rectangle + bump.
-    let corners_main = [
-        Point2 { x: cx - half_w, y: cy - half_h },
-        Point2 { x: cx + half_w, y: cy - half_h },
-        Point2 { x: cx + half_w, y: cy + half_h },
-        Point2 { x: cx - half_w, y: cy + half_h },
+    // Outlines.
+    let main = [
+        Point2 { x: cx - half_w, y: top_y },
+        Point2 { x: cx + half_w, y: top_y },
+        Point2 { x: cx + half_w, y: bot_y },
+        Point2 { x: cx - half_w, y: bot_y },
     ];
     for i in 0..4 {
-        push_line(out, corners_main[i], corners_main[(i + 1) % 4], 1.0, stroke);
+        push_line(out, main[i], main[(i + 1) % 4], 1.0, stroke);
     }
-    let corners_bump = [
-        Point2 { x: cx - bump_w / 2.0, y: cy - half_h - bump_h },
-        Point2 { x: cx + bump_w / 2.0, y: cy - half_h - bump_h },
-        Point2 { x: cx + bump_w / 2.0, y: cy - half_h },
-        Point2 { x: cx - bump_w / 2.0, y: cy - half_h },
+    let bump = [
+        Point2 { x: cx - bump_w / 2.0, y: top_y - bump_h },
+        Point2 { x: cx + bump_w / 2.0, y: top_y - bump_h },
+        Point2 { x: cx + bump_w / 2.0, y: top_y },
+        Point2 { x: cx - bump_w / 2.0, y: top_y },
     ];
     for i in 0..3 {
-        push_line(out, corners_bump[i], corners_bump[i + 1], 1.0, stroke);
+        push_line(out, bump[i], bump[i + 1], 1.0, stroke);
+    }
+}
+
+/* =============================================================================
+ * View-angle HUD overlay — horizontal bar in the top-right showing the
+ * current angle as a fill proportional to angle / (PI/2). Same pattern as
+ * the spike's HUD bar but on the flat-scene compose path.
+ * ============================================================================= */
+
+fn push_view_angle_overlay(out: &mut Vec<DrawCommand>, view_angle_rad: f32) {
+    use crate::gfx::VIRTUAL_W;
+    let w = VIRTUAL_W as f32;
+    let max_w = 200.0;
+    let bar_h = 8.0;
+    let y = 24.0;
+    let x_right = w - 20.0;
+    let frac = (view_angle_rad / std::f32::consts::FRAC_PI_2).clamp(0.0, 1.0);
+    let cur_w = max_w * frac;
+    // Track (background).
+    push_sprite(out, SpriteInstance::axis_aligned(
+        [x_right - max_w / 2.0, y],
+        [max_w / 2.0, bar_h / 2.0],
+        [0.08, 0.12, 0.18, 0.85],
+        atlas::cell_uvs(atlas::SOLID_WHITE),
+    ));
+    // Fill.
+    if cur_w > 0.5 {
+        push_sprite(out, SpriteInstance::axis_aligned(
+            [x_right - max_w + cur_w / 2.0, y],
+            [cur_w / 2.0, bar_h / 2.0],
+            [0.33, 0.81, 0.79, 1.0],
+            atlas::cell_uvs(atlas::SOLID_WHITE),
+        ));
+    }
+    // Tick marks at each fixed angle (0, 15, 30, 45, 60, 75, 90).
+    for i in 0..=6 {
+        let tick_x = (x_right - max_w) + (i as f32 / 6.0) * max_w;
+        push_sprite(out, SpriteInstance::axis_aligned(
+            [tick_x, y + bar_h + 2.0],
+            [0.5, 2.0],
+            [0.55, 0.50, 0.45, 1.0],
+            atlas::cell_uvs(atlas::SOLID_WHITE),
+        ));
     }
 }
 
@@ -743,7 +875,7 @@ mod tests {
     #[test]
     fn empty_board_still_produces_backdrop_and_lane() {
         let board = empty_board(7);
-        let scene = compose_scene(&board, &DEFAULT_LANE);
+        let scene = compose_scene(&board, &DEFAULT_LANE, std::f32::consts::FRAC_PI_4);
         assert!(scene.len() > 20, "expected backdrop + lane, got {}", scene.len());
     }
 
@@ -751,7 +883,7 @@ mod tests {
     fn one_player_ship_produces_visible_sprites() {
         let mut board = empty_board(7);
         board.cells[0] = Some(frigate_at(0, Faction::Player, Orientation::BowOn { bow: LaneEnd::Fore }));
-        let scene = compose_scene(&board, &DEFAULT_LANE);
+        let scene = compose_scene(&board, &DEFAULT_LANE, std::f32::consts::FRAC_PI_4);
         assert!(scene.len() > 30, "expected backdrop + ship sprites, got {}", scene.len());
     }
 
@@ -766,11 +898,11 @@ mod tests {
             starboard: ShieldFace { armour: 1, charge: 0 },
         };
         board_with.cells[0] = Some(ship);
-        let scene_with = compose_scene(&board_with, &DEFAULT_LANE);
+        let scene_with = compose_scene(&board_with, &DEFAULT_LANE, std::f32::consts::FRAC_PI_4);
 
         let mut bare_board = empty_board(7);
         bare_board.cells[0] = Some(frigate_at(0, Faction::Player, Orientation::BowOn { bow: LaneEnd::Fore }));
-        let scene_without = compose_scene(&bare_board, &DEFAULT_LANE);
+        let scene_without = compose_scene(&bare_board, &DEFAULT_LANE, std::f32::consts::FRAC_PI_4);
 
         // 2 bow pips + 1 port pip = 3 extra sprites.
         assert_eq!(scene_with.len() - scene_without.len(), 3);
@@ -782,11 +914,11 @@ mod tests {
         let mut ship = frigate_at(0, Faction::Player, Orientation::BowOn { bow: LaneEnd::Fore });
         ship.heat = 3;
         board.cells[0] = Some(ship);
-        let scene_with = compose_scene(&board, &DEFAULT_LANE);
+        let scene_with = compose_scene(&board, &DEFAULT_LANE, std::f32::consts::FRAC_PI_4);
 
         let mut bare_board = empty_board(7);
         bare_board.cells[0] = Some(frigate_at(0, Faction::Player, Orientation::BowOn { bow: LaneEnd::Fore }));
-        let scene_without = compose_scene(&bare_board, &DEFAULT_LANE);
+        let scene_without = compose_scene(&bare_board, &DEFAULT_LANE, std::f32::consts::FRAC_PI_4);
 
         assert_eq!(scene_with.len() - scene_without.len(), 1);
     }
@@ -805,7 +937,7 @@ mod tests {
             payload: Vec::new(),
             owner_faction: Faction::Player,
         });
-        let scene = compose_scene(&board, &DEFAULT_LANE);
+        let scene = compose_scene(&board, &DEFAULT_LANE, std::f32::consts::FRAC_PI_4);
         let (mn, mx) = atlas::cell_uvs(atlas::TORPEDO);
         let torpedo_idx = scene.iter().position(|c| match c {
             DrawCommand::Sprite(s) => s.uv_min == mn && s.uv_max == mx,
@@ -832,30 +964,36 @@ mod tests {
             payload: Vec::new(),
             owner_faction: Faction::Player,
         });
-        let scene = compose_scene(&board, &DEFAULT_LANE);
+        let scene = compose_scene(&board, &DEFAULT_LANE, std::f32::consts::FRAC_PI_4);
         assert!(scene.len() > 60, "expected a populated scene, got {}", scene.len());
     }
 
     #[test]
-    fn every_scene_command_has_finite_coordinates() {
-        // Crash-guard inherited from spike: no NaN/inf reaches the GPU.
+    fn every_view_angle_produces_finite_vertices() {
+        // Crash-guard: walk every fixed scrub angle (0, 15, 30, 45, 60, 75,
+        // 90 deg) and assert no NaN/inf reaches the GPU. wgpu rejects
+        // non-finite vertex positions on some drivers; this catches a
+        // regression in the ship-rotation math before bruce sees it.
         let mut board = empty_board(7);
         board.cells[0] = Some(frigate_at(0, Faction::Player, Orientation::BowOn { bow: LaneEnd::Fore }));
         board.cells[2] = Some(frigate_at(2, Faction::Enemy, Orientation::Broadside));
-        let scene = compose_scene(&board, &DEFAULT_LANE);
-        for (i, cmd) in scene.iter().enumerate() {
-            match cmd {
-                DrawCommand::Sprite(s) => {
-                    for v in [s.pos, s.half_size, s.uv_min, s.uv_max] {
-                        for c in v {
-                            assert!(c.is_finite(), "non-finite sprite coord at idx {}: {:?}", i, s);
+        board.cells[3] = Some(frigate_at(3, Faction::Enemy, Orientation::BowOn { bow: LaneEnd::Aft }));
+        for d in [0.0_f32, 15.0, 30.0, 45.0, 60.0, 75.0, 90.0] {
+            let scene = compose_scene(&board, &DEFAULT_LANE, d.to_radians());
+            for (i, cmd) in scene.iter().enumerate() {
+                match cmd {
+                    DrawCommand::Sprite(s) => {
+                        for v in [s.pos, s.half_size, s.uv_min, s.uv_max] {
+                            for c in v {
+                                assert!(c.is_finite(), "non-finite sprite coord at angle {}° idx {}: {:?}", d, i, s);
+                            }
                         }
                     }
-                }
-                DrawCommand::Polygon(p) => {
-                    for v in [p.p0, p.p1, p.p2, p.p3, p.uv_min, p.uv_max] {
-                        for c in v {
-                            assert!(c.is_finite(), "non-finite polygon coord at idx {}: {:?}", i, p);
+                    DrawCommand::Polygon(p) => {
+                        for v in [p.p0, p.p1, p.p2, p.p3, p.uv_min, p.uv_max] {
+                            for c in v {
+                                assert!(c.is_finite(), "non-finite polygon coord at angle {}° idx {}: {:?}", d, i, p);
+                            }
                         }
                     }
                 }

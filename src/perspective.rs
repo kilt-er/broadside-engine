@@ -87,21 +87,37 @@ pub fn fractional_cell_to_screen(fractional_cell: f32, geom: &LaneGeometry) -> P
     }
 }
 
-/// A ship's design-pixel dimensions in the flat side-view model.
-/// `length` is bow-stern (horizontal); `height` is vertical (water-line to
-/// top of hull). The bow narrows to a point on the leading edge; the stern
-/// is square. The renderer uses the `Orientation::BowOn { bow }` field to
-/// pick which end is the bow.
+/// A ship's design-pixel dimensions.
+///
+/// - `length` is bow-stern (horizontal along the lane in bow-on stance).
+/// - `beam` is port-starboard (the depth axis perpendicular to length).
+/// - `height` is the vertical extent at pure side view.
+///
+/// The view-angle scrubber stacks a FRONT face of vertical extent
+/// `height × cos(angle)` underneath a TOP face of vertical extent
+/// `beam × sin(angle) / 2`. At angle = 0 the top face collapses and the
+/// ship reads as a pure side silhouette; at angle = PI/2 the front face
+/// collapses and the ship reads as a pure top-down rectangle.
 #[derive(Debug, Clone, Copy)]
 pub struct ShipDims {
     pub length: f32,
+    pub beam: f32,
     pub height: f32,
 }
 
 /// Default Frigate hull. Sized so the silhouette dominates a single cell
-/// (lane cell width on `DEFAULT_LANE` is ~177 design px, so a 168-long
-/// frigate fits with a small visual margin on each side).
-pub const FRIGATE_DIMS: ShipDims = ShipDims { length: 168.0, height: 50.0 };
+/// (lane cell width on `DEFAULT_LANE` is ~177 design px). `beam` is ~25%
+/// of `length` for a recognizable side / top contrast.
+pub const FRIGATE_DIMS: ShipDims = ShipDims { length: 168.0, beam: 42.0, height: 50.0 };
+
+/// Which way the hull is turned. `BowOn` runs along the lane axis (length
+/// along x); `Broadside` runs perpendicular (length along the depth axis,
+/// which the view angle maps to top-face vertical extent).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Stance {
+    BowOn,
+    Broadside,
+}
 
 /// Range band a target sits in relative to a source cell. Thin convenience
 /// wrapper over `geometry::range_band` so renderer code can stay
