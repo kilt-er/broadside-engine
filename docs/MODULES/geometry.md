@@ -49,8 +49,10 @@ Eleven items, all `pub`:
 | `absorb_shield(face, dmg)`            | fn       | Run damage through one zone's shield + armour.      |
 | `default_shield_profile()`            | fn       | The starting Frigate's four-zone shield layout.     |
 
-Plus one private item — `band_index(b)` — and the const `BAND_ORDER`, used together to
-implement `band_falloff`.
+Plus one private item — `band_index(b)`, an exhaustive `match` mapping `RangeBand`
+to its position in the canonical order. The match itself is the drift guard
+(reordering or extending `RangeBand` without updating `band_index` fails to compile).
+Used by `band_falloff` to compute the delta between actual and optimal bands.
 
 ---
 
@@ -90,7 +92,7 @@ functions, in a fixed order.
      │
      ├──► band_falloff(raw, range_band(atk, tgt), weapon.optimalBand)
      │      │
-     │      └──► band_index(...) twice via BAND_ORDER
+     │      └──► band_index(...) twice (exhaustive match per band)
      │
      │      ... subsystem modifiers, target-lock x2 (resolver-internal) ...
      │
@@ -167,15 +169,16 @@ this, not `arc_bears` directly.
 pipeline. Charge negates the hit one-for-one regardless of magnitude; armour subtracts
 permanently. Zero damage does **not** burn charge.
 
-### `default_shield_profile() -> HashMap<HullZone, ShieldFace>`
-**Line:** `geometry.rs:160`. **Mirrors:** `geometry.ts:112`. Bow armour 2, stern 0,
-flanks 1/1. All zero charge.
+### `default_shield_profile() -> ShieldProfile`
+**Line:** `geometry.rs:157`. **Mirrors:** `geometry.ts:112`. Bow armour 2, stern 0,
+flanks 1/1. All zero charge. Returns the named-field `ShieldProfile` struct from
+[`types.rs`](types.md), not a HashMap (see Drift section).
 
 ---
 
 ## Drift from TypeScript
 
-Three watch-list items from before the port landed have been **resolved** by `d383c6a`:
+Updated as audit responses have landed (`d383c6a`, `291206d`, `21561f1`):
 
 1. **Float math in `band_falloff` (drift watch #6).** Architect kept the TS `f64`
    scaling rather than switching to fixed-point integer percentages. Cross-platform
@@ -183,14 +186,25 @@ Three watch-list items from before the port landed have been **resolved** by `d3
    changing the signature.
 
 2. **Shield-profile representation (drift watch #3).** TS uses
-   `Record<HullZone, ShieldFace>` — a JS object keyed by a string union. Rust kept
-   `HashMap<HullZone, ShieldFace>` rather than `[ShieldFace; 4]` indexed by `HullZone`.
-   Trade-off: keeps the JSON wire shape symmetric with TS at the cost of one hash
-   lookup per shield check. Can switch to an array later if profiling demands it.
+   `Record<HullZone, ShieldFace>` — a JS object keyed by a string union. The original
+   port (`d383c6a`) mirrored this with `HashMap<HullZone, ShieldFace>`. The M1 audit
+   fix (`291206d`) **replaced the HashMap with the named-field `ShieldProfile`
+   struct** in [`types.rs`](types.md), and `default_shield_profile` was updated to
+   return it. Total deserialization rejects partial catalogs at parse rather than
+   panicking deep in the resolver. JSON wire shape unchanged.
+   `ShieldProfile: Index<HullZone> + IndexMut<HullZone>`, so call-site syntax
+   `profile[HullZone::Bow]` works identically to the HashMap days.
 
 3. **`ShieldFace` mutation in `absorb_shield`.** TS mutates via reference; Rust uses
-   `&mut ShieldFace`. The resolver will need disjoint borrows to call this — flagged
-   as a future-care item for `resolve.rs`.
+   `&mut ShieldFace`. The resolver reaches it via
+   `&mut ship.shield_profile[zone]` thanks to the `IndexMut<HullZone>` impl on
+   `ShieldProfile` (`types.rs:263`).
+
+4. **`band_index` lookup (audit G4, `21561f1`).** Originally a `const BAND_ORDER`
+   array + `.iter().position(...)` linear scan + runtime `.expect`. Replaced with an
+   exhaustive `match` whose totality is the drift guard at compile time. Drops the
+   parallel-invariant comment that BAND_ORDER had to track `RangeBand`'s declaration
+   order — the match is now the order, and it cannot drift.
 
 **No new drift was introduced.** The Rust port is line-for-line equivalent to the TS
 except for:

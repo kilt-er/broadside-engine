@@ -47,9 +47,11 @@ See **Range band**.
 
 **Band falloff**
 The damage penalty for firing outside a weapon's `optimalBand`. Indexed by the absolute
-distance between actual and optimal band index in `BAND_ORDER`. Factor table currently
-`[1, 0.66, 0.5, 0.33, 0.2]`, floored at 0. Skipped when the effect carries
-`bandFalloff: false`. (HTML Part III; `geometry.ts:41`.)
+distance between actual and optimal band positions (mapped via `geometry::band_index`,
+an exhaustive `match` over `RangeBand`). Factor table currently
+`[1, 0.66, 0.5, 0.33, 0.2]`, floored at 0. Skipped when an `Effect::DAMAGE` on the
+action carries `band_falloff: Some(false)` — `None` and `Some(true)` both apply
+falloff. (HTML Part III; `src/geometry.rs:69`, `src/types.rs:409`.)
 
 **Bay**
 A subsystem's purchasing/grouping category. Six bays: `gunnery`, `helm`, `engineering`,
