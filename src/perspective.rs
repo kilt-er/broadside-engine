@@ -155,14 +155,11 @@ pub struct ShipDims {
     pub height: f32,
 }
 
-/// Default Frigate hull. The TS reference uses `(56, 14, 6)`; we scale 3x
-/// across the board (`168, 42, 18`) so the Rust renderer's ship silhouette
-/// dominates the lane visually at the 1320x480 virtual canvas. Aspect ratio
-/// is unchanged so the military-axonometric projection still places the
-/// bow chevron at the correct relative position on the top face. The
-/// perspective gradient (scaleNear 1.0 -> scaleFar 0.55) keeps far-cell
-/// ships readable without overlapping their neighbours.
-pub const FRIGATE_DIMS: ShipDims = ShipDims { length: 168.0, beam: 42.0, height: 18.0 };
+/// Default Frigate hull. The TS reference uses `(56, 14, 6)`; the Rust
+/// renderer holds at 2x `(112, 28, 12)` after a 3x bump produced an
+/// offscreen-lane regression in bruce`s review. Reverted as a stop-gap
+/// while diagnosing — see commit log.
+pub const FRIGATE_DIMS: ShipDims = ShipDims { length: 112.0, beam: 28.0, height: 12.0 };
 
 /// Which way the hull is turned. `BowOn` runs along the lane axis; `Broadside`
 /// runs perpendicular to it.
