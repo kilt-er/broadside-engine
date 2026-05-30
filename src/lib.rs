@@ -19,12 +19,25 @@
 //! - [`perspective`] — screen-space lane projection, ship sprite polygons,
 //!   beam endpoints. The only module that knows about screen coordinates;
 //!   consumed by the renderer (mirrors `engine/perspective.ts`).
+//! - [`atlas`]    — procedural sprite atlas (ship faces, bow chevron,
+//!   ordnance, HUD glyphs, parallax art).
+//! - [`gfx`]      — wgpu state, instanced sprite batcher, virtual-resolution
+//!   blit. Pipeline scaffold only; scene content lives in [`hud`].
+//! - [`hud`]      — turns a [`types::Board`] into a back-to-front
+//!   `Vec<SpriteInstance>` for the renderer.
 //!
-//! Content effect bodies, AI, and rendering live in sibling modules added by
-//! other teammates.
+//! Content effect bodies and AI live in sibling modules added by other
+//! teammates.
 
 pub mod types;
 pub mod catalog;
 pub mod geometry;
 pub mod perspective;
 pub mod resolve;
+
+#[cfg(feature = "render")]
+pub mod atlas;
+#[cfg(feature = "render")]
+pub mod gfx;
+#[cfg(feature = "render")]
+pub mod hud;
