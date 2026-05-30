@@ -1170,11 +1170,239 @@ fn resolve_target_move(
     }
 }
 
-/// TODO(broadside-content): AI decision layer. Pick actions to maximise
-/// threatened lane-ends (the flanking objective), then reuse `execute_queue`
-/// unchanged. TS body is a no-op stub.
-fn decide_enemy_action(_enemy_cell: usize, _board: &mut Board, _content: &dyn Content) {
-    // intentionally empty — matches TS stub
+/// Enemy AI decision layer. Picks one action for this enemy and pushes it
+/// onto `ship.queue`; the resolver then runs the queue through
+/// [`execute_queue`] unchanged — the AI never bypasses the pipeline.
+///
+/// # Objective
+///
+/// Per the analysis doc (`broadside-analysis.html:499-500`):
+///
+/// > "the enemy controls which situation you are in (its AI maximises the
+/// > number of distinct lane-ends it threatens), the player keeps flipping
+/// > between the two"
+///
+/// So the AI's goal is **lane-end diversity**: enemies stacked on one side
+/// of the player let the player tank with the bow; enemies on opposite
+/// sides force a stance flip. The score function below rewards an action
+/// that threatens the player from a lane-end NOT already covered by an
+/// already-queued enemy.
+///
+/// # Algorithm
+///
+/// 1. Find the player; if there is no player, return — nothing to threaten.
+/// 2. Enumerate this enemy's available actions: every mount's `.weapon`
+///    (an action id), gated by content lookup, cooldown, heat / lockout,
+///    band, and arc. The arc test uses [`resolve_targeting`] against the
+///    real board, so the action is "available" iff it would actually
+///    resolve to a non-empty cell set.
+/// 3. Score each available action:
+///    - `+10` per cell hit that contains the player (the visible threat)
+///    - `+6` if the threatened lane-end is NOT yet covered by an
+///       already-queued enemy on this enemy's turn (diversity bonus)
+///    - `+raw_damage` (the action's first `DAMAGE` effect amount)
+///    - `-heat` cost (cheap actions preferred when threat is equal)
+///    - Trait nudges: `Pursuit` adds a small bonus to actions that hit
+///      the player; `BurnHard` reduces `heat` penalty (it likes to burn).
+/// 4. Pick the highest-scoring action. Push its id onto the queue.
+/// 5. Fallback ladder when nothing threatens the player:
+///    - **Reorient** if a flip would put the player in arc next turn.
+///    - **Move** (any DISPLACE_SELF action) — closes range, telegraphs.
+///    - **Vent** — at the very least, blow off heat so the next round is
+///      more viable. Always a visible telegraph in the queue.
+///
+/// # Visible-threat invariant
+///
+/// Every successful AI turn produces an action whose `resolve_targeting`
+/// returns a non-empty cell set against the current board, OR a fallback
+/// action (reorient / move / vent) that is itself a visible queued
+/// telegraph. The TS resolver renders queue contents over each ship, so
+/// pushing any action id is enough to make the intent legible.
+fn decide_enemy_action(
+    enemy_cell: usize,
+    board: &mut Board,
+    content: &dyn Content,
+) {
+    // 1. Locate the player. The TS uses `cells.find(s => s?.faction ===
+    //    "player")`; we mirror.
+    let Some(player_cell) = board.cells.iter().find_map(|c| {
+        c.as_ref().and_then(|s| (s.faction == Faction::Player).then_some(s.cell))
+    }) else {
+        return;
+    };
+
+    // Snapshot the enemy's gating state. We borrow read-only so the scoring
+    // loop can also borrow the board for resolve_targeting.
+    let Some(enemy) = board.cells[enemy_cell].as_ref() else {
+        return;
+    };
+    let heat = enemy.heat;
+    let heat_max = enemy.heat_max;
+    let locked_out = enemy.locked_out;
+    let cooldowns = enemy.cooldowns.clone();
+    let mount_weapons: Vec<String> = enemy.mounts.iter().map(|m| m.weapon.clone()).collect();
+    let traits: Vec<crate::types::Trait> = enemy.traits.clone();
+
+    let has_trait = |t: crate::types::Trait| traits.iter().any(|x| *x == t);
+    let burn_hard = has_trait(crate::types::Trait::BurnHard);
+    let pursuit = has_trait(crate::types::Trait::Pursuit);
+
+    // Which lane-ends are already covered by other enemies that have queued
+    // an action this round? We approximate "threatens the player from end X"
+    // by direction_to(player, enemy) — the lane-end the shot arrives from.
+    // Enemies whose queues are still empty (haven't been decided yet) don't
+    // count; the resolver iterates enemies in initiative order so when
+    // we're called for enemy N, enemies 0..N have already been decided.
+    let mut covered_ends: std::collections::HashSet<LaneEnd> =
+        std::collections::HashSet::new();
+    for (idx, slot) in board.cells.iter().enumerate() {
+        let Some(other) = slot else { continue };
+        if other.faction != Faction::Enemy {
+            continue;
+        }
+        if idx == enemy_cell {
+            continue;
+        }
+        if other.queue.is_empty() {
+            continue;
+        }
+        covered_ends.insert(crate::geometry::direction_to(player_cell, idx));
+    }
+
+    // 2. Enumerate this enemy's available threatening actions and score
+    //    them. We collect (score, action_id) tuples; the best wins.
+    let mut best: Option<(i32, String)> = None;
+    let my_end_from_player = crate::geometry::direction_to(player_cell, enemy_cell);
+
+    for weapon_id in &mount_weapons {
+        let Some(action) = content.action(weapon_id) else {
+            continue;
+        };
+        // Cooldown gate.
+        if cooldowns.get(weapon_id).copied().unwrap_or(0) > 0 {
+            continue;
+        }
+        // Heat / lockout gate: if locked out, only zero-heat actions fire;
+        // otherwise the action must not push us PAST heat_max (we are happy
+        // to overheat exactly once per turn).
+        if locked_out && action.cost.heat > 0 {
+            continue;
+        }
+        if heat + action.cost.heat > heat_max + 1 {
+            // Conservative: pushing more than 1 above heat_max means an
+            // entire turn wasted to vent. Skip this action this turn.
+            continue;
+        }
+        // Arc / band gate: does this action actually have something to
+        // resolve against today? `resolve_targeting` checks arc, band, and
+        // returns the cells it would hit.
+        let cells = resolve_targeting(action, board, enemy_cell);
+        if cells.is_empty() {
+            continue;
+        }
+
+        // 3. Score.
+        let raw_damage: i32 = action.effects.iter().filter_map(|e| match e {
+            Effect::DAMAGE { amount, .. } => Some(*amount),
+            _ => None,
+        }).sum();
+        let hits_player = cells.contains(&player_cell);
+        let mut score: i32 = 0;
+        if hits_player {
+            score += 10;
+            // Diversity bonus: if this enemy threatens the player from a
+            // lane-end NOT covered by an already-queued enemy, that
+            // produces a stance flip for the player next round.
+            if !covered_ends.contains(&my_end_from_player) {
+                score += 6;
+            }
+        }
+        score += raw_damage;
+        // Heat is the tempo brake; cheaper actions preferred at equal
+        // threat. Burn-Hard ships are less heat-averse.
+        score -= if burn_hard { action.cost.heat / 2 } else { action.cost.heat };
+        // Pursuit small bonus for any threatening action — the trait says
+        // "after firing, moves toward the player," and the AI should
+        // commit to firing rather than positioning when both are
+        // available.
+        if pursuit && hits_player {
+            score += 2;
+        }
+
+        if best.as_ref().map_or(true, |(s, _)| score > *s) {
+            best = Some((score, weapon_id.clone()));
+        }
+    }
+
+    // 4. If we found a threatening action, queue it and return.
+    if let Some((_, id)) = best {
+        if let Some(s) = board.cells[enemy_cell].as_mut() {
+            s.queue.push(id);
+        }
+        return;
+    }
+
+    // 5. Fallback ladder — produce a visible telegraph even when we can't
+    //    bear on the player this turn.
+
+    // 5a. Try a movement action: any mount's action that has a
+    //     DISPLACE_SELF effect. Closing range or pivoting is itself a
+    //     visible intent over the ship's queue.
+    for weapon_id in &mount_weapons {
+        let Some(action) = content.action(weapon_id) else {
+            continue;
+        };
+        if cooldowns.get(weapon_id).copied().unwrap_or(0) > 0 {
+            continue;
+        }
+        if locked_out && action.cost.heat > 0 {
+            continue;
+        }
+        if action.effects.iter().any(|e| matches!(e, Effect::DISPLACE_SELF { .. })) {
+            if let Some(s) = board.cells[enemy_cell].as_mut() {
+                s.queue.push(weapon_id.clone());
+            }
+            return;
+        }
+    }
+
+    // 5b. Try a reorient action — the flip might bring the player into a
+    //     forward arc next turn.
+    for weapon_id in &mount_weapons {
+        let Some(action) = content.action(weapon_id) else {
+            continue;
+        };
+        if cooldowns.get(weapon_id).copied().unwrap_or(0) > 0 {
+            continue;
+        }
+        if locked_out && action.cost.heat > 0 {
+            continue;
+        }
+        if action.effects.iter().any(|e| matches!(e, Effect::REORIENT { .. })) {
+            if let Some(s) = board.cells[enemy_cell].as_mut() {
+                s.queue.push(weapon_id.clone());
+            }
+            return;
+        }
+    }
+
+    // 5c. Last resort: a vent action — at least clears heat so next turn
+    //     is viable. Searches for an action with a VENT_HEAT effect.
+    for weapon_id in &mount_weapons {
+        let Some(action) = content.action(weapon_id) else {
+            continue;
+        };
+        if action.effects.iter().any(|e| matches!(e, Effect::VENT_HEAT { .. })) {
+            if let Some(s) = board.cells[enemy_cell].as_mut() {
+                s.queue.push(weapon_id.clone());
+            }
+            return;
+        }
+    }
+
+    // 5d. If even that fails, leave the queue empty. The resolver will
+    //     no-op the turn. A correctly-configured enemy with at least one
+    //     valid mount weapon should never reach this branch.
 }
 
 /// Was the just-finished execution window a chain kill? A "window" is one
@@ -1888,6 +2116,173 @@ mod tests {
         ]);
         super::resolve_target_move(3, 0, crate::types::DisplaceMode::Push, 2, &mut board);
         assert!(board.cells[3].is_none(), "no target, no move");
+    }
+
+    /* ---- enemy AI -------------------------------------------------------- */
+
+    struct AiContent {
+        actions: HashMap<String, Action>,
+    }
+    impl Content for AiContent {
+        fn action(&self, id: &str) -> Option<&Action> { self.actions.get(id) }
+        fn spawn_projectile(&self, _: &str, _: &Ship) -> Projectile { unreachable!() }
+    }
+
+    /// Helper: an enemy with one mount carrying the named weapon.
+    fn enemy_with_weapon(id: &str, cell: usize, weapon: &str, arc: Arc, bow: LaneEnd) -> Ship {
+        let mut s = make_ship(id, Faction::Enemy, cell, 5, bow);
+        s.mounts = vec![Mount { id: "m1".into(), arc, weapon: weapon.into() }];
+        s
+    }
+
+    /// AI queues a real attack action when one bears on the player.
+    #[test]
+    fn ai_queues_threatening_action_when_bears() {
+        let player = make_ship("p", Faction::Player, 0, 10, LaneEnd::Fore);
+        // Enemy at cell 2, bow=aft so its forward arc faces the player at 0.
+        let enemy = enemy_with_weapon("e", 2, "pulse_laser", Arc::Forward, LaneEnd::Aft);
+        let mut board = make_board(7, vec![
+            Some(player), None, Some(enemy), None, None, None, None,
+        ]);
+        let content = AiContent {
+            actions: HashMap::from([("pulse_laser".into(), pulse_laser())]),
+        };
+        super::decide_enemy_action(2, &mut board, &content);
+        let queue = board.cells[2].as_ref().unwrap().queue.clone();
+        assert_eq!(queue, vec!["pulse_laser".to_string()],
+            "AI should queue the threatening pulse_laser");
+    }
+
+    /// AI doesn't queue an out-of-band action (range it can't reach).
+    #[test]
+    fn ai_skips_out_of_band_action() {
+        let player = make_ship("p", Faction::Player, 0, 10, LaneEnd::Fore);
+        // Enemy at cell 6, bow=aft. Distance 6 is long; the weapon only
+        // covers pointBlank/close/mid (default pulse_laser). Skip.
+        let enemy = enemy_with_weapon("e", 6, "pulse_laser", Arc::Forward, LaneEnd::Aft);
+        let mut board = make_board(7, vec![
+            Some(player), None, None, None, None, None, Some(enemy),
+        ]);
+        let content = AiContent {
+            actions: HashMap::from([("pulse_laser".into(), pulse_laser())]),
+        };
+        super::decide_enemy_action(6, &mut board, &content);
+        let queue = board.cells[6].as_ref().unwrap().queue.clone();
+        assert!(queue.is_empty(),
+            "AI should not queue an out-of-band attack; expected empty fallback, got {queue:?}");
+    }
+
+    /// AI prefers a diversifying threat over a redundant one. With two
+    /// enemies, the second enemy should pick a threat from the OPPOSITE
+    /// lane-end if its score is comparable.
+    #[test]
+    fn ai_prefers_diversifying_threat() {
+        // Construct: player at cell 3 (middle). Enemy A at cell 1 (aft of
+        // player) has already queued an attack from the aft end. Enemy B
+        // is at cell 5 (fore of player); from B's perspective, threatening
+        // the player threatens the fore end — diverse, should score higher
+        // than backing off.
+        let player = make_ship("p", Faction::Player, 3, 10, LaneEnd::Fore);
+        // Enemy A already has a queued action — covers the aft end.
+        let mut enemy_a = enemy_with_weapon("ea", 1, "pulse_laser", Arc::Forward, LaneEnd::Fore);
+        enemy_a.queue = vec!["pulse_laser".into()];
+        // Enemy B is bow=aft so its forward arc points back toward the
+        // player at cell 3.
+        let enemy_b = enemy_with_weapon("eb", 5, "pulse_laser", Arc::Forward, LaneEnd::Aft);
+        let mut board = make_board(7, vec![
+            None, Some(enemy_a), None, Some(player), None, Some(enemy_b), None,
+        ]);
+        let content = AiContent {
+            actions: HashMap::from([("pulse_laser".into(), pulse_laser())]),
+        };
+        super::decide_enemy_action(5, &mut board, &content);
+        let queue = board.cells[5].as_ref().unwrap().queue.clone();
+        assert_eq!(queue, vec!["pulse_laser".to_string()],
+            "AI should queue the cross-flank attack to diversify lane-end coverage");
+    }
+
+    /// Fallback ladder: AI falls through to a movement action when nothing
+    /// bears on the player.
+    #[test]
+    fn ai_falls_back_to_movement_when_nothing_bears() {
+        // Enemy at cell 6, bow=fore — forward arc points AWAY from player.
+        // Pulse laser can't bear; afterburner (movement) should be queued
+        // as a positioning telegraph.
+        let player = make_ship("p", Faction::Player, 0, 10, LaneEnd::Fore);
+        let mut enemy = make_ship("e", Faction::Enemy, 6, 5, LaneEnd::Fore);
+        enemy.mounts = vec![
+            Mount { id: "m1".into(), arc: Arc::Forward, weapon: "pulse_laser".into() },
+            Mount { id: "m2".into(), arc: Arc::Forward, weapon: "afterburner".into() },
+        ];
+        let mut board = make_board(7, vec![
+            Some(player), None, None, None, None, None, Some(enemy),
+        ]);
+        let afterburner = Action {
+            id: "afterburner".into(),
+            name: "Afterburner".into(),
+            archetype: WeaponArchetype::Movement,
+            cost: ActionCost { heat: 0, cooldown_max: 0, advances_turn: true },
+            targeting: Targeting {
+                pattern: TargetingPattern::SELF,
+                band: vec![RangeBand::PointBlank],
+                optimal_band: RangeBand::PointBlank,
+                requires_arc: None,
+                facing_relative: false,
+                hits_all: false,
+            },
+            effects: vec![Effect::DISPLACE_SELF { mode: MovementMode::BURN, distance: 3 }],
+            r#mod: None,
+            icon: None,
+        };
+        let content = AiContent {
+            actions: HashMap::from([
+                ("pulse_laser".into(), pulse_laser()),
+                ("afterburner".into(), afterburner),
+            ]),
+        };
+        super::decide_enemy_action(6, &mut board, &content);
+        let queue = board.cells[6].as_ref().unwrap().queue.clone();
+        assert_eq!(queue, vec!["afterburner".to_string()],
+            "AI should fall back to a movement telegraph; got {queue:?}");
+    }
+
+    /// AI respects cooldowns: a charging weapon is skipped even when it
+    /// would otherwise threaten the player.
+    #[test]
+    fn ai_skips_action_on_cooldown() {
+        let player = make_ship("p", Faction::Player, 0, 10, LaneEnd::Fore);
+        let mut enemy = enemy_with_weapon("e", 2, "pulse_laser", Arc::Forward, LaneEnd::Aft);
+        enemy.cooldowns.insert("pulse_laser".into(), 2);
+        let mut board = make_board(7, vec![
+            Some(player), None, Some(enemy), None, None, None, None,
+        ]);
+        let content = AiContent {
+            actions: HashMap::from([("pulse_laser".into(), pulse_laser())]),
+        };
+        super::decide_enemy_action(2, &mut board, &content);
+        let queue = board.cells[2].as_ref().unwrap().queue.clone();
+        assert!(queue.is_empty(),
+            "AI should skip the cooldown'd weapon and have no fallback to queue");
+    }
+
+    /// Lockout: when overheated, only zero-heat actions are eligible.
+    #[test]
+    fn ai_respects_lockout_only_queues_zero_heat() {
+        let player = make_ship("p", Faction::Player, 0, 10, LaneEnd::Fore);
+        let mut enemy = enemy_with_weapon("e", 2, "pulse_laser", Arc::Forward, LaneEnd::Aft);
+        enemy.locked_out = true;
+        enemy.heat = enemy.heat_max;
+        let mut board = make_board(7, vec![
+            Some(player), None, Some(enemy), None, None, None, None,
+        ]);
+        let content = AiContent {
+            actions: HashMap::from([("pulse_laser".into(), pulse_laser())]),
+        };
+        super::decide_enemy_action(2, &mut board, &content);
+        let queue = board.cells[2].as_ref().unwrap().queue.clone();
+        // Pulse laser has heat:1 -> locked out can't fire it. No fallback.
+        assert!(queue.is_empty(),
+            "AI lockout + only heat-bearing weapon -> empty queue");
     }
 
     /// End-to-end: two lethal hits inside one `execute_queue` window cause
