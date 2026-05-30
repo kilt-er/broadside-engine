@@ -591,6 +591,26 @@ pub enum Hook {
 ///
 /// Every `bus.emit(...)` in `resolve.ts` passes `board`, so it is held by
 /// reference rather than `Option`.
+///
+/// # No-chained-emit invariant
+///
+/// **A callback MUST NOT call `ctx.board.bus.emit(...)`** — the resolver's
+/// emit wrapper [`mem::take`]s [`Board::bus`] off the board for the duration
+/// of every emit, so the bus reachable through `ctx.board` during a callback
+/// is a default placeholder, **not** the live bus. An emit through it would
+/// silently no-op (and would not be a bug to file — that is the contract).
+///
+/// To trigger downstream effects, **call resolver functions directly**
+/// (e.g. `apply_damage`, `destroy`, `add_status`). They take `&mut Board`,
+/// the callback already has `&mut Board` via `ctx.board`, and the resolver
+/// will fire any hooks they trigger **after this callback returns** —
+/// because by then control has unwound back to the wrapper, the bus is
+/// restored, and the next `emit` call goes through the live bus.
+///
+/// This matches the TS engine: in `resolve.ts:337-344`, `destroy` runs
+/// `applyDamage` for the ReactorBreach splash via a **direct function
+/// call**, then emits `onLethal` — no callback ever re-emits through the
+/// bus from inside another emit.
 pub struct HookContext<'b> {
     pub board: &'b mut Board,
     pub source_cell: Option<usize>,
@@ -617,22 +637,38 @@ impl<'b> HookContext<'b> {
 ///
 /// Storage is one [`Vec`] per [`Hook`], holding `Option<Box<dyn FnMut>>`. The
 /// `Option` lets `emit` move a single callback out for the duration of the
-/// call (leaving its slot as `None`) and put it back when the call returns,
-/// so re-entrant calls back into the bus see the vec **minus the currently-
-/// executing callback** — same semantics as iterating a live JS array with
-/// `forEach`.
+/// call (leaving its slot as `None`) and put it back when the call returns
+/// — same semantics as iterating a live JS array with `forEach`.
 ///
-/// Re-entrancy semantics:
-/// - **Same-hook re-emit** during a callback iterates the same vec; the
-///   currently-executing slot reads as `None` and is skipped, every other
-///   subscriber fires. (Fixes the ReactorBreach/Voidtouched chain where a
-///   nested `destroy` would otherwise silently lose the second `onLethal`.)
-/// - **Same-hook re-register** during a callback `push`es a new
-///   `Some(callback)` to the end of the vec. The outer `emit`'s index loop
-///   re-reads `len()` each iteration, so newly-added callbacks fire in the
-///   same emit pass (matches TS `forEach` semantics for in-place push).
+/// # Re-entrancy contract
+///
+/// **From inside a callback, subscribers MUST NOT call `bus.emit(...)`
+/// (whether on this bus directly or via `ctx.board.bus`).** The contract is
+/// enforced at the architecture level by the resolver's emit wrapper, which
+/// `mem::take`s this bus off [`Board`] for the duration of every emit pass —
+/// so a callback that reaches for `ctx.board.bus` finds a default placeholder.
+/// See [`HookContext`] for the full invariant and the "use direct resolver
+/// calls" guidance.
+///
+/// The storage-level `Option<Box<...>>` shape exists nonetheless because
+/// it's the simpler, correct primitive: it makes the `&mut self` borrow live
+/// only for the brief slot-take/slot-restore moments rather than across the
+/// whole callback, which keeps the bus self-consistent against any future
+/// caller (test harnesses, alternative orchestration layers) that does call
+/// `EventBus::emit` re-entrantly without the resolver wrapper interposed.
+/// In that narrow scenario:
+///
+/// - **Same-hook re-emit** iterates the same vec; the currently-executing
+///   slot reads as `None` and is skipped, every other live subscriber fires.
+/// - **Same-hook re-register** `push`es to the end; the outer `emit`'s
+///   index loop re-reads `len()` each iteration so new subscribers fire in
+///   the same pass.
 /// - **Cross-hook emit** is unaffected — only the live hook's slot is in
 ///   the take/replace dance.
+///
+/// These guarantees are correctness backstops, **not** part of the public
+/// subsystem-author contract. Subsystem authors should treat the bus as
+/// "you receive callbacks, you do not fire them."
 ///
 /// Closures are `FnMut` so subsystem state (e.g. counters) can accumulate.
 /// They are NOT `Send + Sync`; the renderer slice cannot move a [`Board`]
@@ -1050,14 +1086,18 @@ mod tests {
         assert_eq!(log.get(), [100, 200], "registration order is preserved");
     }
 
-    // NOTE on N1 (nested re-entrant emit): the storage-level take/replace fix
-    // in `EventBus::emit` lets a callback safely call `bus.emit` on the SAME
-    // bus from inside itself, observing every other subscriber. But the
-    // resolver pattern (`resolve::emit`) `mem::take`s the entire bus off the
-    // board for the duration of the call, so a callback that tries
-    // `ctx.board.bus.emit(...)` finds an empty bus on the board and silently
-    // no-ops. The ReactorBreach/Voidtouched chain reviewer described is
-    // blocked by THAT layer, not by `EventBus::emit`. Pending a team design
-    // call on bus-borrowing (likely a `RefCell<EventBus>` on `Board`); see
-    // architect-to-reviewer thread for the proposal.
+    // NOTE on the no-chained-emit invariant: a callback that tries
+    // `ctx.board.bus.emit(...)` finds a default placeholder bus on the board
+    // (the resolver `mem::take`s the live bus off `Board` for the duration of
+    // every emit) and silently no-ops. This is the documented contract — see
+    // `HookContext` and `EventBus` docstrings. The TS engine itself doesn't
+    // nest emits either (`resolve.ts:337-344` runs `destroy` -> direct
+    // `applyDamage` -> emits `onLethal`; no callback re-emits through the
+    // bus). Subsystems trigger downstream effects via resolver function calls
+    // (`apply_damage`, `destroy`, ...) which fire their own hooks after the
+    // current callback returns and the wrapper restores the bus.
+    //
+    // Tester's task #22 verifies the invariant (callback's view of the bus
+    // is a placeholder); #25 verifies that direct resolver-function calls
+    // from inside a callback DO emit through the live bus after return.
 }
