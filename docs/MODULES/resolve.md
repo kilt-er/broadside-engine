@@ -1,0 +1,401 @@
+# `src/resolve.rs` — Module Companion
+
+*A self-contained walkthrough of the combat resolver. The same content as the
+[`resolve.rs` section of `LINE_BY_LINE.md`](../LINE_BY_LINE.md#srcresolvers), but
+scoped: this file assumes you only care about how a round resolves and don't need the
+rest of the engine in context. Read this if you are about to add a new effect verb,
+modify the damage pipeline, write a subsystem hook, or debug a cascading event chain.*
+
+**Source commits:** `c5855ce` (initial port) + `da243be` (content TODO closures +
+`Content::damage_modifier` extension + `&dyn Content` cascade) + `6575472`
+(EventBus γ-invariant docstrings).
+**Mirrors:** `_drive_pull/broadside-engine/engine/resolve.ts`.
+**Design anchor:** HTML Part I (Core Loop) and Part XIII (Engine Integration & Schema).
+
+---
+
+## Why this file exists
+
+The resolver is what makes Broadside a game rather than a data model. Every action
+queued by player or enemy, every torpedo crossing the lane, every status tick at
+end-of-turn — all of it runs through this one file. **One execution path serves
+player, enemy, and ordnance**; the resolver doesn't branch on faction, and the AI
+never bypasses the pipeline.
+
+Three things to know up front:
+
+1. **The TS is canonical** when this port disagrees, but the Rust port also fills in
+   several TS TODO bodies (`apply_modifiers`, `resolve_self_move`,
+   `resolve_target_move`, `decide_enemy_action`) with implementations that match
+   the analysis-doc intent. Those are documented as Drift notes.
+2. **The damage pipeline is load-bearing**. Five steps in a fixed order:
+   band falloff → modifiers → target-lock ×2 → directional shield → hull. Every
+   balance lever plugs into one of these slots; **do not reorder**.
+3. **The bus is detached during emit** (`mem::take` pattern). Callbacks cannot
+   re-emit on the same bus — they must call resolver functions directly to cascade.
+   See "Re-entrancy and the γ-invariant" below.
+
+---
+
+## The four-phase round
+
+`resolve_round(board, content)` runs one full round:
+
+| Phase | What                                                                          |
+|-------|-------------------------------------------------------------------------------|
+| 1     | Player phase — find the player by faction scan, call `execute_queue` on their cell. |
+| 2     | Ordnance phase — snapshot projectile ids; advance each by id-lookup. **Opens its own chain-kill window** (`destroys_this_window = 0`). |
+| 3     | Enemy phase — for each enemy in initiative order: `skips_turn` check, `decide_enemy_action` to fill the queue, `execute_queue`. |
+| 4     | End of turn — tick cooldowns, dissipate heat, clear lockout, tick statuses, emit `OnTurnEnd`. |
+
+Phase 2 reuses the same `destroys_this_window` field as phase 1 — both reset to 0 on
+entry, both let `destroy()` accumulate kills, but only `execute_queue` emits
+`OnChainKill` from `detect_chain`. The TS ordnance phase does the same (no
+`onChainKill` emit during ordnance). If you want torpedo-driven chain kills to fire
+the hook, that's a future-work item; today it's intentionally omitted.
+
+---
+
+## The damage pipeline (the load-bearing sequence)
+
+`apply_damage(target_cell, raw, atk_cell, weapon, board, content)`:
+
+```
+   raw damage
+     │
+     ▼
+1. band falloff
+     │   if ANY DAMAGE effect on the weapon has band_falloff: Some(false),
+     │   step is skipped (action-level predicate, not per-effect)
+     ▼
+2. subsystem modifiers
+     │   apply_modifiers(dmg, target, band, board, content)
+     │   delegates to content.damage_modifier; default impl returns 0
+     │   result is clamped to max(0, dmg + bonus)
+     ▼
+3. target-lock 2x
+     │   if target carries TargetLock status: dmg *= 2 and the status is consumed
+     │   (swap_remove the matching entry)
+     ▼
+4. directional shield
+     │   incoming_from = direction_to(target.cell, atk_cell)
+     │   zone = facing_zone(target.orientation, incoming_from)
+     │   absorb_shield(face_mut(zone), dmg)
+     │     - charge > 0: decrement, return 0
+     │     - else:       (dmg - armour).max(0)
+     ▼
+5. hull subtraction + emit + destroy check
+     │   target.hull -= final_dmg
+     │   if final_dmg > 0: emit OnDamageTaken
+     │   if target.hull <= 0: destroy(target_cell, board, content)
+     ▼
+   resolved
+```
+
+**This order is invariant.** Every numeric modifier in the game plugs into one of
+these slots; reordering would change observable behaviour. If you add a new balance
+lever, decide which slot it belongs to and document it in the slot, not as a new
+slot.
+
+---
+
+## Queue execution: the arc + heat + cooldown gate
+
+`execute_queue(ship_cell, board, content)`:
+
+```
+   reset destroys_this_window = 0   // open the chain-kill window
+   clone the queue out (stable iteration across mutations)
+
+   for each action_id in queue:
+     action = content.action(action_id)   // skip if None
+     re-check ship still exists           // earlier effect may have destroyed it
+     check lockout: skip if locked_out && action.cost.heat > 0
+     check cooldown: skip if cooldowns[action_id] > 0
+     cells = resolve_targeting(...)
+     check arc-bore: skip if requires_arc && cells empty  // no cost, no cooldown
+     for each effect:
+       apply_effect(...)                  // may destroy ships, mutate cells
+     ship.heat += action.cost.heat
+     if ship.heat >= heat_max: ship.locked_out = true
+     ship.cooldowns[action_id] = action.cost.cooldown_max   // unconditional reset
+     emit OnDamageDealt with source_cell
+
+   if destroys_this_window >= 2: emit OnChainKill
+   clear queue (if ship survived)
+```
+
+Three contracts worth memorising:
+
+1. **No bore, no cost.** If the action requires an arc and `resolve_targeting`
+   returns an empty cell list, the action is skipped entirely. Heat is NOT spent;
+   cooldown is NOT reset. This is what makes optimistic queueing safe.
+2. **Cooldown resets unconditionally on a successful fire.** Hit or miss on individual
+   effects (e.g. damage absorbed entirely by shields), the cooldown still goes back
+   to `cost.cooldown_max`. Matches TS exactly.
+3. **`OnDamageDealt` fires per action, not per effect.** Subscribers see one event per
+   queued action that passed the arc gate, regardless of whether any damage landed.
+
+---
+
+## Targeting — eight patterns
+
+`resolve_targeting(action, board, ship_cell)` returns the cells the action will
+resolve against:
+
+| Pattern         | Returns                                                              |
+|-----------------|----------------------------------------------------------------------|
+| `SELF`          | `[ship_cell]`                                                        |
+| `BROADSIDE`     | Both lane directions if the broadside arc bears (0–2 cells)          |
+| `BEAM`          | First target in the bearing direction at allowed band (0–1 cells)    |
+| `POINT_BLANK`   | Same implementation as BEAM (the TS draws the same code path)        |
+| `SPINAL_LINE`   | Line of occupied cells in bearing direction, filtered by band; all if `hits_all`, else first |
+| `BLAST`         | First target ± neighbours (`[c-1, c, c+1]` clamped to lane)          |
+| `DEPLOYED_CELL` | Adjacent cell in bearing direction (0–1 cells)                       |
+| `ORDNANCE`      | Same as DEPLOYED_CELL (spawn point is the adjacent cell)             |
+
+The arc gate is enforced by `bears(ship, arc, target_cell)` from `geometry.rs`. The
+band gate is enforced by `in_allowed_band(action.targeting.band, ship_cell,
+target_cell)`.
+
+---
+
+## Effects — the closed verb set
+
+`apply_effect` dispatches over nine `Effect` variants:
+
+| Variant            | What happens                                                                |
+|--------------------|-----------------------------------------------------------------------------|
+| `DAMAGE`           | For each cell with a ship: `apply_damage` through the pipeline.             |
+| `APPLY_STATUS`     | For each cell with a ship: `add_status` (existing entry takes `max(old, new)` duration). |
+| `VENT_HEAT`        | Drop source heat, clear lockout, optionally reset all cooldowns. Emit `OnVent`. |
+| `REORIENT`         | Flip/set source orientation. Emit `OnReorient`.                             |
+| `SPAWN_ORDNANCE`   | Call `content.spawn_projectile(kind, &owner)`, push onto `board.ordnance`.  |
+| `DISPLACE_SELF`    | Delegate to `resolve_self_move` (THRUST / BURN / SLIP / JUMP / TRACTOR_SWAP). |
+| `DISPLACE_TARGET`  | For each target cell: `resolve_target_move` (Push / Pull / Swap).           |
+| `DEPLOY`           | For each cell: push a `Hazard` with `kind` widened from `DeployHazardKind`. |
+| `BOARD`            | **Doc-stub**. See Drift below.                                              |
+
+---
+
+## Movement modes
+
+`resolve_self_move(ship_cell, mode, distance, board, content)`:
+
+| Mode           | Path rule                                                                                       | Collision rule                                                       |
+|----------------|-------------------------------------------------------------------------------------------------|----------------------------------------------------------------------|
+| `THRUST`       | Exactly 1 cell. Distance ignored beyond the first cell.                                         | 1 damage if blocked by wall or occupant.                             |
+| `BURN`         | Multi-cell; stops at first ship or wall.                                                        | `max(0, distance - steps_taken)` damage.                             |
+| `SLIP`         | Passes *through* ships for `distance` cells, then continues until the first free cell.          | If lane runs out, clamp to edge + bill overflow.                     |
+| `JUMP`         | Blink-drive: `start + step * distance` directly, no path scan.                                  | Off-board: clamp + bill overflow. Occupied target: **fail entirely** (no-op). |
+| `TRACTOR_SWAP` | Swap with the first adjacent occupant in the bow direction. No-op if adjacent cell empty/off-lane. | None.                                                                |
+
+**Direction:** the ship moves in its *bow* direction. `BowOn { bow: Aft } → step -1`;
+everything else → step +1.
+
+**Collision routes through `apply_damage`** with `dummy_weapon()` so `band_falloff`
+is skipped. The directional shield still mediates — bow-first collisions eat less
+than stern-first.
+
+---
+
+## Target displacement
+
+`resolve_target_move(target_cell, source_cell, mode, distance, board, content)`:
+
+| Mode   | What                                                                                  |
+|--------|---------------------------------------------------------------------------------------|
+| `Swap` | Trade cells between source and target. No collision damage. No-op if `source == target`. |
+| `Push` | Target moves *away* from source. Stops at first occupant (incl. wall). Collision damage on stop. |
+| `Pull` | Target moves *toward* source. Source counts as an occupant — pull stops one cell short and applies collision. |
+
+---
+
+## Re-entrancy and the γ-invariant
+
+The bus is detached from the board for the duration of any emit:
+
+```
+fn emit(board, hook, build) {
+    let mut bus = std::mem::take(&mut board.bus);  // detach
+    let mut ctx = HookContext::new(board);
+    build(&mut ctx);
+    bus.emit(hook, &mut ctx);                      // dispatch
+    board.bus = bus;                               // reattach
+}
+```
+
+Three consequences for subsystem authors:
+
+1. **A callback CANNOT call `ctx.board.bus.emit(...)`.** It finds an empty bus on
+   the board and silently no-ops. This is the **γ-invariant**, canonically stated
+   in the `EventBus` and `HookContext` docstrings (commit `6575472`).
+2. **A callback CAN call resolver functions directly.** `apply_damage`, `destroy`,
+   `add_status`, etc. recurse correctly because they don't go through the bus.
+3. **The `EventBus::emit` storage-level take/replace** (see
+   [`types.rs`](types.md#section-7-subsystems--event-bus-lines-524-724)) handles
+   same-bus same-hook re-entrancy if you ever do reach the bus directly — but that
+   path is blocked by the detach above, so it's a defence-in-depth detail rather
+   than a load-bearing case.
+
+---
+
+## The `destroy()` invariant: splash-before-OnLethal
+
+When a ship dies, the resolver follows a specific ordering. **`destroy()`'s
+`OnLethal` emit is the last step**, after the ReactorBreach splash loop has fully
+unwound — including any recursive `destroy()` calls triggered by splash kills.
+
+**Concrete consequence for subsystem authors:** an `OnLethal` subscriber for ship X
+is guaranteed that any splash damage X dealt has already been observed via
+`OnDamageTaken`. The ordering is splash-before-lethal at every level of the chain.
+
+### Worked example: a 3-ship reactor-breach cascade
+
+From `tests/event_chain.rs::cascading_reactor_breaches_chain_correctly`:
+
+- A "breacher" (ReactorBreach trait) sits at cell 1.
+- A "tiny" (ReactorBreach trait, low hull) sits at cell 2.
+- A normal "neighbour" (10 hull) sits at cell 3.
+- `destroy(1, board, content)` is called.
+
+The observable event order:
+
+```
+damage(2)   // breacher's splash hits tiny
+damage(3)   // tiny's splash hits neighbour (inside breacher's destroy)
+lethal(2)   // tiny's OnLethal (after tiny's splash chain unwinds)
+lethal(1)   // breacher's OnLethal (after the whole subtree returns)
+```
+
+**Both damage emits fire before either lethal emit.** If a future port moves the
+`OnLethal` emit *before* the splash loop, the observable order becomes
+`[damage(2), lethal(2), damage(3), lethal(1)]` — the test's failure message
+explicitly names this regression form (lines 287–293).
+
+`board.destroys_this_window` ends at 2, which `detect_chain` reads as a chain-kill
+when the surrounding `execute_queue` completes.
+
+---
+
+## The AI loop (decide_enemy_action)
+
+`decide_enemy_action(enemy_cell, board, content)` picks one action and pushes it onto
+the enemy's queue. The resolver then runs the queue through `execute_queue`
+unchanged — **the AI never bypasses the pipeline**.
+
+### Objective: lane-end diversity
+
+Per the analysis doc: "the enemy controls which situation you are in (its AI
+maximises the number of distinct lane-ends it threatens), the player keeps flipping
+between the two." Enemies stacked on one side of the player let the player tank with
+the bow; enemies on opposite sides force a stance flip.
+
+### Algorithm
+
+1. **Locate the player**. If absent, return.
+2. **Compute covered ends**: lane-ends that already-queued enemies threaten the
+   player from. The AI runs in initiative order, so enemies 0..N-1 are decided by
+   the time we run for enemy N.
+3. **Enumerate available actions**: every mount's weapon, gated by cooldown, heat,
+   lockout, arc, band. Heat-budget gate skips actions that would push more than 1
+   above heat_max.
+4. **Score**:
+   - `+10` per cell hit that contains the player
+   - `+6` if the threatened lane-end is not yet covered (diversity bonus)
+   - `+raw_damage` (sum of `DAMAGE` effect amounts)
+   - `-heat` cost (halved for `BurnHard` ships)
+   - `+2` for `Pursuit` ships that hit the player
+5. **Pick the highest-scoring action** and queue it.
+6. **Fallback ladder** when nothing threatens the player:
+   - Any DISPLACE_SELF action (closes range)
+   - Any REORIENT action (might bring the player into arc next turn)
+   - Any VENT_HEAT action (at least clears heat)
+   - If even that fails, leave the queue empty.
+
+### Visible-threat invariant
+
+Every successful AI turn produces an action whose `resolve_targeting` returns a
+non-empty cell set, OR a fallback action (reorient / move / vent) that is itself a
+visible queued telegraph. The TS resolver renders queue contents over each ship, so
+pushing any action id is enough to make the AI's intent legible.
+
+---
+
+## Drift from TypeScript
+
+Resolved by `c5855ce + da243be + 6575472`:
+
+1. **`Content` trait, not struct.** TS uses
+   `interface Content { actions, spawnProjectile }`; Rust uses a trait with three
+   methods. Lookup is `Option<&Action>`; spawn drops the `&Board` parameter (caller
+   already has it); a new `damage_modifier` method routes subsystem bonuses through
+   the trait.
+2. **`damage_modifier` trait extension** (new in `da243be`). TS leaves
+   `applyModifiers` as a stub returning `dmg`. The Rust port routes subsystem
+   bonuses through `content.damage_modifier(target, band, board)` with a default
+   impl returning 0. The runtime subsystem registry lives on concrete Content, not
+   on Board, because the bus path can't reach the modifier step in time
+   (`OnDamageDealt` fires after `apply_damage` already ran).
+3. **`&dyn Content` cascade**. The `Content` parameter rippled into `destroy`,
+   `tick_statuses`, `end_of_turn`, `advance_projectile`, `resolve_self_move`,
+   `resolve_target_move`, and the effect dispatch. Broad but mechanical; pipeline
+   ordering preserved.
+4. **`destroys_this_window` counter on Board** (new vs TS). The TS `detectChain` is
+   a stub returning `false`. The Rust port adds an explicit counter on `Board`;
+   `execute_queue` and the ordnance phase each reset it; `destroy` increments;
+   `detect_chain` reads `>= 2`. Reset semantics live in the resolver, not on
+   `Board`.
+5. **`TRACTOR_SWAP` semantic**. TS doesn't specify. Chosen: "swap with the first
+   adjacent bow-direction occupant; no-op if empty." Coordinated with team-lead.
+6. **`Effect::BOARD` doc-stub**. Mass-* board-wide effects (mass_lock, mass_breach,
+   mass_emp, sensor_pulse) are **field-kit Cards** in the analysis doc, not
+   Actions — they live under `Catalog::fieldkit` and will be resolved by a future
+   field-kit handler, not through `applyEffect`. The TS body is also empty, so
+   leaving this stubbed matches the canonical reference exactly.
+7. **Push/Pull collision into source**. Source counts as an occupant; pull stops
+   one cell short and applies the standard collision-damage rule. TS didn't
+   specify.
+8. **AI fallback ladder**. Movement → reorient → vent → empty queue. Ensures the
+   AI's intent is always visible in the queue.
+9. **EventBus γ-invariant**. The `emit` helper detaches the bus during dispatch;
+   chained semantics must go through direct resolver calls. Canonical statement in
+   `EventBus` / `HookContext` docstrings (commit `6575472`).
+10. **`mem::take` pattern for bus borrowing**. TS doesn't have borrow checking; the
+    Rust port detaches the bus to release the `&mut Board` conflict during hook
+    dispatch. `EventBus: Default` is the load-bearing impl that makes this legal.
+
+---
+
+## Tests
+
+40+ inline tests in `#[cfg(test)] mod tests` plus integration suites at
+`tests/event_chain.rs`, `tests/pipeline.rs`, `tests/geometry.rs`, and others.
+Notable inline tests:
+
+```
+apply_damage_weak_stern_takes_post_falloff_hit       (demo Scenario A)
+apply_damage_strong_bow_soaks_to_zero                 (demo Scenario B)
+apply_damage_target_lock_doubles_and_consumes
+apply_damage_lethal_clears_the_cell
+execute_queue_overheats_and_records_cooldown
+execute_queue_no_target_no_cost                      (no-bore-no-cost)
+```
+
+The integration suite at `tests/event_chain.rs` covers cascading reactor breaches
+and the splash-before-lethal invariant.
+
+---
+
+## Cross-references
+
+- **Type vocabulary:** every type from [`src/types.rs`](types.md).
+- **Geometry primitives:** `range_band`, `band_falloff`, `facing_zone`,
+  `absorb_shield`, `direction_to`, `bears`, `opposite` from
+  [`src/geometry.rs`](geometry.md).
+- **Event bus:** `EventBus`, `HookContext`, `Hook` from
+  [`src/types.rs`](types.md#section-7-subsystems--event-bus-lines-524-724).
+- **Domain terms:** every concept in the [glossary](../GLOSSARY.md). Start with
+  *Damage pipeline*, *Heat lockout*, *Chain kill*, *Target lock*, *Movement mode*.
+- **Design intent:** Parts I, IV, VI, VII, and XIII of the
+  [analysis document](../../_drive_pull/broadside-analysis.html).
