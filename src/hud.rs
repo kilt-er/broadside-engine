@@ -966,12 +966,10 @@ pub enum WinState {
 pub fn win_state(board: &Board) -> WinState {
     let mut any_player = false;
     let mut any_enemy = false;
-    for slot in &board.cells {
-        if let Some(ship) = slot {
-            match ship.faction {
-                Faction::Player => any_player = true,
-                Faction::Enemy  => any_enemy = true,
-            }
+    for ship in board.cells.iter().flatten() {
+        match ship.faction {
+            Faction::Player => any_player = true,
+            Faction::Enemy  => any_enemy = true,
         }
     }
     if !any_player { WinState::Defeat }
