@@ -462,7 +462,27 @@ fn vs_ship(
 fn fs_ship(in: VsOut) -> @location(0) vec4<f32> {
     let side_px = textureSample(side_tex, ship_samp, in.uv);
     let top_px  = textureSample(top_tex,  ship_samp, in.uv);
-    return mix(side_px, top_px, ship.blend_t);
+    // blend_t = sin(view_angle): 0 at pure side-on, 1 at pure top-down.
+    //
+    // A naive `mix(side, top, blend_t)` cross-DISSOLVES the two orthographic
+    // sprites, so mid-angle reads as a double-exposure rather than a hull
+    // tilting. The bounding box already foreshortens correctly (height·cosθ +
+    // depth·sinθ) — the fix is to stop dissolving the *fill*:
+    //
+    //   B (faster curve): collapse the crossfade to a narrow smoothstep band
+    //     so we snap through the muddy 50/50 instead of lingering there.
+    //   A (dominant sprite): the band is centered on the θ=45° swap point
+    //     (sin 45° = 0.7071), so for θ<45° we show ~pure side and for θ≥45°
+    //     ~pure top. Outside the band there is zero double-exposure; the
+    //     bbox foreshorten supplies the tilt illusion.
+    //
+    // HALF_BAND is the crossfade half-width in blend_t units. Small enough to
+    // read as a crisp flip, wide enough (a few frames) to avoid a 1-frame
+    // pop. Bruce iterates this and SWAP if needed.
+    let SWAP: f32 = 0.70710677;   // sin(45°)
+    let HALF_BAND: f32 = 0.06;
+    let t = smoothstep(SWAP - HALF_BAND, SWAP + HALF_BAND, ship.blend_t);
+    return mix(side_px, top_px, t);
 }
 "#;
 
