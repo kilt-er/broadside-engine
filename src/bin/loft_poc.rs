@@ -3,7 +3,7 @@
 //! in this one file so the spike can be judged and, if it reads right, lifted
 //! into the engine without entanglement.
 //!
-//! Run: `cargo run --bin loft_poc --features render`
+//! Run: `cargo run --bin loft_poc --features render,runtime`
 //!
 //! Pipeline (mirrors docs/BROADSIDE_RENDER_PIPELINE_HANDOFF.md):
 //!   1. Lofted dagger hull (`loft` mod) uploaded once as flat-shaded tris.
@@ -14,12 +14,17 @@
 //!   3. Posterize pass — WGSL port of the tool's GLSL frag (HSV grade →
 //!      quantize to BANDS → discard a<0.5), nearest-neighbor upscaled to the
 //!      window; background pixels show a flat backdrop.
-//!   4. Spins through the 4 discrete stance yaws (right 28° / left 152° /
-//!      fore 118° / aft 298°) at 26° pitch, ~1.2 s each; LEFT/RIGHT arrows
-//!      step stances manually and freeze the auto-spin.
+//!   4. SMOOTH CONTINUOUS rotation — the camera advances yaw/pitch by the
+//!      wall-clock delta every frame and renders the live pose. This is the
+//!      thesis: live 3D rotates smoothly at every angle for free, with NO
+//!      sprite interpolation and NO baked frames. (The handoff doc's
+//!      "discrete frame-stepped" framing is explicitly superseded.) Default
+//!      is a slow auto-orbit; ←→ steer yaw, ↑↓ scrub pitch, Space pauses,
+//!      1-4 snap to the canonical stance yaws (right/left/fore/aft) as
+//!      reference points only.
 //!
-//! Success criterion is visual (bruce judges): does the dagger read as crisp
-//! capital-ship pixel art like the browser tool?
+//! Success criterion is visual (bruce judges): does the dagger rotate
+//! smoothly and read as crisp capital-ship pixel art at every angle?
 
 use std::sync::Arc;
 use std::time::Instant;
