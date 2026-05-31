@@ -43,7 +43,9 @@ use broadside_engine::input::{
     intent_to_action_id, key_to_intent, synthetic_card_action_id, DemoContent, Intent, Key,
 };
 use broadside_engine::perspective::{LaneGeometry, DEFAULT_LANE};
-use broadside_engine::resolve::{resolve_round, Content};
+use broadside_engine::resolve::{
+    apply_instant_action, find_player_id, fire_player_queue, run_world_phase, Content,
+};
 use broadside_engine::subsystems::{HEAT_SINK, POINT_BLANK_DOCTRINE};
 use broadside_engine::types::{
     Arc as TArc, Board, EventBus, Faction, LaneEnd, Mount, Orientation, ShieldFace,
@@ -79,14 +81,17 @@ fn keycode_to_key(code: KeyCode) -> Option<Key> {
  * Applying an Intent to the board.
  *
  * Mutates `board` in place; returns true if the visible state changed (the
- * renderer requests a redraw on true). `CommitTurn` invokes the resolver;
- * `Restart` rebuilds the board via the supplied factory; everything else
- * gets translated to an action id via `input::intent_to_action_id` and
- * appended to the player's queue.
+ * renderer requests a redraw on true). Implements Shogun-Showdown turn
+ * semantics: every input advances time (i.e. runs phases 2-4 via
+ * [`run_world_phase`]). Move / Reorient / Vent / PlayCard apply
+ * instantly via [`apply_instant_action`]; `QueueAction` pushes to the
+ * player's queue (NOT fired until `CommitTurn`); `CommitTurn` fires the
+ * queue via [`fire_player_queue`]; `Restart` rebuilds the board.
  * ========================================================================== */
 
-/// Apply an [`Intent`] to the board. `initial_board` produces a fresh
-/// starting state for `Restart`. Returns true if the board changed.
+/// Apply an [`Intent`] to the board under Shogun-Showdown turn rules.
+/// `initial_board` produces a fresh starting state for `Restart`. Returns
+/// true if the board changed.
 ///
 /// `content` is `&mut` because [`Intent::PlayCard`] needs to validate +
 /// decrement card charges via [`Content::try_play_card`].
@@ -96,47 +101,83 @@ pub fn apply_intent(
     content: &mut dyn Content,
     initial_board: &dyn Fn() -> Board,
 ) -> bool {
+    // Restart never advances time — it discards the whole board.
+    if matches!(intent, Intent::Restart) {
+        *board = initial_board();
+        return true;
+    }
+
+    // Every other intent needs the player. If the player is gone (defeat
+    // state), the only legal intent is Restart; everything else no-ops.
+    let Some(player_id) = find_player_id(board) else {
+        return false;
+    };
+
     match intent {
-        Intent::CommitTurn => {
-            resolve_round(board, content);
-            true
-        }
-        Intent::Restart => {
-            *board = initial_board();
-            true
-        }
-        Intent::PlayCard(card_id) => {
-            // Resolve the player ship id, then validate + decrement
-            // charges via Content::try_play_card. On success push the
-            // synthetic `__card_<id>` action onto the player's queue;
-            // execute_queue handles the BOARD-effect dispatch.
-            let Some(player_id) = board
-                .cells
-                .iter()
-                .flatten()
-                .find(|s| s.faction == Faction::Player)
-                .map(|s| s.id.clone())
-            else {
+        // --- Instant intents: apply the synthetic action atomically, then
+        // advance the world phase. ---
+        Intent::MoveLeft | Intent::MoveRight | Intent::ReorientFlip | Intent::Vent => {
+            let Some(id) = intent_to_action_id(&intent) else {
                 return false;
             };
+            // The synthetic Action is registered with DemoContent (see
+            // `register_synthetics`). Clone so we don't hold a borrow on
+            // content while we mutate the board.
+            let Some(action) = content.action(id).cloned() else {
+                return false;
+            };
+            apply_instant_action(&player_id, &action, board, content);
+            run_world_phase(board, content);
+            true
+        }
+
+        // --- PlayCard: validate + decrement charges via try_play_card,
+        // then run the synthetic `__card_<id>` Action instantly. World
+        // phase runs after. ---
+        Intent::PlayCard(card_id) => {
             match content.try_play_card(&player_id, &card_id) {
                 PlayResult::Played => {
-                    append_to_player_queue(board, synthetic_card_action_id(&card_id))
+                    let synth_id = synthetic_card_action_id(&card_id);
+                    let Some(action) = content.action(&synth_id).cloned() else {
+                        // Charges were decremented but the synthetic isn't
+                        // registered. Best we can do is still advance time
+                        // so the player isn't stuck.
+                        run_world_phase(board, content);
+                        return true;
+                    };
+                    apply_instant_action(&player_id, &action, board, content);
+                    run_world_phase(board, content);
+                    true
                 }
                 PlayResult::UnknownCard
                 | PlayResult::NotCarried
                 | PlayResult::InsufficientCharges => false,
             }
         }
-        _ => {
-            // QueueAction / MoveLeft / MoveRight / ReorientFlip / Vent
-            // all map to a single action id that gets appended to the
-            // player's queue.
+
+        // --- QueueAction: push the action id to the player's queue. The
+        // queue is NOT fired here — the player commits later via Enter /
+        // Space. Time still advances. ---
+        Intent::QueueAction(_) => {
             let Some(id) = intent_to_action_id(&intent) else {
                 return false;
             };
-            append_to_player_queue(board, id.to_string())
+            let pushed = append_to_player_queue(board, id.to_string());
+            run_world_phase(board, content);
+            pushed
         }
+
+        // --- CommitTurn: fire whatever is in the queue (empty queue =
+        // Wait), then world phase. ---
+        Intent::CommitTurn => {
+            fire_player_queue(&player_id, board, content);
+            run_world_phase(board, content);
+            true
+        }
+
+        // Restart was handled at the top; this arm is unreachable but
+        // keeps the match exhaustive without an `_` wildcard.
+        Intent::Restart => unreachable!("Restart handled before player lookup"),
     }
 }
 
@@ -468,15 +509,22 @@ mod tests {
     }
 
     #[test]
-    fn move_intent_appends_synthetic_move_id() {
+    fn move_intent_advances_ship_instantly() {
+        // Under SS turn semantics MoveRight is instant — the ship moves
+        // one cell on the press, the queue is NOT touched, and the
+        // world phase runs after. Pre-SS the queue would contain the
+        // synthetic id; post-SS the queue stays empty.
         let mut board = fresh_board();
         let mut content = DemoContent::default();
+        // Player starts at cell 0 with bow=Fore in the demo board.
         apply_intent(Intent::MoveRight, &mut board, &mut content, &fresh_board);
-        let player = board.cells[0].as_ref().unwrap();
-        assert_eq!(
-            player.queue.last(),
-            Some(&broadside_engine::input::SYNTHETIC_MOVE_RIGHT.to_string()),
-        );
+        let player_at_1 = board.cells[1]
+            .as_ref()
+            .is_some_and(|s| s.faction == Faction::Player);
+        assert!(player_at_1, "MoveRight should advance the player to cell 1");
+        assert!(board.cells[0].is_none(), "cell 0 should be empty after the move");
+        let player = board.cells[1].as_ref().unwrap();
+        assert!(player.queue.is_empty(), "instant intent must NOT push to queue");
     }
 
     #[test]
@@ -535,7 +583,13 @@ mod tests {
     }
 
     #[test]
-    fn play_card_intent_appends_synthetic_action_and_decrements_charges() {
+    fn play_card_intent_fires_instantly_and_decrements_charges() {
+        // Under SS turn semantics PlayCard is instant: try_play_card
+        // validates + decrements, then the synthetic `__card_<id>` Action
+        // runs through apply_instant_action immediately, then the world
+        // phase advances. The queue is NOT touched. Pre-SS the synthetic
+        // was queued and fired only on CommitTurn; the new behavior
+        // matches the renderer tutorial's `(instant)` tag for cards.
         let mut board = fresh_board();
         let mut content = fresh_content();
         // First placeholder card is mass_lock (per content's
@@ -555,9 +609,7 @@ mod tests {
             &fresh_board,
         );
         assert!(changed, "PlayCard with sufficient charges should mutate board");
-        let synth_id = synthetic_card_action_id(&card_id);
-        let player = board.cells[0].as_ref().unwrap();
-        assert_eq!(player.queue.last(), Some(&synth_id), "synthetic card action queued");
+        // Charges decremented.
         let charges_after = content
             .field_kits
             .for_ship("player")
@@ -565,6 +617,16 @@ mod tests {
             .map(|c| c.charges)
             .unwrap_or(0);
         assert_eq!(charges_after, charges_before - 1, "play should decrement charges");
+        // Queue NOT touched — card fired instantly, the synthetic id
+        // never lands in `player.queue`.
+        let synth_id = synthetic_card_action_id(&card_id);
+        let player = find_player_id(&board)
+            .and_then(|id| board.cells.iter().flatten().find(|s| s.id == id))
+            .expect("player still on the board after card play");
+        assert!(
+            !player.queue.contains(&synth_id),
+            "instant card play must NOT queue the synthetic id",
+        );
     }
 
     #[test]

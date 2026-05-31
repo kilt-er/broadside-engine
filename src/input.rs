@@ -559,12 +559,13 @@ impl Content for DemoContent {
 /// and one line here in the same commit so the three stay in sync.
 pub fn tutorial_lines() -> &'static [&'static str] {
     &[
+        "every input advances time",
+        "[</>] move (instant)",
+        "[Tab] flip (instant)",
+        "[V] vent (instant)",
         "[1/2/3] queue mount",
-        "[5/6/7] play card",
-        "[</>] move left/right",
-        "[Tab] flip",
-        "[V] vent",
-        "[R/Space] commit turn",
+        "[5/6/7] play card (instant)",
+        "[R/Space] release queue",
         "[ [ ] ] rotate camera",
         "[Enter] restart",
         "[Esc] quit",
@@ -761,7 +762,7 @@ mod tests {
     /// player-input synthetics without any pipeline bypass.
     #[test]
     fn synthetic_vent_flows_through_execute_queue() {
-        use crate::resolve::execute_queue;
+        use crate::resolve::fire_player_queue;
         use crate::types::{Board, EventBus};
 
         let mut player = player_with_mounts(1);
@@ -780,7 +781,7 @@ mod tests {
         };
 
         let content = DemoContent::default();
-        execute_queue("p", &mut board, &content);
+        fire_player_queue("p", &mut board, &content);
 
         let p = board.cells[0].as_ref().unwrap();
         assert_eq!(p.heat, 1, "synthetic vent should dump 3 heat (4 -> 1)");
@@ -897,7 +898,7 @@ mod tests {
     #[test]
     fn mass_lock_card_play_through_execute_queue() {
         use crate::cards::{CARD_MASS_LOCK, PlayResult};
-        use crate::resolve::execute_queue;
+        use crate::resolve::fire_player_queue;
         use crate::types::{Board, EventBus, Faction, StatusKind};
 
         let player = player_with_mounts(0);
@@ -937,7 +938,7 @@ mod tests {
         if let Some(p) = board.cells[0].as_mut() {
             p.queue.push(synth_id);
         }
-        execute_queue("p", &mut board, &content);
+        fire_player_queue("p", &mut board, &content);
 
         // Step 3: both enemies should be target-locked, player should not.
         for cell in [1, 3] {

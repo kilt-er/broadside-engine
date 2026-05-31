@@ -286,7 +286,7 @@ fn dual_damage_mixed_predicate_through_execute_queue() {
     }
     let content = DualContent(dual_damage_weapon(RangeBand::Close, 4, [Some(false), None]));
 
-    broadside_engine::resolve::execute_queue("frigate", &mut board, &content);
+    broadside_engine::resolve::fire_player_queue("frigate", &mut board, &content);
 
     let hull = board.cells[5].as_ref().unwrap().hull;
     assert_eq!(

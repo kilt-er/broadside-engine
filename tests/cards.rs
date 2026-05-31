@@ -15,7 +15,7 @@ use broadside_engine::cards::{
     PlayResult, CARD_MASS_BREACH, CARD_MASS_LOCK, CARD_SENSOR_PULSE,
 };
 use broadside_engine::input::{synthetic_card_action_id, DemoContent};
-use broadside_engine::resolve::{execute_queue, Content};
+use broadside_engine::resolve::{fire_player_queue, Content};
 use broadside_engine::types::{
     Arc, Board, EventBus, Faction, LaneEnd, Mount, Orientation, ShieldFace, ShieldProfile, Ship,
     StatusKind,
@@ -93,7 +93,7 @@ fn play_card(
                 }
             }
         }
-        execute_queue(ship_id, board, content);
+        fire_player_queue(ship_id, board, content);
     }
     result
 }
