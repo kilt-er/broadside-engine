@@ -584,8 +584,18 @@ mod parts {
 // POC renderer
 // ===========================================================================
 
-const LOW_W: u32 = 160;
-const LOW_H: u32 = 100;
+/// Offscreen-resolution ladder (the tool's 120/160/220/320/480 selector, at
+/// the POC's 8:5 aspect). `[` / `]` cycle it live so bruce can find the sweet
+/// spot by eye: higher = sharper + greebles resolve, but too high loses the
+/// pixel-art charm. Default index 3 (320×200) — 160×100 was too low for the
+/// greebles to survive the downsample/posterize.
+const RES_LADDER: [(u32, u32); 5] = [(120, 75), (160, 100), (220, 138), (320, 200), (480, 300)];
+const DEFAULT_RES_IDX: usize = 3;
+
+/// Posterize band ladder (`-` / `=` cycle). Band count interacts with how the
+/// greebles read against the hull, so it's a live knob too.
+const BANDS_LADDER: [f32; 5] = [2.0, 3.0, 4.0, 5.0, 8.0];
+const DEFAULT_BANDS_IDX: usize = 2; // 4 bands (tool default)
 
 /// Default look-down pitch (degrees). UP/DOWN arrows scrub it continuously.
 const DEFAULT_PITCH_DEG: f32 = 26.0;
@@ -635,6 +645,17 @@ struct SceneUniform {
     ambient: [f32; 4],  // hull/parts albedo now travels per-vertex
 }
 
+/// Posterize band count, live-tunable. Padded to 16 bytes (uniform alignment;
+/// three scalar pads, never a vec3 — see the gfx.rs BlendUniform lesson).
+#[repr(C)]
+#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+struct PostUniform {
+    bands: f32,
+    _pad0: f32,
+    _pad1: f32,
+    _pad2: f32,
+}
+
 const HULL_SHADER: &str = r#"
 struct Scene {
     view_proj: mat4x4<f32>,
@@ -675,6 +696,11 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
 const POST_SHADER: &str = r#"
 @group(0) @binding(0) var tex: texture_2d<f32>;
 @group(0) @binding(1) var samp: sampler;
+// Scalar pads, NOT vec3<f32>: a WGSL vec3 forces 16-byte alignment and would
+// make this struct 32 bytes vs the Rust PostUniform's 16 — the late-min-
+// binding-size trap (same class of bug fixed in gfx.rs BlendUniform).
+struct Post { bands: f32, _pad0: f32, _pad1: f32, _pad2: f32 };
+@group(0) @binding(2) var<uniform> post: Post;
 
 struct VsOut {
     @builtin(position) clip: vec4<f32>,
@@ -705,7 +731,6 @@ fn hsv2rgb(c: vec3<f32>) -> vec3<f32> {
     return c.z * mix(vec3<f32>(K.x), clamp(p - vec3<f32>(K.x), vec3<f32>(0.0), vec3<f32>(1.0)), c.y);
 }
 
-const BANDS: f32 = 4.0;
 const U_HUE: f32 = 0.0;
 const U_SAT: f32 = 1.0;
 const U_BRI: f32 = 1.0;
@@ -728,7 +753,7 @@ fn fs_post(in: VsOut) -> @location(0) vec4<f32> {
     col = (col - vec3<f32>(0.5)) * U_CON + vec3<f32>(0.5);
     col = pow(max(col, vec3<f32>(0.0)), vec3<f32>(1.0 / U_GAM));
     col = clamp(col, vec3<f32>(0.0), vec3<f32>(1.0));
-    let q = floor(col * BANDS + 0.5) / BANDS;
+    let q = floor(col * post.bands + 0.5) / post.bands;
     return vec4<f32>(q, 1.0);
 }
 "#;
@@ -747,6 +772,16 @@ struct Gpu {
     depth_view: wgpu::TextureView,
     post_pipeline: wgpu::RenderPipeline,
     post_bg: wgpu::BindGroup,
+
+    // ---- live offscreen-resolution + posterize knobs ----
+    /// Kept so the offscreen targets + post bind group can be rebuilt when the
+    /// resolution changes ([ / ]).
+    post_bgl: wgpu::BindGroupLayout,
+    post_sampler: wgpu::Sampler,
+    bands_ubo: wgpu::Buffer,
+    /// Index into RES_LADDER (current offscreen size) and BANDS_LADDER.
+    res_idx: usize,
+    bands_idx: usize,
 
     // ---- continuous-motion camera state ----
     /// Current yaw / pitch in degrees, advanced every frame (smooth, live —
@@ -845,37 +880,9 @@ impl Gpu {
             usage: wgpu::BufferUsages::VERTEX,
         });
 
-        // low-res color + depth
-        let low = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("low-res target"),
-            size: wgpu::Extent3d {
-                width: LOW_W,
-                height: LOW_H,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: LOW_FORMAT,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
-            view_formats: &[],
-        });
-        let low_view = low.create_view(&wgpu::TextureViewDescriptor::default());
-        let depth = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("depth"),
-            size: wgpu::Extent3d {
-                width: LOW_W,
-                height: LOW_H,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: DEPTH_FORMAT,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            view_formats: &[],
-        });
-        let depth_view = depth.create_view(&wgpu::TextureViewDescriptor::default());
+        let res_idx = DEFAULT_RES_IDX;
+        let bands_idx = DEFAULT_BANDS_IDX;
+        let (low_w, low_h) = RES_LADDER[res_idx];
 
         // scene uniform + hull pipeline
         let scene_ubo = device.create_buffer(&wgpu::BufferDescriptor {
@@ -1009,22 +1016,38 @@ impl Gpu {
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering),
                     count: None,
                 },
-            ],
-        });
-        let post_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("post bg"),
-            layout: &post_bgl,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&low_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&post_sampler),
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
                 },
             ],
         });
+        let bands_ubo = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("bands ubo"),
+            size: std::mem::size_of::<PostUniform>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        queue.write_buffer(
+            &bands_ubo,
+            0,
+            bytemuck::bytes_of(&PostUniform {
+                bands: BANDS_LADDER[bands_idx],
+                _pad0: 0.0,
+                _pad1: 0.0,
+                _pad2: 0.0,
+            }),
+        );
+        // Offscreen color+depth at the current resolution, plus the post bind
+        // group wired to them. Rebuilt by `set_resolution` when [ / ] cycle.
+        let (low_view, depth_view, post_bg) =
+            Self::offscreen_targets(&device, low_w, low_h, &post_bgl, &post_sampler, &bands_ubo);
         let post_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("post layout"),
             bind_group_layouts: &[&post_bgl],
@@ -1070,6 +1093,11 @@ impl Gpu {
             depth_view,
             post_pipeline,
             post_bg,
+            post_bgl,
+            post_sampler,
+            bands_ubo,
+            res_idx,
+            bands_idx,
             yaw_deg: STANCE_YAWS_DEG[0],
             pitch_deg: DEFAULT_PITCH_DEG,
             paused: false,
@@ -1079,6 +1107,111 @@ impl Gpu {
             steer_down: false,
             last_frame: Instant::now(),
         }
+    }
+
+    /// (Re)build the low-res offscreen color + depth textures at `(w, h)` and
+    /// the post bind group wired to them (color view + sampler + bands ubo).
+    /// Called once in `new` and again whenever the resolution knob changes.
+    fn offscreen_targets(
+        device: &wgpu::Device,
+        w: u32,
+        h: u32,
+        post_bgl: &wgpu::BindGroupLayout,
+        post_sampler: &wgpu::Sampler,
+        bands_ubo: &wgpu::Buffer,
+    ) -> (wgpu::TextureView, wgpu::TextureView, wgpu::BindGroup) {
+        let size = wgpu::Extent3d {
+            width: w,
+            height: h,
+            depth_or_array_layers: 1,
+        };
+        let low = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("low-res target"),
+            size,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: LOW_FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let low_view = low.create_view(&wgpu::TextureViewDescriptor::default());
+        let depth = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("depth"),
+            size,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: DEPTH_FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        });
+        let depth_view = depth.create_view(&wgpu::TextureViewDescriptor::default());
+        let post_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("post bg"),
+            layout: post_bgl,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&low_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(post_sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: bands_ubo.as_entire_binding(),
+                },
+            ],
+        });
+        (low_view, depth_view, post_bg)
+    }
+
+    /// Step the offscreen-resolution ladder by `delta` (clamped) and rebuild
+    /// the offscreen targets + post bind group at the new size.
+    fn cycle_resolution(&mut self, delta: isize) {
+        let n = RES_LADDER.len() as isize;
+        let next = (self.res_idx as isize + delta).clamp(0, n - 1) as usize;
+        if next == self.res_idx {
+            return;
+        }
+        self.res_idx = next;
+        let (w, h) = RES_LADDER[self.res_idx];
+        let (low_view, depth_view, post_bg) = Self::offscreen_targets(
+            &self.device,
+            w,
+            h,
+            &self.post_bgl,
+            &self.post_sampler,
+            &self.bands_ubo,
+        );
+        self.low_view = low_view;
+        self.depth_view = depth_view;
+        self.post_bg = post_bg;
+        eprintln!("[loft_poc] offscreen resolution: {w}x{h}");
+    }
+
+    /// Step the posterize band ladder by `delta` (clamped) and reupload.
+    fn cycle_bands(&mut self, delta: isize) {
+        let n = BANDS_LADDER.len() as isize;
+        let next = (self.bands_idx as isize + delta).clamp(0, n - 1) as usize;
+        if next == self.bands_idx {
+            return;
+        }
+        self.bands_idx = next;
+        let bands = BANDS_LADDER[self.bands_idx];
+        self.queue.write_buffer(
+            &self.bands_ubo,
+            0,
+            bytemuck::bytes_of(&PostUniform {
+                bands,
+                _pad0: 0.0,
+                _pad1: 0.0,
+                _pad2: 0.0,
+            }),
+        );
+        eprintln!("[loft_poc] posterize bands: {bands}");
     }
 
     fn resize(&mut self, w: u32, h: u32) {
@@ -1126,7 +1259,8 @@ impl Gpu {
 
         let yaw = self.yaw_deg.to_radians();
         let pitch = self.pitch_deg.to_radians();
-        let aspect = LOW_W as f32 / LOW_H as f32;
+        let (low_w, low_h) = RES_LADDER[self.res_idx];
+        let aspect = low_w as f32 / low_h as f32;
         let view_proj = math3::camera_view_proj(yaw, pitch, aspect, 1.0);
         let model = math3::rotate_y(0.0);
 
@@ -1237,10 +1371,12 @@ struct App {
 impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         let attrs = Window::default_attributes()
-            .with_title("Broadside Loft POC — continuous orbit · ←→ yaw · ↑↓ pitch · Space pause · 1-4 snap")
+            .with_title(
+                "Loft POC — ←→ yaw · ↑↓ pitch · Space pause · 1-4 snap · [ ] res · - = bands",
+            )
             .with_inner_size(winit::dpi::LogicalSize::new(
-                (LOW_W * 6) as f64,
-                (LOW_H * 6) as f64,
+                (RES_LADDER[DEFAULT_RES_IDX].0 * 3) as f64,
+                (RES_LADDER[DEFAULT_RES_IDX].1 * 3) as f64,
             ));
         let window = Arc::new(event_loop.create_window(attrs).expect("window"));
         let gpu = pollster::block_on(Gpu::new(window.clone()));
@@ -1277,6 +1413,12 @@ impl ApplicationHandler for App {
                         KeyCode::ArrowDown => gpu.steer_down = pressed,
                         // Space toggles the auto-orbit on/off (on press only).
                         KeyCode::Space if pressed => gpu.paused = !gpu.paused,
+                        // [ / ] cycle the offscreen resolution ladder.
+                        KeyCode::BracketLeft if pressed => gpu.cycle_resolution(-1),
+                        KeyCode::BracketRight if pressed => gpu.cycle_resolution(1),
+                        // - / = cycle the posterize band count.
+                        KeyCode::Minus if pressed => gpu.cycle_bands(-1),
+                        KeyCode::Equal if pressed => gpu.cycle_bands(1),
                         // 1-4 snap yaw to a canonical stance (reference points,
                         // not the motion model) and pause so it can be studied.
                         KeyCode::Digit1 if pressed => {
