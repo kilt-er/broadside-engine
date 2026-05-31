@@ -281,14 +281,23 @@ pub fn synthetic_vent() -> Action {
 /// A pre-built `Content` impl for the demo binary. Loaded with the four
 /// synthetic actions and a starter pulse_laser / torpedo. Real catalog
 /// content will replace this once the JSON export lands.
+///
+/// Carries a [`crate::subsystems::Installations`] registry so subsystems
+/// installed on demo ships drive `Content::damage_modifier` /
+/// `Content::on_turn_end`. See the `subsystems` module docstring for
+/// why the registry lives here rather than on `Board`.
 pub struct DemoContent {
     pub actions: HashMap<String, Action>,
+    pub installations: crate::subsystems::Installations,
 }
 
 impl DemoContent {
     /// Empty registry. Most callers want [`DemoContent::default`].
     pub fn empty() -> Self {
-        Self { actions: HashMap::new() }
+        Self {
+            actions: HashMap::new(),
+            installations: crate::subsystems::Installations::new(),
+        }
     }
 
     /// Insert or replace an action by id.
@@ -302,6 +311,17 @@ impl DemoContent {
         self.insert(synthetic_move_right());
         self.insert(synthetic_reorient_flip());
         self.insert(synthetic_vent());
+    }
+
+    /// Install a subsystem on a ship by id. Phase 2 convenience for the
+    /// demo board's startup; the catalog flow will replace this once
+    /// `SubsystemDef` is wired through.
+    pub fn install_subsystem(
+        &mut self,
+        ship_id: impl Into<String>,
+        subsystem_id: impl Into<crate::subsystems::SubsystemId>,
+    ) {
+        self.installations.install(ship_id, subsystem_id);
     }
 }
 
@@ -358,6 +378,20 @@ impl Default for DemoContent {
 impl Content for DemoContent {
     fn action(&self, id: &str) -> Option<&Action> {
         self.actions.get(id)
+    }
+
+    fn damage_modifier(
+        &self,
+        target: &Ship,
+        band: crate::types::RangeBand,
+        board: &crate::types::Board,
+    ) -> i32 {
+        let installed = self.installations.for_ship(&target.id);
+        crate::subsystems::damage_modifier_for(installed, target, band, board)
+    }
+
+    fn on_turn_end(&self, board: &mut crate::types::Board) {
+        crate::subsystems::on_turn_end_for(&self.installations, board);
     }
 
     fn spawn_projectile(&self, kind: &str, owner: &Ship) -> Projectile {
@@ -643,5 +677,92 @@ mod tests {
         assert_eq!(p.heat, 1, "synthetic vent should dump 3 heat (4 -> 1)");
         assert!(!p.locked_out, "vent should clear lockout");
         assert!(p.queue.is_empty(), "queue should be drained after execute");
+    }
+
+    /* ---- Phase 2 subsystem integration ------------------------------- */
+
+    /// End-to-end: Marksman installed on the target ship adds +1 to a
+    /// Long-range hit, routed through the canonical damage pipeline via
+    /// `Content::damage_modifier`. Pin against a future regression that
+    /// drops the registry lookup.
+    #[test]
+    fn marksman_subsystem_adds_one_through_apply_damage() {
+        use crate::resolve::apply_damage;
+        use crate::subsystems::MARKSMAN;
+        use crate::types::{Board, EventBus, ShieldFace, ShieldProfile};
+
+        // Attacker at cell 0, target at cell 5 (Long range). Target has
+        // armour 0 on every face so the modifier change shows up in hull.
+        let attacker = player_with_mounts(0);
+        let mut target = player_with_mounts(0);
+        target.id = "target".into();
+        target.cell = 5;
+        target.shield_profile = ShieldProfile {
+            bow: ShieldFace { armour: 0, charge: 0 },
+            stern: ShieldFace { armour: 0, charge: 0 },
+            port: ShieldFace { armour: 0, charge: 0 },
+            starboard: ShieldFace { armour: 0, charge: 0 },
+        };
+
+        let mut board = Board {
+            size: 7,
+            cells: vec![
+                Some(attacker), None, None, None, None, Some(target), None,
+            ],
+            ordnance: vec![],
+            hazards: (0..7).map(|_| vec![]).collect(),
+            patrol: 1,
+            bus: EventBus::default(),
+            destroys_this_window: 0,
+        };
+
+        // Weapon: 4 raw, bandFalloff: false so the modifier delta is
+        // unambiguous. Distance 5 -> Long.
+        let mut weapon = synthetic_vent(); // grab a free-cost shell
+        weapon.id = "test_weapon".into();
+        weapon.effects = vec![Effect::DAMAGE { amount: 4, band_falloff: Some(false) }];
+
+        // Baseline: no Marksman installed. Hull should drop by 4.
+        let mut content = DemoContent::default();
+        apply_damage(5, 4, 0, &weapon, &mut board, &content);
+        assert_eq!(board.cells[5].as_ref().unwrap().hull, 6, "no marksman: 4 lands");
+
+        // Reset target, install Marksman, fire again. Hull should drop by 5.
+        board.cells[5].as_mut().unwrap().hull = 10;
+        content.install_subsystem("target", MARKSMAN);
+        apply_damage(5, 4, 0, &weapon, &mut board, &content);
+        assert_eq!(
+            board.cells[5].as_ref().unwrap().hull, 5,
+            "marksman: 4 base + 1 mod at Long = 5 lands"
+        );
+    }
+
+    /// End-to-end: HeatSink installed on the owning ship subtracts one
+    /// extra heat at end-of-turn, stacking with the canonical -1.
+    #[test]
+    fn heatsink_subsystem_doubles_dissipation_per_turn() {
+        use crate::resolve::end_of_turn;
+        use crate::subsystems::HEAT_SINK;
+        use crate::types::{Board, EventBus};
+
+        let mut player = player_with_mounts(0);
+        player.heat = 5;
+        let mut board = Board {
+            size: 3,
+            cells: vec![Some(player), None, None],
+            ordnance: vec![],
+            hazards: (0..3).map(|_| vec![]).collect(),
+            patrol: 1,
+            bus: EventBus::default(),
+            destroys_this_window: 0,
+        };
+
+        let mut content = DemoContent::default();
+        content.install_subsystem("p", HEAT_SINK);
+
+        end_of_turn(&mut board, &content);
+        // Base -1 (passive) + HeatSink -1 = -2 total. 5 -> 3.
+        assert_eq!(board.cells[0].as_ref().unwrap().heat, 3,
+            "HeatSink stacks with passive dissipation");
     }
 }

@@ -28,6 +28,10 @@
 //!   mapping for the Phase 1 demo, and `DemoContent` (a small `Content`
 //!   impl pre-loaded with the synthetic move/flip/vent actions and the
 //!   demo's mount weapons).
+//! - [`subsystems`] — runtime subsystem layer (Phase 2). Holds the
+//!   `Installations` registry + behavioral dispatch for `damage_modifier`
+//!   and `on_turn_end`. `DemoContent` owns an `Installations` and routes
+//!   the two Content trait methods through this module.
 //!
 //! Content effect bodies and AI live in sibling modules added by other
 //! teammates.
@@ -38,6 +42,7 @@ pub mod geometry;
 pub mod input;
 pub mod perspective;
 pub mod resolve;
+pub mod subsystems;
 
 #[cfg(feature = "render")]
 pub mod atlas;

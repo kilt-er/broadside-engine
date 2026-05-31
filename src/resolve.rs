@@ -79,6 +79,20 @@ pub trait Content {
     fn damage_modifier(&self, _target: &Ship, _band: RangeBand, _board: &Board) -> i32 {
         0
     }
+
+    /// End-of-turn subsystem pass. Called by [`end_of_turn`] **after** the
+    /// base passive heat dissipation and **before** the `OnTurnEnd`
+    /// event-bus emit, so any bus subscribers see the post-subsystem
+    /// state. Default impl is a no-op.
+    ///
+    /// Concrete impls (today: [`crate::input::DemoContent`]) walk their
+    /// installed-subsystem registry and apply OnTurnEnd-shaped effects
+    /// (e.g. HeatSink subtracting an extra heat from the owning ship).
+    /// The runtime layer lives in [`crate::subsystems`]; see that module
+    /// for why the registry isn't on `Board`.
+    ///
+    /// Task #61 (Phase 2). Same pre-approval scope as `damage_modifier`.
+    fn on_turn_end(&self, _board: &mut Board) {}
 }
 
 /* =============================================================================
@@ -378,6 +392,11 @@ pub fn end_of_turn(board: &mut Board, content: &dyn Content) {
         }
         tick_statuses(*c, board, content);
     }
+    // Subsystem OnTurnEnd pass (Phase 2 task #61). Runs AFTER base
+    // dissipation so HeatSink stacks additively on the canonical -1, and
+    // BEFORE the bus emit so subscribers see the final post-subsystem
+    // state.
+    content.on_turn_end(board);
     emit(board, Hook::OnTurnEnd, |_ctx| {});
 }
 
