@@ -272,6 +272,19 @@ fn player_ship(cell: usize) -> Ship {
         Mount { id: "m1".into(), arc: TArc::Forward, weapon: "pulse_laser".into() },
         Mount { id: "m2".into(), arc: TArc::Forward, weapon: "torpedo".into() },
     ];
+    // "aegis" is the first broadside-native player class (bruce's
+    // hand-painted PNGs under assets/sprites/aegis_*.png). The
+    // sprite loader picks them up via class-slug match; the renderer
+    // emits TexturedShip draws via the side/top blend pipeline when
+    // both views are present.
+    //
+    // TODO(broadside-content): once the canonical class roster
+    // lands and replaces the Shogun-Showdown-derived placeholders
+    // (wanderer / ronin / shadow / jujitsuka / chainmaster), wire a
+    // real ClassDef for "aegis" into the catalog and look up the
+    // player's loadout from there. For now this is a sprite-only
+    // hook — combat math doesn't depend on the slug.
+    player.klass = Some("aegis".into());
     player
 }
 

@@ -755,7 +755,15 @@ impl Gfx {
         // Invalidate cached bind groups — the underlying texture views
         // may have been replaced.
         self.ship_bg_cache.clear();
-        let classes = ["frigate", "scout", "gunboat"];
+        // Class slugs the loader probes. `aegis` is the first
+        // broadside-native player class (bruce's hand-painted art, see
+        // assets/sprites/aegis_*.png). frigate / scout / gunboat are
+        // placeholder names from the early-scaffold demo phase and
+        // will eventually disappear when the canonical class roster
+        // lands; keeping them in the probe list is free (missing files
+        // are silently skipped) and avoids breaking the existing
+        // procedural fallback.
+        let classes = ["aegis", "frigate", "scout", "gunboat"];
         let views = [SpriteView::Side, SpriteView::Top];
         let mut loaded = 0;
         for class in &classes {

@@ -54,18 +54,34 @@ adjacent ships at PointBlank fit without overlap.
 Endpoints in **bold**: paint side.png to the bold-0° extent, top.png to
 the bold-90° extent. The renderer interpolates between them at runtime.
 
+### Aegis — first broadside-native player class
+
+Bruce's first hand-painted ship. Uses the same `length:beam:height =
+6:3:2 at N=20` dims as the Frigate scaffold, so the bbox table above
+applies to Aegis as well. Painted PNGs live at
+`assets/sprites/aegis_bowOnFore_side.png` (120×40),
+`aegis_bowOnAft_side.png` (120×40), `aegis_bowOnFore_top.png` (120×60),
+`aegis_bowOnAft_top.png` (120×60). Broadside views are not painted
+yet — the loader derives `broadside_top` from `rotate_90_cw(bowOnFore_top)`
+and falls back to the procedural silhouette for `broadside_side`.
+
 ### Scout / Gunboat — TBD
 
-`ShipDims` for Scout and Gunboat aren't defined yet (the Frigate is the
-only class today). When content lands them, regenerate this table with
-`cargo run --bin render_refs --features render,runtime` and extend
-`docs/sprite-refs/` with PNG references for each.
+Legacy placeholder slugs from the early-scaffold phase. `ShipDims` for
+these aren't defined yet, and they'll likely be replaced by additional
+broadside-native classes (Aegis is class #1; future classes will name
+themselves). When content lands their canonical ClassDefs, regenerate
+this table with `cargo run --bin render_refs --features render,runtime`
+and extend `docs/sprite-refs/` with PNG references for each.
 
 ## Per-sprite PNG conventions
 
 Filename: `assets/sprites/<class>_<stance>_<view>.png`
 
-- `class` ∈ `{ frigate, scout, gunboat }`
+- `class` ∈ `{ aegis, frigate, scout, gunboat }` — `aegis` is the
+  current canonical broadside-native class; the others remain in the
+  loader's probe list as legacy slugs and silently fall through when
+  no PNGs are present.
 - `stance` ∈ `{ bowOnFore, bowOnAft, broadside }`
 - `view` ∈ `{ side, top }` — paint the 0° and 90° silhouettes only.
 
