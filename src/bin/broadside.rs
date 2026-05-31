@@ -629,8 +629,14 @@ impl App {
 
 impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        // Launch maximized so the continuous fit-scale blit fills the screen
+        // by default (bruce no longer has to resize each run to get a large
+        // render). `with_inner_size` stays as the un-maximized fallback size
+        // (1 window pixel = 1 virtual pixel) for platforms / WMs that ignore
+        // the maximize hint.
         let attrs = Window::default_attributes()
             .with_title("Broadside")
+            .with_maximized(true)
             .with_inner_size(winit::dpi::LogicalSize::new(
                 VIRTUAL_W as f64,
                 VIRTUAL_H as f64,

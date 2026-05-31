@@ -969,25 +969,37 @@ impl Gfx {
         self.ship_bg_cache.insert(key, bg);
     }
 
-    /// Compute the integer-scaled, letterboxed NDC quad that maps the
+    /// Compute the aspect-preserving, letterboxed NDC quad that maps the
     /// virtual-resolution offscreen target into the swapchain. Recomputed on
     /// every resize so the letterboxing tracks window changes.
+    ///
+    /// **Continuous fit-scale, not integer-floor.** The original integer-only
+    /// scale (`min(w/VIRTUAL_W, h/VIRTUAL_H)` floored, clamped to ≥1) snapped
+    /// the whole canvas to 1× unless the window was a full ≥2× multiple of the
+    /// virtual size on BOTH axes. On a 2560×1080 monitor (canvas 1320×480)
+    /// width gives 2560/1320 = 1.94 → floor 1×, so a maximized window rendered
+    /// at native 1320×480 in a black letterbox and nothing scaled up — the
+    /// real cause of "ships look too small". We now scale by the continuous
+    /// limiting-axis factor (here ~1.94×, ≈2562×931 inside 2560×1080) and
+    /// letterbox only the aspect-ratio remainder, so every window size scales
+    /// smoothly and maximize fills the screen.
     fn update_blit_uniform(&self) {
-        let w = self.config.width;
-        let h = self.config.height;
-        let scale = (w / VIRTUAL_W).min(h / VIRTUAL_H).max(1);
-        let scaled_w = VIRTUAL_W * scale;
-        let scaled_h = VIRTUAL_H * scale;
-        let offset_x = (w - scaled_w) / 2;
-        let offset_y = (h - scaled_h) / 2;
+        let wf = self.config.width as f32;
+        let hf = self.config.height as f32;
 
-        let wf = w as f32;
-        let hf = h as f32;
+        // Limiting-axis scale, preserving the virtual canvas's aspect ratio.
+        let scale = (wf / VIRTUAL_W as f32).min(hf / VIRTUAL_H as f32).max(1.0);
+        let scaled_w = VIRTUAL_W as f32 * scale;
+        let scaled_h = VIRTUAL_H as f32 * scale;
+        // Center the scaled canvas; the leftover on the non-limiting axis is
+        // the (aspect-ratio) letterbox.
+        let offset_x = (wf - scaled_w) / 2.0;
+        let offset_y = (hf - scaled_h) / 2.0;
 
-        let ndc_x_min = (offset_x as f32 / wf) * 2.0 - 1.0;
-        let ndc_x_max = ((offset_x + scaled_w) as f32 / wf) * 2.0 - 1.0;
-        let ndc_y_max = 1.0 - (offset_y as f32 / hf) * 2.0;
-        let ndc_y_min = 1.0 - ((offset_y + scaled_h) as f32 / hf) * 2.0;
+        let ndc_x_min = (offset_x / wf) * 2.0 - 1.0;
+        let ndc_x_max = ((offset_x + scaled_w) / wf) * 2.0 - 1.0;
+        let ndc_y_max = 1.0 - (offset_y / hf) * 2.0;
+        let ndc_y_min = 1.0 - ((offset_y + scaled_h) / hf) * 2.0;
 
         let blit = BlitUniform {
             ndc_min: [ndc_x_min, ndc_y_min],
@@ -1644,14 +1656,23 @@ impl BlitPipeline {
             mapped_at_creation: false,
         });
 
-        // Nearest-neighbor for pixel-art crispness on the integer-scale blit.
+        // LINEAR for the final canvas→window blit. The blit is now a
+        // CONTINUOUS fit-scale (see `update_blit_uniform`), not an integer
+        // multiple — e.g. ~1.94× when maximized on 2560×1080. NEAREST at a
+        // non-integer scale unevenly doubles source texels (some 1 px, some
+        // 2 px wide), which shimmers on motion and looks chunky on bruce's
+        // hand-painted (non-pixel-art) ship PNGs. LINEAR resamples smoothly
+        // for consistent edges. (The offscreen scene itself is still drawn
+        // 1 texel = 1 virtual pixel; this softening only happens once, on the
+        // upscale to the window.) Bruce can flip this back to Nearest if he
+        // prefers crisp-but-uneven.
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("blit nearest sampler"),
+            label: Some("blit linear sampler"),
             address_mode_u: wgpu::AddressMode::ClampToEdge,
             address_mode_v: wgpu::AddressMode::ClampToEdge,
             address_mode_w: wgpu::AddressMode::ClampToEdge,
-            mag_filter: wgpu::FilterMode::Nearest,
-            min_filter: wgpu::FilterMode::Nearest,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
             mipmap_filter: wgpu::FilterMode::Nearest,
             ..Default::default()
         });
