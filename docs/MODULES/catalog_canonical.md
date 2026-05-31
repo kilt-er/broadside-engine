@@ -177,11 +177,14 @@ Line 149-152: `hits_all` accepts either snake_case `hits_all` or camelCase
 `hitsAll` (canonical exports have drifted on this), defaulting to `false`. Only
 `SPINAL_LINE` patterns pierce all targets, and only when explicitly flagged.
 
-Line 154-165: **effect inflation.** `archetype` (defaulting to `"beam"`) and the
-action `id` are read as hints. The loose `effects` array — bare strings like
-`["DAMAGE"]` — is mapped through `inflate_effect`, which turns each string into a
-typed effect record. A non-array `effects` value is wrapped in a one-element vec
-so serde can report the shape error downstream.
+Line 154-176: **effect inflation.** `archetype` (defaulting to `"beam"`) and the
+action `id` are read as hints. Line 169 runs the
+[`rewrite_self_relative_signature`](#fn-rewrite_self_relative_signatureaction_id-str-effects-value---value-srccatalog_canonicalrs397)
+pre-pass on the loose effects (remapping the four dead self-relative class
+signatures from `DISPLACE_TARGET` to `DISPLACE_SELF` before inflation). The
+resulting bare-string `effects` array is then mapped through `inflate_effect`,
+which turns each string into a typed effect record. A non-array `effects` value is
+wrapped in a one-element vec so serde can report the shape error downstream.
 
 Line 167-172: build the **`cost`** sub-object: `{ heat, cooldownMax: cd,
 advancesTurn: !freeplay }`. The negation is the one non-obvious rename — a
@@ -205,7 +208,7 @@ Line 199: `Ok(Value::Object(a))` — the now-strict action object.
 Produces objects decoded into [`Action`](types.md) (with nested `ActionCost` and
 `Targeting`).
 
-**Worked example** (`canonical_pulse_laser_parses`, src/catalog_canonical.rs:516):
+**Worked example** (`canonical_pulse_laser_parses`, src/catalog_canonical.rs:617):
 the flat `pulse_laser` above decodes to `cost.heat == 1`, `cost.cooldown_max == 0`,
 `cost.advances_turn == true` (because `freeplay: false`), and a single
 `Effect::DAMAGE { amount: 3 }` — the `beam + heat 1 → heat + 2 = 3` inflation rule.
@@ -233,7 +236,7 @@ Line 215: `s.remove("desc");` — drop the UI-only description.
 [`SubsystemDef`](types.md).
 
 **Worked example** (`subsystem_unlock_renames_to_unlock_salvage_and_level_defaults`,
-src/catalog_canonical.rs:600): a `marksman` subsystem with `"unlock": null` and
+src/catalog_canonical.rs:700): a `marksman` subsystem with `"unlock": null` and
 no `level` decodes to `unlock_salvage == None`, `level == 1`, `max_level == 3`.
 
 ---
@@ -267,7 +270,7 @@ field; on success the derived id replaces it.
 [`ClassDef`](types.md).
 
 **Worked example** (`canonical_class_normalizes_set_refs_and_signature`,
-src/catalog_canonical.rs:890): the `wanderer` class with display-name sets and a
+src/catalog_canonical.rs:995): the `wanderer` class with display-name sets and a
 prose signature decodes to `set1 == ["broadside_battery", "pulse_laser"]`,
 `set2 == ["railgun_broadside", "grav_snare"]`, and `signature == "slip"`.
 
@@ -295,9 +298,9 @@ original through.
 **Cross-references:** Called by `transform_class`. Reads the `action_name_to_id`
 map built in `from_canonical_value`.
 
-**Worked examples:** `unmapped_set_ref_passes_through` (src/catalog_canonical.rs:946)
+**Worked examples:** `unmapped_set_ref_passes_through` (src/catalog_canonical.rs:1051)
 — `"Ghost Weapon"` has no id, stays verbatim. `snake_case_set_ref_skips_lookup`
-(src/catalog_canonical.rs:978) — `"pulse_laser"` is already an id, skips the lookup.
+(src/catalog_canonical.rs:1083) — `"pulse_laser"` is already an id, skips the lookup.
 
 ---
 
@@ -324,14 +327,59 @@ not `"ram_the_target_"`.
 
 **Cross-references:** Called by `transform_class`.
 
-**Worked examples** (src/catalog_canonical.rs:854): `"Slip — move forward…"` → `"slip"`;
+**Worked examples** (src/catalog_canonical.rs:959): `"Slip — move forward…"` → `"slip"`;
 `"Swap Toss — move into a ship…"` → `"swap_toss"`; `"Phase - move forward…"` →
 `"phase"`; `"Ram The Target"` → `"ram_the_target"`; `""`, `"   "`, and `"—"` all
 → `""`.
 
 ---
 
-## `fn inflate_effect(v: Value, archetype: &str, heat: i32, action_id: &str) -> Value` (src/catalog_canonical.rs:368)
+## `fn rewrite_self_relative_signature(action_id: &str, effects: Value) -> Value` (src/catalog_canonical.rs:397)
+
+**Intent:** A **pre-pass** run by `transform_action` (src/catalog_canonical.rs:169)
+*before* `inflate_effect`, added by the #84 follow-up fix to repair four
+mechanically-dead class signatures.
+
+The problem it solves: the canonical export ships `slip` / `swap_toss` / `ram` /
+`throw` with `pattern: SELF` **and** a `DISPLACE_TARGET` effect string. That
+combination is dead — `resolve_targeting` returns `[ship_cell]` for a `SELF`
+pattern, so a `DISPLACE_TARGET` runs against the source ship itself: a no-op for
+the swap modes, a wrong-direction self-shove for the rams (and the trailing
+`DAMAGE` then strikes the now-vacated origin cell and hits nothing). The
+canonical *prose*, though, is self-relative ("move forward to trade places…",
+"shove the ship ahead…"), so the faithful representation is a `DISPLACE_SELF`,
+which the resolver's `resolve_self_move` implements correctly.
+
+Line 375, 382: two id sets — `SELF_RELATIVE_SWAP_SIGNATURES = ["slip",
+"swap_toss"]` and `SELF_RELATIVE_RAM_SIGNATURES = ["ram", "throw"]`. Line 398-403:
+if the action id is in neither set, pass the effects through untouched. Line
+404-417: for the four signature ids, rewrite the loose effect list —
+`"DISPLACE_TARGET"` becomes `"DISPLACE_SELF"`, and for the ram-style ids the
+trailing `"DAMAGE"` is **dropped** (collision billing inside `resolve_self_move`
+owns that damage; a separate `SELF`-pattern `DAMAGE` would hit the empty origin).
+The actual movement-mode mapping (`TRACTOR_SWAP` / `BURN`) is applied downstream
+by `inflate_effect`'s `DISPLACE_SELF` arm, keyed off the same id. Already-strict
+(object) effects are left as-is.
+
+**Cross-references:** Called by `transform_action` at src/catalog_canonical.rs:169.
+Its `DISPLACE_SELF` output is then mode-mapped by `inflate_effect` (below).
+Produces effects the resolver's `resolve_self_move` runs faithfully (TRACTOR_SWAP
+for the swaps, BURN-with-collision-billing for the rams).
+
+**Drift — `swap_toss` is a faithful subset.** The canonical prose for `swap_toss`
+wants a *two-sided* swap (trade the cells directly fore AND aft around a
+stationary centre). The engine has no effect for that, so the loader uses the
+single bow-side `TRACTOR_SWAP` — the faithful subset. Flagged to the lead for
+whether a two-sided swap effect is worth adding (src/catalog_canonical.rs:532-538).
+
+**Worked example:** `signature_actions_change_board_state_through_resolver`
+(src/catalog_canonical.rs:1165) fires each signature through the real resolver and
+asserts the board actually changed — the regression that proves these four are no
+longer dead.
+
+---
+
+## `fn inflate_effect(v: Value, archetype: &str, heat: i32, action_id: &str) -> Value` (src/catalog_canonical.rs:437)
 
 **Intent:** Turn one bare-string effect (`"DAMAGE"`) into a strict
 `kind`-tagged effect object, inferring the per-variant fields from the action's
@@ -354,13 +402,24 @@ fields the strict [`Effect`](types.md) variant requires:
 - **`APPLY_STATUS`** (400-416): `status` by archetype — `ordnance` and
   `displacement`/`control` apply `systemsOffline`; everything else applies
   `hullBreach`. `duration` defaults to `3`.
-- **`DISPLACE_TARGET`** (417-445): `mode` chosen by **id keyword** — `slip` and
-  `swap_toss` and `tractor+toss` → `swap`; `tractor`/`pull` → `pull`; the
-  repulsor/push/snare/throw/ram family → `push`; default `push`. `distance`
-  defaults to `2`. The id-keyword cascade was extended by the class-signature
-  work (task #84).
-- **`DISPLACE_SELF`** (446-463): `phase` → `("SLIP", 2)` (pass through the ship
-  ahead); everything else → `("THRUST", 1)` (one-step move).
+- **`DISPLACE_TARGET`** (486-519): `mode` by **id keyword** — `tractor+toss` →
+  `swap`; `tractor`/`pull` → `pull`; the repulsor/push/snare family → `push`;
+  default `push`. `distance` defaults to `2`. After the #84 follow-up fix this arm
+  only ever sees **genuine target-displacement** actions (`tractor_beam`,
+  `repulsor`, `grav_snare`, `tractor_toss`); the four self-relative class
+  signatures (`slip`/`swap_toss`/`ram`/`throw`) are rewritten to `DISPLACE_SELF`
+  *before* inflation by `rewrite_self_relative_signature` (see below), so the
+  `slip`/`swap_toss` branch here is now dead — kept only as a harmless guard if a
+  future export drops the rewrite.
+- **`DISPLACE_SELF`** (520-563): `mode`/`distance` by id keyword —
+  `phase` → `("SLIP", 2)` (pass through the ship ahead, landing in the first free
+  cell); `slip`/`swap_toss` → `("TRACTOR_SWAP", 1)` (swap with the bow-adjacent
+  occupant); `ram`/`throw` → `("BURN", 2)` (a self-burn that the resolver's
+  `resolve_self_move` bills collision damage on when blocked by the ship ahead —
+  so the collision *is* the damage); everything else → `("THRUST", 1)`. `direction`
+  is omitted (orientation-relative) for all modes **except `throw`**, which sets
+  `direction: "aft"` ("hurl the ship behind you") so it heads sternward regardless
+  of stance.
 - **`REORIENT`** (464-466): `to: "flip"`.
 - **`SPAWN_ORDNANCE`** (467-473): `projectile` defaults to the action id;
   `Content::spawn_projectile` looks it up at runtime.
@@ -373,24 +432,38 @@ fields the strict [`Effect`](types.md) variant requires:
 - **`_`** (496-500): unknown kind — emit just `{ kind }` and let serde fail
   downstream, surfacing the drift loudly rather than silently swallowing it.
 
-Line 503: `Value::Object(m)` — the inflated strict effect.
+The closing `Value::Object(m)` returns the inflated strict effect.
 
-**Cross-references:** Called by `transform_action`. Produces objects decoded
-into [`Effect`](types.md) variants consumed by the resolver's `apply_damage` /
-effect dispatch.
+**Cross-references:** Called by `transform_action` (after
+`rewrite_self_relative_signature` has already remapped the self-relative
+signature effects). Produces objects decoded into [`Effect`](types.md) variants
+consumed by the resolver's `apply_damage` / effect dispatch / `resolve_self_move`.
 
 **Worked examples:**
-- `ordnance_apply_status_infers_systems_offline` (src/catalog_canonical.rs:619) —
+- `ordnance_apply_status_infers_systems_offline` (src/catalog_canonical.rs:720) —
   Heavy Torpedo's `["SPAWN_ORDNANCE", "APPLY_STATUS"]` yields
   `APPLY_STATUS { status: SystemsOffline, duration: 3 }`.
-- `tractor_beam_displace_infers_pull` (src/catalog_canonical.rs:646) — `tractor_beam`
+- `tractor_beam_displace_infers_pull` (src/catalog_canonical.rs:747) — `tractor_beam`
   → `DISPLACE_TARGET { mode: Pull }`.
-- `repulsor_displace_infers_push` (src/catalog_canonical.rs:671) — `repulsor` → `Push`.
-- `slip_infers_swap` (696), `swap_toss_infers_swap` (722), `tractor_toss_infers_swap`
-  (779) — all → `Swap`.
-- `phase_infers_slip_movement_mode` (src/catalog_canonical.rs:751) — `phase` →
+- `repulsor_displace_infers_push` (src/catalog_canonical.rs:772) — `repulsor` → `Push`.
+- `tractor_toss_infers_swap` (src/catalog_canonical.rs:884) — `tractor_toss` (a
+  genuine target-displacement) → `DISPLACE_TARGET { mode: Swap }`.
+- `slip_inflates_to_self_tractor_swap` (src/catalog_canonical.rs:796) and
+  `swap_toss_inflates_to_self_tractor_swap` (src/catalog_canonical.rs:827) — both
+  the rewritten `DISPLACE_SELF` strings inflate to
+  `DISPLACE_SELF { mode: TRACTOR_SWAP }`. (Pre-#84-fix these were named
+  `*_infers_swap` and asserted the dead `DISPLACE_TARGET { Swap }`.)
+- `phase_infers_slip_movement_mode` (src/catalog_canonical.rs:856) — `phase` →
   `DISPLACE_SELF { mode: SLIP }`.
-- `already_strict_effect_passes_through` (src/catalog_canonical.rs:830) — a pre-built
+- `self_relative_signatures_inflate_to_displace_self` (src/catalog_canonical.rs:1116) —
+  the consolidated pin: `slip`/`swap_toss` → `DISPLACE_SELF{TRACTOR_SWAP}` (no
+  trailing effect), `ram` → `DISPLACE_SELF{BURN, direction: None}` (bow-relative),
+  `throw` → `DISPLACE_SELF{BURN, direction: Some(Aft)}`, `phase` stays
+  `DISPLACE_SELF{SLIP}`.
+- `signature_actions_change_board_state_through_resolver` (src/catalog_canonical.rs:1165) —
+  the end-to-end proof: firing each signature through the actual resolver mutates
+  board state (the whole point of the #84 fix — they used to no-op).
+- `already_strict_effect_passes_through` (src/catalog_canonical.rs:935) — a pre-built
   `{ kind: DAMAGE, amount: 99 }` survives inflation untouched.
 
 ---
@@ -411,5 +484,14 @@ src/catalog_canonical.rs:174-183.
 
 **Drift — inferred effect numerics.** Effect amounts/durations/distances are
 *inferred from archetype + heat*, not present in the canonical data. These are
-intentionally conservative defaults (src/catalog_canonical.rs:360-364) meant to
+intentionally conservative defaults (src/catalog_canonical.rs:429-433) meant to
 be tuned by playtesting, not authoritative balance numbers.
+
+**Drift — self-relative signature repair (#84 follow-up).** The canonical export
+literally lists `slip`/`swap_toss`/`ram`/`throw` as `SELF`-pattern
+`DISPLACE_TARGET` actions, which are mechanically dead in the resolver (a
+`DISPLACE_TARGET` against the source ship). The loader knowingly **deviates from
+the literal export**, rewriting them to `DISPLACE_SELF`
+(`rewrite_self_relative_signature`) so they match the canonical *prose* and run
+faithfully. `swap_toss` is further narrowed to a single bow-side swap because the
+engine has no two-sided swap effect — a faithful subset, flagged to the lead.

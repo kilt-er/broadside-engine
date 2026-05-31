@@ -3986,7 +3986,7 @@ advancesTurn: !freeplay }`. Line 174-193: build `targeting` — note line 182-18
 **Cross-references:** Called by `from_canonical_value`. Calls `inflate_effect`. Produces an
 [`Action`](#srctypesrs).
 
-**Worked example** (`canonical_pulse_laser_parses`, src/catalog_canonical.rs:516): the flat
+**Worked example** (`canonical_pulse_laser_parses`, src/catalog_canonical.rs:617): the flat
 `pulse_laser` decodes to `cost.heat=1`, `cooldown_max=0`, `advances_turn=true`
 (freeplay=false), one `Effect::DAMAGE { amount: 3 }` (beam + heat 1 → heat+2).
 
@@ -3997,7 +3997,7 @@ preserved; `null` stays `None`). Line 213: missing `level` defaults to 1. Line 2
 `desc`.
 
 **Worked example** (`subsystem_unlock_renames_to_unlock_salvage_and_level_defaults`,
-src/catalog_canonical.rs:600): `marksman` with `"unlock": null` and no `level` →
+src/catalog_canonical.rs:700): `marksman` with `"unlock": null` and no `level` →
 `unlock_salvage=None`, `level=1`, `max_level=3`.
 
 ### `fn transform_class(v, action_name_to_id) -> Value` (src/catalog_canonical.rs:237)
@@ -4008,7 +4008,7 @@ Line 251-259: `set1`/`set2` display-names→ids via `normalize_action_ref`. Line
 `eprintln!`) if derivation yields empty.
 
 **Worked example** (`canonical_class_normalizes_set_refs_and_signature`,
-src/catalog_canonical.rs:890): `wanderer` → `set1=["broadside_battery","pulse_laser"]`,
+src/catalog_canonical.rs:995): `wanderer` → `set1=["broadside_battery","pulse_laser"]`,
 `set2=["railgun_broadside","grav_snare"]`, `signature="slip"`.
 
 ### `fn normalize_action_ref(...) -> Value` (src/catalog_canonical.rs:281)
@@ -4028,38 +4028,72 @@ em-dash (U+2014), then `" - "`, else treat the whole string as the title. Line 3
 snake_case loop (lowercase alnum, collapse whitespace/`-`/`_` to a single `_`, drop other
 punctuation). Line 346-348: strip trailing underscore.
 
-**Worked examples** (src/catalog_canonical.rs:854): `"Slip — …"→"slip"`,
+**Worked examples** (src/catalog_canonical.rs:959): `"Slip — …"→"slip"`,
 `"Swap Toss — …"→"swap_toss"`, `"Phase - …"→"phase"`, `"Ram The Target"→"ram_the_target"`,
 empty/whitespace/`"—"`→`""`.
 
-### `fn inflate_effect(v, archetype, heat, action_id) -> Value` (src/catalog_canonical.rs:368)
+### `fn rewrite_self_relative_signature(action_id, effects) -> Value` (src/catalog_canonical.rs:397)
+
+**Intent:** A pre-pass run by `transform_action` (line 169) **before** `inflate_effect`,
+added by the #84 follow-up fix. The canonical export ships `slip`/`swap_toss`/`ram`/`throw`
+as `SELF`-pattern `DISPLACE_TARGET` actions — mechanically **dead**, because
+`resolve_targeting` returns `[ship_cell]` for `SELF`, so a `DISPLACE_TARGET` runs against
+the source ship itself (a no-op for the swaps, a wrong-direction self-shove for the rams,
+with the trailing `DAMAGE` then striking the empty origin). The canonical prose is
+self-relative, so the faithful kind is `DISPLACE_SELF`, which `resolve_self_move` runs
+correctly. Line 375/382: the two id sets `["slip","swap_toss"]` / `["ram","throw"]`. Line
+398-403: non-signature ids pass through untouched. Line 404-417: rewrite `"DISPLACE_TARGET"`
+→ `"DISPLACE_SELF"`, and for the ram-style ids **drop** the trailing `"DAMAGE"` (collision
+billing inside `resolve_self_move` owns it). The mode mapping itself happens downstream in
+`inflate_effect`'s `DISPLACE_SELF` arm. **Cross-references:** called at line 169; output
+mode-mapped by `inflate_effect`. **Worked example:**
+`signature_actions_change_board_state_through_resolver` (src/catalog_canonical.rs:1165) fires
+each signature through the real resolver and asserts board state changed (the regression
+proving these are no longer dead).
+
+### `fn inflate_effect(v, archetype, heat, action_id) -> Value` (src/catalog_canonical.rs:437)
 
 **Intent:** Turn one bare-string effect into a `kind`-tagged object, inferring fields from
 archetype/heat/id. Already-object effects pass through (hybrid-catalog support).
 
-The `match kind` (line 379-501): **DAMAGE** — `amount` by tier (`beam`/`broadside`→`heat+2`,
+The `match kind`: **DAMAGE** — `amount` by tier (`beam`/`broadside`→`heat+2`,
 `ordnance`→0, `displacement`/`control`→2, else `max(heat,1)`); falloff omitted to keep the
 strict `None` default. **APPLY_STATUS** — `ordnance` and `displacement`/`control`→
-`systemsOffline`, else `hullBreach`; `duration:3`. **DISPLACE_TARGET** — `mode` by id
-keyword (`slip`/`swap_toss`/`tractor+toss`→swap, `tractor`/`pull`→pull, repulsor/push/
-snare/throw/ram→push); `distance:2`. **DISPLACE_SELF** — `phase`→`(SLIP,2)`, else
-`(THRUST,1)`. **REORIENT**→`to:"flip"`. **SPAWN_ORDNANCE**→`projectile:<id>`.
+`systemsOffline`, else `hullBreach`; `duration:3`. **DISPLACE_TARGET** (486-519) — `mode` by
+id keyword (`tractor+toss`→swap, `tractor`/`pull`→pull, repulsor/push/snare→push, default
+push); `distance:2`. Post-#84-fix this arm sees only **genuine target-displacement** actions
+(tractor_beam/repulsor/grav_snare/tractor_toss); the self-relative signatures were already
+rewritten away by `rewrite_self_relative_signature`. **DISPLACE_SELF** (520-563) — `mode`/
+`distance` by id keyword: `phase`→`(SLIP,2)`; `slip`/`swap_toss`→`(TRACTOR_SWAP,1)`;
+`ram`/`throw`→`(BURN,2)` (collision damage billed by `resolve_self_move`); else `(THRUST,1)`.
+`direction` is omitted (orientation-relative) for all except `throw`, which sets
+`direction:"aft"`. **REORIENT**→`to:"flip"`. **SPAWN_ORDNANCE**→`projectile:<id>`.
 **VENT_HEAT**→`amount:3, rechargeCooldowns:false`. **DEPLOY**→`drone` if id contains
 "drone", else `mine`. **BOARD**→`note:<id>`. Unknown kind → just `{ kind }`, letting serde
 fail loudly downstream.
 
-**Cross-references:** Called by `transform_action`. Produces [`Effect`](#srctypesrs)
-variants consumed by the resolver's `apply_damage` / effect dispatch.
+**Cross-references:** Called by `transform_action` (after `rewrite_self_relative_signature`).
+Produces [`Effect`](#srctypesrs) variants consumed by the resolver's `apply_damage` / effect
+dispatch / `resolve_self_move`.
 
 **Worked examples:** `ordnance_apply_status_infers_systems_offline` (Heavy Torpedo →
 `APPLY_STATUS{SystemsOffline,3}`); `tractor_beam_displace_infers_pull` (→ Pull);
-`repulsor_displace_infers_push` (→ Push); `slip`/`swap_toss`/`tractor_toss` → Swap;
-`phase_infers_slip_movement_mode` (→ `DISPLACE_SELF{SLIP}`);
+`repulsor_displace_infers_push` (→ Push); `tractor_toss_infers_swap` (→ `DISPLACE_TARGET{Swap}`);
+`slip_inflates_to_self_tractor_swap` + `swap_toss_inflates_to_self_tractor_swap`
+(→ `DISPLACE_SELF{TRACTOR_SWAP}`); `phase_infers_slip_movement_mode` (→ `DISPLACE_SELF{SLIP}`);
+`self_relative_signatures_inflate_to_displace_self` (the consolidated pin: ram→BURN
+bow-relative, throw→BURN aft, swaps→TRACTOR_SWAP, phase→SLIP);
 `already_strict_effect_passes_through` (`{kind:DAMAGE,amount:99}` survives untouched).
 
 **Drift — inferred numerics.** Effect amounts/durations/distances are inferred from
 archetype + heat, not present in canonical data — conservative defaults meant to be tuned
 by playtesting, not authoritative balance.
+
+**Drift — self-relative signature repair (#84 follow-up).** The loader knowingly deviates
+from the literal export: `slip`/`swap_toss`/`ram`/`throw` are listed as dead `SELF`-pattern
+`DISPLACE_TARGET` but rewritten to `DISPLACE_SELF` to match the canonical prose and run
+faithfully. `swap_toss` is narrowed to a single bow-side `TRACTOR_SWAP` (the engine has no
+two-sided swap effect) — a faithful subset, flagged to the lead.
 
 ---
 
