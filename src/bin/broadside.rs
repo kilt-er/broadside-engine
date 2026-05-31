@@ -15,7 +15,7 @@
 //! | `Tab` | `ReorientFlip` | Queue synthetic `__reorient_flip` |
 //! | `V` | `Vent` | Queue synthetic `__vent` |
 //! | `R` / `Space` | `CommitTurn` | Run `resolve_round`; re-renders next frame |
-//! | `Enter` | `Restart` | Reset the board to its initial state |
+//! | `Enter` | `Restart` | Reset the board to its initial state (also the only key accepted while the win/lose overlay is showing) |
 //! | `[` / `]` | rotate camera | Cycle through `[0, 15, 30, 45, 60, 75, 90]°` |
 //! | `Esc` | exit | Close the window |
 //!
@@ -36,7 +36,7 @@ use winit::window::{Window, WindowId};
 
 use broadside_engine::geometry::default_shield_profile;
 use broadside_engine::gfx::{Gfx, VIRTUAL_H, VIRTUAL_W};
-use broadside_engine::hud;
+use broadside_engine::hud::{self, win_state, WinState};
 use broadside_engine::input::{
     intent_to_action_id, key_to_intent, DemoContent, Intent, Key,
 };
@@ -300,8 +300,16 @@ impl ApplicationHandler for App {
                     return;
                 }
                 let Some(key) = keycode_to_key(code) else { return };
+                // When the game has ended (defeat/victory), only Enter is
+                // accepted — restart. Every other key is swallowed so the
+                // overlay reads as a modal screen.
+                if win_state(&self.board) != WinState::Playing && key != Key::Enter {
+                    return;
+                }
                 // key_to_intent needs the player ship for digit-key mount
                 // resolution; clone the snapshot to keep the borrow short.
+                // After defeat there's no player ship, so synthesize a
+                // minimal one purely for the Enter -> Restart routing.
                 let player_snapshot = self
                     .board
                     .cells
@@ -309,8 +317,12 @@ impl ApplicationHandler for App {
                     .flatten()
                     .find(|s| s.faction == Faction::Player)
                     .cloned();
-                let Some(player) = player_snapshot else { return };
-                let Some(intent) = key_to_intent(key, &player, &self.content) else { return };
+                let intent_opt = match player_snapshot {
+                    Some(player) => key_to_intent(key, &player, &self.content),
+                    None if key == Key::Enter => Some(Intent::Restart),
+                    None => None,
+                };
+                let Some(intent) = intent_opt else { return };
                 let changed = apply_intent(intent, &mut self.board, &self.content, &render_example_board);
                 if changed {
                     if let Some(w) = self.window.as_ref() {
@@ -426,6 +438,21 @@ mod tests {
             .is_some_and(|s| s.faction == Faction::Player);
         assert!(player_at_1, "player should have moved to cell 1 after thrust+commit");
         assert!(board.cells[0].is_none(), "cell 0 should be empty");
+    }
+
+    #[test]
+    fn restart_intent_after_defeat_recreates_player() {
+        // Manually drain the board of player + enemies, then Restart.
+        let mut board = fresh_board();
+        for slot in board.cells.iter_mut() {
+            if matches!(slot, Some(s) if s.faction == Faction::Player) {
+                *slot = None;
+            }
+        }
+        assert_eq!(win_state(&board), WinState::Defeat, "precondition");
+        apply_intent(Intent::Restart, &mut board, &DemoContent::default(), &fresh_board);
+        assert_eq!(win_state(&board), WinState::Playing);
+        assert!(board.cells[0].as_ref().is_some_and(|s| s.faction == Faction::Player));
     }
 
     #[test]

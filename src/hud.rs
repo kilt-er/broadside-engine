@@ -121,6 +121,11 @@ pub fn compose_scene_with(
 
     push_view_angle_overlay(&mut out, view_angle_rad);
 
+    // End-state overlay sits on top of everything else (banner reads
+    // even over status badges + ordnance). No-op when state is
+    // Playing.
+    push_end_state_overlay(&mut out, win_state(board));
+
     out
 }
 
@@ -954,20 +959,105 @@ pub enum WinState {
     Victory,
 }
 
-#[allow(dead_code)]
+/// Derive [`WinState`] from a board. Victory when there are no Enemy
+/// ships remaining; Defeat when there is no Player ship; Playing
+/// otherwise. If both factions are empty (shouldn't happen in normal
+/// play) Defeat wins — there's nobody to be victorious.
+pub fn win_state(board: &Board) -> WinState {
+    let mut any_player = false;
+    let mut any_enemy = false;
+    for slot in &board.cells {
+        if let Some(ship) = slot {
+            match ship.faction {
+                Faction::Player => any_player = true,
+                Faction::Enemy  => any_enemy = true,
+            }
+        }
+    }
+    if !any_player { WinState::Defeat }
+    else if !any_enemy { WinState::Victory }
+    else { WinState::Playing }
+}
+
 pub fn push_end_state_overlay(out: &mut Vec<DrawCommand>, state: WinState) {
     use crate::gfx::{VIRTUAL_H, VIRTUAL_W};
-    let color = match state {
+    let (tint, banner) = match state {
         WinState::Playing => return,
-        WinState::Defeat => DEFEAT_TINT,
-        WinState::Victory => VICTORY_TINT,
+        WinState::Defeat => (DEFEAT_TINT, "DEFEATED - PRESS ENTER TO RESTART"),
+        WinState::Victory => (VICTORY_TINT, "VICTORY - PRESS ENTER TO RESTART"),
     };
+    // Full-canvas tinted overlay quad.
     push_sprite(out, SpriteInstance::axis_aligned(
         [VIRTUAL_W as f32 / 2.0, VIRTUAL_H as f32 / 2.0],
         [VIRTUAL_W as f32 / 2.0, VIRTUAL_H as f32 / 2.0],
-        color,
+        tint,
         atlas::cell_uvs(atlas::SOLID_WHITE),
     ));
+    // Centered banner text. Each character is a 5x7 bitmap rendered as
+    // 2-px solid quads ("pixel" = 2 virtual pixels) so it reads at
+    // window scale without needing atlas font glyphs.
+    let pixel = 4.0; // size of one font "pixel" in virtual pixels
+    let glyph_w_px = 5.0 * pixel;
+    let glyph_h_px = 7.0 * pixel;
+    let space_px = pixel;
+    let advance = glyph_w_px + space_px;
+    let total_w: f32 = banner.len() as f32 * advance - space_px;
+    let start_x = (VIRTUAL_W as f32 - total_w) / 2.0;
+    let y = VIRTUAL_H as f32 / 2.0 - glyph_h_px / 2.0;
+    for (i, ch) in banner.chars().enumerate() {
+        let x = start_x + i as f32 * advance;
+        push_glyph_5x7(out, ch, x, y, pixel, WHITE);
+    }
+}
+
+/* =============================================================================
+ * 5x7 bitmap font for the end-state banner. Sparse — only the characters
+ * actually appearing in the banner strings are defined. Unknown chars
+ * render as blank glyphs (5 columns, 7 rows of zeros). Each glyph is
+ * encoded as 7 rows of 5 bits, MSB-first (bit 4 = column 0).
+ * ============================================================================= */
+
+fn push_glyph_5x7(
+    out: &mut Vec<DrawCommand>,
+    ch: char,
+    x: f32,
+    y: f32,
+    pixel: f32,
+    color: [f32; 4],
+) {
+    let rows = match ch {
+        'A' => [0b01110, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001],
+        'C' => [0b01110, 0b10001, 0b10000, 0b10000, 0b10000, 0b10001, 0b01110],
+        'D' => [0b11110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b11110],
+        'E' => [0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b11111],
+        'F' => [0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b10000],
+        'I' => [0b11111, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b11111],
+        'N' => [0b10001, 0b11001, 0b10101, 0b10011, 0b10001, 0b10001, 0b10001],
+        'O' => [0b01110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110],
+        'P' => [0b11110, 0b10001, 0b10001, 0b11110, 0b10000, 0b10000, 0b10000],
+        'R' => [0b11110, 0b10001, 0b10001, 0b11110, 0b10100, 0b10010, 0b10001],
+        'S' => [0b01111, 0b10000, 0b10000, 0b01110, 0b00001, 0b00001, 0b11110],
+        'T' => [0b11111, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100],
+        'V' => [0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01010, 0b00100],
+        'Y' => [0b10001, 0b10001, 0b01010, 0b00100, 0b00100, 0b00100, 0b00100],
+        '-' => [0b00000, 0b00000, 0b00000, 0b11111, 0b00000, 0b00000, 0b00000],
+        ' ' => return,
+        _ => return, // unknown char = blank glyph
+    };
+    for (row, bits) in rows.iter().enumerate() {
+        for col in 0..5 {
+            if (bits >> (4 - col)) & 1 == 1 {
+                let px = x + col as f32 * pixel;
+                let py = y + row as f32 * pixel;
+                push_sprite(out, SpriteInstance::axis_aligned(
+                    [px + pixel / 2.0, py + pixel / 2.0],
+                    [pixel / 2.0, pixel / 2.0],
+                    color,
+                    atlas::cell_uvs(atlas::SOLID_WHITE),
+                ));
+            }
+        }
+    }
 }
 
 /* =============================================================================
@@ -1055,6 +1145,65 @@ mod tests {
         assert_eq!(textured[0].top.as_str(),  "frigate_bowOnFore_top");
         assert_eq!(textured[1].side.as_str(), "frigate_broadside_side");
         assert_eq!(textured[1].top.as_str(),  "frigate_broadside_top");
+    }
+
+    #[test]
+    fn win_state_classifies_factions_correctly() {
+        // Pure backdrop / lane / no ships → board is technically both
+        // "no player" and "no enemy"; we resolve to Defeat (player isn't
+        // present so they can't have won).
+        assert_eq!(win_state(&empty_board(7)), WinState::Defeat);
+
+        let mut b = empty_board(7);
+        b.cells[0] = Some(frigate_at(0, Faction::Player, Orientation::BowOn { bow: LaneEnd::Fore }));
+        assert_eq!(win_state(&b), WinState::Victory, "player alone = victory");
+
+        let mut b = empty_board(7);
+        b.cells[3] = Some(frigate_at(3, Faction::Enemy, Orientation::Broadside));
+        assert_eq!(win_state(&b), WinState::Defeat, "enemy alone = defeat");
+
+        let mut b = empty_board(7);
+        b.cells[0] = Some(frigate_at(0, Faction::Player, Orientation::BowOn { bow: LaneEnd::Fore }));
+        b.cells[3] = Some(frigate_at(3, Faction::Enemy, Orientation::Broadside));
+        assert_eq!(win_state(&b), WinState::Playing);
+    }
+
+    #[test]
+    fn end_state_overlay_is_noop_during_play() {
+        let mut out: Vec<DrawCommand> = Vec::new();
+        push_end_state_overlay(&mut out, WinState::Playing);
+        assert!(out.is_empty(), "Playing state must not emit overlay draws");
+    }
+
+    #[test]
+    fn end_state_overlay_emits_tint_plus_banner_glyphs() {
+        // Defeat: 33-char banner string; many characters render multiple
+        // pixels. We don't pin the exact count but the overlay should
+        // include the tint quad + many sprite draws for the banner.
+        let mut out: Vec<DrawCommand> = Vec::new();
+        push_end_state_overlay(&mut out, WinState::Defeat);
+        assert!(out.len() > 50, "defeat overlay should emit tint + banner glyphs, got {}", out.len());
+
+        let mut v_out: Vec<DrawCommand> = Vec::new();
+        push_end_state_overlay(&mut v_out, WinState::Victory);
+        assert!(v_out.len() > 50, "victory overlay should emit tint + banner glyphs, got {}", v_out.len());
+    }
+
+    #[test]
+    fn compose_scene_includes_overlay_on_defeat() {
+        // Empty board → Defeat → compose_scene_with should append the
+        // overlay's tint + banner draws at the end.
+        let board = empty_board(7);
+        let baseline = compose_scene_with(&board, &DEFAULT_LANE, std::f32::consts::FRAC_PI_4, &EmptySpriteRegistry);
+        // Verify at least one large alpha tint sits in the scene (the
+        // overlay quad). Find any sprite whose half_size is the full
+        // canvas — that's the overlay quad.
+        let has_overlay_quad = baseline.iter().any(|c| {
+            matches!(c, DrawCommand::Sprite(s)
+                if s.half_size[0] >= crate::gfx::VIRTUAL_W as f32 / 2.0
+                && s.half_size[1] >= crate::gfx::VIRTUAL_H as f32 / 2.0)
+        });
+        assert!(has_overlay_quad, "defeat scene should include full-canvas overlay quad");
     }
 
     #[test]
