@@ -53,6 +53,8 @@
 //! on parse error. The canonical export is the only loose shape we
 //! expect today; future formats can extend the dispatch.
 
+use std::collections::HashMap;
+
 use serde_json::{Map, Value};
 
 use crate::types::Catalog;
@@ -75,11 +77,27 @@ pub fn from_canonical_value(root: Value) -> Result<Catalog, serde_json::Error> {
     // strict shape (statuses, enemies, mods, patrols, capitals, sectors,
     // fieldkit, commendations) pass through untouched. Sections with
     // structural drift (actions, subsystems, classes) get rewritten.
+    //
+    // Actions must transform FIRST because the class-normalization step
+    // below needs a display_name -> action_id lookup built from the
+    // transformed actions (task #82).
+    let mut action_name_to_id: HashMap<String, String> = HashMap::new();
     if let Some(Value::Array(actions)) = obj.remove("actions") {
         let transformed: Vec<Value> = actions
             .into_iter()
             .filter_map(|v| transform_action(v).ok())
             .collect();
+        // Build the display_name -> id lookup BEFORE re-inserting so
+        // transform_class can borrow it. The lookup folds case so
+        // "Twin-Linked" and "twin-linked" both resolve.
+        for a in &transformed {
+            if let (Some(name), Some(id)) = (
+                a.get("name").and_then(Value::as_str),
+                a.get("id").and_then(Value::as_str),
+            ) {
+                action_name_to_id.insert(name.to_lowercase(), id.to_string());
+            }
+        }
         obj.insert("actions".into(), Value::Array(transformed));
     }
     if let Some(Value::Array(subsystems)) = obj.remove("subsystems") {
@@ -90,7 +108,10 @@ pub fn from_canonical_value(root: Value) -> Result<Catalog, serde_json::Error> {
         obj.insert("subsystems".into(), Value::Array(transformed));
     }
     if let Some(Value::Array(classes)) = obj.remove("classes") {
-        let transformed: Vec<Value> = classes.into_iter().map(transform_class).collect();
+        let transformed: Vec<Value> = classes
+            .into_iter()
+            .map(|c| transform_class(c, &action_name_to_id))
+            .collect();
         obj.insert("classes".into(), Value::Array(transformed));
     }
 
@@ -196,11 +217,27 @@ fn transform_subsystem(v: Value) -> Value {
     Value::Object(s)
 }
 
-/// Flat class → strict class. Only drift is `affinity: "bow-on"` →
-/// `"bowOn"` (the hyphen-form in canonical, camelCase form in strict).
-/// Other affinity values (`"flexible"`, `"broadside"`) pass through.
-fn transform_class(v: Value) -> Value {
+/// Flat class → strict class. Three drifts:
+///
+/// 1. **affinity rename**: `"bow-on"` → `"bowOn"` (the hyphen-form in
+///    canonical, camelCase form in strict).
+/// 2. **set1 / set2 normalization** (task #82): canonical lists action
+///    *display names* ("Broadside Battery"), engine expects action ids
+///    ("broadside_battery"). Rewrite each entry via `action_name_to_id`.
+///    Unmapped names are left as-is (resolver will silently skip them
+///    when the class is selected) and logged via `eprintln!` for the
+///    catalog-author to fix.
+/// 3. **signature derivation** (task #82): canonical `signature` is
+///    prose ("Slip — move forward to trade places…"). Extract the
+///    leading title before the em-dash / dash, snake_case it, and use
+///    that as the signature action id. The action def itself isn't in
+///    the canonical export today — the resolver will no-op the
+///    Signature press until someone adds a matching action — but the
+///    *id format* is now canonical so the wire-up is mechanical.
+fn transform_class(v: Value, action_name_to_id: &HashMap<String, String>) -> Value {
     let Value::Object(mut c) = v else { return v };
+
+    let class_id = c.get("id").and_then(|v| v.as_str()).unwrap_or("?").to_string();
 
     if let Some(Value::String(s)) = c.remove("affinity") {
         let camel = match s.as_str() {
@@ -210,7 +247,106 @@ fn transform_class(v: Value) -> Value {
         c.insert("affinity".into(), Value::String(camel.into()));
     }
 
+    // set1 / set2: rewrite display names to action ids.
+    for key in ["set1", "set2"] {
+        if let Some(Value::Array(items)) = c.remove(key) {
+            let normalized: Vec<Value> = items
+                .into_iter()
+                .map(|v| normalize_action_ref(v, action_name_to_id, &class_id, key))
+                .collect();
+            c.insert(key.into(), Value::Array(normalized));
+        }
+    }
+
+    // signature: prose -> id derived from the leading title.
+    if let Some(Value::String(prose)) = c.remove("signature") {
+        let id = signature_id_from_prose(&prose);
+        if id.is_empty() {
+            eprintln!(
+                "[catalog_canonical] class `{class_id}`: signature prose \
+                 `{prose}` could not be normalized to an id; leaving as-is",
+            );
+            c.insert("signature".into(), Value::String(prose));
+        } else {
+            c.insert("signature".into(), Value::String(id));
+        }
+    }
+
     Value::Object(c)
+}
+
+/// Look up `display_name` in the action map; if found, return the id
+/// as a JSON string; if not, log a warning and pass the original
+/// through (resolver will silently skip unmapped refs).
+fn normalize_action_ref(
+    v: Value,
+    action_name_to_id: &HashMap<String, String>,
+    class_id: &str,
+    field: &str,
+) -> Value {
+    let Value::String(name) = &v else {
+        return v; // already an id (or some other type) — pass through
+    };
+    // Skip if it already looks like a snake_case id (no spaces, all lowercase + underscores).
+    if name.chars().all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_') {
+        return v;
+    }
+    match action_name_to_id.get(&name.to_lowercase()) {
+        Some(id) => Value::String(id.clone()),
+        None => {
+            eprintln!(
+                "[catalog_canonical] class `{class_id}` {field}: action \
+                 display-name `{name}` has no matching id in the catalog; \
+                 leaving as-is",
+            );
+            v
+        }
+    }
+}
+
+/// Extract a snake_case id from a canonical Signature prose string.
+/// Canonical format: `"<Title> — <description>"` (em-dash U+2014) or
+/// `"<Title> - <description>"` (ASCII hyphen with spaces). The leading
+/// title is the human name; lowercase + space-to-underscore makes it
+/// the id.
+///
+/// `"Slip — move forward to trade places…"` → `"slip"`.
+/// `"Swap Toss — move into a ship…"` → `"swap_toss"`.
+/// Returns empty string on parse failure (caller decides whether to
+/// fall back to the raw prose).
+fn signature_id_from_prose(prose: &str) -> String {
+    // Split on em-dash first (canonical), then ASCII " - " (degraded
+    // exports), then full prose if no dash.
+    let title_part = prose
+        .split_once('\u{2014}')
+        .or_else(|| prose.split_once(" - "))
+        .map(|(a, _)| a)
+        .unwrap_or(prose);
+    let title = title_part.trim();
+    if title.is_empty() {
+        return String::new();
+    }
+    // snake_case: lowercase, replace whitespace runs with single _,
+    // strip everything that isn't ascii alphanumeric or _.
+    let mut out = String::with_capacity(title.len());
+    let mut prev_underscore = true; // suppress leading _
+    for ch in title.chars() {
+        if ch.is_ascii_alphanumeric() {
+            out.push(ch.to_ascii_lowercase());
+            prev_underscore = false;
+        } else if ch.is_whitespace() || ch == '-' || ch == '_' {
+            if !prev_underscore {
+                out.push('_');
+                prev_underscore = true;
+            }
+        }
+        // other punctuation dropped silently
+    }
+    // strip trailing underscore
+    while out.ends_with('_') {
+        out.pop();
+    }
+    out
 }
 
 /* =========================================================================
@@ -604,5 +740,157 @@ mod tests {
             Effect::DAMAGE { amount, .. } => assert_eq!(*amount, 99),
             _ => panic!("expected DAMAGE"),
         }
+    }
+
+    /* ---- task #82: class display-name → action-id normalization ---- */
+
+    /// `signature_id_from_prose` strips the leading title and snake-cases it.
+    #[test]
+    fn signature_id_from_prose_handles_canonical_em_dash() {
+        // Canonical: "<Title> — <description>" (U+2014 em-dash).
+        assert_eq!(
+            signature_id_from_prose("Slip — move forward to trade places with the ship directly ahead."),
+            "slip",
+        );
+        assert_eq!(
+            signature_id_from_prose("Swap Toss — move into a ship to swap the cells directly fore and aft."),
+            "swap_toss",
+        );
+        // ASCII " - " fallback shape.
+        assert_eq!(
+            signature_id_from_prose("Phase - move forward to pass through the ship directly ahead."),
+            "phase",
+        );
+    }
+
+    #[test]
+    fn signature_id_from_prose_handles_no_dash() {
+        // No dash → the whole prose is treated as the title. Only useful
+        // when the export drifts; covers it so the load doesn't panic.
+        assert_eq!(signature_id_from_prose("Ram The Target"), "ram_the_target");
+    }
+
+    #[test]
+    fn signature_id_from_prose_empty_returns_empty() {
+        assert_eq!(signature_id_from_prose(""), "");
+        assert_eq!(signature_id_from_prose("   "), "");
+        // Trim-then-empty branch: pure dash chars produce empty.
+        assert_eq!(signature_id_from_prose("—"), "");
+    }
+
+    /// Round-trip test: a canonical class with display-name set1/set2 and
+    /// prose signature normalizes correctly. Mirrors the `wanderer` entry
+    /// in `assets/broadside.catalog.json`.
+    #[test]
+    fn canonical_class_normalizes_set_refs_and_signature() {
+        let json = serde_json::json!({
+            "meta": { "schema": "x", "lane": [5], "newAxes": [], "bands": ["close"] },
+            // Need the referenced actions in the catalog so the lookup
+            // can find them. Loose canonical shape for each.
+            "actions": [
+                { "id": "broadside_battery", "name": "Broadside Battery",
+                  "archetype": "broadside", "heat": 3, "cd": 4, "band": "close",
+                  "pattern": "BROADSIDE", "arc": "broadsideArc",
+                  "freeplay": false, "effects": ["DAMAGE"] },
+                { "id": "pulse_laser", "name": "Pulse Laser",
+                  "archetype": "beam", "heat": 1, "cd": 0, "band": "close",
+                  "pattern": "BEAM", "arc": "forward",
+                  "freeplay": false, "effects": ["DAMAGE"] },
+                { "id": "railgun_broadside", "name": "Railgun Broadside",
+                  "archetype": "broadside", "heat": 4, "cd": 6, "band": "long",
+                  "pattern": "BROADSIDE", "arc": "broadsideArc",
+                  "freeplay": false, "effects": ["DAMAGE"] },
+                { "id": "grav_snare", "name": "Grav Snare",
+                  "archetype": "displacement", "heat": 2, "cd": 6, "band": "mid",
+                  "pattern": "BEAM", "arc": "turret",
+                  "freeplay": false, "effects": ["DISPLACE_TARGET"] },
+            ],
+            "mods": [], "subsystems": [], "statuses": [],
+            "enemies": [], "patrols": [],
+            "classes": [{
+                "id": "wanderer", "name": "Frigate \"Drifter\"",
+                "unlock": "Unlocked by default",
+                "affinity": "flexible",
+                "set1": ["Broadside Battery", "Pulse Laser"],
+                "set2": ["Railgun Broadside", "Grav Snare"],
+                "signature": "Slip — move forward to trade places with the ship directly ahead.",
+                "passive": null,
+                "desc": "Starting hull.",
+            }],
+        });
+
+        let cat: Catalog = from_canonical_value(json).expect("parses");
+        let cls = &cat.classes[0];
+        assert_eq!(
+            cls.set1,
+            vec!["broadside_battery".to_string(), "pulse_laser".to_string()],
+            "display names normalized to action ids in set1",
+        );
+        assert_eq!(
+            cls.set2,
+            vec!["railgun_broadside".to_string(), "grav_snare".to_string()],
+            "display names normalized to action ids in set2",
+        );
+        assert_eq!(cls.signature, "slip", "signature prose normalized to id");
+    }
+
+    /// Unmapped display-name refs (e.g. typo in the canonical export)
+    /// pass through unchanged — the resolver will silently skip them,
+    /// which is better than failing the catalog load.
+    #[test]
+    fn unmapped_set_ref_passes_through() {
+        let json = serde_json::json!({
+            "meta": { "schema": "x", "lane": [5], "newAxes": [], "bands": ["close"] },
+            "actions": [
+                { "id": "pulse_laser", "name": "Pulse Laser",
+                  "archetype": "beam", "heat": 1, "cd": 0, "band": "close",
+                  "pattern": "BEAM", "arc": "forward",
+                  "freeplay": false, "effects": ["DAMAGE"] },
+            ],
+            "mods": [], "subsystems": [], "statuses": [],
+            "enemies": [], "patrols": [],
+            "classes": [{
+                "id": "test", "name": "Test",
+                "affinity": "flexible",
+                "set1": ["Pulse Laser", "Ghost Weapon"],
+                "set2": [],
+                "signature": "Move",
+                "desc": "Test.",
+            }],
+        });
+        let cat: Catalog = from_canonical_value(json).expect("parses");
+        let cls = &cat.classes[0];
+        // Pulse Laser maps; Ghost Weapon doesn't and stays verbatim.
+        assert_eq!(cls.set1[0], "pulse_laser");
+        assert_eq!(cls.set1[1], "Ghost Weapon",
+            "unmapped display name passes through unchanged");
+    }
+
+    /// A set-ref that's already an action id (snake_case form) skips the
+    /// lookup and passes through. Lets hybrid catalogs (some loose, some
+    /// strict) work without the normalizer over-rewriting things.
+    #[test]
+    fn snake_case_set_ref_skips_lookup() {
+        let json = serde_json::json!({
+            "meta": { "schema": "x", "lane": [5], "newAxes": [], "bands": ["close"] },
+            "actions": [
+                { "id": "pulse_laser", "name": "Pulse Laser",
+                  "archetype": "beam", "heat": 1, "cd": 0, "band": "close",
+                  "pattern": "BEAM", "arc": "forward",
+                  "freeplay": false, "effects": ["DAMAGE"] },
+            ],
+            "mods": [], "subsystems": [], "statuses": [],
+            "enemies": [], "patrols": [],
+            "classes": [{
+                "id": "test", "name": "Test",
+                "affinity": "flexible",
+                "set1": ["pulse_laser"], // already an id
+                "set2": [],
+                "signature": "X",
+                "desc": "Test.",
+            }],
+        });
+        let cat: Catalog = from_canonical_value(json).expect("parses");
+        assert_eq!(cat.classes[0].set1[0], "pulse_laser");
     }
 }
