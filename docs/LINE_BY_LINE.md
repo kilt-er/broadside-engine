@@ -28,8 +28,8 @@ glance what is documented vs. what is pending.*
 - [`src/geometry.rs`](#srcgeometryrs) — pure geometry: bands, arcs, facings, shields
 - [`src/perspective.rs`](#srcperspectivers) — flat screen-space lane: cell-to-pixel transform, ship dims, view-angle stance
 - [`src/resolve.rs`](#srcresolvers) — the four-phase round, queue gate, damage pipeline, effect dispatch, all movement/AI/modifier bodies
-- [`src/content.rs`](#srccontentrs) — catalog loading, projectile spawn dispatch
-- [`src/catalog.rs`](#srccatalogrs) — JSON catalog → typed records
+- [`src/catalog.rs`](#srccatalogrs) — catalog loader + `LoadError` + strict/canonical format auto-detect
+- [`src/catalog_canonical.rs`](#srccatalog_canonicalrs) — canonical (design-doc) → strict catalog transformer
 - [`src/gfx.rs`](#srcgfxrs) — wgpu state, four pipelines, virtual-res offscreen + integer-scale blit
 - [`src/atlas.rs`](#srcatlasrs) — procedural 256×256 sprite atlas
 - [`src/hud.rs`](#srchudrs) — scene compositor (DrawCommand list)
@@ -3814,78 +3814,233 @@ heading predates this decision; folding it here removes the confusion.
 
 ---
 
-## `src/content.rs`
+## Content / AI / EventBus — folded into `src/resolve.rs` and `src/types.rs`
 
-*The runtime content layer: loads the catalog JSON, builds the `Action` lookup table,
-implements `spawn_projectile` table-driven dispatch from the `kind` string.*
+*Navigational breadcrumb for readers who came looking for `content.rs`, `ai.rs`, or
+`bus.rs` modules. None of these files exist in the Rust port.*
 
-**Mirrors:** TS does this inline in `demo.ts`. The Rust port will have a dedicated
-module.
+- **Content layer** — there is no `src/content.rs`. The runtime content surface is the
+  `Content` trait plus its demo implementation, which live alongside the resolver; the
+  catalog *loading* half lives in [`src/catalog.rs`](#srccatalogrs) and
+  [`src/catalog_canonical.rs`](#srccatalog_canonicalrs). The projectile-spawn dispatch
+  (`Content::spawn_projectile`) and board-effect dispatch (`Content::apply_board_effect`)
+  are documented under the resolver's effect-dispatch entries.
+- **AI** — there is no `src/ai.rs`. `decide_enemy_action` and its scoring helpers are
+  folded into [`src/resolve.rs`](#srcresolvers) (see the "AI" sub-entry: scoring formula
+  + visible-threat fallback ladder). They share the resolver's private helpers, so
+  splitting would force those public for no benefit.
+- **EventBus** — there is no `src/bus.rs`. The `Hook` enum, `HookContext`, and the
+  `EventBus` (`on` / `emit`) interface live in [`src/types.rs`](#srctypesrs), documented
+  there along with the "no chained emit" invariant (task #26).
 
-### Functions to document
-
-- **`fn load_catalog(path: &Path) -> Result<Catalog, ContentError>`** — read the JSON,
-  validate, return the typed record.
-- **`fn build_content(catalog: &Catalog) -> Content`** — index actions by ID, build the
-  projectile spawn closure / table.
-- **`fn spawn_projectile(kind: &str, owner: &Ship, board: &Board) -> Projectile`** —
-  look up the projectile template by kind, instantiate at the owner's cell, set
-  heading from the owner's orientation. *Mirrors `demo.ts:37`.*
-
-*Per-line walkthroughs pending Rust implementation.*
-
----
-
-## `src/ai.rs`
-
-*The enemy decision layer. Picks actions to queue, then the same `execute_queue` runs
-them. The design objective: maximize the number of distinct lane-ends threatened, which
-is what manufactures the rotation pressure the orientation system depends on.*
-
-**Mirrors:** `resolve.ts:395` (`decideEnemyAction`, stubbed).
-**Design anchor:** HTML Part IV (closing paragraph on AI's flanking objective).
-
-### Functions to document
-
-- **`fn decide_enemy_action(enemy: &mut Ship, board: &Board, content: &Content)`** —
-  the entry point. Fills `enemy.queue` based on threat analysis.
-- *(Helpers TBD as the AI evolves: threat scoring, lane-end coverage analysis, mount
-  utility per orientation, etc.)*
-
-*Per-line walkthroughs pending Rust implementation. AI is task #6 in the team queue.*
-
----
-
-## `src/bus.rs`
-
-*The event bus and the `Hook` enum. Synchronous fan-out: `emit(hook, ctx)` walks the
-subscriber list for that hook and calls each in registration order.*
-
-**Mirrors:** `engine/types.ts:191` (`EventBus`) and `demo.ts:16` (`makeBus`).
-
-### Items to document
-
-- **`enum Hook`** — the closed set of 11 hook tags.
-- **`struct HookContext<'a>`** — board reference, optional source/target, optional
-  amount, and the extension fields the TS `[k: string]: unknown` allows.
-- **`trait EventBus`** *or* **`struct EventBus`** — the `on` / `emit` interface.
-  *Drift watch: TS uses a plain object with closures. Rust must decide between
-  `Box<dyn Fn(&mut HookContext)>` subscribers (boxed closures) vs. a trait-based
-  subscriber type. Architect's call; document whichever.*
-
-*Per-line walkthroughs pending Rust implementation.*
+These three skeleton headings predated the architecture settling; they're folded here so
+a reader hunting for the old filenames lands somewhere useful.
 
 ---
 
 ## `src/catalog.rs`
 
-*The on-disk catalog format: deserializes `broadside.catalog.json` (the export from the
-analysis HTML) into the typed `Catalog` record. Currently a stub at 214 bytes — a
-placeholder module.*
+*The front door to the content catalog: a `LoadError` enum that splits I/O from parse
+failures, and a strict-first / canonical-fallback `load_from_path` / `load_from_bytes`
+pair that auto-detects which on-disk shape it was handed and returns the same typed
+[`Catalog`](#srctypesrs) either way. Full companion at
+[`docs/MODULES/catalog.md`](MODULES/catalog.md).*
 
-**Mirrors:** No direct TS analog; this is Rust-specific glue.
+**Mirrors:** No direct TS analog. TypeScript loads its catalog inline in `demo.ts`; this
+is Rust-specific loading glue.
 
-*Pending the architect expanding the stub.*
+**Intent:** Callers (the demo bin's startup loader, tester's `tests/catalog_smoke.rs`)
+hand this module a path or byte slice and receive a typed `Catalog`. It owns error typing
+and format auto-detect so no caller has to choose between a strict and a canonical loader.
+
+### `enum LoadError` (src/catalog.rs:29)
+
+Line 30: `#[non_exhaustive]` — leaves room for a future `BadSchema(String)` validation
+variant without breaking downstream `match`es. Line 31-34: the two variants
+`Io(io::Error)` / `Parse(serde_json::Error)`. Line 36-52: `Display` one-liners and an
+`Error::source` impl that returns the wrapped cause for error-chain walking. Line 54-59:
+`From<io::Error>` and `From<serde_json::Error>` so `?` lifts both transparently inside the
+loaders.
+
+### `fn load_from_path(path: impl AsRef<Path>) -> Result<Catalog, LoadError>` (src/catalog.rs:72)
+
+**Intent:** Read the file, then defer to `load_from_bytes`. Line 73: `fs::read(path)?` —
+any I/O error becomes `LoadError::Io`. Line 74: hand the bytes to `load_from_bytes` so the
+path-based and byte-based loaders share one dispatch.
+
+### `fn load_from_bytes(bytes: &[u8]) -> Result<Catalog, LoadError>` (src/catalog.rs:79)
+
+**Intent:** Decode bytes with strict-first / canonical-fallback dispatch.
+
+Line 81-83: **strict fast path** — `serde_json::from_slice::<Catalog>(bytes)`; on success
+return immediately. The strict-parse error is swallowed on purpose (it just means "try the
+other shape"). Line 85: `serde_json::from_slice` into a loose `Value`; a failure here is
+genuinely malformed JSON and propagates as `LoadError::Parse`. Line 86: run
+[`from_canonical_value`](#srccatalog_canonicalrs) and lift its error to `Parse`.
+
+**Drift — auto-detect by trial, not by sniffing.** The loader doesn't inspect a
+schema-version field; it tries strict and falls back. The canonical export is the only
+loose shape expected today (see catalog_canonical.rs:47-54), and trial-decode keeps every
+caller on one function.
+
+**Cross-references:** Called by the demo bin startup and integration tests. On the
+fallback path, calls `crate::catalog_canonical::from_canonical_value`
+([`src/catalog_canonical.rs`](#srccatalog_canonicalrs)). Produces a
+[`Catalog`](#srctypesrs) the resolver's content layer consumes.
+
+**Tests** (src/catalog.rs:89): `loads_minimal_catalog` round-trips a hand-written strict
+fixture; `placeholder_sections_default_to_empty_when_absent` pins the `#[serde(default)]`
+attributes on the placeholder `Catalog` sections (reviewer m3/m4). The canonical fallback
+path is exercised by tester's `tests/catalog_smoke.rs` against the real
+`assets/broadside.catalog.json`.
+
+---
+
+## `src/catalog_canonical.rs`
+
+*The bridge between the catalog's two on-disk shapes. The design HTML's "Copy JSON" button
+emits a **flat** shape (terse field names, bare-string effects); the engine's strict types
+expect a **nested** shape. This module walks the loose `serde_json::Value` tree, renames
+fields, nests them into `cost`/`targeting`, and inflates each bare-string effect into a
+typed record using documented defaults — producing a [`Catalog`](#srctypesrs) the resolver
+can't distinguish from a strict-parsed one. Full companion at
+[`docs/MODULES/catalog_canonical.md`](MODULES/catalog_canonical.md).*
+
+**Mirrors:** No direct TS analog. TypeScript loads its catalog inline in `demo.ts` and
+never grew a loose/strict split. This is Rust-specific glue born of consuming the analysis
+HTML's export directly.
+
+**Intent:** The canonical shape is the source of truth bruce hand-edits in the analysis
+doc. Rather than make the design doc emit verbose engine JSON, this module infers the
+missing structure. The flat action `{ id, heat, cd, band, pattern, arc, freeplay,
+effects: ["DAMAGE"] }` becomes the nested `{ id, cost{…}, targeting{…}, effects: [{ kind:
+"DAMAGE", amount: 3 }] }`. Every difference between those is synthesized here. Inference is
+deliberately conservative (catalog_canonical.rs:360-364) — under-tuned defaults
+playtesting can flag, not magic numbers scraped from `desc` prose.
+
+### Inference rules (summary)
+
+`heat→cost.heat`, `cd→cost.cooldownMax`, `!freeplay→cost.advancesTurn` (negated),
+`band→targeting.optimalBand` and `targeting.band:[band]` (single-element — the conservative
+"fires only at optimal range" read until a real allowed-bands field lands),
+`pattern→targeting.pattern`, `arc→targeting.requiresArc` (null if absent),
+`facingRelative:true` always, `hits_all`/`hitsAll` default false. Subsystems:
+`unlock→unlockSalvage`, missing `level` defaults to 1. Classes: `affinity "bow-on"→"bowOn"`,
+`set1`/`set2` display-names→action-ids, `signature` prose→snake_case id from the leading
+title.
+
+### `fn from_canonical_value(root: Value) -> Result<Catalog, serde_json::Error>` (src/catalog_canonical.rs:70)
+
+**Intent:** The single public entry point. Transforms the three sections with structural
+drift (`actions`, `subsystems`, `classes`), leaves every other section untouched, then
+hands the rebuilt tree to `serde_json::from_value`.
+
+Line 71-74: peel the root to its object map; a non-object root is handed straight to serde
+so the error message describes the real type mismatch. Line 84: declare the
+`action_name_to_id` lookup the class normalizer needs. Line 85-102: the **actions** block —
+`transform_action` each element, `filter_map(...ok())` silently drops failures (losing one
+weapon beats failing the whole load), then populate the lookup with case-folded
+`name→id` so `"Twin-Linked"` and `"twin-linked"` both resolve. **Actions must go first**
+because `transform_class` borrows this map. Line 103-109: **subsystems** (infallible
+`map`). Line 110-116: **classes**, borrowing the lookup. Line 118-121: a comment noting the
+canonical-only `archetypes`/`bays` top-level keys pass through harmlessly (no
+`deny_unknown_fields`). Line 123-124: reassemble and do the real typed decode.
+
+**Cross-references:** Called by `load_from_bytes` (catalog.rs) on the canonical fallback.
+Calls `transform_action`, `transform_subsystem`, `transform_class`.
+
+### `fn transform_action(v: Value) -> Result<Value, &'static str>` (src/catalog_canonical.rs:134)
+
+**Intent:** Flat action → strict nested shape. `Err` on a missing *required* field so the
+caller's `filter_map` can skip it.
+
+Line 135-137: let-else bail on a non-object. Line 141-147: pull/rename the required scalars
+(`heat`/`cd` as `i64`, `band`/`pattern` as `String`) via `remove` so the flat keys don't
+survive. Line 143: `freeplay` defaults false. Line 148: `arc` kept as raw `Option<Value>`
+(may be null/absent). Line 149-152: `hits_all` accepts either casing, default false.
+Line 154-165: map the loose `effects` strings through `inflate_effect` using `archetype`
+(default `"beam"`) and `id` as hints. Line 167-172: build `cost { heat, cooldownMax,
+advancesTurn: !freeplay }`. Line 174-193: build `targeting` — note line 182-183 seeds
+`band` as a single-element array; line 184-190 normalizes `arc` to a string or null; line
+191 hardcodes `facingRelative: true`. Line 197: strip UI-only `desc`.
+
+**Cross-references:** Called by `from_canonical_value`. Calls `inflate_effect`. Produces an
+[`Action`](#srctypesrs).
+
+**Worked example** (`canonical_pulse_laser_parses`, src/catalog_canonical.rs:516): the flat
+`pulse_laser` decodes to `cost.heat=1`, `cooldown_max=0`, `advances_turn=true`
+(freeplay=false), one `Effect::DAMAGE { amount: 3 }` (beam + heat 1 → heat+2).
+
+### `fn transform_subsystem(v: Value) -> Value` (src/catalog_canonical.rs:205)
+
+**Intent:** Infallible flat→strict subsystem. Line 209-211: `unlock→unlockSalvage` (value
+preserved; `null` stays `None`). Line 213: missing `level` defaults to 1. Line 215: strip
+`desc`.
+
+**Worked example** (`subsystem_unlock_renames_to_unlock_salvage_and_level_defaults`,
+src/catalog_canonical.rs:600): `marksman` with `"unlock": null` and no `level` →
+`unlock_salvage=None`, `level=1`, `max_level=3`.
+
+### `fn transform_class(v, action_name_to_id) -> Value` (src/catalog_canonical.rs:237)
+
+**Intent:** Three drifts. Line 242-248: affinity `"bow-on"→"bowOn"` (others pass through).
+Line 251-259: `set1`/`set2` display-names→ids via `normalize_action_ref`. Line 262-273:
+`signature` prose→id via `signature_id_from_prose`, falling back to raw prose (with an
+`eprintln!`) if derivation yields empty.
+
+**Worked example** (`canonical_class_normalizes_set_refs_and_signature`,
+src/catalog_canonical.rs:890): `wanderer` → `set1=["broadside_battery","pulse_laser"]`,
+`set2=["railgun_broadside","grav_snare"]`, `signature="slip"`.
+
+### `fn normalize_action_ref(...) -> Value` (src/catalog_canonical.rs:281)
+
+**Intent:** Resolve one set-ref. Line 291-293: skip the lookup if the string already looks
+like a snake_case id (hybrid-catalog support). Line 294-304: case-folded lookup; a miss
+logs and passes the original through (resolver silently skips unknown refs — better than
+failing the load over a typo).
+
+**Worked examples:** `unmapped_set_ref_passes_through` (`"Ghost Weapon"` stays verbatim);
+`snake_case_set_ref_skips_lookup` (`"pulse_laser"` skips the lookup).
+
+### `fn signature_id_from_prose(prose: &str) -> String` (src/catalog_canonical.rs:317)
+
+**Intent:** Pull a snake_case id from a Signature prose string. Line 320-324: split on
+em-dash (U+2014), then `" - "`, else treat the whole string as the title. Line 331-344: the
+snake_case loop (lowercase alnum, collapse whitespace/`-`/`_` to a single `_`, drop other
+punctuation). Line 346-348: strip trailing underscore.
+
+**Worked examples** (src/catalog_canonical.rs:854): `"Slip — …"→"slip"`,
+`"Swap Toss — …"→"swap_toss"`, `"Phase - …"→"phase"`, `"Ram The Target"→"ram_the_target"`,
+empty/whitespace/`"—"`→`""`.
+
+### `fn inflate_effect(v, archetype, heat, action_id) -> Value` (src/catalog_canonical.rs:368)
+
+**Intent:** Turn one bare-string effect into a `kind`-tagged object, inferring fields from
+archetype/heat/id. Already-object effects pass through (hybrid-catalog support).
+
+The `match kind` (line 379-501): **DAMAGE** — `amount` by tier (`beam`/`broadside`→`heat+2`,
+`ordnance`→0, `displacement`/`control`→2, else `max(heat,1)`); falloff omitted to keep the
+strict `None` default. **APPLY_STATUS** — `ordnance` and `displacement`/`control`→
+`systemsOffline`, else `hullBreach`; `duration:3`. **DISPLACE_TARGET** — `mode` by id
+keyword (`slip`/`swap_toss`/`tractor+toss`→swap, `tractor`/`pull`→pull, repulsor/push/
+snare/throw/ram→push); `distance:2`. **DISPLACE_SELF** — `phase`→`(SLIP,2)`, else
+`(THRUST,1)`. **REORIENT**→`to:"flip"`. **SPAWN_ORDNANCE**→`projectile:<id>`.
+**VENT_HEAT**→`amount:3, rechargeCooldowns:false`. **DEPLOY**→`drone` if id contains
+"drone", else `mine`. **BOARD**→`note:<id>`. Unknown kind → just `{ kind }`, letting serde
+fail loudly downstream.
+
+**Cross-references:** Called by `transform_action`. Produces [`Effect`](#srctypesrs)
+variants consumed by the resolver's `apply_damage` / effect dispatch.
+
+**Worked examples:** `ordnance_apply_status_infers_systems_offline` (Heavy Torpedo →
+`APPLY_STATUS{SystemsOffline,3}`); `tractor_beam_displace_infers_pull` (→ Pull);
+`repulsor_displace_infers_push` (→ Push); `slip`/`swap_toss`/`tractor_toss` → Swap;
+`phase_infers_slip_movement_mode` (→ `DISPLACE_SELF{SLIP}`);
+`already_strict_effect_passes_through` (`{kind:DAMAGE,amount:99}` survives untouched).
+
+**Drift — inferred numerics.** Effect amounts/durations/distances are inferred from
+archetype + heat, not present in canonical data — conservative defaults meant to be tuned
+by playtesting, not authoritative balance.
 
 ---
 
