@@ -3931,6 +3931,46 @@ attributes on the placeholder `Catalog` sections (reviewer m3/m4). The canonical
 path is exercised by tester's `tests/catalog_smoke.rs` against the real
 `assets/broadside.catalog.json`.
 
+### Catalog-driven enemy synthesis (task #115)
+
+*The second half of `catalog.rs`: turn a [`ShipSpawn`](#srctypesrs) into a real
+[`Ship`](#srctypesrs) from the catalog's `enemies[]`, so a `skiff` is hull 3 with a pulse
+laser and a `monitor` is hull 5 with Pursuit — each enemy behaves per its canonical
+identity. Before #115 every non-boss enemy came from
+[`fallback_ship_for_spawn`](#srcrunsrs) (hull 3, one mount, **no traits**), so the AI's
+Pursuit/BurnHard/Agile nudges never fired; this path attaches the real traits.*
+
+- **`enemy_ship_from_catalog(catalog, spawn) -> Option<Ship>`** (src/catalog.rs:143) — find
+  the `EnemyDef` whose id matches `spawn.class_id`, materialize it; `None` if absent (caller
+  falls back). Tier-1 entry; defers to the `_at_tier` form.
+- **`enemy_ship_from_catalog_at_tier(catalog, spawn, patrol_tier)`** (src/catalog.rs:161) —
+  the patrol-tier-aware form. **Dormant seam:** `patrol_tier` is threaded but unused for stat
+  math today (`select_hull` returns base `hull` at every tier); the canonical `hull5`
+  (Patrol-5 scaled hull) has no consumer yet. The parameter exists so wiring
+  `patrol_tier ≥ 5 → hull5` later is a one-line change in `select_hull`, not a
+  signature-breaking retrofit. Reviewer flagged it dormant; it's a deliberate seam.
+- **`ship_from_enemy_def[_at_tier](catalog, def, spawn[, patrol_tier]) -> Ship`**
+  (src/catalog.rs:174, 182) — the materializer. **mounts** ← `EnemyDef.weapons` (display
+  names resolved to action ids via `resolve_weapon_id`, the same #82 drift the class lists
+  have; mount `arc` from the resolved action's `requires_arc`, default Forward for arc-less
+  actions; unresolved weapons skipped + logged). **traits** ← `EnemyDef.traits` via
+  `trait_from_str`. **hull** ← `hp_override` else `select_hull`. **shield** ←
+  `enemy_shield_default` (soft stern). The boss keeps its own richer profile.
+- **Helpers:** `select_hull` (src/catalog.rs:252, the dormant tier switch),
+  `enemy_shield_default` (:266), `action_name_to_id` (:279, synthesis-time display-name→id
+  map), `resolve_weapon_id` (:291), `trait_from_str` (:307, canonical "Burn-Hard"/"Reactor
+  Breach" → `Trait` via a spaceless-lowercase key; unknown → `None`).
+
+**Cross-references:** Called by the bin's `build_current_board`
+([`broadside.rs`](#srcbinbroadsidesrs)) — spawn closure now routes `warlord` →
+[`boss_ship_for_spawn`](#srcrunsrs), else `enemy_ship_from_catalog_at_tier` → real synthesis,
+else [`fallback_ship_for_spawn`](#srcrunsrs). The attached traits drive
+[`decide_enemy_action`](#srcresolvers). **Worked examples:**
+`synthesized_enemy_carries_catalog_traits_and_mounts` (src/catalog.rs:436),
+`patrol_tier_seam_threads_through_without_changing_hull_yet` (src/catalog.rs:517),
+`real_catalog_synthesizes_canonical_enemies_with_traits` (src/catalog.rs:548). Full detail in
+[`docs/MODULES/catalog.md`](MODULES/catalog.md).
+
 ---
 
 ## `src/catalog_canonical.rs`
@@ -4732,9 +4772,11 @@ not on Restart)/`run`/`demo_state`/optional `audio`.
 
 ### `impl App` (src/bin/broadside.rs:406)
 
-`new` (init + optional audio open); `build_current_board` (451, via
-[`build_encounter_board`](#srcrunsrs), `warlord`→`boss_ship_for_spawn` else
-`fallback_ship_for_spawn`); `restart_run` (471); `apply_path_choice` (486, the
+`new` (init + optional audio open); `build_current_board` (489, via
+[`build_encounter_board`](#srcrunsrs), with a three-way spawn dispatch since #115:
+`warlord`→`boss_ship_for_spawn`, else `enemy_ship_from_catalog_at_tier`
+([catalog.rs](#srccatalogrs), real hull/mounts/traits), else `fallback_ship_for_spawn`;
+threads the sector `patrol_tier`); `restart_run` (471); `apply_path_choice` (486, the
 EncounterComplete 1/2/3: repair +2 hull / upgrade placeholder / continue via
 `advance_after_win`); `reinstall_audio` (546/552); and the tween machinery (561-627):
 `snapshot_visual_cells` (pre-mutation), `record_tween_anchors` (post-mutation), `tween_state`

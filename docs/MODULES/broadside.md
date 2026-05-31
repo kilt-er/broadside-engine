@@ -146,10 +146,17 @@ failed to open — headless CI, no driver).
   audio backend and install it on the board's bus.
 - `fresh_player_ship` (441) — `player_ship(0)`; subsystems live on `content`, so
   they carry over for free across encounters.
-- `build_current_board` (451) — build the current encounter's board via
-  [`build_encounter_board`](runs.md), dispatching `class_id == "warlord"` to
-  `boss_ship_for_spawn` and everything else to `fallback_ship_for_spawn`. `None`
-  if the run has no current encounter.
+- `build_current_board` (489) — build the current encounter's board via
+  [`build_encounter_board`](runs.md). The spawn closure is a **three-way priority
+  dispatch** (since #115 catalog enemy synthesis): `class_id == "warlord"` →
+  [`boss_ship_for_spawn`](runs.md) (the hand-tuned hull-14 boss, richer than the
+  catalog's plain warlord); else
+  [`enemy_ship_from_catalog_at_tier`](catalog.md) — real hull/mounts/**traits** from
+  the canonical `enemies[]`, so the AI's Pursuit/BurnHard/Agile nudges fire; else
+  [`fallback_ship_for_spawn`](runs.md) if the catalog is absent or the class_id isn't
+  in `enemies[]` (graceful degrade). It threads the current sector's `patrol_tier`
+  into the synthesizer's dormant difficulty seam. `None` if the run has no current
+  encounter.
 - `restart_run` (471) — reset run + content + board to sector-0/encounter-0,
   clear tweens, re-install audio. Called from the run-end overlays.
 - `apply_path_choice` (486) — the EncounterComplete 1/2/3 handler: `D1` repairs
