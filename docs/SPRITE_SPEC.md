@@ -28,24 +28,28 @@ For each fixed scrub step the renderer computes
 extent: `beam` when bow-on (so the top face has depth = beam/2), `length`
 when broadside (top face has depth = length/2).
 
-### Frigate — `{ length: 168, beam: 42, height: 50 }`
+### Frigate — `{ length: 120, beam: 60, height: 40 }`
+
+Sized on the **6:3:2 length:beam:height ratio at N=20**. The bow-on
+silhouette spans ~68% of one cell on `DEFAULT_LANE` (cell pitch 177);
+adjacent ships at PointBlank fit without overlap.
 
 | Angle | Stance | Width | total_h |
 |------:|:-------|------:|--------:|
-| 0°    | BowOn       | 168 | **50**  |
-| 15°   | BowOn       | 168 | 59      |
-| 30°   | BowOn       | 168 | 64      |
-| 45°   | BowOn       | 168 | 65      |
-| 60°   | BowOn       | 168 | 61      |
-| 75°   | BowOn       | 168 | 54      |
-| 90°   | BowOn       | 168 | **42**  |
-| 0°    | Broadside   | 42  | **50**  |
-| 15°   | Broadside   | 42  | 92      |
-| 30°   | Broadside   | 42  | 127     |
-| 45°   | Broadside   | 42  | 154     |
-| 60°   | Broadside   | 42  | 170     |
-| 75°   | Broadside   | 42  | 175     |
-| 90°   | Broadside   | 42  | **168** |
+| 0°    | BowOn       | 120 | **40**  |
+| 15°   | BowOn       | 120 | 54      |
+| 30°   | BowOn       | 120 | 65      |
+| 45°   | BowOn       | 120 | 71      |
+| 60°   | BowOn       | 120 | 72      |
+| 75°   | BowOn       | 120 | 68      |
+| 90°   | BowOn       | 120 | **60**  |
+| 0°    | Broadside   | 60  | **40**  |
+| 15°   | Broadside   | 60  | 70      |
+| 30°   | Broadside   | 60  | 95      |
+| 45°   | Broadside   | 60  | 113     |
+| 60°   | Broadside   | 60  | 124     |
+| 75°   | Broadside   | 60  | 126     |
+| 90°   | Broadside   | 60  | **120** |
 
 Endpoints in **bold**: paint side.png to the bold-0° extent, top.png to
 the bold-90° extent. The renderer interpolates between them at runtime.
@@ -66,10 +70,10 @@ Filename: `assets/sprites/<class>_<stance>_<view>.png`
 - `view` ∈ `{ side, top }` — paint the 0° and 90° silhouettes only.
 
 Pixel dimensions:
-- `*_side.png`: `width × height`. Frigate side: **168 × 50** (BowOn) or
-  **42 × 50** (Broadside).
-- `*_top.png`: `width × depth`. Frigate top: **168 × 42** (BowOn) or
-  **42 × 168** (Broadside).
+- `*_side.png`: `width × height`. Frigate side: **120 × 40** (BowOn) or
+  **60 × 40** (Broadside).
+- `*_top.png`: `width × depth`. Frigate top: **120 × 60** (BowOn) or
+  **60 × 120** (Broadside).
 
 Anchor point: silhouette is centered both horizontally and vertically in
 the PNG (the renderer overlays the sprite at the ship's lane position,

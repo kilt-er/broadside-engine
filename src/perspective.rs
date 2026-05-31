@@ -107,10 +107,15 @@ pub struct ShipDims {
     pub height: f32,
 }
 
-/// Default Frigate hull. Sized so the silhouette dominates a single cell
-/// (lane cell width on `DEFAULT_LANE` is ~177 design px). `beam` is ~25%
-/// of `length` for a recognizable side / top contrast.
-pub const FRIGATE_DIMS: ShipDims = ShipDims { length: 168.0, beam: 42.0, height: 50.0 };
+/// Default Frigate hull. Sized on a **6:3:2 length:beam:height ratio at
+/// N=20** = 120×60×40. The lane cell width on `DEFAULT_LANE` is ~177
+/// design px, so a bow-on Frigate spans ~68% of one cell — leaves room
+/// for adjacent ships at PointBlank without silhouettes overlapping.
+/// Beam at 50% of length (was 25%) gives a chunkier top-down profile so
+/// the top sprite reads more distinctly at high view angles; height at
+/// 33% of length gives a flatter side silhouette suited to the
+/// space-frigate aesthetic.
+pub const FRIGATE_DIMS: ShipDims = ShipDims { length: 120.0, beam: 60.0, height: 40.0 };
 
 /// Which way the hull is turned. `BowOn` runs along the lane axis (length
 /// along x); `Broadside` runs perpendicular (length along the depth axis,
