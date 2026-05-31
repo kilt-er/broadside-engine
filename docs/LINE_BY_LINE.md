@@ -4311,6 +4311,155 @@ with [`meta.rs`](#srcmetars)'s `accumulate_into_meta` + `MetaProgression::save_t
 
 ---
 
+## `src/sprites.rs`
+
+*PNG sprite loading for hand-painted ship art, with two derive transforms
+(`mirror_horizontal` #85, `rotate_90_cw` #86) that synthesize missing sprite variants, and
+the `SpriteRegistry` trait that lets the compositor ask "is this sprite uploaded?" without
+touching the GPU. Every loader returns `None` rather than panicking, so the renderer falls
+back to the procedural silhouette for any missing PNG. Full companion at
+[`docs/MODULES/sprites.md`](MODULES/sprites.md).*
+
+**Mirrors:** No TS analog — the TS engine had no sprite pipeline. Render-only.
+
+**Intent:** The renderer can draw a ship procedurally ([`atlas.rs`](#srcatlasrs)) or from a
+PNG; this is the PNG loader. Files live at `assets/sprites/<class>_<stance>_<view>.png`
+(`stance ∈ {bowOnFore, bowOnAft, broadside}`, `view ∈ {side, top}`).
+
+### `enum SpriteView` / `enum SpriteStance` / `struct SpriteImage` (src/sprites.rs:22, 40, 58)
+
+`SpriteView` (`Side`=0° / `Top`=90°, blended by the camera scrubber) and `SpriteStance`
+(`BowOnFore`/`BowOnAft`/`Broadside`), each with a `slug()` → filename token. `SpriteImage`
+is the decoded `{ width, height, rgba: Vec<u8> }` (RGBA8, top row first) — the common
+currency.
+
+### `fn load_sprite(...) -> Option<SpriteImage>` / `fn sprite_path(...)` / `fn load_sprite_pair(...)` (src/sprites.rs:68, 93, 110)
+
+`load_sprite` builds the path, `image::open`s it, and on any error logs at `debug` and
+returns `None` (**never panics** — the render fallback handles it). `sprite_path` formats
+`<dir>/sprites/<class>_<stance>_<view>.png` (public for diagnostics). `load_sprite_pair`
+loads both views; either or both may be `None`. **Worked examples:**
+`load_sprite_returns_none_for_missing_file` (src/sprites.rs:248), `sprite_path_format_matches_spec`
+(src/sprites.rs:222), `load_sprite_pair_is_resilient_to_partial_assets` (src/sprites.rs:385).
+
+### `fn mirror_horizontal(src) -> SpriteImage` (src/sprites.rs:130)
+
+**Intent:** Horizontal flip (reverse each row's pixels, rows stay put) — the **#85**
+fallback deriving `bowOnAft` from `bowOnFore` (bow-on ships are fore/aft symmetric).
+Explicit `bowOnAft_<view>.png` takes precedence. **Worked examples:**
+`mirror_horizontal_flips_pixel_order_within_each_row` (src/sprites.rs:260),
+`mirror_horizontal_double_flip_is_identity` (src/sprites.rs:370).
+
+### `fn rotate_90_cw(src) -> SpriteImage` (src/sprites.rs:170)
+
+**Intent:** 90°-CW rotate, dims swap — the **#86** fallback: step 2 of
+`gfx::try_load_ship_sprites`'s `broadside_top` chain (explicit → `rotate90(bowOnFore_top)` →
+procedural). Note `broadside_side` has **no** auto-derivation (it's a front-face beam×height
+view). The y-down mapping is `dst.x = dw-1-sy, dst.y = sx`; handedness isn't visually
+load-bearing (the broadside chevron reads bow direction explicitly). **Worked examples:**
+`rotate_90_cw_maps_top_left_to_top_right` (src/sprites.rs:312),
+`rotate_90_cw_four_times_is_identity` (src/sprites.rs:337),
+`rotate_90_cw_on_frigate_top_dimensions_match_sprite_spec` (src/sprites.rs:355, 120×60→60×120).
+
+### `trait SpriteRegistry` / `struct EmptySpriteRegistry` (src/sprites.rs:197, 208)
+
+A read-only "which sprites are uploaded?" query. [`hud::compose_scene`](#srchudrs) calls
+`has(class, stance, view)` to pick textured vs procedural per ship; [`gfx::Gfx`](#srcgfxrs)
+implements it. `has_pair` is a default ("both views"). `EmptySpriteRegistry` returns `false`
+for everything (tests / no-GPU callers always get procedural). The trait keeps `hud`
+GPU-agnostic.
+
+---
+
+## `src/bin/broadside.rs`
+
+*The only executable in the crate. Opens a winit window, owns the wgpu renderer, holds the
+live [`Board`](#srctypesrs) + [`Run`](#srctypesrs), and routes keyboard input through the
+engine's pure input → `Intent` → resolver pipeline so the library never imports winit. Runs
+the Phase-3 campaign state machine and the per-ship movement tweens. Full companion at
+[`docs/MODULES/broadside.md`](MODULES/broadside.md).*
+
+**Mirrors:** No direct TS analog — `demo.ts` was a headless console script. This is the
+interactive front end the Rust port grew. Initial scene mirrors `render-example.ts`.
+
+**Intent:** Orchestration, not game logic — translate winit keycodes to engine `Key`s, ask
+the engine what each key means, apply the `Intent`, run the `DemoState` machine, drive
+tweens, compose + render. All combat/movement/AI math is in the library.
+
+### `fn keycode_to_key(code) -> Option<Key>` (src/bin/broadside.rs:75)
+
+Translate `winit::KeyCode` → engine `input::Key`. Lives in the bin so **the library never
+imports winit**. One arm per advertised binding; everything else `None`. Pinned by
+`keycode_translation_covers_every_binding` (src/bin/broadside.rs:861).
+
+### `fn apply_intent(intent, board, content, initial_board) -> bool` (src/bin/broadside.rs:112)
+
+**Intent:** Apply one `Intent` under **Shogun-Showdown turn semantics** — every input
+advances time (`run_world_phase`). Returns `true` if the visible state changed.
+
+Line 119-122: `Restart` short-circuits (never advances time; rebuilds from
+`initial_board()`). Line 126-128: every other intent needs the player; gone → only Restart
+legal. The `match`: **instant** moves/reorient/vent (133) apply via `apply_instant_action`
+then `run_world_phase`; **PlayCard** (151) validates via `try_play_card`, runs the synthetic
+`__card_<id>` instantly; **QueueAction** (175) pushes to `player.queue` (not fired here);
+**CommitTurn** (186) fires the queue via `fire_player_queue`.
+
+**Drift — SS turn model.** Moves/cards are now *instant* (not queued); only `QueueAction`
+weapon ids sit in the queue. `move_intent_advances_ship_instantly` (src/bin/broadside.rs:898)
+pins that the queue stays empty after a move. **Cross-references:** calls
+[`resolve.rs`](#srcresolvers) `apply_instant_action`/`fire_player_queue`/`run_world_phase`
+and [`input`](#srcinputrs). **Worked examples:** `queue_action_intent_appends_to_player_queue`
+(885), `commit_turn_runs_resolve_round` (917), `play_card_intent_fires_instantly_and_decrements_charges`
+(972), `play_card_intent_rejected_when_card_absent` (1019).
+
+### Initial scene + ships (src/bin/broadside.rs:221–323)
+
+`demo_lane` (`DEFAULT_LANE`); `fresh_content` (DemoContent + HeatSink + Point-Blank Doctrine
++ one charge of each placeholder card, refilled on Restart); `render_example_board` (the
+TS-mirrored 7-cell startup scene, enemies at 2/3/5/6 each with a forward `pulse_laser`);
+`player_ship` (bow shield 2/1, two forward mounts, `klass = "aegis"` sprite hook);
+`enemy_ship`/`make_ship` constructors.
+
+### Constants, `TweenAnchor`, `DemoState`, `App` (src/bin/broadside.rs:333–404)
+
+`CAMERA_ANGLE_STEPS_DEG` (`[0,15,30,45,60,75,90]°`, default 45°), `TWEEN_DURATION_MS` (200).
+`TweenAnchor` (`from_cell: f32` + `started_at: Instant`). `DemoState` (`Playing` /
+`EncounterComplete` / `RunComplete` / `RunDefeated` — the modal overlays gating input).
+`App` holds window/gfx/board/lane/content/camera idx/tween anchors/`sectors` (built once,
+not on Restart)/`run`/`demo_state`/optional `audio`.
+
+### `impl App` (src/bin/broadside.rs:406)
+
+`new` (init + optional audio open); `build_current_board` (451, via
+[`build_encounter_board`](#srcrunsrs), `warlord`→`boss_ship_for_spawn` else
+`fallback_ship_for_spawn`); `restart_run` (471); `apply_path_choice` (486, the
+EncounterComplete 1/2/3: repair +2 hull / upgrade placeholder / continue via
+`advance_after_win`); `reinstall_audio` (546/552); and the tween machinery (561-627):
+`snapshot_visual_cells` (pre-mutation), `record_tween_anchors` (post-mutation), `tween_state`
+(ease-out-quad per frame), `has_active_tween` (keep-redrawing gate).
+
+### `impl ApplicationHandler for App` (src/bin/broadside.rs:630)
+
+The winit loop. `resumed` (631) creates the window, blocks on `Gfx::new`, loads ship
+sprites. `window_event` (651): `Close`/`Resized`; `KeyboardInput` (667) is **edge-triggered**
+— `Esc` exits, `[`/`]` cycle camera (before the key→intent lookup, so they stay
+renderer-owned), then the `DemoState` gate (EncounterComplete=1/2/3, Run* =Enter), then in
+`Playing` snapshot/`key_to_intent`/`apply_intent` + `encounter_outcome` transition + redraw.
+`RedrawRequested` (773) computes tween + angle under `&self`, then `compose_scene_tweened`,
+`push_salvage_hud` (Playing only), the matching overlay (the bin owns the overlay decision
+since #77), `gfx.render` with `Lost`/`Outdated`→reconfigure / OOM→exit, and re-requests a
+redraw only while a tween is live.
+
+### `fn main()` (src/bin/broadside.rs:837)
+
+Init logging, `EventLoop` with `ControlFlow::Poll` (so in-flight tweens animate; the redraw
+path re-requests only while a tween is live, letting a static scene idle), build `App`, run.
+
+**Cross-references:** Drives [`hud`](#srchudrs), [`gfx`](#srcgfxrs), [`runs`](#srcrunsrs),
+[`resolve`](#srcresolvers), [`input`](#srcinputrs), [`sprites`](#srcspritesrs).
+
+---
+
 ## `tests/`
 
 *Integration tests that double as worked examples. The doc embeds the readable ones —
