@@ -296,6 +296,291 @@ mod math3 {
 }
 
 // ===========================================================================
+// parts — superstructure / engines / guns / batteries / greeble primitives,
+// a port of rebuild()'s attached-part layer (~line 471 in the HTML tool).
+// These are what make the lofted hull read as a *capital* ship: small dense
+// detail on a big hull implies scale. Emitted as flat-shaded, per-vertex
+// COLORED triangles so hull + parts draw in one pass. Colors are the tool's
+// material albedos.
+// ===========================================================================
+mod parts {
+    /// Flat-shaded, per-vertex-colored triangle soup (positions/normals/colors
+    /// parallel; 3 entries per tri sharing one face normal).
+    #[derive(Default)]
+    pub struct ColoredMesh {
+        pub positions: Vec<[f32; 3]>,
+        pub normals: Vec<[f32; 3]>,
+        pub colors: Vec<[f32; 3]>,
+    }
+
+    impl ColoredMesh {
+        fn push_tri(&mut self, a: [f32; 3], b: [f32; 3], c: [f32; 3], color: [f32; 3]) {
+            let nrm = face_normal(a, b, c);
+            self.positions.extend_from_slice(&[a, b, c]);
+            self.normals.extend_from_slice(&[nrm, nrm, nrm]);
+            self.colors.extend_from_slice(&[color, color, color]);
+        }
+
+        pub fn append(&mut self, other: &ColoredMesh) {
+            self.positions.extend_from_slice(&other.positions);
+            self.normals.extend_from_slice(&other.normals);
+            self.colors.extend_from_slice(&other.colors);
+        }
+
+        /// Axis-aligned box centered at `c`, full extents `(sx,sy,sz)`.
+        fn add_box(&mut self, c: [f32; 3], sx: f32, sy: f32, sz: f32, color: [f32; 3]) {
+            let (hx, hy, hz) = (sx * 0.5, sy * 0.5, sz * 0.5);
+            let v = |dx: f32, dy: f32, dz: f32| [c[0] + dx * hx, c[1] + dy * hy, c[2] + dz * hz];
+            let p = [
+                v(-1.0, -1.0, -1.0),
+                v(1.0, -1.0, -1.0),
+                v(1.0, 1.0, -1.0),
+                v(-1.0, 1.0, -1.0),
+                v(-1.0, -1.0, 1.0),
+                v(1.0, -1.0, 1.0),
+                v(1.0, 1.0, 1.0),
+                v(-1.0, 1.0, 1.0),
+            ];
+            let mut quad = |a: usize, b: usize, cc: usize, d: usize| {
+                self.push_tri(p[a], p[b], p[cc], color);
+                self.push_tri(p[a], p[cc], p[d], color);
+            };
+            quad(4, 5, 6, 7);
+            quad(1, 0, 3, 2);
+            quad(0, 4, 7, 3);
+            quad(5, 1, 2, 6);
+            quad(3, 7, 6, 2);
+            quad(0, 1, 5, 4);
+        }
+
+        /// UV sphere centered at `c`, radius `r`, `seg`×`ring` divisions.
+        fn add_sphere(&mut self, c: [f32; 3], r: f32, seg: usize, ring: usize, color: [f32; 3]) {
+            let pt = |i: usize, j: usize| {
+                let v = j as f32 / ring as f32;
+                let u = i as f32 / seg as f32;
+                let theta = v * std::f32::consts::PI;
+                let phi = u * std::f32::consts::TAU;
+                [
+                    c[0] + r * theta.sin() * phi.cos(),
+                    c[1] + r * theta.cos(),
+                    c[2] + r * theta.sin() * phi.sin(),
+                ]
+            };
+            for j in 0..ring {
+                for i in 0..seg {
+                    let a = pt(i, j);
+                    let b = pt(i + 1, j);
+                    let cc = pt(i + 1, j + 1);
+                    let d = pt(i, j + 1);
+                    self.push_tri(a, b, cc, color);
+                    self.push_tri(a, cc, d, color);
+                }
+            }
+        }
+
+        /// Cylinder whose axis runs along x (the tool's z-rotated cylinders).
+        fn add_cylinder_x(
+            &mut self,
+            c: [f32; 3],
+            rtop: f32,
+            rbot: f32,
+            len: f32,
+            seg: usize,
+            color: [f32; 3],
+        ) {
+            let hx = len * 0.5;
+            let ring = |radius: f32, x: f32, i: usize| {
+                let a = i as f32 / seg as f32 * std::f32::consts::TAU;
+                [c[0] + x, c[1] + radius * a.cos(), c[2] + radius * a.sin()]
+            };
+            for i in 0..seg {
+                let tp0 = ring(rtop, hx, i);
+                let tp1 = ring(rtop, hx, i + 1);
+                let bt0 = ring(rbot, -hx, i);
+                let bt1 = ring(rbot, -hx, i + 1);
+                self.push_tri(bt0, bt1, tp1, color);
+                self.push_tri(bt0, tp1, tp0, color);
+                self.push_tri([c[0] + hx, c[1], c[2]], tp0, tp1, color);
+                self.push_tri([c[0] - hx, c[1], c[2]], bt1, bt0, color);
+            }
+        }
+    }
+
+    fn face_normal(a: [f32; 3], b: [f32; 3], c: [f32; 3]) -> [f32; 3] {
+        let ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+        let ac = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+        let n = [
+            ab[1] * ac[2] - ab[2] * ac[1],
+            ab[2] * ac[0] - ab[0] * ac[2],
+            ab[0] * ac[1] - ab[1] * ac[0],
+        ];
+        let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+        if len < 1e-8 {
+            [0.0, 1.0, 0.0]
+        } else {
+            [n[0] / len, n[1] / len, n[2] / len]
+        }
+    }
+
+    // Tool material albedos (sRGB 0..1).
+    const MAT_TOWER: [f32; 3] = [0.784, 0.847, 0.933]; // 0xc8d8ee
+    const MAT_DARK: [f32; 3] = [0.235, 0.290, 0.392]; // 0x3c4a64
+    const MAT_CANOPY: [f32; 3] = [0.373, 0.847, 1.0]; // 0x5fd8ff
+    const MAT_GUN: [f32; 3] = [1.0, 0.541, 0.282]; // 0xff8a48
+    const MAT_BATT: [f32; 3] = [1.0, 0.847, 0.420]; // 0xffd86b
+    const MAT_ENGINE: [f32; 3] = [0.435, 0.878, 1.0]; // 0x6fe0ff
+
+    fn width_at(plan: &[[f32; 2]], u: f32) -> f32 {
+        let n = plan.len();
+        let f = u * (n - 1) as f32;
+        let i = (f.floor() as usize).clamp(0, n - 2);
+        let uu = f - i as f32;
+        plan[i][1] + (plan[i + 1][1] - plan[i][1]) * uu
+    }
+    fn lerp(a: f32, b: f32, t: f32) -> f32 {
+        a + (b - a) * t
+    }
+    /// Seeded hash (not RNG) so the greeble scatter is stable frame-to-frame.
+    fn hash01(n: u32) -> f32 {
+        let mut x = n.wrapping_mul(0x9e3779b1);
+        x ^= x >> 15;
+        x = x.wrapping_mul(0x85ebca6b);
+        x ^= x >> 13;
+        (x & 0x00ff_ffff) as f32 / 0x0100_0000 as f32
+    }
+
+    /// All attached parts in ship space — direct port of rebuild()'s primitive
+    /// layer. `l`/`h` = hull world half-length/height; `plan` = half-width
+    /// outline; `greeb` = density (tool default 0.6).
+    pub fn build_parts(l: f32, h: f32, plan: &[[f32; 2]], greeb: f32) -> ColoredMesh {
+        let mut m = ColoredMesh::default();
+        let stern_w = plan[0][1];
+
+        let tower_x = -l * 0.6;
+        m.add_box(
+            [tower_x, h * 0.7, 0.0],
+            l * 0.5,
+            h * 0.6,
+            stern_w,
+            MAT_TOWER,
+        );
+        m.add_box(
+            [tower_x, h * 1.15, 0.0],
+            l * 0.3,
+            h * 0.5,
+            stern_w * 0.6,
+            MAT_TOWER,
+        );
+        m.add_box(
+            [tower_x - l * 0.05, h * 1.6, 0.0],
+            l * 0.12,
+            h * 0.5,
+            stern_w * 0.36,
+            MAT_TOWER,
+        );
+        for z in [-0.18f32, 0.18] {
+            m.add_sphere(
+                [tower_x - l * 0.05, h * 1.9, z * stern_w],
+                h * 0.18,
+                8,
+                6,
+                MAT_DARK,
+            );
+        }
+        m.add_box(
+            [tower_x + l * 0.04, h * 1.85, 0.0],
+            l * 0.1,
+            h * 0.2,
+            stern_w * 0.3,
+            MAT_CANOPY,
+        );
+
+        let ne = 4usize;
+        for i in 0..ne {
+            let z = (i as f32 / (ne - 1) as f32 - 0.5) * stern_w * 1.4;
+            m.add_cylinder_x(
+                [-l * 0.98, 0.0, z],
+                h * 0.28,
+                h * 0.34,
+                h * 0.3,
+                8,
+                MAT_DARK,
+            );
+            m.add_cylinder_x(
+                [-l * 1.05, 0.0, z],
+                h * 0.2,
+                h * 0.2,
+                h * 0.08,
+                8,
+                MAT_ENGINE,
+            );
+        }
+
+        m.add_cylinder_x(
+            [l * 1.02, 0.0, 0.0],
+            h * 0.06,
+            h * 0.08,
+            l * 0.25,
+            6,
+            MAT_GUN,
+        );
+
+        let count = lerp(3.0, 14.0, greeb).round() as usize;
+        for sgn in [-1.0f32, 1.0] {
+            for i in 0..count {
+                let t = if count > 1 {
+                    i as f32 / (count - 1) as f32
+                } else {
+                    0.0
+                };
+                let sx = lerp(-l * 0.85, l * 0.6, t);
+                let w_at = width_at(plan, sx / (2.0 * l) + 0.5);
+                m.add_box(
+                    [sx, h * 0.12, sgn * w_at * 0.98],
+                    l * 0.05,
+                    h * 0.08,
+                    h * 0.08,
+                    MAT_BATT,
+                );
+            }
+        }
+
+        if greeb > 0.05 {
+            let rows = lerp(2.0, 6.0, greeb).round() as usize;
+            let cols = lerp(6.0, 26.0, greeb).round() as usize;
+            let mut seed = 0u32;
+            for r in 0..rows {
+                for c in 0..cols {
+                    seed += 1;
+                    let t = if cols > 1 {
+                        c as f32 / (cols - 1) as f32
+                    } else {
+                        0.0
+                    };
+                    let sx = lerp(-l * 0.9, l * 0.7, t);
+                    let w_at = width_at(plan, sx / (2.0 * l) + 0.5);
+                    let zz = if rows > 1 {
+                        (r as f32 / (rows - 1) as f32 - 0.5) * w_at * 1.2
+                    } else {
+                        0.0
+                    };
+                    if hash01(seed) > 0.5 {
+                        continue;
+                    }
+                    let col = if hash01(seed.wrapping_add(7)) > 0.5 {
+                        MAT_DARK
+                    } else {
+                        MAT_CANOPY
+                    };
+                    m.add_box([sx, h * 0.34, zz], l * 0.012, h * 0.03, h * 0.03, col);
+                }
+            }
+        }
+        m
+    }
+}
+
+// ===========================================================================
 // POC renderer
 // ===========================================================================
 
@@ -322,6 +607,10 @@ const PITCH_MAX_DEG: f32 = 88.0;
 const STANCE_YAWS_DEG: [f32; 4] = [28.0, 152.0, 118.0, 298.0];
 const STANCE_NAMES: [&str; 4] = ["right", "left", "fore", "aft"];
 
+/// Greeble density (tool default 0.6) — drives broadside-battery count and the
+/// dorsal panel-block scatter in `parts::build_parts`.
+const GREEB: f32 = 0.6;
+
 const LOW_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
@@ -332,6 +621,8 @@ struct Vertex {
     _pad0: f32,
     normal: [f32; 3],
     _pad1: f32,
+    color: [f32; 3],
+    _pad2: f32,
 }
 
 #[repr(C)]
@@ -341,8 +632,7 @@ struct SceneUniform {
     model: [f32; 16],
     key_dir: [f32; 4],  // xyz toward key light, w = intensity
     fill_dir: [f32; 4], // xyz toward fill light, w = intensity
-    base_color: [f32; 4],
-    ambient: [f32; 4],
+    ambient: [f32; 4],  // hull/parts albedo now travels per-vertex
 }
 
 const HULL_SHADER: &str = r#"
@@ -351,7 +641,6 @@ struct Scene {
     model:     mat4x4<f32>,
     key_dir:   vec4<f32>,
     fill_dir:  vec4<f32>,
-    base_color: vec4<f32>,
     ambient:    vec4<f32>,
 };
 @group(0) @binding(0) var<uniform> scene: Scene;
@@ -359,15 +648,17 @@ struct Scene {
 struct VsOut {
     @builtin(position) clip: vec4<f32>,
     @location(0) world_n: vec3<f32>,
+    @location(1) color: vec3<f32>,
 };
 
 @vertex
-fn vs_main(@location(0) pos: vec3<f32>, @location(1) nrm: vec3<f32>) -> VsOut {
+fn vs_main(@location(0) pos: vec3<f32>, @location(1) nrm: vec3<f32>, @location(2) col: vec3<f32>) -> VsOut {
     let world = scene.model * vec4<f32>(pos, 1.0);
     let wn = (scene.model * vec4<f32>(nrm, 0.0)).xyz;
     var o: VsOut;
     o.clip = scene.view_proj * world;
     o.world_n = wn;
+    o.color = col;
     return o;
 }
 
@@ -376,7 +667,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let n = normalize(in.world_n);
     let key = max(dot(n, normalize(scene.key_dir.xyz)), 0.0) * scene.key_dir.w;
     let fill = max(dot(n, normalize(scene.fill_dir.xyz)), 0.0) * scene.fill_dir.w;
-    let lit = scene.base_color.rgb * (scene.ambient.rgb + vec3<f32>(key) + vec3<f32>(0.53, 0.67, 1.0) * fill);
+    let lit = in.color * (scene.ambient.rgb + vec3<f32>(key) + vec3<f32>(0.53, 0.67, 1.0) * fill);
     return vec4<f32>(lit, 1.0);
 }
 "#;
@@ -519,26 +810,37 @@ impl Gpu {
         };
         surface.configure(&device, &config);
 
-        // geometry
-        let hull = loft::build_hull(
-            loft::DAGGER_PLAN,
-            loft::DAGGER_SECTION,
-            loft::LoftParams::default(),
-        );
-        let verts: Vec<Vertex> = hull
-            .positions
-            .iter()
-            .zip(hull.normals.iter())
-            .map(|(p, n)| Vertex {
-                pos: *p,
+        // Geometry: lofted hull (tinted with the tool's hull albedo) folded
+        // together with the attached parts into one per-vertex-colored soup.
+        let params = loft::LoftParams::default();
+        let hull = loft::build_hull(loft::DAGGER_PLAN, loft::DAGGER_SECTION, params);
+        // Hull world half-extents (match buildHull's `L = 6*stretch/2`, `H`).
+        let hull_l = 6.0 * params.stretch / 2.0;
+        let hull_h = params.hscale;
+        const HULL_ALBEDO: [f32; 3] = [180.0 / 255.0, 198.0 / 255.0, 224.0 / 255.0]; // 0xb4c6e0
+
+        let mut mesh = parts::ColoredMesh::default();
+        for (p, n) in hull.positions.iter().zip(hull.normals.iter()) {
+            mesh.positions.push(*p);
+            mesh.normals.push(*n);
+            mesh.colors.push(HULL_ALBEDO);
+        }
+        let parts_mesh = parts::build_parts(hull_l, hull_h, loft::DAGGER_PLAN, GREEB);
+        mesh.append(&parts_mesh);
+
+        let verts: Vec<Vertex> = (0..mesh.positions.len())
+            .map(|i| Vertex {
+                pos: mesh.positions[i],
                 _pad0: 0.0,
-                normal: *n,
+                normal: mesh.normals[i],
                 _pad1: 0.0,
+                color: mesh.colors[i],
+                _pad2: 0.0,
             })
             .collect();
         let vcount = verts.len() as u32;
         let vbuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("hull vbuf"),
+            label: Some("ship vbuf"),
             contents: bytemuck::cast_slice(&verts),
             usage: wgpu::BufferUsages::VERTEX,
         });
@@ -632,6 +934,11 @@ impl Gpu {
                         wgpu::VertexAttribute {
                             shader_location: 1,
                             offset: 16,
+                            format: wgpu::VertexFormat::Float32x3,
+                        },
+                        wgpu::VertexAttribute {
+                            shader_location: 2,
+                            offset: 32,
                             format: wgpu::VertexFormat::Float32x3,
                         },
                     ],
@@ -824,21 +1131,20 @@ impl Gpu {
         let model = math3::rotate_y(0.0);
 
         // Lights ported from the tool's setLight (laz -50, lel 60) / fixed fill
-        // (4,2,-3) / ambient 0x3a4560×0.9 / hull albedo 0xb4c6e0. Three.js
-        // DirectionalLight shines position→origin, so dir-toward-light = +pos.
+        // (4,2,-3) / ambient 0x3a4560×0.9. Hull/parts albedo now travels
+        // per-vertex. Three.js DirectionalLight shines position→origin, so
+        // dir-toward-light = +pos.
         let laz = (-50.0f32).to_radians();
         let lel = (60.0f32).to_radians();
         let key_dir = math3::normalize([lel.cos() * laz.sin(), lel.sin(), lel.cos() * laz.cos()]);
         let fill_dir = math3::normalize([4.0, 2.0, -3.0]);
         let amb = [58.0 / 255.0 * 0.9, 69.0 / 255.0 * 0.9, 96.0 / 255.0 * 0.9];
-        let base = [180.0 / 255.0, 198.0 / 255.0, 224.0 / 255.0];
 
         let scene = SceneUniform {
             view_proj,
             model,
             key_dir: [key_dir[0], key_dir[1], key_dir[2], 1.6],
             fill_dir: [fill_dir[0], fill_dir[1], fill_dir[2], 0.45],
-            base_color: [base[0], base[1], base[2], 1.0],
             ambient: [amb[0], amb[1], amb[2], 1.0],
         };
         self.queue
