@@ -49,6 +49,7 @@ pub mod catalog_canonical;
 pub mod classes;
 pub mod geometry;
 pub mod input;
+pub mod meta;
 pub mod perspective;
 pub mod resolve;
 pub mod runs;
