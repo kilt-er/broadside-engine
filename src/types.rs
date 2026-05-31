@@ -937,9 +937,16 @@ pub struct EncounterDef {
     pub is_boss: bool,
 }
 
-/// Spawn template for one enemy ship at encounter start. `class_id` refers
-/// to a [`ClassDef::id`] in the catalog; `hp_override` lets the encounter
-/// patch hull to a tier-scaled value without minting a whole new ClassDef.
+/// Spawn template for one ship at encounter start. `class_id` refers to a
+/// template id in the catalog — either a [`ClassDef::id`] (player hulls:
+/// wanderer, ronin, shadow, …) **or** an [`EnemyDef::id`] (enemy ships:
+/// skiff, lancer, gunboat, …). The spawn resolver looks in both registries;
+/// content's `placeholder_sectors()` uses this for enemy refs at
+/// `src/runs.rs`. `hp_override` lets the encounter patch hull to a
+/// tier-scaled value without minting a whole new template.
+///
+/// TODO: rename `class_id` → `template_id` (touches every spawn callsite;
+/// deferred until content's progression layer stabilizes).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ShipSpawn {
     pub class_id: String,
@@ -951,17 +958,54 @@ pub struct ShipSpawn {
 
 /// Cross-encounter run state — accumulates progress through a campaign
 /// from the player's first sector entry through victory or defeat.
+///
+/// `player` carries the player Ship across encounter boundaries: hull
+/// damage, installed subsystems, equipped cards, status durations, and
+/// salvage-purchased upgrades all persist. Resuming a saved run rebuilds
+/// the encounter board around this Ship via
+/// `build_encounter_board(enc, run.player.clone(), …)`. (Without this
+/// field, an alt-tab + kill-process cycle would save-scum a fresh
+/// full-hull Ship.)
+///
 /// `salvage` is the meta-currency spent on between-encounter cards;
 /// `completed_encounters` indexes within the *current* sector. The
 /// `defeated` / `victorious` pair is mutually exclusive at end of run
 /// (both `false` while the run is live).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+///
+/// **`Run` is no longer `Copy`/`Eq`/`Hash`** — `player: Ship` brings
+/// heap-allocated fields (Vec, HashMap) that don't satisfy those bounds.
+/// Pre-#79 code passing `Run` by value still works (Clone is derived);
+/// callers that want sharing should hold `&Run` or clone explicitly.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Run {
     pub current_sector_idx: usize,
     pub salvage: u32,
     pub completed_encounters: u32,
     pub defeated: bool,
     pub victorious: bool,
+    /// The active player Ship. See struct docstring on why this lives
+    /// on `Run` and not somewhere else.
+    pub player: Ship,
+}
+
+impl Run {
+    /// Start a fresh run with the given player Ship. All other fields
+    /// initialize to the start-of-campaign state (sector 0, encounter 0,
+    /// zero salvage, neither defeated nor victorious).
+    ///
+    /// Callers build `player` from whichever ClassDef the player picked
+    /// at the class-select screen; constructing the Ship is content's
+    /// job, not types.rs's, so `new` takes a fully-formed Ship.
+    pub fn new(player: Ship) -> Self {
+        Self {
+            current_sector_idx: 0,
+            salvage: 0,
+            completed_encounters: 0,
+            defeated: false,
+            victorious: false,
+            player,
+        }
+    }
 }
 
 /// Persistable snapshot of a live [`Board`]. [`Board`] itself is intentionally
@@ -1365,16 +1409,76 @@ mod tests {
 
     #[test]
     fn run_roundtrips_through_json() {
+        // Build a minimal player Ship via the same factory style other
+        // tests use; persistence has to round-trip the full Ship state
+        // (hull, heat, queue, cooldowns, statuses, traits, klass).
+        let player = Ship {
+            id: "player".into(),
+            faction: Faction::Player,
+            cell: 0,
+            orientation: Orientation::BowOn { bow: LaneEnd::Fore },
+            hull: 4, max_hull: 5,
+            heat: 1, heat_max: 6, locked_out: false,
+            shield_profile: ShieldProfile {
+                bow:       ShieldFace { armour: 2, charge: 1 },
+                stern:     ShieldFace { armour: 0, charge: 0 },
+                port:      ShieldFace { armour: 1, charge: 0 },
+                starboard: ShieldFace { armour: 1, charge: 0 },
+            },
+            mounts: vec![Mount { id: "m1".into(), arc: Arc::Forward, weapon: "pulse_laser".into() }],
+            queue: vec!["pulse_laser".into()],
+            cooldowns: {
+                let mut m = HashMap::new();
+                m.insert("torpedo".into(), 2);
+                m
+            },
+            statuses: vec![Status { kind: StatusKind::TargetLock, duration: 1, face: None }],
+            traits: vec![Trait::Agile],
+            klass: Some("wanderer".into()),
+        };
         let run = Run {
             current_sector_idx: 2,
             salvage: 17,
             completed_encounters: 4,
             defeated: false,
             victorious: false,
+            player,
         };
         let json = serde_json::to_string(&run).unwrap();
         let back: Run = serde_json::from_str(&json).unwrap();
         assert_eq!(run, back);
+    }
+
+    #[test]
+    fn run_new_seeds_clean_progress() {
+        // `Run::new(player)` should start at sector 0 / encounter 0 with
+        // zero salvage and neither end-state flag. The player Ship is
+        // carried in unchanged.
+        let player = Ship {
+            id: "p".into(),
+            faction: Faction::Player,
+            cell: 0,
+            orientation: Orientation::BowOn { bow: LaneEnd::Fore },
+            hull: 5, max_hull: 5,
+            heat: 0, heat_max: 6, locked_out: false,
+            shield_profile: ShieldProfile {
+                bow:       ShieldFace { armour: 2, charge: 0 },
+                stern:     ShieldFace { armour: 0, charge: 0 },
+                port:      ShieldFace { armour: 1, charge: 0 },
+                starboard: ShieldFace { armour: 1, charge: 0 },
+            },
+            mounts: vec![],
+            queue: vec![], cooldowns: HashMap::new(),
+            statuses: vec![], traits: vec![],
+            klass: Some("wanderer".into()),
+        };
+        let run = Run::new(player.clone());
+        assert_eq!(run.current_sector_idx, 0);
+        assert_eq!(run.salvage, 0);
+        assert_eq!(run.completed_encounters, 0);
+        assert!(!run.defeated);
+        assert!(!run.victorious);
+        assert_eq!(run.player, player);
     }
 
     #[test]
@@ -1419,9 +1523,14 @@ mod tests {
         board.bus.on(Hook::OnDamageDealt, |_ctx| { /* canary */ });
 
         let snap = BoardSnapshot::from(&board);
+        // The player Ship inside Run is independent of the board snapshot —
+        // for this test we just need a placeholder; the rest of the assertions
+        // are about the snapshot, not Run.player.
+        let placeholder_player = board.cells[0].as_ref().unwrap().clone();
         let save = SaveState { run: Run {
             current_sector_idx: 0, salvage: 0, completed_encounters: 0,
             defeated: false, victorious: false,
+            player: placeholder_player,
         }, board: snap };
 
         let json = serde_json::to_string(&save).unwrap();

@@ -598,13 +598,7 @@ mod tests {
     /* ---- run advancement ------------------------------------------- */
 
     fn new_run() -> Run {
-        Run {
-            current_sector_idx: 0,
-            salvage: 0,
-            completed_encounters: 0,
-            defeated: false,
-            victorious: false,
-        }
+        Run::new(make_player(0, 5))
     }
 
     #[test]

@@ -38,6 +38,11 @@
 //!   three Signature actions; the ClassDefs are exposed via
 //!   `placeholder_classes()` for catalog seeding. Input wiring deferred
 //!   per task #62's "just have the Action defs in place."
+//! - [`save`] — postcard-backed save/load for the per-run state
+//!   ([`types::Run`]). Methods on `Run`: `save_to_disk(path)`,
+//!   `load_from_disk(path)`, `delete_save(path)`. Path is the caller's
+//!   choice — bin decides where; meta-progression lives at a separate
+//!   path with separate lifecycle (see [`meta`]).
 //!
 //! Content effect bodies and AI live in sibling modules added by other
 //! teammates.
@@ -53,6 +58,7 @@ pub mod meta;
 pub mod perspective;
 pub mod resolve;
 pub mod runs;
+pub mod save;
 pub mod subsystems;
 
 #[cfg(feature = "render")]

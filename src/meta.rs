@@ -359,13 +359,7 @@ mod tests {
     }
 
     fn new_run() -> Run {
-        Run {
-            current_sector_idx: 0,
-            salvage: 0,
-            completed_encounters: 0,
-            defeated: false,
-            victorious: false,
-        }
+        Run::new(ship_with_hull("player", 5))
     }
 
     /* ---- salvage math ---------------------------------------------- */

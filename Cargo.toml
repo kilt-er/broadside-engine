@@ -24,7 +24,13 @@ runtime = ["dep:hecs", "dep:log", "dep:env_logger"]
 audio = ["dep:kira"]
 
 [dependencies]
-# Used by the types + catalog slice — always compiled.
+# Used by the types + catalog slice — always compiled. `serde_json` also
+# backs the per-run save/load (`Run::save_to_disk` / `load_from_disk`).
+# Task #79 originally specced postcard, but postcard can't encode
+# internally-tagged enums and `Orientation` is `#[serde(tag = "stance")]`
+# for byte-stable JSON-catalog round-trip with the TS engine. Run state
+# is only ~5 KB; the binary-format size win is immaterial. See
+# `src/save.rs` module doc for the full rationale.
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
