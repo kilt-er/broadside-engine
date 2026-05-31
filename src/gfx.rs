@@ -260,6 +260,21 @@ struct BlendUniform {
     _pad: [f32; 3],
 }
 
+// Each of these structs is bound as a uniform buffer whose bind group entry
+// uses `min_binding_size: None`, so wgpu defers the size check to draw time
+// against the matching WGSL struct's byte layout. If the Rust size and the
+// WGSL size disagree, the draw fails with a generic "Encoder is invalid"
+// (see the BlendUniform vec3-padding bug fixed under task #92). These
+// `const _` assertions make the Rust side a hard compile-time invariant.
+//
+// IMPORTANT: pad WGSL structs with scalars or `vec2<f32>` (4- / 8-byte
+// alignment), never `vec3<f32>` — a vec3 forces 16-byte member alignment and
+// silently inflates the WGSL struct past these sizes. When adding a uniform,
+// add its assertion here AND keep its WGSL twin's byte layout in lockstep.
+const _: () = assert!(std::mem::size_of::<ViewUniform>() == 16);
+const _: () = assert!(std::mem::size_of::<BlitUniform>() == 16);
+const _: () = assert!(std::mem::size_of::<BlendUniform>() == 16);
+
 const SPRITE_SHADER: &str = r#"
 struct ViewUniform {
     px_to_ndc: vec2<f32>,
