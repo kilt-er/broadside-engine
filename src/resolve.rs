@@ -388,10 +388,12 @@ fn run_action(
     // Heat + cooldown bookkeeping happen AFTER effects, against the ship at
     // its post-effect cell. The TS resets `cooldowns[lookup_id]`
     // unconditionally once the action passed the arc gate (hit or miss on
-    // individual effects); we match that, but only if the ship still
-    // exists (a self-destruct or reactor-breach splash could have killed
-    // it).
-    if let Some(post_cell) = find_cell_by_id(board, ship_id) {
+    // individual effects); we match that, but only when the ship is still on
+    // the board — a self-destruct (e.g. ReactorBreach) or reactor-breach
+    // splash could have cleared its cell, and Rust (unlike TS) cannot write
+    // fields on a ship that no longer occupies a cell.
+    let post_cell = find_cell_by_id(board, ship_id);
+    if let Some(post_cell) = post_cell {
         if let Some(ship) = board.cells[post_cell].as_mut() {
             ship.heat += action.cost.heat;
             if ship.heat >= ship.heat_max {
@@ -399,10 +401,19 @@ fn run_action(
             }
             ship.cooldowns.insert(lookup_id.to_string(), action.cost.cooldown_max);
         }
-        emit(board, Hook::OnDamageDealt, |ctx| {
-            ctx.source_cell = Some(post_cell);
-        });
     }
+    // `onDamageDealt` fires UNCONDITIONALLY — once per fired action — to match
+    // the TS `executeQueue`, which emits `{ board, source: ship }` on every
+    // loop iteration regardless of whether the firing ship survived (in TS
+    // `ship` is an object reference that outlives its removal from the board;
+    // the event is orthogonal to the attacker's fate). Reviewer divergence #1:
+    // the pre-fix Rust nested this emit inside the `Some(post_cell)` guard, so
+    // a self-destructing attacker silently skipped the hook. When the attacker
+    // is gone, `source_cell` is `None` — the lane-index analog of "the source
+    // ship is no longer on the board" — but subscribers still run.
+    emit(board, Hook::OnDamageDealt, |ctx| {
+        ctx.source_cell = post_cell;
+    });
     true
 }
 
@@ -3207,6 +3218,93 @@ mod tests {
         assert!(
             bearing_direction(&ship, 0, &board, &turret).is_some(),
             "turret arc at cell 0 must resolve a bearing direction, not None",
+        );
+    }
+
+    /// Regression (task #112 / reviewer divergence #1): a firing ship that
+    /// self-destructs in its own action STILL emits `onDamageDealt`.
+    ///
+    /// TS `executeQueue` emits `onDamageDealt` once per fired action,
+    /// unconditionally — `source: ship` is an object reference that survives
+    /// the ship's removal from the board, so the event is orthogonal to the
+    /// attacker's fate. The pre-fix Rust nested the emit inside the
+    /// `Some(post_cell)` guard, so a self-destructing attacker skipped it.
+    ///
+    /// Mechanism: a `SELF`-targeting `DAMAGE` action (band_falloff:false) with
+    /// amount >= the firing ship's hull, against a zero-armour shield, drops
+    /// the ship's own hull to <=0 and `destroy()`s it during effect
+    /// application. After the queue runs, the ship's cell is empty AND the
+    /// `OnDamageDealt` subscriber must have fired exactly once.
+    #[test]
+    fn run_action_emits_on_damage_dealt_even_when_attacker_self_destructs() {
+        use std::cell::Cell;
+        use std::rc::Rc;
+
+        // Self-destruct action: targets SELF, lands 9 raw on a hull-3 ship.
+        let self_destruct = Action {
+            id: "self_destruct".into(),
+            name: "Reactor Overload".into(),
+            archetype: WeaponArchetype::Beam,
+            cost: ActionCost { heat: 0, cooldown_max: 0, advances_turn: true },
+            targeting: Targeting {
+                pattern: TargetingPattern::SELF,
+                band: vec![
+                    RangeBand::PointBlank, RangeBand::Close, RangeBand::Mid,
+                    RangeBand::Long, RangeBand::Extreme,
+                ],
+                optimal_band: RangeBand::PointBlank,
+                requires_arc: None,
+                facing_relative: false,
+                hits_all: false,
+            },
+            // band_falloff:false so the raw 9 lands intact even at PointBlank.
+            effects: vec![Effect::DAMAGE { amount: 9, band_falloff: Some(false) }],
+            r#mod: None,
+            icon: None,
+        };
+        struct OneAction(Action);
+        impl Content for OneAction {
+            fn action(&self, id: &str) -> Option<&Action> {
+                (id == "self_destruct").then_some(&self.0)
+            }
+            fn spawn_projectile(&self, _: &str, _: &Ship) -> Projectile { unreachable!() }
+        }
+
+        // Firing ship: hull 3, ZERO-armour shields so the self-hit lands full.
+        let mut ship = make_ship("kamikaze", Faction::Player, 0, 3, LaneEnd::Fore);
+        ship.shield_profile = ShieldProfile {
+            bow: crate::types::ShieldFace { armour: 0, charge: 0 },
+            stern: crate::types::ShieldFace { armour: 0, charge: 0 },
+            port: crate::types::ShieldFace { armour: 0, charge: 0 },
+            starboard: crate::types::ShieldFace { armour: 0, charge: 0 },
+        };
+        ship.queue = vec!["self_destruct".into()];
+        let mut board = make_board(7, vec![
+            Some(ship), None, None, None, None, None, None,
+        ]);
+
+        // Count OnDamageDealt emits via a side-channel before the bus is
+        // borrowed into the resolver.
+        let damage_dealt = Rc::new(Cell::new(0u32));
+        let c2 = damage_dealt.clone();
+        board.bus.on(Hook::OnDamageDealt, move |_ctx| {
+            c2.set(c2.get() + 1);
+        });
+
+        fire_player_queue("kamikaze", &mut board, &OneAction(self_destruct));
+
+        // The attacker self-destructed: its cell is empty.
+        assert!(
+            board.cells[0].is_none(),
+            "the firing ship should have destroyed itself with its own SELF damage",
+        );
+        // ...and `onDamageDealt` still fired exactly once, matching TS's
+        // unconditional emit. Pre-fix this was 0 (emit was skipped because the
+        // attacker was gone from the board).
+        assert_eq!(
+            damage_dealt.get(),
+            1,
+            "onDamageDealt fires unconditionally per action, even on self-destruct",
         );
     }
 }
