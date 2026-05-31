@@ -429,6 +429,11 @@ mod parts {
     const MAT_GUN: [f32; 3] = [1.0, 0.541, 0.282]; // 0xff8a48
     const MAT_BATT: [f32; 3] = [1.0, 0.847, 0.420]; // 0xffd86b
     const MAT_ENGINE: [f32; 3] = [0.435, 0.878, 1.0]; // 0x6fe0ff
+                                                      // Greeble accent colors — pushed to high hull-contrast so the panel
+                                                      // scatter reads clearly (bruce: "make them pop"). Very-dark recess vs the
+                                                      // ~0.7-grey hull, plus a warm amber light.
+    const GREEB_DARK: [f32; 3] = [0.08, 0.10, 0.16];
+    const GREEB_LIGHT: [f32; 3] = [1.0, 0.78, 0.42];
 
     fn width_at(plan: &[[f32; 2]], u: f32) -> f32 {
         let n = plan.len();
@@ -546,8 +551,12 @@ mod parts {
         }
 
         if greeb > 0.05 {
-            let rows = lerp(2.0, 6.0, greeb).round() as usize;
-            let cols = lerp(6.0, 26.0, greeb).round() as usize;
+            // bruce wants the greebles to POP. Denser grid (more rows/cols),
+            // less skipping (keep ~70% vs the old ~50%), bigger blocks (~2×),
+            // and higher hull-contrast colors so they read clearly as hull
+            // detail at 320×200 / 8 bands.
+            let rows = lerp(3.0, 9.0, greeb).round() as usize;
+            let cols = lerp(10.0, 38.0, greeb).round() as usize;
             let mut seed = 0u32;
             for r in 0..rows {
                 for c in 0..cols {
@@ -564,15 +573,23 @@ mod parts {
                     } else {
                         0.0
                     };
-                    if hash01(seed) > 0.5 {
+                    // Keep ~70% of slots (skip only the top ~30%).
+                    if hash01(seed) > 0.7 {
                         continue;
                     }
-                    let col = if hash01(seed.wrapping_add(7)) > 0.5 {
-                        MAT_DARK
-                    } else {
+                    // Three-way pick for tonal variety + contrast: very-dark
+                    // panel, bright canopy-blue, or warm amber light.
+                    let pick = hash01(seed.wrapping_add(7));
+                    let col = if pick > 0.66 {
+                        GREEB_DARK
+                    } else if pick > 0.33 {
                         MAT_CANOPY
+                    } else {
+                        GREEB_LIGHT
                     };
-                    m.add_box([sx, h * 0.34, zz], l * 0.012, h * 0.03, h * 0.03, col);
+                    // ~2× the old block size, raised slightly off the dorsal
+                    // so it stands proud of the hull.
+                    m.add_box([sx, h * 0.36, zz], l * 0.025, h * 0.06, h * 0.06, col);
                 }
             }
         }
@@ -595,7 +612,9 @@ const DEFAULT_RES_IDX: usize = 3;
 /// Posterize band ladder (`-` / `=` cycle). Band count interacts with how the
 /// greebles read against the hull, so it's a live knob too.
 const BANDS_LADDER: [f32; 5] = [2.0, 3.0, 4.0, 5.0, 8.0];
-const DEFAULT_BANDS_IDX: usize = 2; // 4 bands (tool default)
+// bruce prefers the smoother, more-shaded HD-2D look over chunky-retro; 8
+// bands keep the greebles' tonal separation from the hull.
+const DEFAULT_BANDS_IDX: usize = 4; // 8 bands
 
 /// Default look-down pitch (degrees). UP/DOWN arrows scrub it continuously.
 const DEFAULT_PITCH_DEG: f32 = 26.0;
