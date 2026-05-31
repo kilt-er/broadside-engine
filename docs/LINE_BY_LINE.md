@@ -26,13 +26,15 @@ glance what is documented vs. what is pending.*
 - [`src/lib.rs`](#srclibrs) — crate root, re-exports, module declarations
 - [`src/types.rs`](#srctypesrs) — every type, no logic
 - [`src/geometry.rs`](#srcgeometryrs) — pure geometry: bands, arcs, facings, shields
-- [`src/perspective.rs`](#srcperspectivers) — screen-space projection: lane trapezoid, cell positions, ship sprite vertices
+- [`src/perspective.rs`](#srcperspectivers) — flat screen-space lane: cell-to-pixel transform, ship dims, view-angle stance
 - [`src/resolve.rs`](#srcresolvers) — the four-phase round, queue gate, damage pipeline, effect dispatch, all movement/AI/modifier bodies
 - [`src/content.rs`](#srccontentrs) — catalog loading, projectile spawn dispatch
-- [`src/ai.rs`](#srcairs) — enemy decision layer
-- [`src/bus.rs`](#srcbusrs) — event bus + hooks
 - [`src/catalog.rs`](#srccatalogrs) — JSON catalog → typed records
-- [`src/gfx/`](#srcgfx) — wgpu renderer, atlas, HUD
+- [`src/gfx.rs`](#srcgfxrs) — wgpu state, four pipelines, virtual-res offscreen + integer-scale blit
+- [`src/atlas.rs`](#srcatlasrs) — procedural 256×256 sprite atlas
+- [`src/hud.rs`](#srchudrs) — scene compositor (DrawCommand list)
+- [`src/sprites.rs`](#srcspritesrs) — PNG loader for ship sprites, `SpriteRegistry` trait
+- [`src/bin/broadside.rs`](#srcbinbroadsidesrs) — winit event loop, input → Intent → resolver
 - [`tests/`](#tests) — integration tests, worked examples
 
 ---
@@ -1607,6 +1609,555 @@ to land in `hud.rs` than here — this module's API is essentially complete.
 
 ---
 
+## `src/gfx.rs`
+
+*wgpu state, four render pipelines, and the virtual-resolution presentation model.
+Owns the GPU device, the swapchain, the procedural sprite atlas, the offscreen
+target, and per-frame draw dispatch. Reads a `Vec<DrawCommand>` from
+[`src/hud.rs`](#srchudrs) once per frame and turns it into GPU work.*
+
+**Mirrors:** Ported from `GameEngine/mvp/src/gfx.rs` and adapted for Broadside (four
+called-out structural changes; see Drift below).
+**Design anchor:** Tasks #7 (Slice A — wgpu pipeline scaffold) + #28–#30 (the atlas /
+hud / demo-board slices that built on top) + #46 (animation tweens) + #58 (camera-
+revolves model) + #64 (sprite spec + side/top interpolation scaffold).
+**Source commit:** stabilized at `95b94a6`. 1635 lines, no inline tests — `gfx.rs`
+has no `#[cfg(test)]` module (`atlas.rs` carries the renderer-adjacent test coverage
+with its own 7 tests). Reviewer audited.
+
+### Module rustdoc (lines 1–28)
+
+A 28-line `//!` block. The four structural changes from the source `GameEngine/mvp`
+engine, quoted from the rustdoc verbatim because they're the canonical statement:
+
+1. **Virtual resolution is 1320×480** (2× of the design doc's historical 660×240).
+   Integer-scales cleanly on a 2560×1440 monitor (1× and 2×); keeps the
+   `perspective::DEFAULT_LANE` coordinates usable after a uniform 2× map.
+2. **The view uniform projects ONTO the virtual-pixel grid:** world is
+   `[0, VIRTUAL_W] × [0, VIRTUAL_H]` with y-down. The source engine used a NDC-half-
+   size world; Broadside feeds raw pixel coordinates from `crate::perspective`
+   straight through. Y is flipped in the vertex shader so screen-space conventions
+   match `perspective::cell_to_screen`.
+3. **The atlas comes from `crate::atlas`** (Broadside content), not the source's
+   humanoid set.
+4. **The clear color is deep-space ink (`#080c14`)**, matching the analysis HTML's
+   `--ink` token. Pre-converted to linear at the top of the file because the
+   offscreen target is sRGB — wgpu interprets `wgpu::Color` linearly when the target
+   is sRGB.
+
+Two passes per frame, unchanged in spirit from the source:
+
+1. **Sprite pass** — instanced colored quads drawn into the 1320×480 offscreen
+   target. Every game pixel is one texel here.
+2. **Blit pass** — the offscreen texture is sampled with nearest-neighbor filtering
+   and drawn to the swapchain at the largest integer scale that fits the window.
+   The leftover area is letterboxed.
+
+**The `BlitPipeline` is the only thing that touches the swapchain's sRGB format.**
+Everything else renders to `OFFSCREEN_FORMAT = Rgba8UnormSrgb`. The pre-converted
+linear `CLEAR` color above is the consequence — a Slice-A papercut bruce reported in
+early playtests.
+
+---
+
+### Constants and capacity ceilings (lines 38–69)
+
+| Constant                        | Value      | Role                                                                       |
+|---------------------------------|-----------:|----------------------------------------------------------------------------|
+| `VIRTUAL_W` (line 40)           | `1320`     | Virtual-pixel canvas width.                                                |
+| `VIRTUAL_H` (line 41)           | `480`      | Virtual-pixel canvas height. Lane bisects at y = 240.                      |
+| `MAX_SPRITES` (line 47)         | `4096`     | Hard ceiling on `SpriteInstance` count per frame.                          |
+| `MAX_POLYGONS` (line 51)        | `256`      | Hard ceiling on `PolygonInstance` count per frame.                         |
+| `MAX_TEXTURED_SHIPS` (line 56)  | `16`       | Hard ceiling on textured-ship draws per frame.                             |
+| `OFFSCREEN_FORMAT` (line 58)    | `Rgba8UnormSrgb` | Format for the virtual-res offscreen target.                         |
+| `CLEAR` (lines 63–68)           | `0.001214,0.002428,0.006995,1.0` | Deep-space ink, pre-converted to linear.            |
+| `LETTERBOX` (line 69)           | `0,0,0,1`  | Black bars outside the integer-scaled blit.                                |
+
+**Capacity-ceiling behaviour is load-bearing:** all three `MAX_*` are **hard
+pre-allocated ceilings**, not high-water marks. The instance buffers are sized once
+at startup in each pipeline's `::new` (e.g. `MAX_SPRITES * sizeof::<SpriteInstance>()`)
+and never reallocate. On overflow `Gfx::render` **silently drops** extra commands
+(the `if (sprite_buf.len() as u64) >= MAX_SPRITES { continue }` branch at line 921)
+and emits a `log::warn!` once per frame if the total `commands.len()` exceeds
+`MAX_SPRITES + MAX_POLYGONS + MAX_TEXTURED_SHIPS` (lines 958–962).
+
+**Symptom if a future scene blows the cap:** "stuff stops appearing" — not "panic."
+This is intentional graceful degradation so a runaway scene doesn't crash the
+playtest, but it's a quiet failure mode worth knowing about. The original values
+(4096 / 256 / 16) were set in Slice A and have generous headroom over the current
+demo board (~100–150 sprite instances + ~30 polygons per frame). Bumping a constant
+only costs one extra VRAM allocation at startup; the buffer is reused frame-to-frame.
+
+---
+
+### Instance shapes (lines 71–224)
+
+Four `#[repr(C)] bytemuck::Pod` shapes plus a `Copy` slug helper. These are the
+data the GPU vertex stage reads.
+
+#### `struct QuadVertex` + `const QUAD_VERTS` (lines 71–84)
+
+Six 2D vertex positions in CCW order describing the unit quad (two triangles, six
+verts). The sprite pipeline binds this once and uses it for every instance — only
+the `SpriteInstance` data changes per draw.
+
+#### `struct SpriteInstance` (lines 98–108)
+
+The bread-and-butter instance for rotated, atlas-sampled rectangles:
+
+| Field          | Type      | Role                                                          |
+|----------------|-----------|---------------------------------------------------------------|
+| `pos`          | `[f32;2]` | Rectangle center in virtual-pixel space.                      |
+| `half_size`    | `[f32;2]` | Half-width / half-height. Quad spans `pos ± half_size`.       |
+| `color`        | `[f32;4]` | Multiplies the sampled atlas texel. `1,1,1,1` = no tint.      |
+| `uv_min`       | `[f32;2]` | Atlas UV top-left.                                            |
+| `uv_max`       | `[f32;2]` | Atlas UV bottom-right.                                        |
+| `rotation_rad` | `f32`     | Rotation around `pos` in radians.                             |
+| `_pad`         | `[f32;3]` | Padding to 64 bytes for std140 / GPU alignment.               |
+
+**`rotation_rad` is per-instance only on `SpriteInstance`.** `PolygonInstance` and
+`TexturedShipInstance` have no rotation field — their corners are explicit. If a
+caller wants a rotated textured ship, they precompute rotated corners on the CPU.
+The design decision: ship facing is encoded in the bow chevron / sprite asymmetry,
+not in instance rotation.
+
+`SpriteInstance::axis_aligned(pos, half_size, color, uv) -> Self` (line 112) is the
+convenience for the common case where rotation is zero — most HUD elements use it.
+
+#### `struct PolygonInstance` (lines 139–153)
+
+Four explicit corners (CCW with screen y-down: top-left, top-right, bottom-right,
+bottom-left) plus tint and UV rect. Used for shapes the rotation-around-center
+`SpriteInstance` cannot represent without pixel staircase — primarily the lane plate
+parallelogram (`#37` audit fix) and ship-face polygons under forced perspective.
+
+`PolygonInstance::flat(corners, color, solid_white_uv) -> Self` (line 160) builds a
+flat-tint polygon by pointing the UVs at the atlas's `SOLID_WHITE` cell. The caller
+supplies that UV rect to keep this module decoupled from `crate::atlas`.
+
+#### `struct SpriteSlug` (lines 177–194)
+
+A 32-byte inline-storage string identifier for loaded ship sprites. `Copy + Eq +
+Hash`. Used inside `TexturedShipInstance` and as part of the `ship_bg_cache` key,
+which both require `Copy` — a `String` won't do. Truncates silently at 31 bytes; the
+SPRITE_SPEC defines every legal slug well under that.
+
+#### `struct TexturedShipInstance` (lines 204–214)
+
+Per-ship textured-quad draw. Four explicit corners + a `blend_t: f32` + two
+`SpriteSlug`s (side, top). The bbox quad matches what the procedural silhouette
+would produce; the fragment shader samples both `side` and `top` textures (looked up
+via the slugs at draw time) and blends them by `blend_t = sin(view_angle)`.
+
+Emitted by `hud::push_ship` only when both side and top PNGs are registered for the
+ship's `class_stance`. Otherwise the procedural polygon-set is emitted instead.
+
+#### `enum DrawCommand` (lines 219–236)
+
+Three variants: `Sprite(SpriteInstance)`, `Polygon(PolygonInstance)`,
+`TexturedShip(TexturedShipInstance)`. Plus `From` impls for each variant so call
+sites can write `sprite.into()`.
+
+**This is the hud↔gfx contract.** `hud::compose_scene` produces a `Vec<DrawCommand>`
+in back-to-front order; `Gfx::render` consumes it. `DrawCommand` is `Copy`, which is
+load-bearing — `SpriteSlug`'s inline storage exists specifically to keep this enum
+`Copy`.
+
+#### Uniform shapes (lines 238–261)
+
+Three small `#[repr(C)] bytemuck::Pod` uniforms that flow CPU → GPU:
+
+- **`ViewUniform { px_to_ndc, _pad }`** — `[2.0/VIRTUAL_W, 2.0/VIRTUAL_H]`.
+  Multiplying a virtual-pixel position by this gives NDC half-extent; subtracting
+  1.0 maps to `[-1, 1]`. Y is flipped in the vertex shader so virtual-pixel `(0, 0)`
+  is the top-left corner of the offscreen — same y-down convention as
+  `perspective::cell_to_screen`.
+- **`BlitUniform { ndc_min, ndc_max }`** — the integer-scaled, letterboxed NDC
+  rectangle on the swapchain. Recomputed by `update_blit_uniform` on every resize.
+- **`BlendUniform { blend_t, _pad }`** — per-textured-ship blend factor. Padded to
+  16 bytes for wgpu's uniform alignment.
+
+---
+
+### Shaders (lines 263–478)
+
+Four inline WGSL string literals.
+
+#### `SPRITE_SHADER` (lines 263–321)
+
+The vertex stage rotates the quad-local vertex by `i_rotation` around the instance
+center, translates by `i_pos`, then maps virtual-pixel coordinates to NDC via
+`view.px_to_ndc`. **Y-flip happens here:** `ndc_y = 1.0 - pixel.y * view.px_to_ndc.y`
+(line 301) — virtual-pixel `(0, 0)` lands at clip-space top-left.
+
+The fragment stage samples the atlas at the interpolated UV and multiplies by the
+instance color tint. UV interpolation flips y too (line 308–312) so the *top* of the
+atlas cell shows at the *top* of the quad in screen space.
+
+#### `POLYGON_SHADER` (lines 329–383)
+
+Same view uniform + atlas binding as `SPRITE_SHADER`. The vertex stage uses
+`vertex_index` to pick one of four explicit corner positions per instance (two
+triangles: `0-1-2` and `0-2-3`); UVs are barycentrically blended across the polygon
+from `uv_min` to `uv_max` with the same y-flip convention.
+
+#### `TEXTURED_SHIP_SHADER` (lines 389–443)
+
+Same vertex layout as `POLYGON_SHADER` (four explicit corners expanded by
+`vertex_index`), but the bind group is different. The view uniform sits at
+`@group(0)`; the per-ship `BlendUniform` + side texture + top texture + sampler all
+sit at `@group(1)`. The fragment stage samples both textures and blends with
+`mix(side_px, top_px, ship.blend_t)`.
+
+The blend formula `blend_t = sin(view_angle)` is set by the caller; at `view_angle =
+π/4` (the default) the blend favours the top sprite about 70/30. The SPRITE_SPEC
+documents this dominance ratio as intentional — at 45° the camera is already looking
+more down than across, so the top silhouette carries the orientation cue.
+
+#### `BLIT_SHADER` (lines 445–478)
+
+The simplest of the four. Takes a `BlitUniform { ndc_min, ndc_max }`, builds a
+quad-from-vertex-index in those NDC coordinates, samples the offscreen target with
+nearest filtering. No tint, no rotation. The only shader that targets the swapchain
+directly.
+
+---
+
+### `struct Gfx` and the four pipeline owners (lines 480–558)
+
+`Gfx` owns the surface, device, queue, surface config, the offscreen view, all four
+pipelines, plus two HashMaps for ship-sprite textures and per-slot bind groups:
+
+```rust
+pub struct Gfx {
+    surface: wgpu::Surface<'static>,
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+    config: wgpu::SurfaceConfiguration,
+    offscreen_view: wgpu::TextureView,
+    sprites: SpritePipeline,
+    polygons: PolygonPipeline,
+    textured_ships: TexturedShipPipeline,
+    blit: BlitPipeline,
+    ship_sprites: HashMap<String, ShipSpriteEntry>,
+    ship_bg_cache: HashMap<(u32, SpriteSlug, SpriteSlug), wgpu::BindGroup>,
+}
+```
+
+#### `SpritePipeline` (line 514)
+
+Owns the **view UBO** (the single one shared by every pipeline), the quad vertex
+buffer, the per-instance buffer, and a bind group binding `[view_ubo, atlas_view,
+atlas_sampler]` at `@group(0)`.
+
+**Load-bearing ownership detail:** *the shared view UBO is owned by
+SpritePipeline.* `PolygonPipeline` and `TexturedShipPipeline` borrow it via
+`&sprites.view_ubo` at construction time and bind it into their own bind groups.
+If `SpritePipeline` were ever dropped, the other two would dangle. The
+construction order in `Gfx::new` (lines 684–687) enforces this: sprites first,
+then polygons + textured ships + blit can borrow from it.
+
+#### `PolygonPipeline` (line 522)
+
+Owns its own instance buffer and a bind group identical in shape to
+SpritePipeline's — same view UBO, same atlas texture, same sampler. The pipeline
+itself differs (different shader, different vertex attribute layout — explicit
+corners rather than quad-plus-instance).
+
+#### `TexturedShipPipeline` (line 536)
+
+The most complex of the four. Owns its instance vbuf, a per-textured-ship
+`Vec<wgpu::Buffer> blend_ubos` of length `MAX_TEXTURED_SHIPS`, the view bind group
+at `@group(0)`, the per-ship bind group **layout** (`ship_bgl`) used to build
+cached `(side, top)` bind groups on demand, and a shared sampler.
+
+**Per-ship bind groups are slot-keyed:** `Gfx::ship_bg_cache` is keyed by
+`(slot_idx: u32, side: SpriteSlug, top: SpriteSlug)` (line 502). The `slot_idx` is
+in the key because each slot has its own pre-allocated `blend_ubo[slot_idx]`, so
+the bind group must reference the correct slot's UBO. Two ships drawn at slots 3
+and 7 with the same `(side, top)` slug pair get *different* bind groups.
+
+#### `BlitPipeline` (line 554)
+
+Owns the blit uniform buffer and a bind group binding `[blit_ubo, offscreen_view,
+offscreen_sampler]`. Targets the swapchain (not the offscreen) — the only pipeline
+that does.
+
+#### `impl crate::sprites::SpriteRegistry for Gfx` (lines 560–569)
+
+Implements the trait by delegating to `Gfx::has_ship_sprite`. Lets `hud::push_ship`
+decide whether to emit a `TexturedShip` draw or fall back to the procedural
+polygon-set without holding a `&Gfx` directly.
+
+---
+
+### `Gfx::new(window) -> Self` (lines 576–711)
+
+The async constructor. Builds everything in this order, which is load-bearing:
+
+1. **Surface** from the window (line 580).
+2. **Adapter** (line 584) with `HighPerformance` power preference. Logged at INFO.
+3. **Device + queue** (line 595) with default limits, `Trace::Off`.
+4. **Surface configuration** (line 613) — chooses the first sRGB format the
+   surface supports, sets `present_mode = AutoVsync`, sizes to the window.
+5. **Offscreen virtual-res target** (line 625) — 1320×480 RGBA8 sRGB,
+   `RENDER_ATTACHMENT | TEXTURE_BINDING` (rendered to by passes 1, sampled by
+   pass 2).
+6. **Atlas texture** (line 641) — calls `atlas::generate_atlas()` to produce the
+   256×256 RGBA8 bytes, creates the texture, uploads with `queue.write_texture`,
+   builds the texture view and a nearest-filtering `ClampToEdge` sampler.
+7. **Four pipelines** (lines 684–687), in order:
+   - `SpritePipeline::new(device, atlas_view, atlas_sampler)` — *creates* the
+     shared view UBO.
+   - `PolygonPipeline::new(device, &sprites.view_ubo, atlas_view, atlas_sampler)` —
+     *borrows* the view UBO.
+   - `TexturedShipPipeline::new(device, &sprites.view_ubo)` — *borrows* the view
+     UBO; does not bind the atlas (textured ships sample their own loaded PNGs).
+   - `BlitPipeline::new(device, format, &offscreen_view)` — binds the offscreen
+     view as its source texture, targets the swapchain `format`.
+8. **Write the view uniform** (line 703) — `[2.0/VIRTUAL_W, 2.0/VIRTUAL_H]`. Done
+   once at startup; never changes (virtual resolution is fixed).
+9. **Compute the blit uniform** (line 709) — calls `update_blit_uniform()` to set
+   the initial letterbox rectangle.
+
+The function takes `Arc<Window>` and is `async` because wgpu adapter / device
+acquisition is async. Bruce's `bin/broadside.rs` resolves the future with
+`pollster::block_on` (visible in #69's binary).
+
+---
+
+### `Gfx::resize` and `Gfx::reconfigure` (lines 713–725)
+
+Both reconfigure the surface to a new size (or the same size if `reconfigure`)
+and recompute the blit uniform so the letterboxing tracks. `resize` skips the
+work if either dimension is zero (window minimised). The offscreen target is
+**not** resized — virtual resolution is fixed at 1320×480 regardless of window
+size; the blit step does the integer-scaling.
+
+---
+
+### Ship-sprite loader (lines 735–815)
+
+Three public + one private function for loading PNG ship sprites at runtime:
+
+- **`try_load_ship_sprites(asset_dir) -> usize`** (line 735) — walks the
+  `<class>_<stance>_<view>` slug space (3 classes × 3 stances × 2 views = 18
+  combinations) and calls `crate::sprites::load_sprite` for each. Missing files
+  are skipped; returns the count loaded. Clears `ship_bg_cache` first because
+  the underlying texture views may have changed.
+- **`upload_ship_sprite(slug, img)`** (line 766) — private. One sprite to one
+  GPU texture; inserts the texture view + dimensions into `ship_sprites`.
+- **`has_ship_sprite(class, stance, view) -> bool`** (line 807) — query whether
+  a slug has been loaded. Used by `hud.rs` (via the `SpriteRegistry` trait impl)
+  to decide whether to emit `TexturedShip` or the procedural fallback.
+- **`ensure_ship_bind_group(slot_idx, side, top)`** (line 821) — private. Build
+  the per-slot `(slot_idx, side, top)` bind group on first request and cache it
+  in `ship_bg_cache`. If either texture slug is missing from `ship_sprites`, the
+  cache entry is **not** populated — the render loop checks the cache and skips
+  the draw if absent (the procedural polygon below stays visible).
+
+The cache invalidation contract: any time `ship_sprites` is mutated,
+`ship_bg_cache` must be cleared. The only mutator today is
+`try_load_ship_sprites`, which does the clear at the top (line 738).
+
+---
+
+### `update_blit_uniform` (lines 867–889) — the letterbox math
+
+The single non-obvious piece of arithmetic in the file. Given the current swapchain
+size `(w, h)`, compute the largest integer scale `s` such that `s × VIRTUAL_W ≤ w`
+and `s × VIRTUAL_H ≤ h`:
+
+```rust
+let scale = (w / VIRTUAL_W).min(h / VIRTUAL_H).max(1);
+```
+
+`.max(1)` floors at 1× (the offscreen always draws at native size or larger; never
+downscaled). **On a window smaller than 1320×480 the scale is still clamped to 1**,
+which means the offscreen extends past the visible swapchain — by design, we never
+downscale game pixels. Bruce will never see this on a 2560×1440 monitor, but the
+behavior matters for anyone running on a smaller display. Then the scaled offscreen
+size is `(s × VIRTUAL_W, s × VIRTUAL_H)` and the centering offsets are
+`((w - scaled_w) / 2, (h - scaled_h) / 2)`. The four NDC corners follow from
+converting `(offset, offset + scaled)` to NDC via the standard `pixel/dim × 2 - 1`
+formula (with y flipped because NDC y-up vs swapchain y-down).
+
+The resulting `BlitUniform` is written to `self.blit.ubo` and consumed by the blit
+vertex shader's `mix(blit.ndc_min, blit.ndc_max, v)` per corner.
+
+**Recomputed on every `resize` / `reconfigure`.** Not per-frame — the swapchain
+dimensions only change on resize.
+
+---
+
+### `Gfx::render(&[DrawCommand]) -> Result<(), SurfaceError>` (lines 896–1089)
+
+The frame-dispatch hot path. Two phases:
+
+#### Phase 1: collect-and-batch (lines 900–963)
+
+Walks `commands` once. For each `DrawCommand`:
+
+- **`Sprite(s)`** — push `s` into `sprite_buf`. If `sprite_buf.len() >= MAX_SPRITES`
+  (line 921), `continue` — silently truncate. If the previous batch was also
+  `Sprite`, extend its count; otherwise start a new batch.
+- **`Polygon(p)`** — same shape, against `polygon_buf` / `MAX_POLYGONS`.
+- **`TexturedShip(t)`** — same overflow check against `MAX_TEXTURED_SHIPS`. Pushes
+  the four corner positions into `ship_corner_buf` and the metadata (side slug,
+  top slug, blend factor) into `ship_meta`. **Always its own batch** (line 954) —
+  each textured ship has its own bind group, so they can't be batched together.
+
+After the walk, if `commands.len() > MAX_SPRITES + MAX_POLYGONS + MAX_TEXTURED_SHIPS`
+emit the per-frame `log::warn!` (lines 958–962). Upload all three instance buffers
+in one `queue.write_buffer` each (only if non-empty). For each textured-ship slot,
+write the `BlendUniform` and call `ensure_ship_bind_group(i, side, top)`.
+
+#### Phase 2: encode-and-submit (lines 997–1089)
+
+Two render passes inside one encoder:
+
+**Pass 1: scene → offscreen** (lines 1009–1062). Clears to the deep-space ink
+`CLEAR` color, then walks `batches` in order. For each batch:
+
+- `BatchKind::Sprite` — set sprite pipeline, bind group, quad + instance vbufs,
+  `draw(0..6, b.start..b.start+b.count)`.
+- `BatchKind::Polygon` — set polygon pipeline, bind group, instance vbuf,
+  `draw(0..6, b.start..b.start+b.count)` (6 verts × N instances; the polygon
+  shader expands two triangles per instance).
+- `BatchKind::TexturedShip(slot_idx)` — look up the slot's bind group in
+  `ship_bg_cache`. If missing (PNG not loaded), `continue` — skip silently; the
+  procedural polygons emitted alongside stay visible as the fallback. Otherwise
+  set the textured-ship pipeline, bind groups 0 and 1, slice the instance vbuf
+  at this slot's 32-byte offset, `draw(0..6, 0..1)`.
+
+**Pass 2: offscreen → swapchain** (lines 1065–1084). Clears the swapchain to
+`LETTERBOX` black, sets the blit pipeline + its bind group, `draw(0..6, 0..1)`.
+The blit vertex shader uses the precomputed `BlitUniform` to position its single
+quad at the integer-scaled, letterboxed rectangle.
+
+Submits the encoder, presents the frame, returns `Ok(())`.
+
+**Two render passes per frame, one queue submit.** No depth buffer (every draw is
+strictly back-to-front in the input command list; the renderer is painter's-
+algorithm by construction).
+
+---
+
+### Pipeline `::new` constructors (lines 1092–1635)
+
+Four constructor functions, one per pipeline. The patterns are very similar; the
+deltas are what matter.
+
+#### `SpritePipeline::new(device, atlas_view, atlas_sampler)` (line 1093)
+
+Builds:
+1. **WGSL shader module** from `SPRITE_SHADER`.
+2. **View UBO** (`std::mem::size_of::<ViewUniform>()`, `UNIFORM | COPY_DST`).
+3. **Bind group layout** with three entries: uniform buffer (vertex stage),
+   filterable 2D texture (fragment stage), filtering sampler (fragment stage).
+4. **Bind group** binding `[view_ubo, atlas_view, atlas_sampler]`.
+5. **Pipeline layout** referencing the single bgl.
+6. **Render pipeline** with vertex state describing two vertex buffers:
+   - Buffer 0 (`Vertex` step mode): `QuadVertex { pos: [f32;2] }`.
+   - Buffer 1 (`Instance` step mode): six attributes mapping `SpriteInstance`'s
+     layout (`pos`, `half_size`, `color`, `uv_min`, `uv_max`, `rotation_rad`).
+     Offsets are hand-tabulated (lines 1188–1193).
+   - Fragment state targeting `OFFSCREEN_FORMAT` with `ALPHA_BLENDING`.
+   - `PrimitiveTopology::TriangleList`, `FrontFace::Ccw`, no culling.
+7. **Quad vbuf** (line 1223) — initialized from `QUAD_VERTS` at startup; static.
+8. **Instance vbuf** (line 1229) — sized `MAX_SPRITES * sizeof(SpriteInstance)`,
+   written per-frame.
+
+#### `PolygonPipeline::new(device, view_ubo, atlas_view, atlas_sampler)` (line 1246)
+
+Borrows the view UBO from caller. Builds essentially the same scaffolding as
+SpritePipeline but with one vertex buffer instead of two (the polygon shader pulls
+corners from the instance directly via `vertex_index`). The bind group layout is
+**byte-identical** to SpritePipeline's at the wgpu level — same bindings, same
+visibility flags, same types — which is what lets the two pipelines share the view
+UBO and atlas binding without a bind-group rebuild between them in `Gfx::render`.
+The pipeline itself differs in shader and vertex attribute count.
+
+#### `TexturedShipPipeline::new(device, view_ubo)` (line 1363)
+
+Two bind group layouts:
+- **Group 0** (view UBO) — identical to sprites/polygons.
+- **Group 1** (per-ship) — uniform buffer (fragment stage, for the
+  `BlendUniform`), two filterable 2D textures (side, top), filtering sampler.
+  Cached as `self.ship_bgl` for later bind-group construction.
+
+Pre-allocates `MAX_TEXTURED_SHIPS` blend UBO buffers (line ~1505), one per slot
+index. Each is 16 bytes (padded `BlendUniform`). Storing as one big buffer with
+dynamic offsets would be neater but the count is tiny so individual buffers are
+simpler.
+
+The pipeline uses **the same vertex layout as PolygonPipeline** (four explicit
+corners per instance, expanded by `vertex_index`) but a different shader and a
+different second bind group.
+
+#### `BlitPipeline::new(device, target_format, offscreen_view)` (line 1522)
+
+The simplest. Builds:
+1. WGSL shader from `BLIT_SHADER`.
+2. Bind group layout: uniform (`BlitUniform`, fragment), 2D texture (the
+   offscreen view), non-filtering sampler (nearest-neighbor only).
+3. Sampler with `Nearest` filtering and `ClampToEdge` addressing in both axes —
+   the crisp-pixel look depends on this.
+4. Bind group binding the three resources.
+5. The blit uniform buffer (16 bytes).
+6. Pipeline targeting `target_format` (the swapchain's sRGB format) with no
+   blending. Empty vertex state — the shader generates its quad from
+   `vertex_index` alone.
+
+---
+
+### Drift watch list (resolved by `95b94a6`)
+
+Four called-out structural deltas from `GameEngine/mvp/src/gfx.rs` — these are the
+intentional ports, not bugs:
+
+1. **Virtual resolution: 1320×480** (Broadside) vs the source engine's NDC half-
+   extent world. Pixel coords flow straight from `perspective::cell_to_screen`
+   into the shader; the source needed an NDC mapping step.
+2. **Y-down convention** (Broadside) vs y-up (source). The vertex shader's
+   `ndc_y = 1.0 - pixel.y * view.px_to_ndc.y` flip is the load-bearing line.
+   Matches `perspective::cell_to_screen` (also y-down). UV interpolation flips y
+   too (`mix(uv_max.y, uv_min.y, ...)`) so atlas-top shows at screen-top.
+3. **Procedural atlas from `crate::atlas`** vs the source's humanoid atlas. The
+   atlas is generated at startup, uploaded once, and never changes — see
+   [`src/atlas.rs`](#srcatlasrs).
+4. **Per-instance `rotation_rad` on `SpriteInstance`** added vs the source
+   engine. Lets axis-aligned HUD elements and lane-slope-aligned sprites share
+   one pipeline. Only `SpriteInstance` has it; the polygon and textured-ship
+   instances pre-compute rotated corners on the CPU.
+
+**New decisions documented in this pass:**
+
+- **Hard capacity ceilings with silent truncation.** `MAX_SPRITES = 4096`,
+  `MAX_POLYGONS = 256`, `MAX_TEXTURED_SHIPS = 16`. Set in Slice A, never bumped.
+  Symptom on overflow: "stuff stops appearing" + a once-per-frame `log::warn!`.
+  Bumping the constant only costs one VRAM alloc at startup.
+- **View UBO ownership lives on `SpritePipeline`.** The other two pipelines
+  borrow it at construction. Construction order in `Gfx::new` enforces this.
+- **`ship_bg_cache` keys on `(slot_idx, side, top)`.** Each slot has its own
+  pre-allocated blend UBO, so the bind group is slot-specific. The `slot_idx`
+  in the key is non-obvious GPU state management.
+- **`BlitPipeline` is the only pipeline that touches the swapchain's sRGB
+  format.** Everything else renders to `OFFSCREEN_FORMAT = Rgba8UnormSrgb`. The
+  pre-converted-to-linear `CLEAR` color is the consequence — Slice-A papercut
+  bruce reported.
+- **Two render passes per frame, one queue submit, no depth buffer.** Painter's-
+  algorithm by construction; the command list must be in back-to-front order.
+- **No `#[cfg(test)]` module in `gfx.rs` itself.** GPU code is tested in
+  isolation via the `atlas.rs` helpers and via integration runs. Per `95b94a6`
+  reviewer audit: gfx-side coverage relies on visual confirmation + the
+  procedural-fallback safety net (textured-ship missing → procedural polygons
+  still draw).
+
+No open architectural items.
+
+---
+
 ## `src/resolve.rs`
 
 *The combat resolver. One execution path serves player, enemy, and ordnance. The
@@ -2426,28 +2977,6 @@ placeholder module.*
 **Mirrors:** No direct TS analog; this is Rust-specific glue.
 
 *Pending the architect expanding the stub.*
-
----
-
-## `src/gfx/`
-
-*The wgpu renderer subtree. Owns its own state; reads `Board` and `Ship` for layout;
-subscribes to the event bus for damage / kill / vent / reorient animations.*
-
-**Mirrors:** No TS analog — the TS reference is headless.
-**Design anchor:** No HTML section; this is a Rust-port concern.
-
-### Submodules to document (target)
-
-- `src/gfx/mod.rs` — module root, renderer entry point.
-- `src/gfx/pipeline.rs` — wgpu pipeline, shaders, vertex/index buffers.
-- `src/gfx/atlas.rs` — sprite atlas packing and UV lookup by string ID.
-- `src/gfx/hud.rs` — queue display, heat bar, cooldown pips, initiative badges,
-  range-band ruler.
-- `src/gfx/anim.rs` — event-driven animation queue (damage numbers, kill flashes,
-  ordnance trails).
-
-*Per-line walkthroughs pending implementation. Renderer is task #7 in the team queue.*
 
 ---
 
