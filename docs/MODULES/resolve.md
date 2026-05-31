@@ -101,7 +101,19 @@ slot.
 
 ## Queue execution: the arc + heat + cooldown gate
 
-`execute_queue(ship_cell, board, content)`:
+> **Naming note (post-refactor).** What this section calls `execute_queue` is now
+> split in the source: the queue-firing seam is `fire_player_queue(ship_id, board,
+> content)` (src/resolve.rs:212, the former `executeQueue` body — used for player
+> *and* enemy), and the per-action gate + effect application is factored into
+> `run_action(...)` (src/resolve.rs:346). `resolve_round` (src/resolve.rs:183) now
+> just composes `fire_player_queue` (phase 1) + `run_world_phase` (phases 2-4). The
+> pseudocode below still describes the combined behavior faithfully; see the
+> [`fire_player_queue` / `run_action` walkthrough](../LINE_BY_LINE.md#srcresolvers)
+> in LINE_BY_LINE for the current per-line cites. Also note the **no-mount-gate
+> gotcha** documented there: the queue path fires by id lookup and does not require
+> the ship to own a matching `Mount`.
+
+`fire_player_queue` / `run_action` (formerly one `execute_queue`):
 
 ```
    reset destroys_this_window = 0   // open the chain-kill window

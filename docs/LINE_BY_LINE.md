@@ -3182,117 +3182,129 @@ correctly because they don't go through the bus.
 
 ---
 
-### Phase 0 — `fn resolve_round(board, content)` (line 110)
+### Phase 0 — `fn resolve_round(board, content)` (resolve.rs:183)
 
-**Mirrors:** `resolve.ts:31`.
+**Mirrors:** `resolve.ts:31` (`resolveRound`).
 **Design anchor:** HTML Part I — the four-phase round is the engine's heartbeat.
-**Intent:** One full round. The four phases in order:
+**Intent:** One full round, now a thin composition of two reusable halves so the
+Shogun-Showdown turn dispatch in `input.rs` / `broadside.rs` can call them
+independently. Line 184-187: find the player (`find_player_id`) and, if present, run
+`fire_player_queue` (phase 1). Line 188: `run_world_phase` (phases 2-4). That's the
+whole function.
 
-1. **Player phase** (lines 111–114). Find the player by faction scan, then
-   `execute_queue` on the player's cell. `find_map` + `then_some` returns the cell as
-   `Option<usize>`; absent player means skip the phase (matches TS).
-2. **Ordnance phase** (lines 126–130). Snapshot projectile ids first, then advance
-   each by id-lookup. The snapshot is needed because `advance_projectile` removes its
-   projectile from `board.ordnance` on impact. The TS iterates a `[...board.ordnance]`
-   shallow copy for the same reason. Critically, **`board.destroys_this_window = 0`
-   on line 126** opens a new chain-kill window for the ordnance phase: torpedo
-   impacts that kill multiple enemies count as a chain within the phase, separately
-   from the player queue. The TS does *not* emit `onChainKill` from the ordnance
-   phase itself — only `executeQueue` does — and this port matches that.
-3. **Enemy phase** (lines 133–139). Iterate enemy cells in initiative order
-   (currently lane order; explicit initiative TBD). For each: check `skips_turn`,
-   call `decide_enemy_action` to fill the queue, then `execute_queue`. The
-   AI-fills-then-resolver-runs pattern is the design principle behind "the AI never
-   bypasses the pipeline" (the resolver runs the same code path for enemy and
-   player).
-4. **End of turn** (line 142). `end_of_turn(board, content)` ticks cooldowns/heat/
-   statuses and emits `OnTurnEnd`.
+**Drift — the executeQueue split.** The TS `resolveRound` inlined player-queue + world
+phases in one body. The Rust port factors them into [`fire_player_queue`](#phase-1--3--fn-fire_player_queuesship_id-board-content-srcresolversr212)
+(phase 1, the former `executeQueue` body) and `run_world_phase` (phases 2-4) so the SS
+turn model can fire them separately: instant intents run `apply_instant_action` +
+`run_world_phase`; queueing intents push to the queue + `run_world_phase` (queue not
+fired); commit runs `fire_player_queue` + `run_world_phase`. See
+[`broadside.rs::apply_intent`](#srcbinbroadsidesrs).
 
-**Drift note: snapshot iteration over ordnance.** The TS uses `[...board.ordnance]`
-to clone the array; Rust collects ids into a `Vec<String>` and re-looks-up by id each
-iteration. Same semantic — iteration is stable across mid-iteration removals.
+### Phases 2-4 — `fn run_world_phase(board, content)` (resolve.rs:265)
+
+**Intent:** The world half of a round, run after every player input under SS rules.
+
+1. **Ordnance phase** (line 277-281). `board.destroys_this_window = 0` (line 277) opens
+   a fresh chain-kill window for the ordnance phase — torpedo impacts that kill multiple
+   enemies count as a chain within the phase, separately from the player queue. Snapshot
+   projectile ids, then `advance_projectile` each by id (the snapshot is needed because
+   impact removes the projectile). The TS does *not* emit `onChainKill` from the ordnance
+   phase — only the queue path does — and this port matches that.
+2. **Enemy phase** (line 287-300). Snapshot enemy ids in `enemy_initiative` order up
+   front (so movement/destroys during one enemy's turn can't reshuffle the rest). For
+   each surviving enemy: `skips_turn` check, `decide_enemy_action` fills its queue, then
+   `fire_player_queue` runs it — the same per-ship loop body as the player, which is the
+   "AI never bypasses the pipeline" design principle.
+3. **End of turn** (line 303). `end_of_turn` ticks cooldowns/heat/statuses and emits
+   `OnTurnEnd`.
+
+**Drift — snapshot iteration.** TS uses `[...board.ordnance]` / enemy-array copies; Rust
+collects ids into `Vec<String>` and re-looks-up by id each iteration. Same semantic:
+iteration is stable across mid-iteration removals.
 
 ---
 
-### Phase 1 / 3 — `fn execute_queue(ship_cell, board, content)` (line 153)
+### Phase 1 / 3 — `fn fire_player_queue(ship_id, board, content)` (resolve.rs:212)
 
-**Mirrors:** `resolve.ts:53`.
-**Intent:** Execute one ship's queued actions in order. The single most-read function
-in the engine. Same code path for the player (phase 1) and each enemy (phase 3).
+**Mirrors:** `resolve.ts:53` (`executeQueue`).
+**Intent:** Fire one ship's queued actions in order through the arc + heat + cooldown
+gate, then clear the queue. The single most-read code path in the engine — used for the
+player (phase 1) **and** each enemy (phase 3, called from `run_world_phase`). Exposed as
+its own seam so SS commit can fire it without the world phase.
 
-The ship is identified by lane `cell`, **not** by `&Ship` — because applying an effect
-can mutate the cells vector underneath us (movement, destroys), and a stable
-borrow would not survive. The function looks up the ship by cell each time it
-needs to read or mutate it; if a prior effect destroyed the ship mid-queue, the loop
-returns early at line 178.
+The ship is identified by `ship_id` (not `&Ship`) — applying an effect can mutate the
+cells vector underneath us (movement, destroys), so the function re-locates the ship by
+id (`find_cell_by_id`) each time it reads or mutates it.
 
-Line 158: `board.destroys_this_window = 0` — opens this ship's chain-kill window.
-`destroy()` (line 819) increments this counter; `detect_chain` (line 1499) reads it
-after the queue runs. Each `execute_queue` call is one window. The ordnance phase
-above also opens its own window — same counter, different reset points.
+Line 217: `board.destroys_this_window = 0` — opens this ship's chain-kill window.
+`destroy()` (resolve.rs:1007) increments it; `detect_chain` (resolve.rs:1735) reads it
+after the queue runs. Each `fire_player_queue` call is one window; the ordnance phase
+opens its own — same counter, different reset points.
 
-Lines 164–167: clone the queue out up front. Iteration is stable across mid-iteration
-mutations to the ship's record. Matches the TS `for (const actionId of ship.queue)`
-which is also stable.
+Line 223-226: snapshot the queue out front (stable across mid-iteration mutations to the
+ship's record; matches the TS `for (const actionId of ship.queue)`). Line 228-238: the
+loop — for each `action_id`, look it up via `content.action` (missing → skip silently,
+the TS `if (!a) continue`), clone the `Action`, and hand off to **`run_action`**
+(resolve.rs:346), which is where the per-action gate + effect application now lives (the
+refactor pulled the loop body out of the old monolithic `executeQueue`). Line 241-246:
+after the queue, `detect_chain` reads `destroys_this_window`; if a chain occurred, emit
+`OnChainKill` with the ship's final cell. Line 250-254: clear the queue (only if the ship
+survived).
 
-Lines 169–220: the per-action loop. For each `action_id`:
+### `fn run_action(ship_id, lookup_id, action, board, content) -> bool` (resolve.rs:346)
 
-- **Line 172**: `content.action(action_id)`. Returns `Option<&Action>`; missing →
-  continue silently. We clone the Action (line 173) so we don't hold a borrow on
-  `content` while mutating the board.
-- **Line 178**: re-check the ship still exists. A prior effect in *this same queue*
-  may have destroyed it; if so, abort the queue entirely.
-- **Lines 185–187**: lockout gate. Overheated ship can only fire free / zero-heat
-  actions.
-- **Lines 189–191**: cooldown gate. Action not yet charged.
-- **Line 194**: `resolve_targeting(&action, board, ship_cell)` — returns the cells
-  this action will resolve against.
-- **Lines 197–199**: the "nothing bore" gate. If the action requires an arc and
-  targeting returned an empty cell list, **the action is skipped with no heat cost
-  and no cooldown reset**. This is the critical contract that lets a player queue
-  optimistic actions; if their forward gun has no target, they don't lose the turn's
-  heat budget.
+**Intent:** Run one action for one ship — the per-action gate cascade and effect
+application, factored out of the queue loop. Returns whether it fired.
+
+- **Line 355-357**: re-resolve the ship's current cell (a prior effect — DISPLACE_SELF,
+  push, swap — may have moved it). Gone → return false.
+- **Line 362-364**: lockout gate. Overheated ship can only fire free / zero-heat actions.
+- **Line 366-368**: cooldown gate. Action not yet charged.
+- **Line 371**: `resolve_targeting(action, board, ship_cell)` — the cells this action
+  resolves against, from the *current* cell.
+- **Line 375-377**: the "nothing bore" gate. If the action requires an arc and targeting
+  returned no cells, **skip with no heat cost and no cooldown reset** — the contract that
+  lets a player queue optimistic actions without losing the turn's heat budget if the gun
+  has no target.
 
 > **Gotcha — the queue path does NOT gate on the ship owning a matching Mount.**
-> `execute_queue` fires whatever `action_id`s sit in `ship.queue`, looked up purely by
-> `content.action(action_id)`. There is no check that the ship has a `Mount` whose
-> `weapon` is that action. An **unarmed ship (zero mounts) will still fire a queued
-> weapon** — the only gates are lockout, cooldown, and the arc/target "nothing bore"
-> check above (and the arc check only bites when the action has `requires_arc`; a
-> `requires_arc: None` action with no mount fires unconditionally). This is **not a
-> bug**: in real play the player's queue is built only from actions they have mounts
-> for, and the **AI never hits this edge** because `decide_enemy_action` enumerates
-> *from the enemy's mounts* and gates on arc/band/range via `resolve_targeting` before
-> queuing anything. The sharp edge is exclusively the **direct queue-injection path**
-> (player input, or a test/fixture that pushes an id onto `ship.queue` directly).
-> Tester surfaced this while writing `tests/run_loop.rs`. If a future change wants
-> mounts to be a hard prerequisite, the gate belongs right here at the top of the
-> per-action loop.
-- **Lines 202–204**: apply each effect via `apply_effect`. Effects may mutate cells,
-  ordnance, statuses.
-- **Lines 209–215**: heat + cooldown bookkeeping. Heat *always* increments by
-  `action.cost.heat`; lockout fires when heat ≥ heat_max; cooldown resets
-  unconditionally to `cost.cooldown_max` (hit or miss). Matches TS exactly.
-- **Lines 217–219**: emit `OnDamageDealt` per action. Subsystem authors hooking this
-  fire on every queued action, not just successful damage.
+> `run_action` fires whatever `action_id` the queue held, looked up purely by
+> `content.action(action_id)` in `fire_player_queue`. There is no check that the ship has
+> a `Mount` whose `weapon` is that action. An **unarmed ship (zero mounts) will still fire
+> a queued weapon** — the only gates are lockout, cooldown, and the arc/target "nothing
+> bore" check above (and the arc check only bites when the action has `requires_arc`; a
+> `requires_arc: None` action with no mount fires unconditionally). This is **not a bug**:
+> in real play the player's queue is built only from actions they have mounts for, and the
+> **AI never hits this edge** because `decide_enemy_action` enumerates *from the enemy's
+> mounts* and gates on arc/band/range via `resolve_targeting` before queuing anything. The
+> sharp edge is exclusively the **direct queue-injection path** (player input, or a
+> test/fixture that pushes an id onto `ship.queue` directly). Tester surfaced this while
+> writing `tests/run_loop.rs`. If a future change wants mounts to be a hard prerequisite,
+> the gate belongs right here at the top of `run_action`.
 
-Lines 222–226: after the queue runs, `detect_chain(board)` reads `destroys_this_window`.
-If ≥ 2, emit `OnChainKill`. Lines 230–232 clear the queue (if the ship survived).
+- **Line 384-386**: apply each effect via `apply_effect` (resolve.rs:719). Effects may
+  mutate cells, ordnance, statuses.
+- **Line 394-401**: heat + cooldown bookkeeping, *after* effects, against the ship at its
+  post-effect cell (if it survived). Heat *always* increments by `action.cost.heat`;
+  lockout fires when heat ≥ heat_max; cooldown resets unconditionally to
+  `cost.cooldown_max` (hit or miss). Matches TS.
+- **Line 402-404**: emit `OnDamageDealt`. Subsystem authors hooking this fire on every
+  fired action, not just successful damage.
 
-**Worked example (`execute_queue_overheats_and_records_cooldown`, line 1656):**
-Attacker starts heat=5, heat_max=6, queue=[pulse_laser]. After execute_queue: heat=6
+**Worked example (`execute_queue_overheats_and_records_cooldown`, resolve.rs:1897):**
+Attacker starts heat=5, heat_max=6, queue=[pulse_laser]. After the queue fires: heat=6
 (crossed threshold), `locked_out=true`, cooldowns["pulse_laser"]=0 (reset), queue
 cleared. The lockout means the *next* round's pulse_laser is gated by the lockout
-check (line 185) until vented.
+check (resolve.rs:362) until vented.
 
-**Worked example (`execute_queue_no_target_no_cost`, line 1684):** Attacker queues
+**Worked example (`execute_queue_no_target_no_cost`, resolve.rs:2168):** Attacker queues
 pulse_laser into an empty lane (forward arc, no target). `resolve_targeting` returns
 `[]`, the arc gate skips the action, heat stays 0, cooldown stays absent (or
 unchanged). The contract is "no bore, no cost."
 
 ---
 
-### Phase 2 — `fn advance_projectile(projectile_id, board, content)` (line 242)
+### Phase 2 — `fn advance_projectile(projectile_id, board, content)` (resolve.rs:428)
 
 **Mirrors:** `resolve.ts:233`.
 **Intent:** Step a single projectile by its speed, resolving impacts. Identified by id
