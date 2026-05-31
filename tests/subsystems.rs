@@ -5,12 +5,17 @@
 //! `on_turn_end_for` called directly. This file pins that the SAME
 //! behaviours are observable when the resolver drives them through the
 //! `Content` trait — i.e., `DemoContent::damage_modifier` is wired
-//! correctly into `apply_modifiers` (resolve.rs:1031) and
-//! `DemoContent::on_turn_end` is wired into `end_of_turn`
-//! (resolve.rs:442), called in the right pipeline-order positions, and
-//! actually mutate observable state.
+//! correctly into `apply_modifiers` (resolve.rs:1115) and
+//! `DemoContent::on_turn_end` is wired into `end_of_turn`, called in
+//! the right pipeline-order positions, and actually mutate observable
+//! state.
 //!
-//! Reference: subsystems.rs:106-185, resolve.rs:1015-1033, 442.
+//! Per audit #67 (commit c441295), damage_modifier fires from the
+//! ATTACKER's installed subsystems, not the target's. Marksman / PBD
+//! installs in this file are on the attacker; an inverse test pins the
+//! "no bonus when installed on the target" semantics.
+//!
+//! Reference: subsystems.rs:106-185, resolve.rs:1105-1117.
 
 use broadside_engine::input::DemoContent;
 use broadside_engine::resolve::{apply_damage, resolve_round};
@@ -126,14 +131,14 @@ fn damage_log(board: &mut Board) -> Rc<RefCell<Vec<(usize, i32)>>> {
 /// With Marksman installed on the TARGET, the damage_modifier adds +1
 /// at Long band only — total 4. The +1 comes from
 /// `Content::damage_modifier` being called inside `apply_modifiers` at
-/// step 2 of the pipeline (resolve.rs:1031).
+/// step 2 of the pipeline (resolve.rs:1115).
 ///
-/// The `_target` argument to damage_modifier_for is the receiving ship,
-/// and the Installations registry is keyed by ship id. Marksman is
-/// installed on the TARGET (defender), because the analysis-doc
-/// semantics describe defensive subsystems — the ship installs a
-/// subsystem that boosts ITS modifier at certain bands. (If the team
-/// later flips this to attacker-side, this test will catch it.)
+/// Per audit #67 (commit c441295), subsystem damage bonuses fire from
+/// the ATTACKER's installed subsystems, not the target's. Marksman is
+/// installed on the attacker; the bonus applies when the attacker
+/// fires at Long range. Inverting the install — Marksman on the target
+/// — must NOT produce a bonus; that case is pinned by
+/// `marksman_is_not_attached_to_target_side` below.
 #[test]
 fn marksman_adds_one_damage_at_long_through_content_trait() {
     // Baseline: no Marksman.
@@ -149,7 +154,31 @@ fn marksman_adds_one_damage_at_long_through_content_trait() {
     apply_damage(5, 3, 0, &raw_weapon(RangeBand::Long, 3), &mut board, &content);
     assert_eq!(*log.borrow(), vec![(5, 3)], "baseline: no modifier, 3 lands");
 
-    // With Marksman installed on target.
+    // With Marksman installed on the ATTACKER.
+    let mut board = board_with(
+        7,
+        vec![
+            naked_ship("attacker", Faction::Player, 0, 10),
+            naked_ship("target", Faction::Enemy, 5, 10),
+        ],
+    );
+    let log = damage_log(&mut board);
+    let mut content = DemoContent::default();
+    content.install_subsystem("attacker", MARKSMAN);
+    apply_damage(5, 3, 0, &raw_weapon(RangeBand::Long, 3), &mut board, &content);
+    assert_eq!(
+        *log.borrow(),
+        vec![(5, 4)],
+        "Marksman on attacker: +1 at Long range -> 4 lands",
+    );
+}
+
+/// Inverse of the above: Marksman installed on the TARGET (defender)
+/// must NOT produce a bonus. Pins the attacker-side semantics from
+/// audit #67 — if a future port accidentally re-flips back to
+/// defender-side, this test fails immediately.
+#[test]
+fn marksman_on_target_does_not_modify_damage() {
     let mut board = board_with(
         7,
         vec![
@@ -163,13 +192,16 @@ fn marksman_adds_one_damage_at_long_through_content_trait() {
     apply_damage(5, 3, 0, &raw_weapon(RangeBand::Long, 3), &mut board, &content);
     assert_eq!(
         *log.borrow(),
-        vec![(5, 4)],
-        "Marksman: +1 at Long range -> 4 lands",
+        vec![(5, 3)],
+        "Marksman is attacker-side; installing it on the target must NOT add the bonus",
     );
 }
 
-/// Marksman does NOT add at non-Long bands. Same setup as above but
-/// firing at Mid range (distance 3 from attacker cell 0).
+/// Marksman does NOT add at non-Long bands. Same setup as the
+/// attacker-side install above but firing at Mid range (distance 3
+/// from attacker cell 0). The install is on the ATTACKER per audit #67;
+/// installing on the target would make this test pass for the wrong
+/// reason (no bonus from any band) so the install side matters.
 #[test]
 fn marksman_is_band_gated() {
     let mut board = board_with(
@@ -181,13 +213,13 @@ fn marksman_is_band_gated() {
     );
     let log = damage_log(&mut board);
     let mut content = DemoContent::default();
-    content.install_subsystem("target", MARKSMAN);
+    content.install_subsystem("attacker", MARKSMAN);
     // Distance 0->3 = Mid band. Marksman fires only at Long.
     apply_damage(3, 3, 0, &raw_weapon(RangeBand::Mid, 3), &mut board, &content);
     assert_eq!(
         *log.borrow(),
         vec![(3, 3)],
-        "Marksman must NOT add at Mid; raw 3 lands unchanged",
+        "Marksman on attacker must NOT add at Mid; raw 3 lands unchanged",
     );
 }
 
@@ -196,6 +228,7 @@ fn marksman_is_band_gated() {
  * ====================================================================== */
 
 /// PBD adds +2 at PointBlank distance only (d <= 1). Raw 3 -> 5 lands.
+/// Install is on the ATTACKER per audit #67.
 #[test]
 fn point_blank_doctrine_adds_two_at_point_blank_through_content_trait() {
     let mut board = board_with(
@@ -207,18 +240,19 @@ fn point_blank_doctrine_adds_two_at_point_blank_through_content_trait() {
     );
     let log = damage_log(&mut board);
     let mut content = DemoContent::default();
-    content.install_subsystem("target", POINT_BLANK_DOCTRINE);
+    content.install_subsystem("attacker", POINT_BLANK_DOCTRINE);
     // Distance 0->1 = PointBlank.
     apply_damage(1, 3, 0, &raw_weapon(RangeBand::PointBlank, 3), &mut board, &content);
-    assert_eq!(*log.borrow(), vec![(1, 5)], "PBD: +2 at PointBlank -> 5 lands");
+    assert_eq!(*log.borrow(), vec![(1, 5)], "PBD on attacker: +2 at PointBlank -> 5 lands");
 }
 
 /* =========================================================================
  * Marksman + PBD — stack at their respective bands; do not cross-pollinate
  * ====================================================================== */
 
-/// Both subsystems installed on the target: at Long range, Marksman
-/// contributes +1; at PointBlank, PBD contributes +2; at Mid, neither.
+/// Both subsystems installed on the ATTACKER (per audit #67): at Long
+/// range, Marksman contributes +1; at PointBlank, PBD contributes +2;
+/// at Mid, neither.
 #[test]
 fn marksman_and_pbd_cooperate_at_their_respective_bands() {
     let make_board = || {
@@ -231,8 +265,8 @@ fn marksman_and_pbd_cooperate_at_their_respective_bands() {
         )
     };
     let mut content = DemoContent::default();
-    content.install_subsystem("target", MARKSMAN);
-    content.install_subsystem("target", POINT_BLANK_DOCTRINE);
+    content.install_subsystem("attacker", MARKSMAN);
+    content.install_subsystem("attacker", POINT_BLANK_DOCTRINE);
 
     // Long range: Marksman applies, PBD doesn't.
     let mut board = make_board();
