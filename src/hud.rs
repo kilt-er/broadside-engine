@@ -65,6 +65,38 @@ const WHITE:        [f32; 4] = [1.0, 1.0, 1.0, 1.0];
 const DEFEAT_TINT:  [f32; 4] = [0.85, 0.08, 0.10, 0.55];
 const VICTORY_TINT: [f32; 4] = [1.00, 0.80, 0.20, 0.45];
 
+/// Render-only multiplier on the ship silhouette's on-screen extent. The raw
+/// `FRIGATE_DIMS` (120×60×40) read too small against the ~177 px lane-cell
+/// pitch on `DEFAULT_LANE` (bruce playtest: "ships too small to read"). This
+/// scales the drawn width/height WITHOUT moving cell centers, so the
+/// silhouette grows toward the cell pitch while ships stay on their lane
+/// slots. A bow-on Frigate goes 120 → ~162 px (≈92% of the 177 px pitch),
+/// still clearing adjacent occupied cells edge-to-edge.
+///
+/// This is a renderer-side knob only — it does NOT touch the `FRIGATE_DIMS`
+/// game-design constant or any range/geometry math. Bruce iterates this
+/// value visually; bumping it past ~1.45 risks adjacent-cell overlap at
+/// PointBlank, which would need a wider lane / fewer cells instead (see the
+/// composition options flagged to the lead).
+const SHIP_SCALE: f32 = 1.35;
+
+/// Scaled `(width, total_h)` of a ship silhouette at the current view angle.
+/// Single source of truth for both the silhouette draw (`push_ship`) and the
+/// HUD overlay anchors (`ship_bbox`) so heat bars / pips / glyphs track the
+/// scaled hull. `width` is the lane-axis extent; `total_h` stacks the
+/// side-view height projection (`height·cosθ`) and the top-down depth
+/// projection (`depth·sinθ`), then applies `SHIP_SCALE` uniformly.
+fn scaled_ship_extent(stance: Stance, view_angle_rad: f32) -> (f32, f32) {
+    let (width, depth_dim) = match stance {
+        Stance::BowOn => (FRIGATE_DIMS.length, FRIGATE_DIMS.beam),
+        Stance::Broadside => (FRIGATE_DIMS.beam, FRIGATE_DIMS.length),
+    };
+    let cos_a = view_angle_rad.cos();
+    let sin_a = view_angle_rad.sin();
+    let total_h = FRIGATE_DIMS.height * cos_a + depth_dim * sin_a;
+    (width * SHIP_SCALE, total_h * SHIP_SCALE)
+}
+
 /* ---- entry point --------------------------------------------------------- */
 
 /// Build the full frame's draw command list, back-to-front. Sprites and
@@ -183,14 +215,7 @@ fn ship_bbox(ship: &Ship, view_angle_rad: f32) -> (f32, f32) {
         Orientation::BowOn { .. } => Stance::BowOn,
         Orientation::Broadside => Stance::Broadside,
     };
-    let (width, depth_dim) = match stance {
-        Stance::BowOn => (FRIGATE_DIMS.length, FRIGATE_DIMS.beam),
-        Stance::Broadside => (FRIGATE_DIMS.beam, FRIGATE_DIMS.length),
-    };
-    let cos_a = view_angle_rad.cos();
-    let sin_a = view_angle_rad.sin();
-    let total_h = FRIGATE_DIMS.height * cos_a + depth_dim * sin_a;
-    (width, total_h)
+    scaled_ship_extent(stance, view_angle_rad)
 }
 
 #[inline]
@@ -498,14 +523,14 @@ fn push_ship(
     let cos_a = view_angle_rad.cos();
     let sin_a = view_angle_rad.sin();
 
-    // Width along the lane is fixed (no horizontal foreshortening).
-    let (width, depth_dim) = match stance {
-        Stance::BowOn => (FRIGATE_DIMS.length, FRIGATE_DIMS.beam),
-        Stance::Broadside => (FRIGATE_DIMS.beam, FRIGATE_DIMS.length),
-    };
-    // Total vertical extent under the camera-revolves model: sum of the
-    // side-view height projection and the top-down depth projection.
-    let total_h = FRIGATE_DIMS.height * cos_a + depth_dim * sin_a;
+    // On-screen silhouette extent. `width` is the lane-axis span (no
+    // horizontal foreshortening); `total_h` is the camera-revolves vertical
+    // stack of the side-view height projection and the top-down depth
+    // projection. Both already include the renderer-side `SHIP_SCALE`
+    // readability multiplier — see `scaled_ship_extent`. Using the shared
+    // helper keeps this draw and the HUD overlay anchors (`ship_bbox`) in
+    // lockstep.
+    let (width, total_h) = scaled_ship_extent(stance, view_angle_rad);
     let cx = p.x;
     // Silhouette is CENTERED on the lane line: half above, half below.
     // The lane bisects the ship vertically at every angle.
