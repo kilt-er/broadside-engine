@@ -30,6 +30,11 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
+#[cfg(feature = "audio")]
+use std::cell::RefCell;
+#[cfg(feature = "audio")]
+use std::rc::Rc;
+
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
@@ -337,11 +342,18 @@ struct App {
     /// input mutates the board; the redraw path interpolates `from_cell`
     /// → `ship.cell` over `TWEEN_DURATION_MS` using ease-out quad.
     tween_anchors: HashMap<String, TweenAnchor>,
+    /// Shared audio state. `None` if the `audio` feature is off OR the
+    /// audio backend failed to open on startup (headless CI, missing
+    /// driver). When present, the bus is re-installed on every
+    /// Restart so the fresh board's bus gets the same closures.
+    #[cfg(feature = "audio")]
+    audio: Option<Rc<RefCell<broadside_engine::audio::AudioState>>>,
 }
 
 impl App {
     fn new() -> Self {
-        Self {
+        #[allow(unused_mut)]
+        let mut app = Self {
             window: None,
             gfx: None,
             board: render_example_board(),
@@ -349,8 +361,36 @@ impl App {
             content: fresh_content(),
             camera_angle_idx: CAMERA_ANGLE_DEFAULT_INDEX,
             tween_anchors: HashMap::new(),
+            #[cfg(feature = "audio")]
+            audio: None,
+        };
+        #[cfg(feature = "audio")]
+        {
+            if let Some(state) = broadside_engine::audio::AudioState::new(std::path::Path::new("assets")) {
+                let shared = Rc::new(RefCell::new(state));
+                broadside_engine::audio::install_on_bus(&mut app.board, Rc::clone(&shared));
+                app.audio = Some(shared);
+                log::info!("audio enabled");
+            } else {
+                log::info!("audio disabled (no backend or device not available)");
+            }
+        }
+        app
+    }
+
+    /// Re-install audio hook subscriptions on the current `self.board.bus`.
+    /// Called after Restart since the board (and its bus) get rebuilt.
+    /// No-op when the `audio` feature is off OR when the backend isn't
+    /// initialized.
+    #[cfg(feature = "audio")]
+    fn reinstall_audio(&mut self) {
+        if let Some(audio) = self.audio.as_ref() {
+            broadside_engine::audio::install_on_bus(&mut self.board, Rc::clone(audio));
         }
     }
+
+    #[cfg(not(feature = "audio"))]
+    fn reinstall_audio(&mut self) {}
 
     /// Snapshot the current visual position of every ship. Called BEFORE
     /// `apply_intent` so we have a `from_cell` to anchor the tween from.
@@ -528,6 +568,9 @@ impl ApplicationHandler for App {
                     // Restart snaps instantly — no tweening of the
                     // discarded scene's last frame to the fresh board.
                     self.tween_anchors.clear();
+                    // The fresh board has a fresh (empty) EventBus —
+                    // re-install audio subscriptions on it.
+                    self.reinstall_audio();
                 } else if changed {
                     self.record_tween_anchors(prev_visual, now);
                 }

@@ -17,6 +17,11 @@ render = ["dep:wgpu", "dep:winit", "dep:pollster", "dep:bytemuck", "dep:image"]
 # Enable for the runtime ECS / logging surface (hecs world, env_logger).
 # Resolver and content don't need this for type-check builds.
 runtime = ["dep:hecs", "dep:log", "dep:env_logger"]
+# Optional: pulls in `kira` for procedural / sample-based sound playback.
+# The bin subscribes to EventBus hooks (OnDamageDealt / OnLethal / OnVent
+# / OnReorient / OnChainKill) and plays placeholder synthesized sounds.
+# Default OFF — tests and CI builds skip the OS audio device.
+audio = ["dep:kira"]
 
 [dependencies]
 # Used by the types + catalog slice — always compiled.
@@ -38,6 +43,10 @@ env_logger = { version = "0.11", optional = true }
 # renders. PNG-only to keep the dep small; `default-features = false`
 # drops jpeg/gif/etc.
 image = { version = "0.25", default-features = false, features = ["png"], optional = true }
+# Audio playback. `cpal` backend is the default and works cross-platform.
+# Gated under the `audio` feature so the default build doesn't pull the
+# OS audio device or the cpal dependency tree.
+kira = { version = "0.10", optional = true }
 
 # Runnable demo: opens a window and renders a Broadside scene using the
 # gfx / atlas / hud modules. The library is the canonical home for renderer

@@ -51,6 +51,7 @@ pub mod geometry;
 pub mod input;
 pub mod perspective;
 pub mod resolve;
+pub mod runs;
 pub mod subsystems;
 
 #[cfg(feature = "render")]
@@ -61,3 +62,5 @@ pub mod gfx;
 pub mod hud;
 #[cfg(all(feature = "render", feature = "runtime"))]
 pub mod sprites;
+#[cfg(feature = "audio")]
+pub mod audio;
