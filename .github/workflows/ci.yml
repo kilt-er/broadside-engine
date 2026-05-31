@@ -1,0 +1,55 @@
+name: CI
+
+# Logic-slice CI. Runs the default (no-feature) build: types / catalog /
+# geometry / resolve / runs / meta / save plus the full integration suite.
+# The `render` and `runtime` features (wgpu / winit / hecs) are deliberately
+# NOT enabled — they need a GPU + windowing, and the two bins are gated
+# behind `required-features = ["render", "runtime"]`, so the default build
+# never compiles them. That keeps this workflow headless and green on a
+# plain Ubuntu runner with no GPU. See Cargo.toml `[features]` for the
+# rationale ("Tester's CI loop ... run here").
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Cancel superseded runs on the same ref so a fast push train doesn't queue.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: test + clippy (stable, default features)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install stable toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache cargo registry + build
+        uses: Swatinem/rust-cache@v2
+
+      # Clippy on the default feature set, all targets. The non-render bins
+      # are skipped automatically by their required-features. Not yet
+      # `-D warnings`: there's an existing lint backlog in the renderer-owned
+      # files; flip to deny once that's cleared (tracked as a follow-up).
+      - name: clippy
+        run: cargo clippy --all-targets
+
+      # The suite: lib unit tests + every tests/*.rs integration file.
+      - name: test
+        run: cargo test --all-targets
+
+      # Doctests aren't covered by --all-targets; run them explicitly so the
+      # worked examples in module docs stay compilable.
+      - name: doctests
+        run: cargo test --doc
