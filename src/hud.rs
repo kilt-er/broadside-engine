@@ -93,6 +93,48 @@ pub fn compose_scene_with(
     view_angle_rad: f32,
     sprites: &dyn SpriteRegistry,
 ) -> Vec<DrawCommand> {
+    compose_scene_tweened(board, lane, view_angle_rad, sprites, &TweenState::default())
+}
+
+/// Per-ship visual cell-position overrides, keyed by `Ship::id`. Each
+/// entry is a fractional cell index (0.0 .. lane.cell_count - 1.0) used
+/// in place of the ship's logical `ship.cell`. Empty map (or the
+/// default constructed value) makes the function behave identically to
+/// [`compose_scene_with`] — every ship snaps to its logical cell.
+///
+/// The bin captures previous cell positions before each input mutation
+/// and lerps `prev -> current` over ~200ms using ease-out, producing a
+/// `TweenState` per frame that smooths out the per-input snap under
+/// Shogun-Showdown turn semantics.
+#[derive(Default, Clone, Debug)]
+pub struct TweenState {
+    pub visual_cells: std::collections::HashMap<String, f32>,
+}
+
+impl TweenState {
+    /// Visual cell for the named ship, falling back to its logical cell
+    /// when absent from the map. Returned as `f32` so callers can feed
+    /// it straight into [`fractional_cell_to_screen`].
+    fn cell_for(&self, ship: &Ship) -> f32 {
+        self.visual_cells
+            .get(&ship.id)
+            .copied()
+            .unwrap_or(ship.cell as f32)
+    }
+}
+
+/// Like [`compose_scene_with`] but consults `tween` for per-ship visual
+/// cell positions. Ships not present in the map render at their logical
+/// `ship.cell`. Heat bars, shield pips, queue glyphs and status badges
+/// all ride along with the tweened ship position so the overlay HUD
+/// tracks the smoothed silhouette.
+pub fn compose_scene_tweened(
+    board: &Board,
+    lane: &LaneGeometry,
+    view_angle_rad: f32,
+    sprites: &dyn SpriteRegistry,
+    tween: &TweenState,
+) -> Vec<DrawCommand> {
     let mut out = Vec::with_capacity(256);
 
     push_parallax(&mut out, lane, view_angle_rad);
@@ -100,23 +142,21 @@ pub fn compose_scene_with(
     push_range_band_ticks(&mut out, board, lane);
     push_hazards(&mut out, board, lane);
 
-    for (cell_idx, slot) in board.cells.iter().enumerate() {
-        if let Some(ship) = slot {
-            push_ship(&mut out, ship, cell_idx, lane, view_angle_rad, sprites);
-        }
+    for ship in board.cells.iter().flatten() {
+        let visual_cell = tween.cell_for(ship);
+        push_ship(&mut out, ship, visual_cell, lane, view_angle_rad, sprites);
     }
 
     for proj in &board.ordnance {
         push_projectile(&mut out, proj, lane);
     }
 
-    for (cell_idx, slot) in board.cells.iter().enumerate() {
-        if let Some(ship) = slot {
-            push_heat_bar(&mut out, ship, cell_idx, lane, view_angle_rad);
-            push_shield_pips(&mut out, ship, cell_idx, lane, view_angle_rad);
-            push_queue_glyphs(&mut out, ship, cell_idx, lane, view_angle_rad);
-            push_status_badges(&mut out, ship, cell_idx, lane, view_angle_rad);
-        }
+    for ship in board.cells.iter().flatten() {
+        let visual_cell = tween.cell_for(ship);
+        push_heat_bar(&mut out, ship, visual_cell, lane, view_angle_rad);
+        push_shield_pips(&mut out, ship, visual_cell, lane, view_angle_rad);
+        push_queue_glyphs(&mut out, ship, visual_cell, lane, view_angle_rad);
+        push_status_badges(&mut out, ship, visual_cell, lane, view_angle_rad);
     }
 
     push_view_angle_overlay(&mut out, view_angle_rad);
@@ -432,12 +472,12 @@ fn push_hazards(out: &mut Vec<DrawCommand>, board: &Board, lane: &LaneGeometry) 
 fn push_ship(
     out: &mut Vec<DrawCommand>,
     ship: &Ship,
-    cell_idx: usize,
+    visual_cell: f32,
     lane: &LaneGeometry,
     view_angle_rad: f32,
     sprites: &dyn SpriteRegistry,
 ) {
-    let p = cell_to_screen(cell_idx as u32, lane);
+    let p = fractional_cell_to_screen(visual_cell, lane);
     let (fill, stroke) = if ship.faction == Faction::Player {
         (PLAYER_HULL_FILL, PLAYER_HULL_STROKE)
     } else {
@@ -776,11 +816,11 @@ fn push_projectile(out: &mut Vec<DrawCommand>, proj: &Projectile, lane: &LaneGeo
 fn push_heat_bar(
     out: &mut Vec<DrawCommand>,
     ship: &Ship,
-    cell_idx: usize,
+    visual_cell: f32,
     lane: &LaneGeometry,
     view_angle_rad: f32,
 ) {
-    let p = cell_to_screen(cell_idx as u32, lane);
+    let p = fractional_cell_to_screen(visual_cell, lane);
     let (width, _total_h) = ship_bbox(ship, view_angle_rad);
     let max_h = 32.0;
     let bar_w = 4.0;
@@ -816,11 +856,11 @@ fn push_heat_bar(
 fn push_shield_pips(
     out: &mut Vec<DrawCommand>,
     ship: &Ship,
-    cell_idx: usize,
+    visual_cell: f32,
     lane: &LaneGeometry,
     view_angle_rad: f32,
 ) {
-    let p = cell_to_screen(cell_idx as u32, lane);
+    let p = fractional_cell_to_screen(visual_cell, lane);
     let (width, total_h) = ship_bbox(ship, view_angle_rad);
     let pip = 2.5;
     let pad = 6.0;
@@ -866,14 +906,14 @@ fn push_shield_pips(
 fn push_queue_glyphs(
     out: &mut Vec<DrawCommand>,
     ship: &Ship,
-    cell_idx: usize,
+    visual_cell: f32,
     lane: &LaneGeometry,
     view_angle_rad: f32,
 ) {
     if ship.queue.is_empty() {
         return;
     }
-    let p = cell_to_screen(cell_idx as u32, lane);
+    let p = fractional_cell_to_screen(visual_cell, lane);
     let (_width, total_h) = ship_bbox(ship, view_angle_rad);
     let glyph_size = 12.0;
     let spacing = glyph_size * 2.4;
@@ -914,14 +954,14 @@ fn archetype_to_glyph(a: WeaponArchetype) -> (u32, u32) {
 fn push_status_badges(
     out: &mut Vec<DrawCommand>,
     ship: &Ship,
-    cell_idx: usize,
+    visual_cell: f32,
     lane: &LaneGeometry,
     view_angle_rad: f32,
 ) {
     if ship.statuses.is_empty() {
         return;
     }
-    let p = cell_to_screen(cell_idx as u32, lane);
+    let p = fractional_cell_to_screen(visual_cell, lane);
     let (width, total_h) = ship_bbox(ship, view_angle_rad);
     let size = 8.0;
     let spacing = size * 2.4;
@@ -1143,6 +1183,78 @@ mod tests {
         assert_eq!(textured[0].top.as_str(),  "frigate_bowOnFore_top");
         assert_eq!(textured[1].side.as_str(), "frigate_broadside_side");
         assert_eq!(textured[1].top.as_str(),  "frigate_broadside_top");
+    }
+
+    #[test]
+    fn tween_state_default_is_identity_with_compose_scene_with() {
+        // A default TweenState (empty visual_cells map) should produce
+        // the same scene as compose_scene_with — the tweened path is a
+        // strict superset.
+        let mut board = empty_board(7);
+        board.cells[2] = Some(frigate_at(2, Faction::Player, Orientation::BowOn { bow: LaneEnd::Fore }));
+        let untweened = compose_scene_with(&board, &DEFAULT_LANE, std::f32::consts::FRAC_PI_4, &EmptySpriteRegistry);
+        let tweened = compose_scene_tweened(
+            &board, &DEFAULT_LANE, std::f32::consts::FRAC_PI_4, &EmptySpriteRegistry,
+            &TweenState::default(),
+        );
+        assert_eq!(untweened.len(), tweened.len(),
+            "default TweenState must produce identical draw count");
+    }
+
+    #[test]
+    fn tween_state_shifts_ship_polygon_left_when_visual_cell_is_lower() {
+        // Same board, two compose calls: one with no tween (ship at
+        // logical cell 4), one with the tween anchoring the ship at
+        // cell 2.0 (mid-flight from cell 2 → cell 4). The second pass
+        // should emit ship polygons whose x coords are shifted LEFT
+        // because visual_cell < logical_cell on a left-to-right lane.
+        let mut board = empty_board(7);
+        board.cells[4] = Some(frigate_at(4, Faction::Player, Orientation::BowOn { bow: LaneEnd::Fore }));
+        let logical_scene = compose_scene_with(&board, &DEFAULT_LANE, 0.0, &EmptySpriteRegistry);
+
+        let mut tween = TweenState::default();
+        tween.visual_cells.insert("ship-4".to_string(), 2.0);
+        let tweened = compose_scene_tweened(&board, &DEFAULT_LANE, 0.0, &EmptySpriteRegistry, &tween);
+
+        // Find the first ship polygon in each (the stern body
+        // rectangle is the first Polygon emitted after parallax /
+        // lane / range bands).
+        let logical_x = first_ship_polygon_left_x(&logical_scene)
+            .expect("logical scene must have a ship polygon");
+        let tweened_x = first_ship_polygon_left_x(&tweened)
+            .expect("tweened scene must have a ship polygon");
+        assert!(tweened_x < logical_x,
+            "tweened ship (visual_cell=2) should be drawn LEFT of logical ship (cell=4); \
+             got logical_x={} tweened_x={}", logical_x, tweened_x);
+    }
+
+    /// Helper: find the leftmost x-coordinate among ship-body polygons.
+    /// Skips lane / range-band / hazard polygons by selecting those
+    /// whose fill matches the player hull fill color.
+    fn first_ship_polygon_left_x(cmds: &[DrawCommand]) -> Option<f32> {
+        for cmd in cmds {
+            if let DrawCommand::Polygon(p) = cmd {
+                if (p.color[0] - PLAYER_HULL_FILL[0]).abs() < 1e-4
+                    && (p.color[1] - PLAYER_HULL_FILL[1]).abs() < 1e-4
+                {
+                    return Some(p.p0[0].min(p.p3[0]));
+                }
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn tween_state_cell_for_falls_back_to_logical() {
+        let ship = frigate_at(3, Faction::Player, Orientation::BowOn { bow: LaneEnd::Fore });
+        let empty = TweenState::default();
+        assert_eq!(empty.cell_for(&ship), 3.0,
+            "empty TweenState should fall back to ship.cell");
+
+        let mut populated = TweenState::default();
+        populated.visual_cells.insert(ship.id.clone(), 1.5);
+        assert_eq!(populated.cell_for(&ship), 1.5,
+            "TweenState entry should override the logical cell");
     }
 
     #[test]
