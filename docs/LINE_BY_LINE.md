@@ -34,6 +34,7 @@ glance what is documented vs. what is pending.*
 - [`src/meta.rs`](#srcmetars) — cross-run meta-progression: salvage math, unlock-threshold ladder, persistence
 - [`src/save.rs`](#srcsavers) — per-run save/load (atomic JSON write), `SaveError`
 - [`src/ship_design.rs`](#srcship_designrs) — loft-editor `.json` asset format (the data half of the render-pipeline pivot)
+- [`src/loft.rs`](#srcloftrs) — pure-math hull lofting: `ShipDesign` → `HullMesh` triangle soup (Stage 1 of the render pipeline)
 - [`src/gfx.rs`](#srcgfxrs) — wgpu state, four pipelines, virtual-res offscreen + integer-scale blit
 - [`src/atlas.rs`](#srcatlasrs) — procedural 256×256 sprite atlas
 - [`src/hud.rs`](#srchudrs) — scene compositor (DrawCommand list)
@@ -4428,6 +4429,65 @@ examples:** `parses_the_sample_design` (src/ship_design.rs:298, the default dagg
 `future_version_still_parses_but_flags_unknown` (src/ship_design.rs:375),
 `missing_required_field_is_a_parse_error` (src/ship_design.rs:410, dropping `settings` rejects
 — the loft path needs real camera/res values).
+
+---
+
+## `src/loft.rs`
+
+*Pure-math hull lofting — **Stage 1** of the render pipeline (see
+[`RENDER_PIPELINE.md`](RENDER_PIPELINE.md)). Sweeps a [`ShipDesign`](#srcship_designrs)'s 2D
+section profile along its length, scaled per-station by the plan outline + an optional height
+multiplier, into a flat-shaded 3D triangle soup (`HullMesh`). **No GPU, no `feature=render`** —
+pure arithmetic, headless-testable, so it productionizes ahead of the visual-POC verdict; the
+renderer's `loft_gpu` consumes its output. Full companion at
+[`docs/MODULES/loft.md`](MODULES/loft.md).*
+
+**Mirrors:** the loft editor's `buildHull()`/`sampleSection()`
+(`docs/broadside-loft-editor.html`), via the standalone POC's `loft` mod — but driven from a
+loaded `ShipDesign` instead of hardcoded dagger consts, reusing
+[`ship_design::Point2`](#srcship_designrs). Coordinate convention: x=length (prow +x),
+y=height (dorsal +y), z=half-width.
+
+### `const DEFAULT_SEC_N` / `struct LoftParams` / `struct HullMesh` (src/loft.rs:49, 55, 84)
+
+`DEFAULT_SEC_N = 10` is the section ring resolution (each ring = `2·sec_n−2` verts).
+`LoftParams { stretch, hscale, sec_n }` scales the loft (`Default` = editor's `2.0`/`0.7`).
+`HullMesh { positions, normals }` is a flat-shaded **triangle soup** — three verts per
+triangle, all sharing the face normal, so the low-poly facets survive upload with **no index
+buffer / no vertex-normal averaging**; upload non-indexed, draw `positions.len()` verts.
+`tri_count()` = len/3.
+
+### `fn loft_hull(design) -> HullMesh` (src/loft.rs:100)
+
+**Intent:** The thin wrapper — unpack `plan`/`section`/`height_profile` + `stretch`/`hscale`
+from the design (sec_n = `DEFAULT_SEC_N`), defer to `loft_from_profiles`. The entry point the
+engine calls on a loaded `.json`. **Worked example:** `loft_hull_unpacks_a_ship_design`
+(src/loft.rs:402).
+
+### `fn loft_from_profiles(plan, section, height, params) -> HullMesh` (src/loft.rs:121)
+
+**Intent:** The loft proper. Line 129-131: `l` = half stretched length (plan x 0.5 → world x 0
+amidships), `h` = hscale, sec_n floored at 3. Line 140-147: each plan point → a **station**
+(world x, half-width, height-profile multiplier at that x). Line 152-164: `ring_pts` builds a
+station's vertex ring — section sampled `sec_n` steps right side top→belly, then mirrored for
+the left, each vertex `[x, y·h·hm, z·width]`. Line 172-174: degenerate guard (≥2 stations +
+non-empty ring, else empty mesh). Line 177-191: `push_tri` (positions + shared face normal),
+then **stitch consecutive rings** — two tris per quad around the loop.
+
+**Cross-references:** calls `sample_section` / `sample_height_prof` / `face_normal`; output
+feeds the renderer's `loft_gpu` (Stage 2-4). **Worked examples:**
+`vertex_count_matches_ring_stitch_formula` (src/loft.rs:291),
+`prow_is_narrower_than_stern` (src/loft.rs:329), `stretch_scales_length` (src/loft.rs:356),
+`degenerate_single_station_yields_empty_mesh` (src/loft.rs:431).
+
+### Helpers (src/loft.rs:199–260)
+
+`sample_height_prof` (piecewise-linear, clamped; flat 1.0 if no profile —
+`height_profile_scales_height` src/loft.rs:381), `sample_section` (piecewise-linear over the
+section, `t→[0,n−1]`), `lerp`, `face_normal` (`(b−a)×(c−a)` normalized, `+y` fallback for
+zero-area tris). `all_normals_are_unit_length` (src/loft.rs:309) + `loft_is_deterministic`
+(src/loft.rs:322) pin the unit-normal + bit-stable-determinism invariants (the mesh feeds the
+structural-determinism harness).
 
 ---
 
