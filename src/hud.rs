@@ -25,10 +25,11 @@
 
 use crate::atlas;
 use crate::geometry::range_band;
-use crate::gfx::{DrawCommand, PolygonInstance, SpriteInstance};
+use crate::gfx::{DrawCommand, PolygonInstance, SpriteInstance, SpriteSlug, TexturedShipInstance};
 use crate::perspective::{
     cell_to_screen, fractional_cell_to_screen, LaneGeometry, Point2, Stance, FRIGATE_DIMS,
 };
+use crate::sprites::{EmptySpriteRegistry, SpriteRegistry, SpriteStance, SpriteView};
 use crate::types::{
     Board, Faction, HullZone, LaneEnd, Mount, Orientation, Projectile, RangeBand, Ship, Status,
     StatusKind, WeaponArchetype,
@@ -78,6 +79,20 @@ const VICTORY_TINT: [f32; 4] = [1.00, 0.80, 0.20, 0.45];
 /// Both planes anchor at the lane: back-wall vertical extent =
 /// `back_wall_h × cos(θ)`, floor vertical extent = `floor_h × sin(θ)`.
 pub fn compose_scene(board: &Board, lane: &LaneGeometry, view_angle_rad: f32) -> Vec<DrawCommand> {
+    compose_scene_with(board, lane, view_angle_rad, &EmptySpriteRegistry)
+}
+
+/// Like [`compose_scene`] but consults the supplied [`SpriteRegistry`]
+/// when emitting ships. If both `side` and `top` PNGs are registered for
+/// a ship's class/stance, a textured-quad draw command replaces the
+/// procedural silhouette polygons. Otherwise the procedural silhouette
+/// is emitted as before.
+pub fn compose_scene_with(
+    board: &Board,
+    lane: &LaneGeometry,
+    view_angle_rad: f32,
+    sprites: &dyn SpriteRegistry,
+) -> Vec<DrawCommand> {
     let mut out = Vec::with_capacity(256);
 
     push_parallax(&mut out, lane, view_angle_rad);
@@ -87,7 +102,7 @@ pub fn compose_scene(board: &Board, lane: &LaneGeometry, view_angle_rad: f32) ->
 
     for (cell_idx, slot) in board.cells.iter().enumerate() {
         if let Some(ship) = slot {
-            push_ship(&mut out, ship, cell_idx, lane, view_angle_rad);
+            push_ship(&mut out, ship, cell_idx, lane, view_angle_rad, sprites);
         }
     }
 
@@ -415,6 +430,7 @@ fn push_ship(
     cell_idx: usize,
     lane: &LaneGeometry,
     view_angle_rad: f32,
+    sprites: &dyn SpriteRegistry,
 ) {
     let p = cell_to_screen(cell_idx as u32, lane);
     let (fill, stroke) = if ship.faction == Faction::Player {
@@ -446,6 +462,36 @@ fn push_ship(
     let half_h = total_h / 2.0;
     let top_y = p.y - half_h;
     let base_y = p.y + half_h;
+
+    // If the artist has painted both side + top PNGs for this ship's
+    // class/stance, draw the textured quad instead of the procedural
+    // silhouette. The bbox is the same — the shader samples both PNGs
+    // and blends by sin(view_angle).
+    let class = ship.klass.as_deref().unwrap_or("frigate");
+    let sprite_stance = match ship.orientation {
+        Orientation::BowOn { bow: LaneEnd::Fore } => SpriteStance::BowOnFore,
+        Orientation::BowOn { bow: LaneEnd::Aft }  => SpriteStance::BowOnAft,
+        Orientation::Broadside => SpriteStance::Broadside,
+    };
+    if sprites.has_pair(class, sprite_stance) {
+        let left  = cx - width / 2.0;
+        let right = cx + width / 2.0;
+        let side_slug = format!("{}_{}_{}", class, sprite_stance.slug(), SpriteView::Side.slug());
+        let top_slug  = format!("{}_{}_{}", class, sprite_stance.slug(), SpriteView::Top.slug());
+        out.push(DrawCommand::TexturedShip(TexturedShipInstance {
+            p0: [left,  top_y],
+            p1: [right, top_y],
+            p2: [right, base_y],
+            p3: [left,  base_y],
+            blend_t: sin_a,
+            side: SpriteSlug::new(&side_slug),
+            top:  SpriteSlug::new(&top_slug),
+        }));
+        // Skip chevron + procedural-silhouette art: the painted PNGs
+        // own bow direction and outline. Heat bars / shield pips /
+        // queue glyphs / status badges still draw on top.
+        return;
+    }
 
     match stance {
         Stance::BowOn => push_bow_on_silhouette(
@@ -969,6 +1015,48 @@ mod tests {
         }
     }
 
+    /// Stub registry that reports the requested class+stance as having
+    /// BOTH side and top loaded — verifies the `compose_scene_with`
+    /// branch that emits a textured-quad command instead of the
+    /// procedural silhouette polygons.
+    struct AlwaysLoaded;
+    impl SpriteRegistry for AlwaysLoaded {
+        fn has(&self, _class: &str, _stance: SpriteStance, _view: SpriteView) -> bool {
+            true
+        }
+    }
+
+    #[test]
+    fn empty_registry_emits_procedural_silhouette() {
+        let mut board = empty_board(7);
+        board.cells[0] = Some(frigate_at(0, Faction::Player, Orientation::BowOn { bow: LaneEnd::Fore }));
+        let scene = compose_scene_with(&board, &DEFAULT_LANE, std::f32::consts::FRAC_PI_4, &EmptySpriteRegistry);
+        let textured_count = scene.iter().filter(|c| matches!(c, DrawCommand::TexturedShip(_))).count();
+        assert_eq!(textured_count, 0, "empty registry should not emit textured-ship draws");
+    }
+
+    #[test]
+    fn loaded_registry_emits_textured_ship_per_ship() {
+        let mut board = empty_board(7);
+        board.cells[0] = Some(frigate_at(0, Faction::Player, Orientation::BowOn { bow: LaneEnd::Fore }));
+        board.cells[2] = Some(frigate_at(2, Faction::Enemy, Orientation::Broadside));
+        let scene = compose_scene_with(&board, &DEFAULT_LANE, std::f32::consts::FRAC_PI_4, &AlwaysLoaded);
+        let textured: Vec<_> = scene
+            .iter()
+            .filter_map(|c| if let DrawCommand::TexturedShip(t) = c { Some(t) } else { None })
+            .collect();
+        assert_eq!(textured.len(), 2, "expected one textured-ship draw per ship");
+        // sin(45deg) ≈ 0.7071
+        for t in &textured {
+            assert!((t.blend_t - std::f32::consts::FRAC_1_SQRT_2).abs() < 1e-5);
+        }
+        // Each ship's slug pair encodes its stance.
+        assert_eq!(textured[0].side.as_str(), "frigate_bowOnFore_side");
+        assert_eq!(textured[0].top.as_str(),  "frigate_bowOnFore_top");
+        assert_eq!(textured[1].side.as_str(), "frigate_broadside_side");
+        assert_eq!(textured[1].top.as_str(),  "frigate_broadside_top");
+    }
+
     #[test]
     fn empty_board_still_produces_backdrop_and_lane() {
         let board = empty_board(7);
@@ -1092,6 +1180,14 @@ mod tests {
                                 assert!(c.is_finite(), "non-finite polygon coord at angle {}° idx {}: {:?}", d, i, p);
                             }
                         }
+                    }
+                    DrawCommand::TexturedShip(t) => {
+                        for v in [t.p0, t.p1, t.p2, t.p3] {
+                            for c in v {
+                                assert!(c.is_finite(), "non-finite textured-ship coord at angle {}° idx {}: {:?}", d, i, t);
+                            }
+                        }
+                        assert!(t.blend_t.is_finite(), "non-finite blend_t at angle {}° idx {}: {:?}", d, i, t);
                     }
                 }
             }

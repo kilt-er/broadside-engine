@@ -118,6 +118,29 @@ pub fn load_sprite_pair(
     )
 }
 
+/// Read-only lookup of which ship sprites are currently uploaded.
+/// `hud::compose_scene` queries this to decide whether to emit a textured
+/// or procedural silhouette per ship. `Gfx` implements it over its own
+/// internal registry.
+pub trait SpriteRegistry {
+    fn has(&self, class: &str, stance: SpriteStance, view: SpriteView) -> bool;
+
+    /// Convenience: both views present.
+    fn has_pair(&self, class: &str, stance: SpriteStance) -> bool {
+        self.has(class, stance, SpriteView::Side) && self.has(class, stance, SpriteView::Top)
+    }
+}
+
+/// No-op registry — every lookup returns false. Useful for tests and for
+/// `compose_scene` callers that don't have a GPU registry to query.
+pub struct EmptySpriteRegistry;
+
+impl SpriteRegistry for EmptySpriteRegistry {
+    fn has(&self, _class: &str, _stance: SpriteStance, _view: SpriteView) -> bool {
+        false
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

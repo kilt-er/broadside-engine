@@ -50,6 +50,11 @@ const MAX_SPRITES: u64 = 4096;
 /// 2 face polygons = ~27. 256 is plenty.
 const MAX_POLYGONS: u64 = 256;
 
+/// Maximum textured-ship draws per frame. Each consumes one tiny uniform
+/// buffer + one cached bind group. 16 covers the maximum 9-cell lane with
+/// headroom.
+const MAX_TEXTURED_SHIPS: usize = 16;
+
 const OFFSCREEN_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 
 /// Deep-space ink — matches the analysis HTML `--ink` token (`#080c14`).
@@ -165,12 +170,57 @@ impl PolygonInstance {
     }
 }
 
+/// Inline-storage slug identifying a loaded ship sprite. `Copy`, no heap
+/// allocation — `DrawCommand` is `Copy` and the renderer batches commands
+/// frame-to-frame, so we can't hold a `String`. Truncates silently at 31
+/// bytes (every legal slug is < 32 bytes — see `SPRITE_SPEC.md`).
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub struct SpriteSlug {
+    bytes: [u8; 32],
+    len: u8,
+}
+
+impl SpriteSlug {
+    pub fn new(s: &str) -> Self {
+        let src = s.as_bytes();
+        let n = src.len().min(32);
+        let mut bytes = [0u8; 32];
+        bytes[..n].copy_from_slice(&src[..n]);
+        Self { bytes, len: n as u8 }
+    }
+    pub fn as_str(&self) -> &str {
+        std::str::from_utf8(&self.bytes[..self.len as usize]).unwrap_or("")
+    }
+}
+
+/// Per-ship textured-quad draw. The bbox quad (`p0..p3`) is identical to
+/// what the procedural silhouette would produce; the fragment shader
+/// samples both `side` and `top` textures (looked up via the slugs at
+/// draw time) and blends them by `blend_t = sin(view_angle_rad)`.
+///
+/// Emitted by `hud::push_ship` only when both side and top PNGs are
+/// registered for the ship's `class_stance`. Otherwise the procedural
+/// polygon-set is emitted instead.
+#[repr(C)]
+#[derive(Copy, Clone, Debug)]
+pub struct TexturedShipInstance {
+    pub p0: [f32; 2],
+    pub p1: [f32; 2],
+    pub p2: [f32; 2],
+    pub p3: [f32; 2],
+    pub blend_t: f32,
+    pub side: SpriteSlug,
+    pub top: SpriteSlug,
+}
+
 /// A draw command in back-to-front order. `Gfx::render` batches consecutive
-/// same-variant runs into single draw calls.
+/// same-variant runs into single draw calls (except `TexturedShip`, which
+/// is always drawn one-at-a-time since each ship has its own texture pair).
 #[derive(Copy, Clone, Debug)]
 pub enum DrawCommand {
     Sprite(SpriteInstance),
     Polygon(PolygonInstance),
+    TexturedShip(TexturedShipInstance),
 }
 
 impl From<SpriteInstance> for DrawCommand {
@@ -179,6 +229,10 @@ impl From<SpriteInstance> for DrawCommand {
 
 impl From<PolygonInstance> for DrawCommand {
     fn from(p: PolygonInstance) -> Self { DrawCommand::Polygon(p) }
+}
+
+impl From<TexturedShipInstance> for DrawCommand {
+    fn from(t: TexturedShipInstance) -> Self { DrawCommand::TexturedShip(t) }
 }
 
 #[repr(C)]
@@ -196,6 +250,14 @@ struct ViewUniform {
 struct BlitUniform {
     ndc_min: [f32; 2],
     ndc_max: [f32; 2],
+}
+
+/// Per-textured-ship blend factor. Padded to 16 bytes (wgpu uniform alignment).
+#[repr(C)]
+#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+struct BlendUniform {
+    blend_t: f32,
+    _pad: [f32; 3],
 }
 
 const SPRITE_SHADER: &str = r#"
@@ -320,6 +382,66 @@ fn fs_poly(in: VsOut) -> @location(0) vec4<f32> {
 }
 "#;
 
+// Textured-ship shader. Same vertex layout as POLYGON_SHADER (four explicit
+// corners expanded by vertex_index), but the fragment samples two textures
+// (side, top) and blends by `blend_t` carried in a uniform — one uniform
+// per ship since each batch is a single instance with its own texture pair.
+const TEXTURED_SHIP_SHADER: &str = r#"
+struct ViewUniform {
+    px_to_ndc: vec2<f32>,
+    _pad: vec2<f32>,
+};
+struct BlendUniform {
+    blend_t: f32,
+    _pad: vec3<f32>,
+};
+@group(0) @binding(0) var<uniform> view: ViewUniform;
+@group(1) @binding(0) var<uniform> ship: BlendUniform;
+@group(1) @binding(1) var side_tex: texture_2d<f32>;
+@group(1) @binding(2) var top_tex:  texture_2d<f32>;
+@group(1) @binding(3) var ship_samp: sampler;
+
+struct VsOut {
+    @builtin(position) clip: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+};
+
+@vertex
+fn vs_ship(
+    @builtin(vertex_index) v_idx: u32,
+    @location(0) i_p0: vec2<f32>,
+    @location(1) i_p1: vec2<f32>,
+    @location(2) i_p2: vec2<f32>,
+    @location(3) i_p3: vec2<f32>,
+) -> VsOut {
+    var corner_idx = array<u32, 6>(0u, 1u, 2u, 0u, 2u, 3u);
+    let c = corner_idx[v_idx];
+    var pixel: vec2<f32>;
+    var uv:    vec2<f32>;
+    // p0 = top-left  -> uv (0, 0)
+    // p1 = top-right -> uv (1, 0)
+    // p2 = bot-right -> uv (1, 1)
+    // p3 = bot-left  -> uv (0, 1)
+    if (c == 0u) { pixel = i_p0; uv = vec2<f32>(0.0, 0.0); }
+    else if (c == 1u) { pixel = i_p1; uv = vec2<f32>(1.0, 0.0); }
+    else if (c == 2u) { pixel = i_p2; uv = vec2<f32>(1.0, 1.0); }
+    else { pixel = i_p3; uv = vec2<f32>(0.0, 1.0); }
+    let ndc_x = pixel.x * view.px_to_ndc.x - 1.0;
+    let ndc_y = 1.0 - pixel.y * view.px_to_ndc.y;
+    var o: VsOut;
+    o.clip = vec4<f32>(ndc_x, ndc_y, 0.0, 1.0);
+    o.uv = uv;
+    return o;
+}
+
+@fragment
+fn fs_ship(in: VsOut) -> @location(0) vec4<f32> {
+    let side_px = textureSample(side_tex, ship_samp, in.uv);
+    let top_px  = textureSample(top_tex,  ship_samp, in.uv);
+    return mix(side_px, top_px, ship.blend_t);
+}
+"#;
+
 const BLIT_SHADER: &str = r#"
 struct BlitUniform {
     ndc_min: vec2<f32>,
@@ -366,19 +488,24 @@ pub struct Gfx {
     offscreen_view: wgpu::TextureView,
     sprites: SpritePipeline,
     polygons: PolygonPipeline,
+    textured_ships: TexturedShipPipeline,
     blit: BlitPipeline,
     /// Loaded ship sprite textures keyed by `<class>_<stance>_<view>` slug.
     /// `gfx.rs` uploads each PNG to its own GPU texture; the textured-ship
-    /// render path (landing in a follow-up commit) will look up handles
-    /// here and supply them as side/top bindings.
+    /// render path looks up handles here and supplies them as side/top
+    /// bindings.
     ship_sprites: std::collections::HashMap<String, ShipSpriteEntry>,
+    /// Cache of per-slot bind groups by (slot_idx, side_slug, top_slug).
+    /// The bind group includes the slot's blend uniform (slot-specific)
+    /// AND the texture pair. Cleared on `try_load_ship_sprites` since
+    /// loaded textures may have changed.
+    ship_bg_cache: std::collections::HashMap<(u32, SpriteSlug, SpriteSlug), wgpu::BindGroup>,
 }
 
 /// One uploaded ship sprite. `dimensions` is the source PNG size in
 /// pixels so the renderer can compute the dest rect from the sprite's
 /// intended bbox in the SPRITE_SPEC table.
 struct ShipSpriteEntry {
-    #[allow(dead_code)]  // wired in the textured-ship pipeline (follow-up commit)
     texture_view: wgpu::TextureView,
     #[allow(dead_code)]
     dimensions: (u32, u32),
@@ -402,10 +529,43 @@ struct PolygonPipeline {
     bind_group: wgpu::BindGroup,
 }
 
+/// Per-ship texture-blend pipeline. One pipeline + a shared per-ship bind
+/// group layout (uniform + side tex + top tex + sampler). Each ship's
+/// draw uses its own bind group built from the loaded ship sprite
+/// textures, cached on `Gfx::ship_bg_cache` keyed by the slug pair.
+struct TexturedShipPipeline {
+    pipeline: wgpu::RenderPipeline,
+    instance_vbuf: wgpu::Buffer,
+    /// view ubo bind group (group 0). Identical to sprites/polygons.
+    view_bg: wgpu::BindGroup,
+    /// Layout for per-ship bind group (group 1). Used to build cached
+    /// (side, top) bind groups on demand.
+    ship_bgl: wgpu::BindGroupLayout,
+    /// Shared sampler used by every per-ship bind group.
+    sampler: wgpu::Sampler,
+    /// Pre-allocated per-frame uniform buffers — one entry per drawn ship.
+    /// Sized for `MAX_TEXTURED_SHIPS` ships; each draw writes its slice
+    /// before binding. Storing as one big buffer with dynamic offsets
+    /// would be neater but the count is tiny so individual buffers are
+    /// simpler.
+    blend_ubos: Vec<wgpu::Buffer>,
+}
+
 struct BlitPipeline {
     pipeline: wgpu::RenderPipeline,
     ubo: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
+}
+
+impl crate::sprites::SpriteRegistry for Gfx {
+    fn has(
+        &self,
+        class: &str,
+        stance: crate::sprites::SpriteStance,
+        view: crate::sprites::SpriteView,
+    ) -> bool {
+        Gfx::has_ship_sprite(self, class, stance, view)
+    }
 }
 
 impl Gfx {
@@ -523,6 +683,7 @@ impl Gfx {
 
         let sprites = SpritePipeline::new(&device, &atlas_view, &atlas_sampler);
         let polygons = PolygonPipeline::new(&device, &sprites.view_ubo, &atlas_view, &atlas_sampler);
+        let textured_ships = TexturedShipPipeline::new(&device, &sprites.view_ubo);
         let blit = BlitPipeline::new(&device, format, &offscreen_view);
 
         let g = Self {
@@ -533,8 +694,10 @@ impl Gfx {
             offscreen_view,
             sprites,
             polygons,
+            textured_ships,
             blit,
             ship_sprites: std::collections::HashMap::new(),
+            ship_bg_cache: std::collections::HashMap::new(),
         };
 
         let view = ViewUniform {
@@ -570,6 +733,9 @@ impl Gfx {
     /// textured-ship render path (follow-up commit) looks up handles via
     /// [`Gfx::has_ship_sprite`].
     pub fn try_load_ship_sprites(&mut self, asset_dir: &std::path::Path) -> usize {
+        // Invalidate cached bind groups — the underlying texture views
+        // may have been replaced.
+        self.ship_bg_cache.clear();
         let classes = ["frigate", "scout", "gunboat"];
         let stances = [
             crate::sprites::SpriteStance::BowOnFore,
@@ -648,6 +814,53 @@ impl Gfx {
         self.ship_sprites.contains_key(&slug)
     }
 
+    /// Build the per-slot (slot, side, top) bind group on first request
+    /// and cache it. If either texture slug is missing from
+    /// `ship_sprites`, the cache entry is **not** populated — the
+    /// render loop checks the cache and skips drawing if absent.
+    fn ensure_ship_bind_group(&mut self, slot_idx: usize, side: SpriteSlug, top: SpriteSlug) {
+        let key = (slot_idx as u32, side, top);
+        if self.ship_bg_cache.contains_key(&key) {
+            return;
+        }
+        let side_entry = self.ship_sprites.get(side.as_str());
+        let top_entry  = self.ship_sprites.get(top.as_str());
+        let (side_view, top_view) = match (side_entry, top_entry) {
+            (Some(s), Some(t)) => (&s.texture_view, &t.texture_view),
+            _ => {
+                log::debug!(
+                    "ship bg skipped: side={} top={} (one or both not loaded)",
+                    side.as_str(),
+                    top.as_str()
+                );
+                return;
+            }
+        };
+        let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("ship per-instance bg"),
+            layout: &self.textured_ships.ship_bgl,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: self.textured_ships.blend_ubos[slot_idx].as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(side_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(top_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::Sampler(&self.textured_ships.sampler),
+                },
+            ],
+        });
+        self.ship_bg_cache.insert(key, bg);
+    }
+
     /// Compute the integer-scaled, letterboxed NDC quad that maps the
     /// virtual-resolution offscreen target into the swapchain. Recomputed on
     /// every resize so the letterboxing tracks window changes.
@@ -686,10 +899,15 @@ impl Gfx {
         // index into the per-variant buffer the batch occupies.
         let mut sprite_buf: Vec<SpriteInstance> = Vec::with_capacity(commands.len());
         let mut polygon_buf: Vec<PolygonInstance> = Vec::with_capacity(commands.len());
-        // Each batch references one of the two buffers.
+        // Textured-ship instances are stored as the 4 corner positions only
+        // (the slugs + blend_t are CPU-side per-batch metadata).
+        let mut ship_corner_buf: Vec<[f32; 8]> = Vec::with_capacity(MAX_TEXTURED_SHIPS);
+        let mut ship_meta: Vec<(SpriteSlug, SpriteSlug, f32)> = Vec::with_capacity(MAX_TEXTURED_SHIPS);
         enum BatchKind {
             Sprite,
             Polygon,
+            // index into ship_corner_buf / ship_meta
+            TexturedShip(u32),
         }
         struct Batch {
             kind: BatchKind,
@@ -701,7 +919,6 @@ impl Gfx {
             match cmd {
                 DrawCommand::Sprite(s) => {
                     if (sprite_buf.len() as u64) >= MAX_SPRITES {
-                        // Truncate silently; warn once outside the loop.
                         continue;
                     }
                     let start = sprite_buf.len() as u32;
@@ -722,13 +939,26 @@ impl Gfx {
                         _ => batches.push(Batch { kind: BatchKind::Polygon, start, count: 1 }),
                     }
                 }
+                DrawCommand::TexturedShip(t) => {
+                    if ship_corner_buf.len() >= MAX_TEXTURED_SHIPS {
+                        continue;
+                    }
+                    let idx = ship_corner_buf.len() as u32;
+                    ship_corner_buf.push([
+                        t.p0[0], t.p0[1], t.p1[0], t.p1[1],
+                        t.p2[0], t.p2[1], t.p3[0], t.p3[1],
+                    ]);
+                    ship_meta.push((t.side, t.top, t.blend_t));
+                    // Each textured-ship draw is its own batch (different
+                    // bind group per ship).
+                    batches.push(Batch { kind: BatchKind::TexturedShip(idx), start: idx, count: 1 });
+                }
             }
         }
-        if (commands.len() as u64) > MAX_SPRITES + MAX_POLYGONS {
+        if (commands.len() as u64) > MAX_SPRITES + MAX_POLYGONS + MAX_TEXTURED_SHIPS as u64 {
             log::warn!(
-                "draw command count {} exceeds MAX_SPRITES+MAX_POLYGONS {}; truncating",
-                commands.len(),
-                MAX_SPRITES + MAX_POLYGONS
+                "draw command count {} exceeds capacity; truncating",
+                commands.len()
             );
         }
 
@@ -745,6 +975,23 @@ impl Gfx {
                 0,
                 bytemuck::cast_slice(&polygon_buf),
             );
+        }
+        if !ship_corner_buf.is_empty() {
+            self.queue.write_buffer(
+                &self.textured_ships.instance_vbuf,
+                0,
+                bytemuck::cast_slice(&ship_corner_buf),
+            );
+            // Write per-ship blend uniforms and ensure bind groups exist.
+            for (i, (side, top, blend)) in ship_meta.iter().enumerate() {
+                let blend_u = BlendUniform { blend_t: *blend, _pad: [0.0; 3] };
+                self.queue.write_buffer(
+                    &self.textured_ships.blend_ubos[i],
+                    0,
+                    bytemuck::bytes_of(&blend_u),
+                );
+                self.ensure_ship_bind_group(i, *side, *top);
+            }
         }
 
         let frame = self.surface.get_current_texture()?;
@@ -789,6 +1036,26 @@ impl Gfx {
                         pass.set_bind_group(0, &self.polygons.bind_group, &[]);
                         pass.set_vertex_buffer(0, self.polygons.instance_vbuf.slice(..));
                         pass.draw(0..6, b.start..(b.start + b.count));
+                    }
+                    BatchKind::TexturedShip(slot_idx) => {
+                        let (side, top, _blend) = ship_meta[slot_idx as usize];
+                        let bg = match self.ship_bg_cache.get(&(slot_idx, side, top)) {
+                            Some(bg) => bg,
+                            None => {
+                                // Bind group missing — sprites for this slug
+                                // pair aren't loaded. Skip the draw; the
+                                // procedural polygons below stay visible.
+                                continue;
+                            }
+                        };
+                        pass.set_pipeline(&self.textured_ships.pipeline);
+                        pass.set_bind_group(0, &self.textured_ships.view_bg, &[]);
+                        pass.set_bind_group(1, bg, &[]);
+                        // Offset the vbuf to this slot's 32 bytes.
+                        let off = (slot_idx as u64) * 32;
+                        pass.set_vertex_buffer(0, self.textured_ships.instance_vbuf.slice(off..off + 32));
+                        // Draw 6 verts (two triangles) of one instance.
+                        pass.draw(0..6, 0..1);
                     }
                 }
             }
@@ -1089,6 +1356,165 @@ impl PolygonPipeline {
         });
 
         Self { pipeline, instance_vbuf, bind_group }
+    }
+}
+
+impl TexturedShipPipeline {
+    fn new(device: &wgpu::Device, view_ubo: &wgpu::Buffer) -> Self {
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("textured-ship shader"),
+            source: wgpu::ShaderSource::Wgsl(TEXTURED_SHIP_SHADER.into()),
+        });
+
+        let view_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("ship view bgl"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
+        });
+        let view_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("ship view bg"),
+            layout: &view_bgl,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: view_ubo.as_entire_binding(),
+            }],
+        });
+
+        let ship_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("ship per-instance bgl"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        });
+
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("ship texture sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Nearest,
+            min_filter: wgpu::FilterMode::Nearest,
+            mipmap_filter: wgpu::FilterMode::Nearest,
+            ..Default::default()
+        });
+
+        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("ship layout"),
+            bind_group_layouts: &[&view_bgl, &ship_bgl],
+            push_constant_ranges: &[],
+        });
+
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("ship pipeline"),
+            layout: Some(&layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_ship"),
+                compilation_options: Default::default(),
+                buffers: &[wgpu::VertexBufferLayout {
+                    // Instance stride matches the four corner positions
+                    // packed at the head of TexturedShipInstance.
+                    array_stride: 32, // 4 × Float32x2
+                    step_mode: wgpu::VertexStepMode::Instance,
+                    attributes: &[
+                        wgpu::VertexAttribute { shader_location: 0, offset: 0,  format: wgpu::VertexFormat::Float32x2 },
+                        wgpu::VertexAttribute { shader_location: 1, offset: 8,  format: wgpu::VertexFormat::Float32x2 },
+                        wgpu::VertexAttribute { shader_location: 2, offset: 16, format: wgpu::VertexFormat::Float32x2 },
+                        wgpu::VertexAttribute { shader_location: 3, offset: 24, format: wgpu::VertexFormat::Float32x2 },
+                    ],
+                }],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_ship"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: OFFSCREEN_FORMAT,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: None,
+                unclipped_depth: false,
+                polygon_mode: wgpu::PolygonMode::Fill,
+                conservative: false,
+            },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+            cache: None,
+        });
+
+        // Per-frame instance buffer: one slot per ship that may draw.
+        let instance_vbuf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("ship instance vbuf"),
+            // Each instance is 4 × Float32x2 = 32 bytes (matches the
+            // vertex layout — the slug bytes and blend_t in
+            // TexturedShipInstance are CPU-side only and don't go in
+            // the vbuf).
+            size: 32 * MAX_TEXTURED_SHIPS as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let mut blend_ubos = Vec::with_capacity(MAX_TEXTURED_SHIPS);
+        for i in 0..MAX_TEXTURED_SHIPS {
+            blend_ubos.push(device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some(&format!("ship blend ubo {}", i)),
+                size: std::mem::size_of::<BlendUniform>() as u64,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }));
+        }
+
+        Self { pipeline, instance_vbuf, view_bg, ship_bgl, sampler, blend_ubos }
     }
 }
 

@@ -322,7 +322,7 @@ impl ApplicationHandler for App {
                 // Inline the angle read to avoid a &self borrow that
                 // would conflict with the &mut self.gfx held above.
                 let angle = CAMERA_ANGLE_STEPS_DEG[self.camera_angle_idx].to_radians();
-                let instances = hud::compose_scene(&self.board, &self.lane, angle);
+                let instances = hud::compose_scene_with(&self.board, &self.lane, angle, gfx);
                 match gfx.render(&instances) {
                     Ok(()) => {}
                     Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
