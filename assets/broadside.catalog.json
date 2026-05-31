@@ -1107,6 +1107,21 @@
         "Afterburner",
         "Beam Cannon"
       ]
+    },
+    {
+      "id": "warlord",
+      "name": "Citadel Warlord",
+      "hull": 14,
+      "hull5": 16,
+      "traits": [
+        "Reactor Breach"
+      ],
+      "sector": "Citadel Approach",
+      "weapons": [
+        "Beam Cannon",
+        "Missile Salvo",
+        "Brace"
+      ]
     }
   ],
   "capitals": [

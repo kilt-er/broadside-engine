@@ -50,7 +50,7 @@ use broadside_engine::hud::{
     win_state, BetweenEncounterChoice, TweenState, WinState,
 };
 use broadside_engine::runs::{
-    advance_after_win, build_encounter_board, current_encounter, encounter_outcome, fallback_ship_for_spawn,
+    advance_after_win, boss_ship_for_spawn, build_encounter_board, current_encounter, encounter_outcome, fallback_ship_for_spawn,
     mark_defeated, placeholder_sectors, AdvanceResult, EncounterOutcome,
 };
 use broadside_engine::input::{
@@ -451,7 +451,18 @@ impl App {
     fn build_current_board(&self) -> Option<Board> {
         let enc = current_encounter(&self.run, &self.sectors)?;
         let player = Self::fresh_player_ship();
-        Some(build_encounter_board(enc, player, |spawn| Some(fallback_ship_for_spawn(spawn))))
+        Some(build_encounter_board(enc, player, |spawn| {
+            // Final boss (task #83) gets the rich `boss_ship_for_spawn`
+            // loadout; every other class_id falls through to the
+            // minimal `fallback_ship_for_spawn`. When a real class
+            // registry lands (catalog-driven enemy synthesis), this
+            // dispatch goes away.
+            if spawn.class_id == "warlord" {
+                Some(boss_ship_for_spawn(spawn))
+            } else {
+                Some(fallback_ship_for_spawn(spawn))
+            }
+        }))
     }
 
     /// Reset run + content + board to a fresh sector-0 / encounter-0

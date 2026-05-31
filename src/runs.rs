@@ -290,6 +290,70 @@ pub fn canonical_lane_size(max_cell: usize) -> usize {
  * lookups when those land.
  * ====================================================================== */
 
+/// Build the final-boss [`Ship`] for the Citadel Warlord encounter
+/// (task #83). High-hull, multi-weapon, `ReactorBreach` trait so the
+/// kill splashes neighbors — the kind of pressure that earns the
+/// run-end overlay. The bin's spawn callback dispatches to this when
+/// it sees `spawn.class_id == "warlord"`; everything else falls
+/// through to [`fallback_ship_for_spawn`].
+///
+/// Tuning rationale:
+/// - Hull 14 (vs the cap of 7 for regular enemies in the canonical
+///   `enemies[]`) — communicates "this fight is different." If
+///   `spawn.hp_override` is set, it wins (lets the encounter tier-scale).
+/// - Three mounts (Forward pulse_laser, Forward missile_salvo,
+///   broadside beam_cannon) so the AI's telegraph queue surfaces
+///   serious moves a turn ahead. The player sees the threat and has
+///   to respond.
+/// - `Trait::ReactorBreach` — the resolver consumes this in
+///   `destroy()` (see `resolve.rs::1004`): splash damage to neighbors
+///   on death. Mechanically the boss isn't just a sponge; killing it
+///   matters at point-blank range.
+/// - Strong bow facing the player (`BowOn { bow: Aft }`) so the
+///   approach has to break through the bow's armour or maneuver
+///   around it.
+pub fn boss_ship_for_spawn(spawn: &ShipSpawn) -> Ship {
+    let mut s = Ship {
+        id: format!("{}@{}", spawn.class_id, spawn.cell),
+        faction: Faction::Enemy,
+        cell: spawn.cell,
+        orientation: spawn.orientation,
+        hull: 14,
+        max_hull: 14,
+        heat: 0,
+        heat_max: 8, // generous heat budget so the boss can sustain fire
+        locked_out: false,
+        shield_profile: ShieldProfile {
+            // Stronger bow armour than regular enemies — the design's
+            // "front of the boss is hard to crack" feel. Stern is still
+            // the soft underbelly; the player is rewarded for flanking.
+            bow: ShieldFace { armour: 3, charge: 1 },
+            stern: ShieldFace { armour: 0, charge: 0 },
+            port: ShieldFace { armour: 1, charge: 0 },
+            starboard: ShieldFace { armour: 1, charge: 0 },
+        },
+        mounts: vec![
+            // Forward pulse_laser — the AI fires this when range allows.
+            Mount { id: "m1".into(), arc: TArc::Forward, weapon: "pulse_laser".into() },
+            // Forward beam_cannon — high-damage telegraphed move.
+            Mount { id: "m2".into(), arc: TArc::Forward, weapon: "beam_cannon".into() },
+            // Broadside missile_salvo — punishes the player for
+            // sitting in the flank arc trying to dodge the bow.
+            Mount { id: "m3".into(), arc: TArc::BroadsideArc, weapon: "missile_salvo".into() },
+        ],
+        queue: Vec::new(),
+        cooldowns: HashMap::new(),
+        statuses: Vec::new(),
+        traits: vec![Trait::ReactorBreach],
+        klass: Some(spawn.class_id.clone()),
+    };
+    if let Some(hp) = spawn.hp_override {
+        s.hull = hp;
+        s.max_hull = hp;
+    }
+    s
+}
+
 /// Minimal default `Ship` shape used for spawns whose `class_id` isn't
 /// known to the caller's class registry. Bow-on facing the player, low
 /// hull, one Forward pulse_laser mount so the AI has something to fire.
@@ -463,18 +527,45 @@ fn sector_citadel_approach() -> Sector {
                 ],
                 false,
             ),
-            // Boss encounter — the run-end gate. High-hull single
-            // enemy with a Forward-arc loadout. Final boss task #83
-            // will replace this with a richer encounter; for now the
-            // is_boss flag is what AdvanceResult::Victorious reads.
+            // Boss encounter — the run-end gate. The Citadel Warlord
+            // (`class_id: "warlord"`) dispatches via the bin's spawn
+            // callback to `boss_ship_for_spawn` — hull 14, three mounts
+            // covering forward + broadside, `ReactorBreach` trait so the
+            // kill splashes neighbors. Two `voidrunner` escorts at
+            // either flank — the warlord's bow is hard to break, so the
+            // intended play is to clear the escorts first (they have
+            // `Agile` per the canonical EnemyDef) then maneuver to the
+            // warlord's stern. `is_boss: true` is the flag
+            // `AdvanceResult::Victorious` reads when the encounter is
+            // won.
             EncounterDef {
                 id: "citadel_boss".into(),
                 enemy_ships: vec![
+                    // Forward escort — closer to the player, harasses on
+                    // the approach.
+                    ShipSpawn {
+                        class_id: "voidrunner".into(),
+                        cell: 3,
+                        orientation: Orientation::BowOn { bow: LaneEnd::Aft },
+                        hp_override: None,
+                    },
+                    // The warlord itself — mid-board, bow facing the
+                    // player. boss_ship_for_spawn supplies the rich
+                    // loadout; hp_override stays None so the function's
+                    // 14-hull default applies.
                     ShipSpawn {
                         class_id: "warlord".into(),
                         cell: 5,
                         orientation: Orientation::BowOn { bow: LaneEnd::Aft },
-                        hp_override: Some(12),
+                        hp_override: None,
+                    },
+                    // Aft escort — covers the warlord's stern; the
+                    // player has to break through to flank.
+                    ShipSpawn {
+                        class_id: "voidrunner".into(),
+                        cell: 6,
+                        orientation: Orientation::BowOn { bow: LaneEnd::Aft },
+                        hp_override: None,
                     },
                 ],
                 hazards: Vec::new(),
@@ -826,6 +917,62 @@ mod tests {
         let at_0 = board.cells[0].as_ref().unwrap();
         // Player kept cell 0; enemy spawn at 0 was dropped.
         assert_eq!(at_0.faction, Faction::Player);
+    }
+
+    #[test]
+    fn boss_ship_for_spawn_has_climactic_loadout() {
+        // Task #83: the Citadel Warlord needs to FEEL like a boss when
+        // it spawns. This test pins the climactic invariants — hull
+        // jump (far above the 1..=7 cap of regular enemies), the
+        // ReactorBreach trait (kill-splash on death), and a
+        // multi-mount loadout so the AI's telegraph queue surfaces
+        // serious threats a turn ahead.
+        let spawn = ShipSpawn {
+            class_id: "warlord".into(),
+            cell: 5,
+            orientation: Orientation::BowOn { bow: LaneEnd::Aft },
+            hp_override: None,
+        };
+        let s = boss_ship_for_spawn(&spawn);
+        assert_eq!(s.faction, Faction::Enemy);
+        assert_eq!(s.cell, 5);
+        assert!(
+            s.hull >= 14,
+            "boss hull should be the climactic-tier default (14), got {}",
+            s.hull,
+        );
+        assert_eq!(s.max_hull, s.hull);
+        assert!(
+            s.traits.contains(&Trait::ReactorBreach),
+            "boss must carry ReactorBreach so the kill splashes neighbors",
+        );
+        assert!(
+            s.mounts.len() >= 3,
+            "boss needs >= 3 mounts so the AI telegraph surfaces real threats; got {}",
+            s.mounts.len(),
+        );
+        // The bow shield is the player's frontal pressure — should be
+        // tougher than the canonical default (armour 2).
+        assert!(
+            s.shield_profile.bow.armour >= 3,
+            "boss bow armour should be 3+ to make the frontal approach a real fight",
+        );
+    }
+
+    #[test]
+    fn boss_ship_for_spawn_honors_hp_override() {
+        // The encounter author can still tier-scale by passing
+        // `hp_override`. Confirms the boss synthesizer doesn't
+        // hardcode hull past the override path.
+        let spawn = ShipSpawn {
+            class_id: "warlord".into(),
+            cell: 5,
+            orientation: Orientation::BowOn { bow: LaneEnd::Aft },
+            hp_override: Some(20),
+        };
+        let s = boss_ship_for_spawn(&spawn);
+        assert_eq!(s.hull, 20);
+        assert_eq!(s.max_hull, 20);
     }
 
     #[test]
