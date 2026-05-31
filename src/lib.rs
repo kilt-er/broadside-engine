@@ -43,6 +43,10 @@
 //!   `load_from_disk(path)`, `delete_save(path)`. Path is the caller's
 //!   choice — bin decides where; meta-progression lives at a separate
 //!   path with separate lifecycle (see [`meta`]).
+//! - [`ship_design`] — serde shape for the loft editor's ship-design
+//!   `.json` (`docs/broadside-loft-editor.html`'s `collectDesign()`).
+//!   Data only — the asset format the 3D loft/render path consumes;
+//!   no rendering here.
 //!
 //! Content effect bodies and AI live in sibling modules added by other
 //! teammates.
@@ -59,6 +63,7 @@ pub mod perspective;
 pub mod resolve;
 pub mod runs;
 pub mod save;
+pub mod ship_design;
 pub mod subsystems;
 
 #[cfg(feature = "render")]
