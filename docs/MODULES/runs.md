@@ -21,6 +21,16 @@ and build the next board → on `Lost` call `mark_defeated` and show the defeat
 screen. There is no TS analog — `demo.ts` is a single hand-built board with no
 campaign layer. Phase-3-only.
 
+> **Gotcha (run-loop ↔ resolver seam).** The round the bin resolves between
+> `encounter_outcome` checks runs `execute_queue`, which fires queued action ids
+> via `Content::action` lookup and **does not gate on the firing ship owning a
+> matching `Mount`** — an unarmed ship still fires a queued weapon. This only
+> bites the direct queue-injection path (player input or a test fixture pushing
+> onto `ship.queue`); the AI gates on mounts/arc/band. Full detail in the
+> [`execute_queue` walkthrough](../LINE_BY_LINE.md#srcresolvers). Relevant here
+> because a `run_loop` fixture that hand-builds a ship + queue can see a "weapon
+> fired with no mount" result that looks wrong but isn't.
+
 ### Design decisions baked into the module
 
 - **Placeholder sectors live here, not on `DemoContent`** (src/runs.rs:30-39).
@@ -131,6 +141,18 @@ Line 255-259: drop hazards. Line 261-269: assemble the `Board` with a fresh
 The closure parameter is the key flexibility: the bin passes a catalog-aware
 builder; tests pass `|spawn| Some(fallback_ship_for_spawn(spawn))`. The same
 board builder works with placeholder and real data.
+
+> **Gotcha — the spawn's orientation wins, not the closure's.** Line 245
+> (`ship.orientation = spawn.orientation;`) **unconditionally overwrites** the
+> orientation the builder closure set on the ship. A ship's facing on the board
+> is therefore determined by the [`ShipSpawn`](types.md), *not* by
+> `boss_ship_for_spawn` / `fallback_ship_for_spawn` / any custom builder — even
+> though those builders set an `orientation` field, it's discarded here. This is
+> counterintuitive when constructing boards: if a fixture or caller wants a
+> ship bow-on aft, it must set that on the **spawn**, not in the closure. (The
+> same line also applies `hp_override` from the spawn, with the same
+> "spawn-data-wins" intent: the encounter author controls facing and hull, the
+> builder controls the rest of the loadout.)
 
 **Cross-references:** Called by the bin on each encounter transition (and on
 resume, rebuilding around `run.player.clone()`). Uses `canonical_lane_size`;

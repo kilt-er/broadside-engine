@@ -3252,6 +3252,22 @@ Lines 169–220: the per-action loop. For each `action_id`:
   and no cooldown reset**. This is the critical contract that lets a player queue
   optimistic actions; if their forward gun has no target, they don't lose the turn's
   heat budget.
+
+> **Gotcha — the queue path does NOT gate on the ship owning a matching Mount.**
+> `execute_queue` fires whatever `action_id`s sit in `ship.queue`, looked up purely by
+> `content.action(action_id)`. There is no check that the ship has a `Mount` whose
+> `weapon` is that action. An **unarmed ship (zero mounts) will still fire a queued
+> weapon** — the only gates are lockout, cooldown, and the arc/target "nothing bore"
+> check above (and the arc check only bites when the action has `requires_arc`; a
+> `requires_arc: None` action with no mount fires unconditionally). This is **not a
+> bug**: in real play the player's queue is built only from actions they have mounts
+> for, and the **AI never hits this edge** because `decide_enemy_action` enumerates
+> *from the enemy's mounts* and gates on arc/band/range via `resolve_targeting` before
+> queuing anything. The sharp edge is exclusively the **direct queue-injection path**
+> (player input, or a test/fixture that pushes an id onto `ship.queue` directly).
+> Tester surfaced this while writing `tests/run_loop.rs`. If a future change wants
+> mounts to be a hard prerequisite, the gate belongs right here at the top of the
+> per-action loop.
 - **Lines 202–204**: apply each effect via `apply_effect`. Effects may mutate cells,
   ordnance, statuses.
 - **Lines 209–215**: heat + cooldown bookkeeping. Heat *always* increments by
