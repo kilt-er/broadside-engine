@@ -214,9 +214,6 @@ fn scenario_a_weak_stern_takes_post_falloff_damage() {
  * ====================================================================== */
 
 #[test]
-#[ignore = "AI friendly-fires: gunboat at cell 4 fires at scout at cell 1 because \
-            decide_enemy_action doesn't filter same-faction targets. See task #49. \
-            Un-ignore once the AI / resolve_targeting fix lands."]
 fn scenario_b_strong_bow_soaks_to_zero() {
     let mut board = demo_board(LaneEnd::Aft);
     let (damage, lethal) = wire_bus(&mut board);
@@ -255,7 +252,6 @@ fn scenario_b_strong_bow_soaks_to_zero() {
 /// `scenario_b` would conversely route to the stern and lose 2 hull.
 /// The delta would invert. This test catches that.
 #[test]
-#[ignore = "Depends on scenario_b passing — same friendly-fire bug. See task #49."]
 fn orientation_alone_changes_the_outcome() {
     // Scenario A: weak stern facing.
     let mut board_a = demo_board(LaneEnd::Fore);
