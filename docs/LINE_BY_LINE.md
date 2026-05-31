@@ -33,6 +33,7 @@ glance what is documented vs. what is pending.*
 - [`src/runs.rs`](#srcrunsrs) — Phase 3 run-loop: encounter outcome, run advancement, board materialization, placeholder sectors
 - [`src/meta.rs`](#srcmetars) — cross-run meta-progression: salvage math, unlock-threshold ladder, persistence
 - [`src/save.rs`](#srcsavers) — per-run save/load (atomic JSON write), `SaveError`
+- [`src/ship_design.rs`](#srcship_designrs) — loft-editor `.json` asset format (the data half of the render-pipeline pivot)
 - [`src/gfx.rs`](#srcgfxrs) — wgpu state, four pipelines, virtual-res offscreen + integer-scale blit
 - [`src/atlas.rs`](#srcatlasrs) — procedural 256×256 sprite atlas
 - [`src/hud.rs`](#srchudrs) — scene compositor (DrawCommand list)
@@ -4325,6 +4326,68 @@ Game-Over, and does **not** touch the meta save. `tmp_path_for` computes the sam
 **Cross-references:** Called by the bin at startup (`load_from_disk`), on turn-commit /
 transitions (`save_to_disk`), and on run end (`delete_save`). The end-of-run sequence pairs
 with [`meta.rs`](#srcmetars)'s `accumulate_into_meta` + `MetaProgression::save_to_disk`.
+
+---
+
+## `src/ship_design.rs`
+
+*The serde shape for the loft editor's ship-design `.json` — the **data half of the
+render-pipeline pivot** (see [`RENDER_PIPELINE.md`](RENDER_PIPELINE.md)). It's the Rust mirror
+of the tool's `collectDesign()` payload, so the engine can loft a ship from design data
+instead of baked sprite PNGs. Pure data, no rendering. Full companion at
+[`docs/MODULES/ship_design.md`](MODULES/ship_design.md).*
+
+**Mirrors:** the loft editor's `collectDesign()` (`docs/broadside-loft-editor.html:718`), not
+a TS engine file — this is a new asset format. **Intent:** byte-stable round-trip with the
+tool's saved `.json` (every type choice serves that).
+
+### `struct Point2` (src/ship_design.rs:95)
+
+**Intent:** A 2-D point stored as a **bare `[x, y]` array** — `#[serde(transparent)]` over
+`[f64; 2]` so `plan`/`section`/`heightProfile` round-trip byte-for-byte with the tool's
+`[[x, hw], ...]` (not `{x,y}` objects). The two components mean different things per list, so
+named `.x()`/`.y()` accessors (src/ship_design.rs:101, 108) carry the semantics: plan =
+x-along-length / half-width; section = z-half-width / y-height (top→belly); heightProfile =
+x-along-length / height-multiplier. **Worked example:** `point2_is_a_bare_array_on_the_wire`
+(src/ship_design.rs:317).
+
+### `struct Resolution` / `Settings` / `Grade` (src/ship_design.rs:127, 136, 164)
+
+`Resolution{w,h}` (target sprite px); `Settings` (camera pitch/yaw/zoom, hull stretch/hscale,
+`sup` superstructure toggle, `greeb` density, posterize `bands`, light `laz`/`lel`, `res`);
+`Grade` (the HSV/contrast/gamma uniforms — `hue` is the 0..1 slider/360 form, matching
+[`RENDER_PIPELINE.md`](RENDER_PIPELINE.md)'s Stage 4). Field names match the JSON keys verbatim.
+
+### `struct ShipDesign` (src/ship_design.rs:181)
+
+**Intent:** The complete parsed design (`format`, `version`, `plan`, `section`,
+`height_profile`, `settings`, `grade`). The load-bearing field is
+**`height_profile: Option<Vec<Point2>>`** (src/ship_design.rs:197) with `#[serde(default,
+rename = "heightProfile")]` and **deliberately no `skip_serializing_if`** — the tool always
+writes the key (literal `null` = "flat 1.0 height"), so `None` must round-trip **as JSON
+`null`**, not be omitted (mirrors the `SubsystemDef::unlock_salvage` `number|null` precedent).
+The `default` is defensive for a future tool that drops the key. **Worked examples:**
+`height_profile_none_round_trips_as_json_null` (src/ship_design.rs:338),
+`missing_height_profile_key_defaults_to_none` (src/ship_design.rs:366).
+
+### `enum DesignError` + `impl ShipDesign` (src/ship_design.rs:208, 240)
+
+`DesignError` is `Io`/`Parse` (same shape as [`catalog::LoadError`](#srccatalogrs) /
+[`save::SaveError`](#srcsavers)). The impl: `load_from_json` (bytes), `load_from_path`,
+`to_json_pretty` (2-space indent matching the tool), plus the **parse-don't-enforce**
+predicates `has_expected_format` (is `"broadside-ship"`?) and `is_known_version` (is v1?). The
+through-line is **version tolerance**: any `format`/`version` parses (serde ignores unknown
+fields), and the predicates let the *caller* decide whether to warn/migrate/bail rather than
+hard-failing on the schema tag — so a v2 file loads its v1 subset. Constants `EXPECTED_FORMAT`
+/ `KNOWN_VERSION` mirror the tool's `DESIGN_VERSION`.
+
+**Cross-references:** The asset format the 3D render path consumes — POC #109, then the
+in-engine lift; see [`RENDER_PIPELINE.md`](RENDER_PIPELINE.md) phased-plan step 4. **Worked
+examples:** `parses_the_sample_design` (src/ship_design.rs:298, the default dagger),
+`round_trips_through_serialize` (src/ship_design.rs:330),
+`future_version_still_parses_but_flags_unknown` (src/ship_design.rs:375),
+`missing_required_field_is_a_parse_error` (src/ship_design.rs:410, dropping `settings` rejects
+— the loft path needs real camera/res values).
 
 ---
 
