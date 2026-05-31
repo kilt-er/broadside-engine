@@ -147,6 +147,49 @@ pub fn mirror_horizontal(src: &SpriteImage) -> SpriteImage {
     }
 }
 
+/// Return a 90° clockwise-rotated copy of `src`. Output dimensions swap
+/// (`width` ↔ `height`). RGBA8 in / RGBA8 out.
+///
+/// Mapping in image (y-down) coordinates:
+/// ```text
+///   src[sx, sy]  →  dst[dh - 1 - sy, sx]   (with dw = src.height, dh = src.width)
+/// ```
+/// So the source's top edge becomes the destination's right edge, and a
+/// "bow at +x" silhouette in the source becomes a "bow at -y" silhouette
+/// in the destination. The renderer's broadside chevron overlay reads
+/// the bow direction explicitly, so the absolute rotation handedness
+/// isn't visually load-bearing — `rotate_90_cw` was chosen for the
+/// alignment with `image::imageops::rotate90`'s conventions per the
+/// brief.
+///
+/// Used by [`crate::gfx::Gfx::try_load_ship_sprites`] as step 2 of the
+/// `broadside_top` fallback chain: explicit → rotate90(bowOnFore_top)
+/// → procedural. `broadside_side` has NO auto-derivation — it's a
+/// front-face view of the hull (beam × height) that can't be
+/// reconstructed from the side or top of a bow-on sprite.
+pub fn rotate_90_cw(src: &SpriteImage) -> SpriteImage {
+    let sw = src.width as usize;
+    let sh = src.height as usize;
+    let dw = sh;
+    let dh = sw;
+    let mut rgba = vec![0u8; dw * dh * 4];
+    for sy in 0..sh {
+        for sx in 0..sw {
+            let src_p = (sy * sw + sx) * 4;
+            // 90° CW in y-down: dst x = dw - 1 - sy, dst y = sx.
+            let dx = dw - 1 - sy;
+            let dy = sx;
+            let dst_p = (dy * dw + dx) * 4;
+            rgba[dst_p..dst_p + 4].copy_from_slice(&src.rgba[src_p..src_p + 4]);
+        }
+    }
+    SpriteImage {
+        width: dw as u32,
+        height: dh as u32,
+        rgba,
+    }
+}
+
 /// Read-only lookup of which ship sprites are currently uploaded.
 /// `hud::compose_scene` queries this to decide whether to emit a textured
 /// or procedural silhouette per ship. `Gfx` implements it over its own
@@ -251,6 +294,77 @@ mod tests {
             2, 2, 2, 2,    1, 1, 1, 1,   // row 0 reversed
             4, 4, 4, 4,    3, 3, 3, 3,   // row 1 reversed
         ]);
+    }
+
+    #[test]
+    fn rotate_90_cw_swaps_dimensions() {
+        let src = SpriteImage {
+            width: 4,
+            height: 2,
+            rgba: vec![0; 4 * 2 * 4],
+        };
+        let r = rotate_90_cw(&src);
+        assert_eq!(r.width, 2, "rotated width = source height");
+        assert_eq!(r.height, 4, "rotated height = source width");
+        assert_eq!(r.rgba.len(), src.rgba.len());
+    }
+
+    #[test]
+    fn rotate_90_cw_maps_top_left_to_top_right() {
+        // 2×2 source: row0 = [A B], row1 = [C D]. After 90° CW:
+        //   col 0 (top of rotated, leftmost) = C, A (reading top→bottom)
+        //   col 1 (right of rotated, rightmost) = D, B
+        // Output is 2 wide × 2 tall, so:
+        //   row 0 (top): [C A]   (was leftmost column of src, top→bottom)
+        //   row 1 (bot): [D B]   (was rightmost column of src, top→bottom)
+        let src = SpriteImage {
+            width: 2,
+            height: 2,
+            rgba: vec![
+                10, 10, 10, 10,   20, 20, 20, 20,   // row 0: A B
+                30, 30, 30, 30,   40, 40, 40, 40,   // row 1: C D
+            ],
+        };
+        let r = rotate_90_cw(&src);
+        assert_eq!(r.width, 2);
+        assert_eq!(r.height, 2);
+        assert_eq!(r.rgba, vec![
+            30, 30, 30, 30,   10, 10, 10, 10,   // row 0: C A
+            40, 40, 40, 40,   20, 20, 20, 20,   // row 1: D B
+        ]);
+    }
+
+    #[test]
+    fn rotate_90_cw_four_times_is_identity() {
+        // Property: rotating any sprite 90° four times returns it
+        // bit-exact to the source (both dims AND bytes).
+        let src = SpriteImage {
+            width: 3,
+            height: 4,
+            rgba: (0..(3 * 4 * 4) as u8).collect(),
+        };
+        let r1 = rotate_90_cw(&src);
+        let r2 = rotate_90_cw(&r1);
+        let r3 = rotate_90_cw(&r2);
+        let r4 = rotate_90_cw(&r3);
+        assert_eq!(r4.width, src.width);
+        assert_eq!(r4.height, src.height);
+        assert_eq!(r4.rgba, src.rgba);
+    }
+
+    #[test]
+    fn rotate_90_cw_on_frigate_top_dimensions_match_sprite_spec() {
+        // SPRITE_SPEC says Frigate bowOnFore_top is 120×60 and
+        // broadside_top is 60×120. Rotating fore_top should give
+        // broadside_top's dimensions.
+        let src = SpriteImage {
+            width: 120,
+            height: 60,
+            rgba: vec![0; 120 * 60 * 4],
+        };
+        let r = rotate_90_cw(&src);
+        assert_eq!(r.width, 60);
+        assert_eq!(r.height, 120);
     }
 
     #[test]

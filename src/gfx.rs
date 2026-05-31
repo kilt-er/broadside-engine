@@ -729,20 +729,29 @@ impl Gfx {
     /// procedural silhouette renders as the fallback). Each successfully
     /// loaded sprite is keyed by the same slug the SPRITE_SPEC defines.
     ///
-    /// **BowOnAft fallback:** when a `<class>_bowOnAft_<view>.png` file is
-    /// missing AND a `<class>_bowOnFore_<view>.png` file exists, the
-    /// loader generates the aft sprite by horizontally mirroring the
-    /// fore sprite and uploads that as the aft texture. Bow-on ships
-    /// are symmetric across the fore/aft flip, so the mirror reads as
-    /// authentic art. Explicit `bowOnAft` PNGs take precedence over
-    /// the auto-mirror — bruce can override per-class if a ship has
-    /// directional asymmetry (e.g. an aft-mounted nacelle).
+    /// **Fallback chain** (applied in order per `<class>_<stance>_<view>`
+    /// slot, fall through on miss):
     ///
-    /// `Broadside` is unaffected — that stance is its own sprite.
+    /// | Slot                       | 1. Explicit | 2. Derived | 3. Procedural |
+    /// |----------------------------|:-----------:|:----------:|:-------------:|
+    /// | `<class>_bowOnFore_*.png`  | ✓           | —          | renderer side |
+    /// | `<class>_bowOnAft_*.png`   | ✓           | `mirror_horizontal(bowOnFore_<view>)` | renderer side |
+    /// | `<class>_broadside_top.png`| ✓           | `rotate_90_cw(bowOnFore_top)` | renderer side |
+    /// | `<class>_broadside_side.png` | ✓         | — (no derivation possible) | renderer side |
+    ///
+    /// Net result: bruce paints just `bowOnFore_side.png` and
+    /// `bowOnFore_top.png` for each class; the loader derives 3 of the
+    /// other 4 sprite slots. `broadside_side` is the only slot that
+    /// stays procedural until painted explicitly (it's an end-on view
+    /// of the hull that can't be reconstructed from the other faces).
+    ///
+    /// Explicit files always take precedence over derivations. Bruce
+    /// can paint asymmetric ships per-class by dropping explicit
+    /// bowOnAft / broadside_top PNGs.
     ///
     /// Returns the count of sprites loaded so the caller can log it.
     pub fn try_load_ship_sprites(&mut self, asset_dir: &std::path::Path) -> usize {
-        use crate::sprites::{load_sprite, mirror_horizontal, SpriteStance, SpriteView};
+        use crate::sprites::{load_sprite, mirror_horizontal, rotate_90_cw, SpriteStance, SpriteView};
         // Invalidate cached bind groups — the underlying texture views
         // may have been replaced.
         self.ship_bg_cache.clear();
@@ -751,15 +760,16 @@ impl Gfx {
         let mut loaded = 0;
         for class in &classes {
             for &view in &views {
-                // Always try the directly-painted file for each of the
-                // three stances. Remember the bowOnFore image in case
-                // we need it to derive a fallback bowOnAft.
+                // Step 1: bowOnFore — always explicit-only. Remember
+                // the image; we'll derive bowOnAft + (for top) broadside
+                // from it.
                 let fore = load_sprite(asset_dir, class, SpriteStance::BowOnFore, view);
                 if let Some(img) = fore.as_ref() {
                     let slug = format!("{}_{}_{}", class, SpriteStance::BowOnFore.slug(), view.slug());
                     self.upload_ship_sprite(&slug, img);
                     loaded += 1;
                 }
+                // Step 2: bowOnAft = explicit, else mirror(bowOnFore).
                 let aft_explicit = load_sprite(asset_dir, class, SpriteStance::BowOnAft, view);
                 match (aft_explicit, fore.as_ref()) {
                     (Some(img), _) => {
@@ -768,22 +778,39 @@ impl Gfx {
                         loaded += 1;
                     }
                     (None, Some(fore_img)) => {
-                        // Derive aft from horizontally-mirrored fore.
                         let mirrored = mirror_horizontal(fore_img);
                         let slug = format!("{}_{}_{}", class, SpriteStance::BowOnAft.slug(), view.slug());
                         log::debug!("sprite: deriving {} from horizontally-mirrored bowOnFore", slug);
                         self.upload_ship_sprite(&slug, &mirrored);
                         loaded += 1;
                     }
-                    (None, None) => {
-                        // Neither fore nor aft painted — leave both
-                        // slots empty; the procedural silhouette covers.
-                    }
+                    (None, None) => {}
                 }
-                if let Some(img) = load_sprite(asset_dir, class, SpriteStance::Broadside, view) {
-                    let slug = format!("{}_{}_{}", class, SpriteStance::Broadside.slug(), view.slug());
-                    self.upload_ship_sprite(&slug, &img);
-                    loaded += 1;
+                // Step 3: broadside.
+                //
+                // - For `Top`: explicit → rotate90(bowOnFore_top) → none.
+                // - For `Side`: explicit → none (no derivation possible).
+                let bs_explicit = load_sprite(asset_dir, class, SpriteStance::Broadside, view);
+                match (bs_explicit, view, fore.as_ref()) {
+                    (Some(img), _, _) => {
+                        let slug = format!("{}_{}_{}", class, SpriteStance::Broadside.slug(), view.slug());
+                        self.upload_ship_sprite(&slug, &img);
+                        loaded += 1;
+                    }
+                    (None, SpriteView::Top, Some(fore_top)) => {
+                        let rotated = rotate_90_cw(fore_top);
+                        let slug = format!("{}_{}_{}", class, SpriteStance::Broadside.slug(), view.slug());
+                        log::debug!("sprite: deriving {} from rotate90(bowOnFore_top)", slug);
+                        self.upload_ship_sprite(&slug, &rotated);
+                        loaded += 1;
+                    }
+                    _ => {
+                        // No explicit broadside, and either:
+                        //  - view==Side (no derivation defined), or
+                        //  - view==Top but no bowOnFore_top to rotate.
+                        // Leave the slot empty; the procedural
+                        // silhouette covers it.
+                    }
                 }
             }
         }

@@ -83,23 +83,36 @@ The PNGs should have a transparent background; the bow direction (for
 BowOn variants) is encoded in the sprite asymmetry — paint the bow at the
 fore end of `bowOnFore_*.png`, at the aft end of `bowOnAft_*.png`.
 
-### BowOnAft fallback: paint half the files
+### Fallback chain: paint just `bowOnFore_*.png`
 
-You only need to paint `bowOnFore_*.png`. If `bowOnAft_<view>.png` is
-missing, the renderer auto-generates it by horizontally mirroring the
-matching `bowOnFore` file at load time. Two cases:
+You only need to paint **two PNGs per class**:
+`<class>_bowOnFore_side.png` and `<class>_bowOnFore_top.png`. The
+loader derives 3 of the other 4 sprite slots at load time. The full
+chain per slot (in priority order):
 
-- **Drop only `bowOnFore_side.png` + `bowOnFore_top.png`** for a class
-  → the loader fills in `bowOnAft_side` + `bowOnAft_top` from
-  horizontal mirrors of the fore files. This is the common case;
-  bow-on ships are symmetric across the fore/aft flip.
-- **Drop both `bowOnFore_*` AND `bowOnAft_*`** if a class has
-  directional asymmetry (e.g. an aft-mounted nacelle that shouldn't
-  appear at the bow when mirrored). Explicit `bowOnAft` PNGs take
-  precedence over the auto-mirror.
+| Slot                          | 1. Explicit | 2. Derived from                          | 3. Procedural |
+|-------------------------------|:-----------:|:-----------------------------------------|:-------------:|
+| `<class>_bowOnFore_*.png`     | yes         | —                                        | yes           |
+| `<class>_bowOnAft_*.png`      | yes         | `mirror_horizontal(bowOnFore_<view>)`    | yes           |
+| `<class>_broadside_top.png`   | yes         | `rotate_90_cw(bowOnFore_top)` (dims swap) | yes           |
+| `<class>_broadside_side.png`  | yes         | — (no derivation defined)                 | yes           |
 
-`broadside_*.png` is unaffected — that stance is its own sprite and is
-not derived from the bow-on files.
+Net result: bruce paints just two files per class and the engine
+produces five of the six views automatically. `broadside_side` is
+the one slot with no auto-derivation — it's an end-on view of the
+hull (front face, beam × height) that can't be reconstructed from
+the side or top of a bow-on sprite. Until painted explicitly, it
+renders as the procedural silhouette rectangle.
+
+**Explicit overrides always win.** Drop a real `bowOnAft_*.png` or
+`broadside_top.png` if a class has directional asymmetry (e.g. an
+aft-mounted nacelle that shouldn't appear at the bow when mirrored;
+or a broadside silhouette that should look different from the
+rotated top view).
+
+`rotate_90_cw` note: rotating `bowOnFore_top` (120×60 for Frigate)
+swaps the dimensions to 60×120 — matching the broadside_top size
+listed in the "Per-sprite PNG conventions" table above.
 
 ## Reference renders
 
