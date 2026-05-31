@@ -16,7 +16,8 @@
 //! | `Tab` | `ReorientFlip` | Queue synthetic `__reorient_flip` |
 //! | `V` | `Vent` | Queue synthetic `__vent` |
 //! | `R` / `Space` | `CommitTurn` | Run `resolve_round`; re-renders next frame |
-//! | `Enter` | `Restart` | Reset the board to its initial state (also the only key accepted while the win/lose overlay is showing) |
+//! | `Enter` | `Restart` | Reset the board to its initial state (also the only key accepted while a run-end overlay is showing) |
+//! | `1` / `2` / `3` (overloaded) | Path choice | While the EncounterComplete overlay is up: 1 = repair (+2 hull), 2 = upgrade (placeholder), 3 = continue to next encounter |
 //! | `[` / `]` | rotate camera | Cycle through `[0, 15, 30, 45, 60, 75, 90]°` |
 //! | `Esc` | exit | Close the window |
 //!
@@ -44,7 +45,13 @@ use winit::window::{Window, WindowId};
 use broadside_engine::cards::PlayResult;
 use broadside_engine::geometry::default_shield_profile;
 use broadside_engine::gfx::{Gfx, VIRTUAL_H, VIRTUAL_W};
-use broadside_engine::hud::{self, win_state, TweenState, WinState};
+use broadside_engine::hud::{
+    self, push_between_encounter_overlay, win_state, BetweenEncounterChoice, TweenState, WinState,
+};
+use broadside_engine::runs::{
+    advance_after_win, build_encounter_board, current_encounter, encounter_outcome, fallback_ship_for_spawn,
+    mark_defeated, placeholder_sectors, AdvanceResult, EncounterOutcome,
+};
 use broadside_engine::input::{
     intent_to_action_id, key_to_intent, synthetic_card_action_id, DemoContent, Intent, Key,
 };
@@ -54,7 +61,7 @@ use broadside_engine::resolve::{
 };
 use broadside_engine::subsystems::{HEAT_SINK, POINT_BLANK_DOCTRINE};
 use broadside_engine::types::{
-    Arc as TArc, Board, EventBus, Faction, LaneEnd, Mount, Orientation, ShieldFace,
+    Arc as TArc, Board, EventBus, Faction, LaneEnd, Mount, Orientation, Run, Sector, ShieldFace,
     ShieldProfile, Ship,
 };
 
@@ -330,6 +337,26 @@ struct TweenAnchor {
     started_at: Instant,
 }
 
+/// Phase 3 demo state machine. The bin transitions between these on
+/// every `apply_intent` call. `Playing` is the normal turn-by-turn
+/// state; the other three are modal overlays that gate input.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DemoState {
+    /// Live encounter — normal apply_intent flow.
+    Playing,
+    /// Last encounter cleared. 1/2/3 chooses repair / upgrade /
+    /// continue. Everything else is swallowed except Esc.
+    EncounterComplete,
+    /// Final encounter of final sector cleared. Enter restarts the
+    /// run from sector 0.
+    RunComplete,
+    /// Player ship destroyed (and not at the encounter-clear screen).
+    /// Enter restarts the run from sector 0. Distinct from
+    /// `WinState::Defeat` (which is per-encounter) — this flips on
+    /// `mark_defeated` and the Run carries the flag forward.
+    RunDefeated,
+}
+
 struct App {
     window: Option<Arc<Window>>,
     gfx: Option<Gfx>,
@@ -342,6 +369,18 @@ struct App {
     /// input mutates the board; the redraw path interpolates `from_cell`
     /// → `ship.cell` over `TWEEN_DURATION_MS` using ease-out quad.
     tween_anchors: HashMap<String, TweenAnchor>,
+    /// The campaign — list of sectors the run progresses through.
+    /// Built once at startup from [`placeholder_sectors`] and not
+    /// rebuilt on Restart.
+    sectors: Vec<Sector>,
+    /// Cross-encounter run state. Defeats / victories flip the
+    /// `defeated` / `victorious` flags. Restart rebuilds a fresh Run
+    /// at sector 0, encounters 0.
+    run: Run,
+    /// Modal-overlay state. `Playing` for the normal turn loop; the
+    /// other variants gate input until the player presses the
+    /// matching exit key.
+    demo_state: DemoState,
     /// Shared audio state. `None` if the `audio` feature is off OR the
     /// audio backend failed to open on startup (headless CI, missing
     /// driver). When present, the bus is re-installed on every
@@ -361,6 +400,15 @@ impl App {
             content: fresh_content(),
             camera_angle_idx: CAMERA_ANGLE_DEFAULT_INDEX,
             tween_anchors: HashMap::new(),
+            sectors: placeholder_sectors(),
+            run: Run {
+                current_sector_idx: 0,
+                salvage: 0,
+                completed_encounters: 0,
+                defeated: false,
+                victorious: false,
+            },
+            demo_state: DemoState::Playing,
             #[cfg(feature = "audio")]
             audio: None,
         };
@@ -376,6 +424,105 @@ impl App {
             }
         }
         app
+    }
+
+    /// Build the player ship for the current run. Cloned from the
+    /// existing demo player so loadout / shield_profile / mounts stay
+    /// consistent across encounters. Subsystems live on `content`, not
+    /// on the ship, so they carry over for free.
+    fn fresh_player_ship() -> Ship {
+        player_ship(0)
+    }
+
+    /// Build the [`Board`] for the current encounter. Uses
+    /// [`build_encounter_board`] with [`fallback_ship_for_spawn`] for
+    /// class-id resolution — content's class catalog isn't required
+    /// for the demo to function. Returns `None` if the run has no
+    /// current encounter (defeated, victorious, or sector index past
+    /// the end of `self.sectors`).
+    fn build_current_board(&self) -> Option<Board> {
+        let enc = current_encounter(&self.run, &self.sectors)?;
+        let player = Self::fresh_player_ship();
+        Some(build_encounter_board(enc, player, |spawn| Some(fallback_ship_for_spawn(spawn))))
+    }
+
+    /// Reset run + content + board to a fresh sector-0 / encounter-0
+    /// start. Called on Restart from `RunComplete` / `RunDefeated`
+    /// overlays. Also re-installs audio on the new board's EventBus.
+    fn restart_run(&mut self) {
+        self.run = Run {
+            current_sector_idx: 0,
+            salvage: 0,
+            completed_encounters: 0,
+            defeated: false,
+            victorious: false,
+        };
+        self.content = fresh_content();
+        self.board = self
+            .build_current_board()
+            .unwrap_or_else(render_example_board);
+        self.demo_state = DemoState::Playing;
+        self.tween_anchors.clear();
+        self.reinstall_audio();
+    }
+
+    /// React to an `EncounterComplete` 1/2/3 choice. Repair applies
+    /// a small hull-restore on the player; upgrade is a placeholder
+    /// (no-op); continue advances the run. Returns true if the
+    /// caller should request_redraw.
+    fn apply_path_choice(&mut self, choice: Key) -> bool {
+        match choice {
+            Key::D1 => {
+                // Repair: restore up to +2 hull on the player.
+                if let Some(player) = self
+                    .board
+                    .cells
+                    .iter_mut()
+                    .flatten()
+                    .find(|s| s.faction == Faction::Player)
+                {
+                    let restored = (player.hull + 2).min(player.max_hull);
+                    log::info!("repair: hull {} -> {}", player.hull, restored);
+                    player.hull = restored;
+                }
+                // Stays in EncounterComplete — player picks again
+                // or presses 3 to continue.
+                true
+            }
+            Key::D2 => {
+                // Upgrade: placeholder. Future: spend salvage on a
+                // subsystem install. For now just log.
+                log::info!("upgrade: placeholder (not yet wired)");
+                true
+            }
+            Key::D3 => {
+                // Continue: advance the run.
+                match advance_after_win(&mut self.run, &self.sectors) {
+                    AdvanceResult::NextEncounter | AdvanceResult::NextSector => {
+                        if let Some(next) = self.build_current_board() {
+                            self.board = next;
+                            self.demo_state = DemoState::Playing;
+                            self.tween_anchors.clear();
+                            self.reinstall_audio();
+                        } else {
+                            // Shouldn't happen — advance_after_win
+                            // said there's another encounter, but
+                            // current_encounter says no. Defensive
+                            // fall-back to RunComplete.
+                            self.demo_state = DemoState::RunComplete;
+                        }
+                    }
+                    AdvanceResult::Victorious => {
+                        self.demo_state = DemoState::RunComplete;
+                    }
+                    AdvanceResult::AlreadyEnded => {
+                        // No-op; redraw won't change anything.
+                    }
+                }
+                true
+            }
+            _ => false,
+        }
     }
 
     /// Re-install audio hook subscriptions on the current `self.board.bus`.
@@ -530,16 +677,45 @@ impl ApplicationHandler for App {
                     return;
                 }
                 let Some(key) = keycode_to_key(code) else { return };
-                // When the game has ended (defeat/victory), only Enter is
-                // accepted — restart. Every other key is swallowed so the
-                // overlay reads as a modal screen.
-                if win_state(&self.board) != WinState::Playing && key != Key::Enter {
+
+                // Modal-overlay states gate input. Phase 3 introduced
+                // EncounterComplete / RunComplete / RunDefeated; each
+                // accepts only a small key set, everything else is
+                // swallowed.
+                match self.demo_state {
+                    DemoState::EncounterComplete => {
+                        if matches!(key, Key::D1 | Key::D2 | Key::D3) {
+                            let changed = self.apply_path_choice(key);
+                            if changed {
+                                if let Some(w) = self.window.as_ref() { w.request_redraw(); }
+                            }
+                        }
+                        return;
+                    }
+                    DemoState::RunComplete | DemoState::RunDefeated => {
+                        if key == Key::Enter {
+                            self.restart_run();
+                            if let Some(w) = self.window.as_ref() { w.request_redraw(); }
+                        }
+                        return;
+                    }
+                    DemoState::Playing => {}
+                }
+
+                // Defeat-mid-encounter still goes through the existing
+                // Phase 1 path (apply_intent's Restart route). When the
+                // player ship is gone but demo_state is still Playing,
+                // we promote to RunDefeated here so the overlay path
+                // takes over.
+                if win_state(&self.board) == WinState::Defeat {
+                    mark_defeated(&mut self.run);
+                    self.demo_state = DemoState::RunDefeated;
+                    if let Some(w) = self.window.as_ref() { w.request_redraw(); }
                     return;
                 }
+
                 // key_to_intent needs the player ship for digit-key mount
                 // resolution; clone the snapshot to keep the borrow short.
-                // After defeat there's no player ship, so synthesize a
-                // minimal one purely for the Enter -> Restart routing.
                 let player_snapshot = self
                     .board
                     .cells
@@ -547,12 +723,8 @@ impl ApplicationHandler for App {
                     .flatten()
                     .find(|s| s.faction == Faction::Player)
                     .cloned();
-                let intent_opt = match player_snapshot {
-                    Some(player) => key_to_intent(key, &player, &self.content),
-                    None if key == Key::Enter => Some(Intent::Restart),
-                    None => None,
-                };
-                let Some(intent) = intent_opt else { return };
+                let Some(player) = player_snapshot else { return };
+                let Some(intent) = key_to_intent(key, &player, &self.content) else { return };
                 // Restart resets both the board AND the content so card
                 // charges + subsystems come back as a fresh game.
                 let is_restart = matches!(intent, Intent::Restart);
@@ -564,15 +736,20 @@ impl ApplicationHandler for App {
                 let prev_visual = self.snapshot_visual_cells(now);
                 let changed = apply_intent(intent, &mut self.board, &mut self.content, &render_example_board);
                 if is_restart {
-                    self.content = fresh_content();
-                    // Restart snaps instantly — no tweening of the
-                    // discarded scene's last frame to the fresh board.
-                    self.tween_anchors.clear();
-                    // The fresh board has a fresh (empty) EventBus —
-                    // re-install audio subscriptions on it.
-                    self.reinstall_audio();
+                    self.restart_run();
                 } else if changed {
                     self.record_tween_anchors(prev_visual, now);
+                    // Post-mutation: did this turn end an encounter?
+                    match encounter_outcome(&self.board) {
+                        EncounterOutcome::Won => {
+                            self.demo_state = DemoState::EncounterComplete;
+                        }
+                        EncounterOutcome::Lost => {
+                            mark_defeated(&mut self.run);
+                            self.demo_state = DemoState::RunDefeated;
+                        }
+                        EncounterOutcome::InProgress => {}
+                    }
                 }
                 if changed {
                     if let Some(w) = self.window.as_ref() {
@@ -587,8 +764,31 @@ impl ApplicationHandler for App {
                 // only `&self`. Then borrow gfx mutably to render.
                 let tween = self.tween_state(now);
                 let active_tween = self.has_active_tween(now);
+                let demo_state = self.demo_state;
+                let sector_idx = self.run.current_sector_idx;
                 let Some(gfx) = self.gfx.as_mut() else { return };
-                let instances = hud::compose_scene_tweened(&self.board, &self.lane, angle, gfx, &tween);
+                let mut instances = hud::compose_scene_tweened(&self.board, &self.lane, angle, gfx, &tween);
+                // Push the appropriate demo-state overlay on top.
+                // Compose no longer auto-pushes — the bin owns the
+                // overlay decision since #77.
+                match demo_state {
+                    DemoState::Playing => {}
+                    DemoState::EncounterComplete => {
+                        push_between_encounter_overlay(
+                            &mut instances,
+                            BetweenEncounterChoice::EncounterComplete { sector_idx },
+                        );
+                    }
+                    DemoState::RunComplete => {
+                        push_between_encounter_overlay(
+                            &mut instances,
+                            BetweenEncounterChoice::RunComplete,
+                        );
+                    }
+                    DemoState::RunDefeated => {
+                        hud::push_end_state_overlay(&mut instances, WinState::Defeat);
+                    }
+                }
                 match gfx.render(&instances) {
                     Ok(()) => {}
                     Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {

@@ -161,10 +161,15 @@ pub fn compose_scene_tweened(
 
     push_view_angle_overlay(&mut out, view_angle_rad);
 
-    // End-state overlay sits on top of everything else (banner reads
-    // even over status badges + ordnance). No-op when state is
-    // Playing.
-    push_end_state_overlay(&mut out, win_state(board));
+    // NOTE: the end-state / between-encounter overlays are NOT pushed
+    // here. The bin (or any other compose-caller) is responsible for
+    // pushing the appropriate overlay on top of this draw list when its
+    // own demo state requires it. Prior history: through #45 this
+    // module auto-pushed `push_end_state_overlay(out, win_state(board))`,
+    // but the Phase 3 between-encounter screens introduced overlay
+    // states beyond what `win_state(&Board)` can describe (e.g.
+    // "encounter complete, sector 2, awaiting path choice"), so the
+    // bin now drives the overlay-vs-no-overlay decision.
 
     out
 }
@@ -1031,20 +1036,85 @@ pub fn push_end_state_overlay(out: &mut Vec<DrawCommand>, state: WinState) {
         tint,
         atlas::cell_uvs(atlas::SOLID_WHITE),
     ));
-    // Centered banner text. Each character is a 5x7 bitmap rendered as
-    // 2-px solid quads ("pixel" = 2 virtual pixels) so it reads at
-    // window scale without needing atlas font glyphs.
-    let pixel = 4.0; // size of one font "pixel" in virtual pixels
+    push_centered_banner(out, banner, VIRTUAL_H as f32 / 2.0, 4.0);
+}
+
+/// Centered single-line banner using the inline 5×7 font. `pixel` is
+/// the size of one font "pixel" in virtual pixels (typically 4 for
+/// title-style banners, 2 for body text). `y` is the vertical center
+/// of the rendered glyph row.
+fn push_centered_banner(out: &mut Vec<DrawCommand>, banner: &str, y_center: f32, pixel: f32) {
+    use crate::gfx::VIRTUAL_W;
     let glyph_w_px = 5.0 * pixel;
     let glyph_h_px = 7.0 * pixel;
     let space_px = pixel;
     let advance = glyph_w_px + space_px;
     let total_w: f32 = banner.len() as f32 * advance - space_px;
     let start_x = (VIRTUAL_W as f32 - total_w) / 2.0;
-    let y = VIRTUAL_H as f32 / 2.0 - glyph_h_px / 2.0;
+    let y = y_center - glyph_h_px / 2.0;
     for (i, ch) in banner.chars().enumerate() {
         let x = start_x + i as f32 * advance;
         push_glyph_5x7(out, ch, x, y, pixel, WHITE);
+    }
+}
+
+/// Per-Phase-3 demo state for between-encounter screens.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BetweenEncounterChoice {
+    /// Encounter just cleared. Player picks 1/2/3 (repair / upgrade /
+    /// continue). `sector_idx` is the run's CURRENT sector index
+    /// (zero-based); displayed as sector_idx+1 in the banner.
+    EncounterComplete { sector_idx: usize },
+    /// Final encounter of final sector cleared. Player won the run.
+    /// Distinct from `WinState::Victory` (which fires on any single
+    /// encounter win) — this is for the campaign-end overlay only.
+    RunComplete,
+}
+
+/// Render the between-encounter overlay. Three-line layout:
+///   "ENCOUNTER COMPLETE - SECTOR N"
+///   ""
+///   "1 REPAIR    2 UPGRADE    3 CONTINUE"
+///
+/// For [`BetweenEncounterChoice::RunComplete`] renders a "RUN COMPLETE"
+/// banner plus "PRESS ENTER TO RESTART" subtext, similar tint to the
+/// existing victory overlay.
+///
+/// No-op when neither state applies — the bin should only call this
+/// while between-encounter or run-complete state is active.
+pub fn push_between_encounter_overlay(
+    out: &mut Vec<DrawCommand>,
+    choice: BetweenEncounterChoice,
+) {
+    use crate::gfx::{VIRTUAL_H, VIRTUAL_W};
+    let center_x = VIRTUAL_W as f32 / 2.0;
+    let center_y = VIRTUAL_H as f32 / 2.0;
+    let tint = match choice {
+        BetweenEncounterChoice::EncounterComplete { .. } => [0.10, 0.20, 0.35, 0.65],
+        BetweenEncounterChoice::RunComplete => VICTORY_TINT,
+    };
+    // Full-canvas tinted overlay.
+    push_sprite(out, SpriteInstance::axis_aligned(
+        [center_x, center_y],
+        [center_x, center_y],
+        tint,
+        atlas::cell_uvs(atlas::SOLID_WHITE),
+    ));
+
+    match choice {
+        BetweenEncounterChoice::EncounterComplete { sector_idx } => {
+            // Banner row: "ENCOUNTER COMPLETE - SECTOR N" at y_center - 60.
+            let pixel = 3.0;
+            let sector_num = sector_idx + 1;
+            let banner = format!("ENCOUNTER COMPLETE - SECTOR {}", sector_num);
+            push_centered_banner(out, &banner, center_y - 60.0, pixel);
+            // Choice row: "1 REPAIR    2 UPGRADE    3 CONTINUE" at y_center + 20.
+            push_centered_banner(out, "1 REPAIR  2 UPGRADE  3 CONTINUE", center_y + 20.0, pixel);
+        }
+        BetweenEncounterChoice::RunComplete => {
+            push_centered_banner(out, "RUN COMPLETE", center_y - 30.0, 5.0);
+            push_centered_banner(out, "PRESS ENTER TO RESTART", center_y + 30.0, 3.0);
+        }
     }
 }
 
@@ -1069,15 +1139,29 @@ fn push_glyph_5x7(
         'D' => [0b11110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b11110],
         'E' => [0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b11111],
         'F' => [0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b10000],
+        'G' => [0b01110, 0b10001, 0b10000, 0b10111, 0b10001, 0b10001, 0b01110],
         'I' => [0b11111, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b11111],
+        'L' => [0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b11111],
+        'M' => [0b10001, 0b11011, 0b10101, 0b10001, 0b10001, 0b10001, 0b10001],
         'N' => [0b10001, 0b11001, 0b10101, 0b10011, 0b10001, 0b10001, 0b10001],
         'O' => [0b01110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110],
         'P' => [0b11110, 0b10001, 0b10001, 0b11110, 0b10000, 0b10000, 0b10000],
         'R' => [0b11110, 0b10001, 0b10001, 0b11110, 0b10100, 0b10010, 0b10001],
         'S' => [0b01111, 0b10000, 0b10000, 0b01110, 0b00001, 0b00001, 0b11110],
         'T' => [0b11111, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100],
+        'U' => [0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110],
         'V' => [0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01010, 0b00100],
         'Y' => [0b10001, 0b10001, 0b01010, 0b00100, 0b00100, 0b00100, 0b00100],
+        '0' => [0b01110, 0b10001, 0b10011, 0b10101, 0b11001, 0b10001, 0b01110],
+        '1' => [0b00100, 0b01100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110],
+        '2' => [0b01110, 0b10001, 0b00001, 0b00010, 0b00100, 0b01000, 0b11111],
+        '3' => [0b11111, 0b00010, 0b00100, 0b00010, 0b00001, 0b10001, 0b01110],
+        '4' => [0b00010, 0b00110, 0b01010, 0b10010, 0b11111, 0b00010, 0b00010],
+        '5' => [0b11111, 0b10000, 0b11110, 0b00001, 0b00001, 0b10001, 0b01110],
+        '6' => [0b00110, 0b01000, 0b10000, 0b11110, 0b10001, 0b10001, 0b01110],
+        '7' => [0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b01000, 0b01000],
+        '8' => [0b01110, 0b10001, 0b10001, 0b01110, 0b10001, 0b10001, 0b01110],
+        '9' => [0b01110, 0b10001, 0b10001, 0b01111, 0b00001, 0b00010, 0b01100],
         '-' => [0b00000, 0b00000, 0b00000, 0b11111, 0b00000, 0b00000, 0b00000],
         ' ' => return,
         _ => return, // unknown char = blank glyph
@@ -1300,20 +1384,52 @@ mod tests {
     }
 
     #[test]
-    fn compose_scene_includes_overlay_on_defeat() {
-        // Empty board → Defeat → compose_scene_with should append the
-        // overlay's tint + banner draws at the end.
+    fn compose_scene_no_longer_auto_pushes_end_state_overlay() {
+        // Through #45 compose_scene auto-pushed push_end_state_overlay
+        // whenever the board was in a non-Playing state. Phase 3
+        // (task #77) moved overlay decisions to the bin so it can pick
+        // between win-state vs. between-encounter vs. run-end overlays.
+        // Verify the auto-push is gone: an empty board (which would
+        // have read as Defeat in the old behavior) produces NO
+        // full-canvas overlay quad.
         let board = empty_board(7);
         let baseline = compose_scene_with(&board, &DEFAULT_LANE, std::f32::consts::FRAC_PI_4, &EmptySpriteRegistry);
-        // Verify at least one large alpha tint sits in the scene (the
-        // overlay quad). Find any sprite whose half_size is the full
-        // canvas — that's the overlay quad.
         let has_overlay_quad = baseline.iter().any(|c| {
             matches!(c, DrawCommand::Sprite(s)
                 if s.half_size[0] >= crate::gfx::VIRTUAL_W as f32 / 2.0
                 && s.half_size[1] >= crate::gfx::VIRTUAL_H as f32 / 2.0)
         });
-        assert!(has_overlay_quad, "defeat scene should include full-canvas overlay quad");
+        assert!(!has_overlay_quad,
+            "compose_scene must NOT auto-push the end-state overlay anymore; \
+             the bin owns that decision since #77");
+    }
+
+    #[test]
+    fn push_between_encounter_overlay_emits_tint_plus_text() {
+        let mut out: Vec<DrawCommand> = Vec::new();
+        push_between_encounter_overlay(
+            &mut out,
+            BetweenEncounterChoice::EncounterComplete { sector_idx: 0 },
+        );
+        assert!(out.len() > 50,
+            "encounter-complete overlay should emit tint + banner + choice glyphs, got {}",
+            out.len());
+        // Tint quad: full-canvas sprite with half_size = canvas/2.
+        let has_overlay_quad = out.iter().any(|c| {
+            matches!(c, DrawCommand::Sprite(s)
+                if s.half_size[0] >= crate::gfx::VIRTUAL_W as f32 / 2.0
+                && s.half_size[1] >= crate::gfx::VIRTUAL_H as f32 / 2.0)
+        });
+        assert!(has_overlay_quad, "must include full-canvas tint quad");
+    }
+
+    #[test]
+    fn push_between_encounter_overlay_run_complete_variant_renders() {
+        let mut out: Vec<DrawCommand> = Vec::new();
+        push_between_encounter_overlay(&mut out, BetweenEncounterChoice::RunComplete);
+        assert!(out.len() > 50,
+            "run-complete overlay should emit tint + banner glyphs, got {}",
+            out.len());
     }
 
     #[test]
