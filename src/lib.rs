@@ -32,6 +32,12 @@
 //!   `Installations` registry + behavioral dispatch for `damage_modifier`
 //!   and `on_turn_end`. `DemoContent` owns an `Installations` and routes
 //!   the two Content trait methods through this module.
+//! - [`classes`] — three placeholder [`types::ClassDef`]s + their
+//!   Signature actions (Vanguard/Overcharge, Wraith/Phase Drift,
+//!   Bulwark/Broadside Volley). `DemoContent::default` registers the
+//!   three Signature actions; the ClassDefs are exposed via
+//!   `placeholder_classes()` for catalog seeding. Input wiring deferred
+//!   per task #62's "just have the Action defs in place."
 //!
 //! Content effect bodies and AI live in sibling modules added by other
 //! teammates.
@@ -39,6 +45,7 @@
 pub mod types;
 pub mod cards;
 pub mod catalog;
+pub mod classes;
 pub mod geometry;
 pub mod input;
 pub mod perspective;

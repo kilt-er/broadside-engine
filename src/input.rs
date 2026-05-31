@@ -365,6 +365,18 @@ impl DemoContent {
         }
     }
 
+    /// Register the three placeholder class Signature actions
+    /// (Overcharge, Phase Drift, Broadside Volley) so the resolver can
+    /// dispatch them when the `Ship::klass` lookup finds a matching
+    /// [`crate::types::ClassDef`]. Task #62 step 2; input wiring for
+    /// "press a key to fire the Signature" is deferred — these defs
+    /// just exist in the action registry, ready for that later step.
+    pub fn register_class_signatures(&mut self) {
+        self.insert(crate::classes::synthetic_overcharge());
+        self.insert(crate::classes::synthetic_phase_drift());
+        self.insert(crate::classes::synthetic_broadside_volley());
+    }
+
     /// Install a subsystem on a ship by id. Phase 2 convenience for the
     /// demo board's startup; the catalog flow will replace this once
     /// `SubsystemDef` is wired through.
@@ -411,14 +423,16 @@ fn card_synthetic_action(card_id: &str) -> Action {
 }
 
 impl Default for DemoContent {
-    /// Pre-loaded with the four synthetics, the three card synthetics
-    /// (task #63), the placeholder card catalog, plus the demo board's
-    /// two mount weapons (`pulse_laser`, `torpedo`). Matches the player
-    /// setup in `bin/broadside.rs::render_example_board`.
+    /// Pre-loaded with the four player-input synthetics, the three card
+    /// synthetics (task #63), the three class Signatures (task #62),
+    /// the placeholder card catalog, plus the demo board's two mount
+    /// weapons (`pulse_laser`, `torpedo`). Matches the player setup in
+    /// `bin/broadside.rs::render_example_board`.
     fn default() -> Self {
         let mut c = Self::empty();
         c.register_synthetics();
         c.register_card_synthetics();
+        c.register_class_signatures();
         c.card_catalog = crate::cards::placeholder_catalog();
 
         // pulse_laser — close-range forward beam.
@@ -755,6 +769,22 @@ mod tests {
         assert!(lines.iter().any(|l| l.contains("R/Space")));
         assert!(lines.iter().any(|l| l.contains("Enter")));
         assert!(lines.iter().any(|l| l.contains("Esc")));
+    }
+
+    /// Task #62 — DemoContent::default registers every placeholder class
+    /// Signature action, so a future "press S to fire signature" intent
+    /// can `content.action(class.signature)` and get back a real Action.
+    #[test]
+    fn demo_content_registers_every_placeholder_signature() {
+        let c = DemoContent::default();
+        for class in crate::classes::placeholder_classes() {
+            assert!(
+                c.action(&class.signature).is_some(),
+                "DemoContent must serve ClassDef::signature `{}` for class `{}`",
+                class.signature,
+                class.id,
+            );
+        }
     }
 
     /// End-to-end sanity: queue a synthetic, run resolve_round, see the
