@@ -515,6 +515,83 @@
         "DEPLOY"
       ],
       "desc": "Deploys a drone hazard that draws enemy fire and ordnance for a few turns. Buys a window to reorient or vent."
+    },
+    {
+      "id": "slip",
+      "name": "Slip",
+      "archetype": "displacement",
+      "heat": 1,
+      "cd": 5,
+      "band": "pointBlank",
+      "pattern": "SELF",
+      "arc": null,
+      "freeplay": true,
+      "effects": [
+        "DISPLACE_TARGET"
+      ],
+      "desc": "Signature (Frigate \"Drifter\"). Trade places with the ship directly ahead — slip past a blocker without spending the turn. Free-fire."
+    },
+    {
+      "id": "ram",
+      "name": "Ram",
+      "archetype": "displacement",
+      "heat": 2,
+      "cd": 6,
+      "band": "pointBlank",
+      "pattern": "SELF",
+      "arc": null,
+      "freeplay": true,
+      "effects": [
+        "DISPLACE_TARGET",
+        "DAMAGE"
+      ],
+      "desc": "Signature (Destroyer \"Ronin\"). Shove the ship ahead, dealing collision damage on impact. Pairs with bow-on stance + Chikara-style collision perks."
+    },
+    {
+      "id": "phase",
+      "name": "Phase",
+      "archetype": "movement",
+      "heat": 1,
+      "cd": 5,
+      "band": "pointBlank",
+      "pattern": "SELF",
+      "arc": null,
+      "freeplay": true,
+      "effects": [
+        "DISPLACE_SELF"
+      ],
+      "desc": "Signature (Phantom \"Shade\"). Pass through the ship directly ahead — SLIP-style movement that ignores occupants and lands in the first free cell. Free-fire."
+    },
+    {
+      "id": "throw",
+      "name": "Throw",
+      "archetype": "displacement",
+      "heat": 2,
+      "cd": 6,
+      "band": "pointBlank",
+      "pattern": "SELF",
+      "arc": null,
+      "freeplay": true,
+      "effects": [
+        "DISPLACE_TARGET",
+        "DAMAGE"
+      ],
+      "desc": "Signature (Monitor \"Anvil\"). Hurl the ship behind you, dealing collision damage on impact. The reversed-stance brawler's stern-arc tool."
+    },
+    {
+      "id": "swap_toss",
+      "name": "Swap Toss",
+      "archetype": "displacement",
+      "heat": 2,
+      "cd": 7,
+      "band": "pointBlank",
+      "pattern": "SELF",
+      "arc": null,
+      "freeplay": true,
+      "effects": [
+        "DISPLACE_TARGET"
+      ],
+      "desc": "Signature (Carrier \"Tessen\"). Swap the cells directly fore and aft — multi-target reposition that reliably triggers chain subsystems."
     }
   ],
   "mods": [
@@ -1136,7 +1213,7 @@
         "Railgun Broadside",
         "Grav Snare"
       ],
-      "signature": "Slip — move forward to trade places with the ship directly ahead.",
+      "signature": "slip",
       "passive": null,
       "desc": "The starting hull; a balanced beam + broadside opener with no strong stance bias."
     },
@@ -1153,7 +1230,7 @@
         "Railgun Broadside",
         "Tractor Toss"
       ],
-      "signature": "Ram — move forward to shove the ship ahead, dealing collision damage on impact.",
+      "signature": "ram",
       "passive": null,
       "desc": "Bow-on bruiser built around its strong front and collision damage; Chikara-style collision perks shine."
     },
@@ -1170,7 +1247,7 @@
         "Particle Lance",
         "Blink Drive"
       ],
-      "signature": "Phase — move forward to pass through the ship directly ahead.",
+      "signature": "phase",
       "passive": "When moving, the Phantom advances as far as possible in the chosen direction.",
       "desc": "The only class with a passive layered on the signature; a broadside skirmisher that slips between threats."
     },
@@ -1187,7 +1264,7 @@
         "Beam Cannon",
         "Grav Snare"
       ],
-      "signature": "Throw — move backward to hurl the ship behind you, dealing collision damage.",
+      "signature": "throw",
       "passive": null,
       "desc": "A reversed-stance brawler that fights over its stern, turning displacement into kills."
     },
@@ -1204,7 +1281,7 @@
         "Flak Battery",
         "Missile Salvo"
       ],
-      "signature": "Swap Toss — move into a ship to swap the cells directly fore and aft.",
+      "signature": "swap_toss",
       "passive": null,
       "desc": "Ordnance-heavy broadside hull; multi-target launches reliably trigger chain subsystems."
     }

@@ -416,8 +416,16 @@ fn inflate_effect(v: Value, archetype: &str, heat: i32, action_id: &str) -> Valu
         }
         "DISPLACE_TARGET" => {
             // mode chosen by action id keyword. Default push.
+            //
+            // Class signatures (task #84) extend the keyword set:
+            //   slip       — "trade places with ship ahead" → swap
+            //   swap_toss  — "swap fore + aft cells"         → swap
+            //   throw      — "hurl ship behind, collision"   → push
+            //   ram        — "shove ahead, collision damage" → push (default)
             let id_lower = action_id.to_lowercase();
             let mode = if id_lower.contains("tractor") && id_lower.contains("toss") {
+                "swap"
+            } else if id_lower == "slip" || id_lower == "swap_toss" {
                 "swap"
             } else if id_lower.contains("tractor") || id_lower.contains("pull") {
                 "pull"
@@ -425,6 +433,8 @@ fn inflate_effect(v: Value, archetype: &str, heat: i32, action_id: &str) -> Valu
                 || id_lower.contains("push")
                 || id_lower.contains("toss")
                 || id_lower.contains("snare")
+                || id_lower == "throw"
+                || id_lower == "ram"
             {
                 "push"
             } else {
@@ -434,8 +444,20 @@ fn inflate_effect(v: Value, archetype: &str, heat: i32, action_id: &str) -> Valu
             m.insert("distance".into(), Value::from(2));
         }
         "DISPLACE_SELF" => {
-            m.insert("mode".into(), Value::String("THRUST".into()));
-            m.insert("distance".into(), Value::from(1));
+            // Mode usually defaults to THRUST (one-step move). Class
+            // signature `phase` (#84) specifically says "pass through the
+            // ship directly ahead" — that's the SLIP semantic in the
+            // engine (skip over occupants to land in the first free
+            // cell). Special-case it by id keyword so the canonical
+            // signature dispatches the right movement.
+            let id_lower = action_id.to_lowercase();
+            let (mode, distance) = if id_lower == "phase" {
+                ("SLIP", 2)
+            } else {
+                ("THRUST", 1)
+            };
+            m.insert("mode".into(), Value::String(mode.into()));
+            m.insert("distance".into(), Value::from(distance));
             // direction omitted -> serde defaults to None on the strict
             // shape (preserves orientation-relative semantics).
         }
@@ -667,6 +689,90 @@ mod tests {
                 assert_eq!(*mode, crate::types::DisplaceMode::Push);
             }
             other => panic!("expected push, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn slip_infers_swap() {
+        // Class-signature extension (task #84): id `slip` overrides the
+        // default push for DISPLACE_TARGET. Per the canonical class
+        // signature prose, slip trades places with the ship ahead.
+        let json = serde_json::json!({
+            "meta": { "schema": "x", "lane": [5], "newAxes": [], "bands": ["pointBlank"] },
+            "actions": [{
+                "id": "slip", "name": "Slip",
+                "archetype": "displacement",
+                "heat": 1, "cd": 5, "band": "pointBlank",
+                "pattern": "SELF", "arc": null,
+                "freeplay": true,
+                "effects": ["DISPLACE_TARGET"],
+            }],
+            "mods": [], "subsystems": [], "statuses": [],
+            "enemies": [], "patrols": [],
+        });
+        let cat: Catalog = from_canonical_value(json).expect("parses");
+        match &cat.actions[0].effects[0] {
+            Effect::DISPLACE_TARGET { mode, .. } => {
+                assert_eq!(*mode, crate::types::DisplaceMode::Swap);
+            }
+            other => panic!("expected swap, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn swap_toss_infers_swap() {
+        // Class-signature extension (task #84): id `swap_toss` overrides
+        // the default push. The existing `tractor && toss` rule didn't
+        // match because the new signature id has `swap` instead of
+        // `tractor`. Without this branch the action would push instead
+        // of swapping.
+        let json = serde_json::json!({
+            "meta": { "schema": "x", "lane": [5], "newAxes": [], "bands": ["pointBlank"] },
+            "actions": [{
+                "id": "swap_toss", "name": "Swap Toss",
+                "archetype": "displacement",
+                "heat": 2, "cd": 7, "band": "pointBlank",
+                "pattern": "SELF", "arc": null,
+                "freeplay": true,
+                "effects": ["DISPLACE_TARGET"],
+            }],
+            "mods": [], "subsystems": [], "statuses": [],
+            "enemies": [], "patrols": [],
+        });
+        let cat: Catalog = from_canonical_value(json).expect("parses");
+        match &cat.actions[0].effects[0] {
+            Effect::DISPLACE_TARGET { mode, .. } => {
+                assert_eq!(*mode, crate::types::DisplaceMode::Swap);
+            }
+            other => panic!("expected swap, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn phase_infers_slip_movement_mode() {
+        // Class-signature extension (task #84): id `phase` overrides the
+        // default THRUST for DISPLACE_SELF. Per the canonical class
+        // signature prose, phase passes through the ship ahead — that's
+        // SLIP semantics (skip occupants, land in the first free cell).
+        let json = serde_json::json!({
+            "meta": { "schema": "x", "lane": [5], "newAxes": [], "bands": ["pointBlank"] },
+            "actions": [{
+                "id": "phase", "name": "Phase",
+                "archetype": "movement",
+                "heat": 1, "cd": 5, "band": "pointBlank",
+                "pattern": "SELF", "arc": null,
+                "freeplay": true,
+                "effects": ["DISPLACE_SELF"],
+            }],
+            "mods": [], "subsystems": [], "statuses": [],
+            "enemies": [], "patrols": [],
+        });
+        let cat: Catalog = from_canonical_value(json).expect("parses");
+        match &cat.actions[0].effects[0] {
+            Effect::DISPLACE_SELF { mode, .. } => {
+                assert_eq!(*mode, crate::types::MovementMode::SLIP);
+            }
+            other => panic!("expected SLIP, got {other:?}"),
         }
     }
 

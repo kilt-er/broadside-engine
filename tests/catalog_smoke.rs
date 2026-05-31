@@ -110,18 +110,14 @@ fn catalog_asset_loads_and_ids_are_unique() {
 /// display-name vs action-id drift (the classic "Pulse Laser" string
 /// where "pulse_laser" was meant).
 ///
-/// Task #82 (commit 78d4039) normalized set1/set2 references to action
-/// ids, but the canonical transformer normalizes class signatures
-/// independently (e.g. "Slip — move forward..." -> "slip") and those
-/// normalized signature ids are NOT yet present in `actions[]`. Task
-/// #84 owns the fix (either add Action records for the five class
-/// signatures, or have the transformer auto-mint placeholders).
-/// Un-ignore once #84 lands.
+/// Task #82 normalized set1/set2 references to action ids. Task #84
+/// added the five class-signature Action records (slip/ram/phase/throw/
+/// swap_toss) to canonical `actions[]`, normalized the `signature`
+/// fields in `classes[]` to the matching snake_case ids, and extended
+/// the canonical transformer's id-keyword inference for slip/phase/
+/// swap_toss so the inflated Effects use the right `mode`. With both
+/// landed, this regression test runs in the regular suite.
 #[test]
-#[ignore = "Blocked on task #84: class signature ids (slip/ram/phase/throw/swap_toss) \
-            normalize correctly but don't exist as Action entries in the catalog. \
-            Un-ignore once those Action records are added (or the transformer \
-            auto-mints them)."]
 fn class_loadout_action_ids_all_resolve() {
     assert!(Path::new(CATALOG_PATH).exists());
     let cat = load_from_path(CATALOG_PATH).expect("catalog must parse");
