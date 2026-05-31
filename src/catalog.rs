@@ -137,15 +137,54 @@ pub fn load_from_bytes(bytes: &[u8]) -> Result<Catalog, LoadError> {
 /// `orientation` and `hp_override` come from the spawn (the encounter
 /// author's call), matching [`crate::runs::build_encounter_board`]'s
 /// existing contract.
+///
+/// Tier-1 entry point — see [`enemy_ship_from_catalog_at_tier`] for the
+/// patrol-tier-aware form. Equivalent to passing `patrol_tier = 1`.
 pub fn enemy_ship_from_catalog(catalog: &Catalog, spawn: &ShipSpawn) -> Option<Ship> {
-    let def = catalog.enemies.iter().find(|e| e.id == spawn.class_id)?;
-    Some(ship_from_enemy_def(catalog, def, spawn))
+    enemy_ship_from_catalog_at_tier(catalog, spawn, 1)
 }
 
-/// Materialize a [`Ship`] from a specific [`EnemyDef`] + spawn. Split from
-/// [`enemy_ship_from_catalog`] so tests can drive a hand-built `EnemyDef`
-/// without a whole catalog.
+/// Patrol-tier-aware enemy synthesis. `patrol_tier` is the
+/// [`crate::types::Sector::patrol_tier`] of the encounter being built.
+///
+/// **Difficulty-tier seam (not yet consumed).** The canonical data carries a
+/// `hull5` field — the enemy's effective hull at Patrol 5+ — and the design
+/// escalates difficulty by patrol tier. That mechanic has no consumer yet
+/// (the demo escalates via enemy count + traits), so `patrol_tier` is
+/// currently threaded but not used for stat math: [`select_hull`] returns the
+/// base `hull` at every tier today. The parameter exists so that wiring
+/// tier-scaling later (`patrol_tier ≥ 5 → hull5`, plus `patrol_tier →
+/// Board.patrol` at the encounter-builder level) is a small change inside
+/// [`select_hull`] rather than a signature-breaking retrofit across every
+/// caller. Flagged by reviewer's audit as dormant; deliberately left as a
+/// seam per the lead.
+pub fn enemy_ship_from_catalog_at_tier(
+    catalog: &Catalog,
+    spawn: &ShipSpawn,
+    patrol_tier: u8,
+) -> Option<Ship> {
+    let def = catalog.enemies.iter().find(|e| e.id == spawn.class_id)?;
+    Some(ship_from_enemy_def_at_tier(catalog, def, spawn, patrol_tier))
+}
+
+/// Materialize a [`Ship`] from a specific [`EnemyDef`] + spawn at Patrol
+/// tier 1. Split from [`enemy_ship_from_catalog`] so tests can drive a
+/// hand-built `EnemyDef` without a whole catalog. See
+/// [`ship_from_enemy_def_at_tier`] for the tier-aware form.
 pub fn ship_from_enemy_def(catalog: &Catalog, def: &EnemyDef, spawn: &ShipSpawn) -> Ship {
+    ship_from_enemy_def_at_tier(catalog, def, spawn, 1)
+}
+
+/// Tier-aware materialization. `patrol_tier` flows in through the
+/// difficulty-tier seam documented on [`enemy_ship_from_catalog_at_tier`];
+/// it currently only reaches [`select_hull`], which ignores it pending the
+/// scheduled tier-scaling work.
+pub fn ship_from_enemy_def_at_tier(
+    catalog: &Catalog,
+    def: &EnemyDef,
+    spawn: &ShipSpawn,
+    patrol_tier: u8,
+) -> Ship {
     let name_to_id = action_name_to_id(catalog);
 
     let mounts: Vec<Mount> = def
@@ -181,7 +220,7 @@ pub fn ship_from_enemy_def(catalog: &Catalog, def: &EnemyDef, spawn: &ShipSpawn)
         .filter_map(|t| trait_from_str(t))
         .collect();
 
-    let hull = spawn.hp_override.unwrap_or(def.hull);
+    let hull = spawn.hp_override.unwrap_or_else(|| select_hull(def, patrol_tier));
 
     Ship {
         id: format!("{}@{}", def.id, spawn.cell),
@@ -201,6 +240,22 @@ pub fn ship_from_enemy_def(catalog: &Catalog, def: &EnemyDef, spawn: &ShipSpawn)
         traits,
         klass: Some(def.id.clone()),
     }
+}
+
+/// Select an enemy's effective hull for a patrol tier — the difficulty-tier
+/// seam. **Currently returns `def.hull` at every tier.** When tier-scaling is
+/// scheduled, this is the single place to switch to `def.hull5` at
+/// `patrol_tier >= 5` (the canonical Patrol-5 escalation); every caller
+/// already threads `patrol_tier` here, so no signature changes are needed
+/// then. Kept as a named fn (rather than inlining `def.hull`) precisely so
+/// that future change is one edit.
+fn select_hull(def: &EnemyDef, _patrol_tier: u8) -> i32 {
+    // TODO(broadside-content, difficulty-tier scaling): when wired, return
+    //   if patrol_tier >= 5 { def.hull5 } else { def.hull }
+    // and wire patrol_tier -> Board.patrol at the encounter-builder level.
+    // Reviewer's audit flagged Sector.patrol_tier + hull5 as dormant; this
+    // is the consumer-to-be.
+    def.hull
 }
 
 /// Generic enemy shield: light all-round armour with a soft stern, the
@@ -456,6 +511,37 @@ mod tests {
         let cat = load_from_bytes(MINIMAL_CATALOG_JSON.as_bytes()).expect("parses");
         // MINIMAL_CATALOG_JSON has no enemies[]; any class_id misses.
         assert!(enemy_ship_from_catalog(&cat, &spawn_at("nonexistent", 1)).is_none());
+    }
+
+    #[test]
+    fn patrol_tier_seam_threads_through_without_changing_hull_yet() {
+        // The difficulty-tier seam: patrol_tier is accepted at every entry
+        // point but `select_hull` ignores it today (hull5-at-patrol-5 is
+        // dormant pending the scheduled tier-scaling work). This pins the
+        // current "tier in, base hull out" behaviour so the eventual
+        // tier-math change has a test to flip rather than a silent
+        // behaviour drift. EnemyDef has hull 3 / hull5 6; at every tier we
+        // still expect 3 until the seam is wired.
+        let def = EnemyDef {
+            id: "scaler".into(),
+            name: "Scaler".into(),
+            hull: 3,
+            hull5: 6,
+            traits: vec![],
+            sector: "Test".into(),
+            weapons: vec![],
+        };
+        let cat = load_from_bytes(MINIMAL_CATALOG_JSON.as_bytes()).expect("parses");
+        for tier in [1u8, 3, 5, 9] {
+            let ship = ship_from_enemy_def_at_tier(&cat, &def, &spawn_at("scaler", 2), tier);
+            assert_eq!(
+                ship.hull, 3,
+                "tier {tier}: select_hull still returns base hull (seam present, math dormant)",
+            );
+        }
+        // select_hull is the single switch point for the future change.
+        assert_eq!(select_hull(&def, 1), 3);
+        assert_eq!(select_hull(&def, 5), 3, "dormant: will become hull5 (6) when wired");
     }
 
     #[test]

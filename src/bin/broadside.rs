@@ -56,7 +56,7 @@ use broadside_engine::runs::{
 use broadside_engine::input::{
     intent_to_action_id, key_to_intent, synthetic_card_action_id, DemoContent, Intent, Key,
 };
-use broadside_engine::catalog::{enemy_ship_from_catalog, load_from_path};
+use broadside_engine::catalog::{enemy_ship_from_catalog_at_tier, load_from_path};
 use broadside_engine::perspective::{LaneGeometry, DEFAULT_LANE};
 use broadside_engine::resolve::{
     apply_instant_action, find_player_id, fire_player_queue, run_world_phase, Content,
@@ -488,6 +488,14 @@ impl App {
     ///    typo'd class degrades gracefully instead of crashing.
     fn build_current_board(&self) -> Option<Board> {
         let enc = current_encounter(&self.run, &self.sectors)?;
+        // The current sector's patrol tier feeds the catalog synthesizer's
+        // difficulty-tier seam (hull5-at-patrol-5 is dormant today, but the
+        // tier is threaded so wiring it later is a one-line change).
+        let patrol_tier = self
+            .sectors
+            .get(self.run.current_sector_idx)
+            .map(|s| s.patrol_tier)
+            .unwrap_or(1);
         let player = Self::fresh_player_ship();
         Some(build_encounter_board(enc, player, |spawn| {
             if spawn.class_id == "warlord" {
@@ -495,7 +503,7 @@ impl App {
             }
             self.catalog
                 .as_ref()
-                .and_then(|cat| enemy_ship_from_catalog(cat, spawn))
+                .and_then(|cat| enemy_ship_from_catalog_at_tier(cat, spawn, patrol_tier))
                 .or_else(|| Some(fallback_ship_for_spawn(spawn)))
         }))
     }
