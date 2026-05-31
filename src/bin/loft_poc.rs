@@ -296,10 +296,26 @@ mod math3 {
 
 const LOW_W: u32 = 160;
 const LOW_H: u32 = 100;
-const PITCH_DEG: f32 = 26.0;
+
+/// Default look-down pitch (degrees). UP/DOWN arrows scrub it continuously.
+const DEFAULT_PITCH_DEG: f32 = 26.0;
+/// Auto-orbit yaw speed (degrees/second) when not being dragged. Slow so the
+/// continuous read is easy to judge at every angle.
+const AUTO_YAW_DEG_PER_SEC: f32 = 36.0;
+/// Manual steer rates while an arrow key is held (deg/sec).
+const STEER_YAW_DEG_PER_SEC: f32 = 90.0;
+const STEER_PITCH_DEG_PER_SEC: f32 = 60.0;
+/// Pitch clamp so the camera never crosses the poles (degrees).
+const PITCH_MIN_DEG: f32 = 2.0;
+const PITCH_MAX_DEG: f32 = 88.0;
+
+/// The four canonical stance yaws (degrees) — right / left / fore / aft. These
+/// are *reference snap points only* (press 1–4 to jump to one). The POC's
+/// actual motion model is SMOOTH CONTINUOUS yaw, not stepping between these:
+/// the whole thesis is that live 3D rotates smoothly at every angle for free,
+/// with no sprite interpolation or baked frames.
 const STANCE_YAWS_DEG: [f32; 4] = [28.0, 152.0, 118.0, 298.0];
 const STANCE_NAMES: [&str; 4] = ["right", "left", "fore", "aft"];
-const STANCE_HOLD_SECS: f32 = 1.2;
 
 const LOW_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
@@ -435,10 +451,23 @@ struct Gpu {
     depth_view: wgpu::TextureView,
     post_pipeline: wgpu::RenderPipeline,
     post_bg: wgpu::BindGroup,
-    start: Instant,
-    last_logged: isize,
-    /// `Some(i)` freezes on stance i (arrow-key stepped); `None` auto-spins.
-    manual_stance: Option<usize>,
+
+    // ---- continuous-motion camera state ----
+    /// Current yaw / pitch in degrees, advanced every frame (smooth, live —
+    /// NOT stepped between discrete stances). Yaw auto-orbits unless paused or
+    /// being steered; pitch scrubs with UP/DOWN.
+    yaw_deg: f32,
+    pitch_deg: f32,
+    /// `false` = continuous auto-orbit; `true` = paused (steer-only).
+    paused: bool,
+    /// Held-key steer state (set on press, cleared on release) for smooth
+    /// continuous nudging while a key is down.
+    steer_left: bool,
+    steer_right: bool,
+    steer_up: bool,
+    steer_down: bool,
+    /// Wall-clock of the previous frame, for frame-rate-independent motion.
+    last_frame: Instant,
 }
 
 impl Gpu {
@@ -729,9 +758,14 @@ impl Gpu {
             depth_view,
             post_pipeline,
             post_bg,
-            start: Instant::now(),
-            last_logged: -1,
-            manual_stance: None,
+            yaw_deg: STANCE_YAWS_DEG[0],
+            pitch_deg: DEFAULT_PITCH_DEG,
+            paused: false,
+            steer_left: false,
+            steer_right: false,
+            steer_up: false,
+            steer_down: false,
+            last_frame: Instant::now(),
         }
     }
 
@@ -743,27 +777,43 @@ impl Gpu {
         }
     }
 
-    fn current_stance(&self) -> usize {
-        if let Some(i) = self.manual_stance {
-            i
-        } else {
-            let elapsed = self.start.elapsed().as_secs_f32();
-            ((elapsed / STANCE_HOLD_SECS) as usize) % STANCE_YAWS_DEG.len()
+    /// Advance the live camera angles by the wall-clock delta since the last
+    /// frame — this is the continuous-motion model: smooth yaw/pitch every
+    /// frame, no discrete stance stepping. Manual steer (held arrows) adds to
+    /// the auto-orbit; auto-orbit pauses while steering yaw or when paused.
+    fn advance(&mut self) {
+        let now = Instant::now();
+        let dt = (now - self.last_frame).as_secs_f32().min(0.1); // clamp hitches
+        self.last_frame = now;
+
+        let mut yaw_rate = 0.0;
+        if self.steer_left {
+            yaw_rate -= STEER_YAW_DEG_PER_SEC;
         }
+        if self.steer_right {
+            yaw_rate += STEER_YAW_DEG_PER_SEC;
+        }
+        // Auto-orbit only when not paused and not actively steering yaw.
+        if !self.paused && yaw_rate == 0.0 {
+            yaw_rate = AUTO_YAW_DEG_PER_SEC;
+        }
+        self.yaw_deg = (self.yaw_deg + yaw_rate * dt).rem_euclid(360.0);
+
+        let mut pitch_rate = 0.0;
+        if self.steer_up {
+            pitch_rate += STEER_PITCH_DEG_PER_SEC;
+        }
+        if self.steer_down {
+            pitch_rate -= STEER_PITCH_DEG_PER_SEC;
+        }
+        self.pitch_deg = (self.pitch_deg + pitch_rate * dt).clamp(PITCH_MIN_DEG, PITCH_MAX_DEG);
     }
 
     fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
-        let stance = self.current_stance();
-        if stance as isize != self.last_logged {
-            eprintln!(
-                "[loft_poc] stance: {} ({}\u{b0})",
-                STANCE_NAMES[stance], STANCE_YAWS_DEG[stance]
-            );
-            self.last_logged = stance as isize;
-        }
+        self.advance();
 
-        let yaw = STANCE_YAWS_DEG[stance].to_radians();
-        let pitch = PITCH_DEG.to_radians();
+        let yaw = self.yaw_deg.to_radians();
+        let pitch = self.pitch_deg.to_radians();
         let aspect = LOW_W as f32 / LOW_H as f32;
         let view_proj = math3::camera_view_proj(yaw, pitch, aspect, 1.0);
         let model = math3::rotate_y(0.0);
@@ -876,7 +926,7 @@ struct App {
 impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         let attrs = Window::default_attributes()
-            .with_title("Broadside Loft POC — arrows step stance, else auto-spin (26\u{b0} pitch)")
+            .with_title("Broadside Loft POC — continuous orbit · ←→ yaw · ↑↓ pitch · Space pause · 1-4 snap")
             .with_inner_size(winit::dpi::LogicalSize::new(
                 (LOW_W * 6) as f64,
                 (LOW_H * 6) as f64,
@@ -899,26 +949,44 @@ impl ApplicationHandler for App {
                 event:
                     KeyEvent {
                         physical_key: PhysicalKey::Code(code),
-                        state: ElementState::Pressed,
+                        state,
                         ..
                     },
                 ..
             } => {
                 if let Some(gpu) = self.gpu.as_mut() {
-                    let n = STANCE_YAWS_DEG.len();
+                    let pressed = state == ElementState::Pressed;
                     match code {
-                        KeyCode::ArrowRight => {
-                            let cur = gpu.current_stance();
-                            gpu.manual_stance = Some((cur + 1) % n);
+                        // Held arrows = continuous steer (set the flag; the
+                        // per-frame `advance` integrates it). Steering yaw
+                        // suspends the auto-orbit only while the key is down.
+                        KeyCode::ArrowLeft => gpu.steer_left = pressed,
+                        KeyCode::ArrowRight => gpu.steer_right = pressed,
+                        KeyCode::ArrowUp => gpu.steer_up = pressed,
+                        KeyCode::ArrowDown => gpu.steer_down = pressed,
+                        // Space toggles the auto-orbit on/off (on press only).
+                        KeyCode::Space if pressed => gpu.paused = !gpu.paused,
+                        // 1-4 snap yaw to a canonical stance (reference points,
+                        // not the motion model) and pause so it can be studied.
+                        KeyCode::Digit1 if pressed => {
+                            gpu.yaw_deg = STANCE_YAWS_DEG[0];
+                            gpu.paused = true;
+                            eprintln!("[loft_poc] snap: {} (28\u{b0})", STANCE_NAMES[0]);
                         }
-                        KeyCode::ArrowLeft => {
-                            let cur = gpu.current_stance();
-                            gpu.manual_stance = Some((cur + n - 1) % n);
+                        KeyCode::Digit2 if pressed => {
+                            gpu.yaw_deg = STANCE_YAWS_DEG[1];
+                            gpu.paused = true;
+                            eprintln!("[loft_poc] snap: {} (152\u{b0})", STANCE_NAMES[1]);
                         }
-                        KeyCode::Space => {
-                            // Toggle back to auto-spin.
-                            gpu.manual_stance = None;
-                            gpu.start = Instant::now();
+                        KeyCode::Digit3 if pressed => {
+                            gpu.yaw_deg = STANCE_YAWS_DEG[2];
+                            gpu.paused = true;
+                            eprintln!("[loft_poc] snap: {} (118\u{b0})", STANCE_NAMES[2]);
+                        }
+                        KeyCode::Digit4 if pressed => {
+                            gpu.yaw_deg = STANCE_YAWS_DEG[3];
+                            gpu.paused = true;
+                            eprintln!("[loft_poc] snap: {} (298\u{b0})", STANCE_NAMES[3]);
                         }
                         _ => {}
                     }
