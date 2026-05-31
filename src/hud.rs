@@ -67,18 +67,25 @@ const VICTORY_TINT: [f32; 4] = [1.00, 0.80, 0.20, 0.45];
 
 /// Render-only multiplier on the ship silhouette's on-screen extent. The raw
 /// `FRIGATE_DIMS` (120×60×40) read too small against the ~177 px lane-cell
-/// pitch on `DEFAULT_LANE` (bruce playtest: "ships too small to read"). This
-/// scales the drawn width/height WITHOUT moving cell centers, so the
-/// silhouette grows toward the cell pitch while ships stay on their lane
-/// slots. A bow-on Frigate goes 120 → ~162 px (≈92% of the 177 px pitch),
-/// still clearing adjacent occupied cells edge-to-edge.
+/// pitch on `DEFAULT_LANE` (bruce playtest, twice: "ships too small to
+/// read"). This scales the drawn width/height WITHOUT moving cell centers,
+/// so the silhouette grows while ships stay on their lane slots.
 ///
-/// This is a renderer-side knob only — it does NOT touch the `FRIGATE_DIMS`
-/// game-design constant or any range/geometry math. Bruce iterates this
-/// value visually; bumping it past ~1.45 risks adjacent-cell overlap at
-/// PointBlank, which would need a wider lane / fewer cells instead (see the
-/// composition options flagged to the lead).
-const SHIP_SCALE: f32 = 1.35;
+/// At 2.0× a bow-on Frigate draws ~240 px wide vs the ~177 px cell pitch, so
+/// adjacent ships **overlap by design at PointBlank** — that reads as
+/// close-quarters crowding, not breakage (bruce's call: point-blank ships
+/// *should* look jammed together). Broadside ships (beam-on, 60 px base)
+/// stay ~120 px and never overlap. Vertically the worst case (broadside at
+/// 45°, total_h ≈ 113 px unscaled → ~226 px) still fits inside the 480 px
+/// canvas centered on `center_y = 240`.
+///
+/// Renderer-side knob only — does NOT touch the `FRIGATE_DIMS` game-design
+/// constant, lane positions, or any range/geometry math, and is fully
+/// revertible. Bruce iterates this value. Going much past ~2.2× starts
+/// clipping tall broadside silhouettes against the canvas top/bottom; making
+/// ships bigger than that needs fewer lane cells (gameplay-significant — see
+/// the lane-cell-count option flagged to the lead, needs his ruling).
+const SHIP_SCALE: f32 = 2.0;
 
 /// Scaled `(width, total_h)` of a ship silhouette at the current view angle.
 /// Single source of truth for both the silhouette draw (`push_ship`) and the
