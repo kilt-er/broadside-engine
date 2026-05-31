@@ -32,7 +32,7 @@
 
 use crate::geometry::{absorb_shield, bears, direction_to, facing_zone, opposite, range_band};
 use crate::types::{
-    Action, ActionCost, Arc, Board, DeployHazardKind, Effect, Faction, Hazard, HazardKind, Hook,
+    Action, ActionCost, Board, DeployHazardKind, Effect, Faction, Hazard, HazardKind, Hook,
     HookContext, LaneEnd, MovementMode, Orientation, Projectile, RangeBand, ReorientTo, Ship,
     Status, StatusKind, Targeting, TargetingPattern, WeaponArchetype,
 };
@@ -1165,11 +1165,10 @@ fn apply_modifiers(
 /// - `Some(LaneEnd::Fore)` -> step +1
 /// - `Some(LaneEnd::Aft)`  -> step -1
 /// - `None` (the canonical TS semantics) — derive from `ship.orientation`:
-///     - `BowOn { bow: Fore }` -> step +1
-///     - `BowOn { bow: Aft }`  -> step -1
-///     - `Broadside`           -> step +1 (arbitrary; broadside ships rarely
-///                                queue a DISPLACE_SELF, and the design doc
-///                                gives no preference; matches TS).
+///   - `BowOn { bow: Fore }` -> step +1
+///   - `BowOn { bow: Aft }`  -> step -1
+///   - `Broadside` -> step +1 (arbitrary; broadside ships rarely queue a
+///     DISPLACE_SELF, and the design doc gives no preference; matches TS).
 ///
 /// AI / scripted moves pass `direction: None` so behaviour matches the TS
 /// engine bit-for-bit. Player synthetic Left/Right actions pass
@@ -1499,7 +1498,7 @@ fn resolve_target_move(
 /// 3. Score each available action:
 ///    - `+10` per cell hit that contains the player (the visible threat)
 ///    - `+6` if the threatened lane-end is NOT yet covered by an
-///       already-queued enemy on this enemy's turn (diversity bonus)
+///      already-queued enemy on this enemy's turn (diversity bonus)
 ///    - `+raw_damage` (the action's first `DAMAGE` effect amount)
 ///    - `-heat` cost (cheap actions preferred when threat is equal)
 ///    - Trait nudges: `Pursuit` adds a small bonus to actions that hit
@@ -1543,7 +1542,7 @@ fn decide_enemy_action(
     let mount_weapons: Vec<String> = enemy.mounts.iter().map(|m| m.weapon.clone()).collect();
     let traits: Vec<crate::types::Trait> = enemy.traits.clone();
 
-    let has_trait = |t: crate::types::Trait| traits.iter().any(|x| *x == t);
+    let has_trait = |t: crate::types::Trait| traits.contains(&t);
     let burn_hard = has_trait(crate::types::Trait::BurnHard);
     let pursuit = has_trait(crate::types::Trait::Pursuit);
 
@@ -1648,7 +1647,7 @@ fn decide_enemy_action(
             score += 2;
         }
 
-        if best.as_ref().map_or(true, |(s, _)| score > *s) {
+        if best.as_ref().is_none_or(|(s, _)| score > *s) {
             best = Some((score, weapon_id.clone()));
         }
     }
@@ -1746,7 +1745,11 @@ fn detect_chain(board: &Board) -> bool {
 mod tests {
     use super::*;
     use crate::geometry::default_shield_profile;
-    use crate::types::{ActionCost, EventBus, Mount, Orientation, ShieldProfile};
+    // `Arc` is imported here (not at module top) because every non-doc use of
+    // it lives in this test module — importing it at the top would be an
+    // `unused_imports` warning in the non-test build (the resolver's only
+    // former top-level use was the cell-0 arc allowlist removed in #96).
+    use crate::types::{ActionCost, Arc, EventBus, Mount, Orientation, ShieldProfile};
     use std::collections::HashMap;
 
     /// Empty content for tests that don't invoke action lookups or spawns.
