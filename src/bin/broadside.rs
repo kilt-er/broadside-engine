@@ -10,6 +10,7 @@
 //! | Key | Intent | Effect |
 //! |-----|--------|--------|
 //! | `1` / `2` / `3` | `QueueAction` from `mounts[0/1/2]` | Append weapon action id to `player.queue` |
+//! | `5` / `6` / `7` | `PlayCard` from `field_kit.cards[0/1/2]` | Decrement charge + queue synthetic card action |
 //! | `←` | `MoveLeft` | Queue synthetic `__move_left` |
 //! | `→` | `MoveRight` | Queue synthetic `__move_right` |
 //! | `Tab` | `ReorientFlip` | Queue synthetic `__reorient_flip` |
@@ -34,14 +35,16 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowId};
 
+use broadside_engine::cards::PlayResult;
 use broadside_engine::geometry::default_shield_profile;
 use broadside_engine::gfx::{Gfx, VIRTUAL_H, VIRTUAL_W};
 use broadside_engine::hud::{self, win_state, WinState};
 use broadside_engine::input::{
-    intent_to_action_id, key_to_intent, DemoContent, Intent, Key,
+    intent_to_action_id, key_to_intent, synthetic_card_action_id, DemoContent, Intent, Key,
 };
 use broadside_engine::perspective::{LaneGeometry, DEFAULT_LANE};
 use broadside_engine::resolve::{resolve_round, Content};
+use broadside_engine::subsystems::{HEAT_SINK, POINT_BLANK_DOCTRINE};
 use broadside_engine::types::{
     Arc as TArc, Board, EventBus, Faction, LaneEnd, Mount, Orientation, ShieldFace,
     ShieldProfile, Ship,
@@ -62,6 +65,9 @@ fn keycode_to_key(code: KeyCode) -> Option<Key> {
         KeyCode::Digit1 => Key::D1,
         KeyCode::Digit2 => Key::D2,
         KeyCode::Digit3 => Key::D3,
+        KeyCode::Digit5 => Key::D5,
+        KeyCode::Digit6 => Key::D6,
+        KeyCode::Digit7 => Key::D7,
         KeyCode::KeyR => Key::R,
         KeyCode::Space => Key::Space,
         KeyCode::Enter => Key::Enter,
@@ -81,10 +87,13 @@ fn keycode_to_key(code: KeyCode) -> Option<Key> {
 
 /// Apply an [`Intent`] to the board. `initial_board` produces a fresh
 /// starting state for `Restart`. Returns true if the board changed.
+///
+/// `content` is `&mut` because [`Intent::PlayCard`] needs to validate +
+/// decrement card charges via [`Content::try_play_card`].
 pub fn apply_intent(
     intent: Intent,
     board: &mut Board,
-    content: &dyn Content,
+    content: &mut dyn Content,
     initial_board: &dyn Fn() -> Board,
 ) -> bool {
     match intent {
@@ -95,6 +104,29 @@ pub fn apply_intent(
         Intent::Restart => {
             *board = initial_board();
             true
+        }
+        Intent::PlayCard(card_id) => {
+            // Resolve the player ship id, then validate + decrement
+            // charges via Content::try_play_card. On success push the
+            // synthetic `__card_<id>` action onto the player's queue;
+            // execute_queue handles the BOARD-effect dispatch.
+            let Some(player_id) = board
+                .cells
+                .iter()
+                .flatten()
+                .find(|s| s.faction == Faction::Player)
+                .map(|s| s.id.clone())
+            else {
+                return false;
+            };
+            match content.try_play_card(&player_id, &card_id) {
+                PlayResult::Played => {
+                    append_to_player_queue(board, synthetic_card_action_id(&card_id))
+                }
+                PlayResult::UnknownCard
+                | PlayResult::NotCarried
+                | PlayResult::InsufficientCharges => false,
+            }
         }
         _ => {
             // QueueAction / MoveLeft / MoveRight / ReorientFlip / Vent
@@ -133,6 +165,19 @@ fn append_to_player_queue(board: &mut Board, action_id: String) -> bool {
 /// canvas width centered vertically.
 fn demo_lane() -> LaneGeometry {
     DEFAULT_LANE
+}
+
+/// Build the demo [`DemoContent`] with the player's Phase 2 loadout
+/// pre-installed: HeatSink + Point-Blank Doctrine subsystems and one
+/// charge of each placeholder field-kit card (mass_lock / mass_breach /
+/// sensor_pulse). Called on startup and on every Restart so card
+/// charges are refilled when the player restarts.
+fn fresh_content() -> DemoContent {
+    let mut c = DemoContent::default();
+    c.install_subsystem("player", HEAT_SINK);
+    c.install_subsystem("player", POINT_BLANK_DOCTRINE);
+    c.grant_placeholder_kit("player");
+    c
 }
 
 /// Mirrors the board state hard-coded in `render-example.ts`. Used as both
@@ -237,7 +282,7 @@ impl App {
             gfx: None,
             board: render_example_board(),
             lane: demo_lane(),
-            content: DemoContent::default(),
+            content: fresh_content(),
             camera_angle_idx: CAMERA_ANGLE_DEFAULT_INDEX,
         }
     }
@@ -323,7 +368,13 @@ impl ApplicationHandler for App {
                     None => None,
                 };
                 let Some(intent) = intent_opt else { return };
-                let changed = apply_intent(intent, &mut self.board, &self.content, &render_example_board);
+                // Restart resets both the board AND the content so card
+                // charges + subsystems come back as a fresh game.
+                let is_restart = matches!(intent, Intent::Restart);
+                let changed = apply_intent(intent, &mut self.board, &mut self.content, &render_example_board);
+                if is_restart {
+                    self.content = fresh_content();
+                }
                 if changed {
                     if let Some(w) = self.window.as_ref() {
                         w.request_redraw();
@@ -388,6 +439,9 @@ mod tests {
         assert_eq!(keycode_to_key(KeyCode::Digit1), Some(Key::D1));
         assert_eq!(keycode_to_key(KeyCode::Digit2), Some(Key::D2));
         assert_eq!(keycode_to_key(KeyCode::Digit3), Some(Key::D3));
+        assert_eq!(keycode_to_key(KeyCode::Digit5), Some(Key::D5));
+        assert_eq!(keycode_to_key(KeyCode::Digit6), Some(Key::D6));
+        assert_eq!(keycode_to_key(KeyCode::Digit7), Some(Key::D7));
         assert_eq!(keycode_to_key(KeyCode::KeyR), Some(Key::R));
         assert_eq!(keycode_to_key(KeyCode::Space), Some(Key::Space));
         assert_eq!(keycode_to_key(KeyCode::Enter), Some(Key::Enter));
@@ -402,11 +456,11 @@ mod tests {
     #[test]
     fn queue_action_intent_appends_to_player_queue() {
         let mut board = fresh_board();
-        let content = DemoContent::default();
+        let mut content = DemoContent::default();
         apply_intent(
             Intent::QueueAction("pulse_laser".into()),
             &mut board,
-            &content,
+            &mut content,
             &fresh_board,
         );
         let player = board.cells[0].as_ref().unwrap();
@@ -416,8 +470,8 @@ mod tests {
     #[test]
     fn move_intent_appends_synthetic_move_id() {
         let mut board = fresh_board();
-        let content = DemoContent::default();
-        apply_intent(Intent::MoveRight, &mut board, &content, &fresh_board);
+        let mut content = DemoContent::default();
+        apply_intent(Intent::MoveRight, &mut board, &mut content, &fresh_board);
         let player = board.cells[0].as_ref().unwrap();
         assert_eq!(
             player.queue.last(),
@@ -427,12 +481,10 @@ mod tests {
 
     #[test]
     fn commit_turn_runs_resolve_round() {
-        // Queue a thrust-fore and commit. The player ship should move from
-        // cell 0 to cell 1 once the resolver runs the queue.
         let mut board = fresh_board();
-        let content = DemoContent::default();
-        apply_intent(Intent::MoveRight, &mut board, &content, &fresh_board);
-        apply_intent(Intent::CommitTurn, &mut board, &content, &fresh_board);
+        let mut content = DemoContent::default();
+        apply_intent(Intent::MoveRight, &mut board, &mut content, &fresh_board);
+        apply_intent(Intent::CommitTurn, &mut board, &mut content, &fresh_board);
         let player_at_1 = board.cells[1]
             .as_ref()
             .is_some_and(|s| s.faction == Faction::Player);
@@ -442,7 +494,6 @@ mod tests {
 
     #[test]
     fn restart_intent_after_defeat_recreates_player() {
-        // Manually drain the board of player + enemies, then Restart.
         let mut board = fresh_board();
         for slot in board.cells.iter_mut() {
             if matches!(slot, Some(s) if s.faction == Faction::Player) {
@@ -450,7 +501,8 @@ mod tests {
             }
         }
         assert_eq!(win_state(&board), WinState::Defeat, "precondition");
-        apply_intent(Intent::Restart, &mut board, &DemoContent::default(), &fresh_board);
+        let mut content = DemoContent::default();
+        apply_intent(Intent::Restart, &mut board, &mut content, &fresh_board);
         assert_eq!(win_state(&board), WinState::Playing);
         assert!(board.cells[0].as_ref().is_some_and(|s| s.faction == Faction::Player));
     }
@@ -458,11 +510,75 @@ mod tests {
     #[test]
     fn restart_resets_the_board() {
         let mut board = fresh_board();
-        let content = DemoContent::default();
-        apply_intent(Intent::MoveRight, &mut board, &content, &fresh_board);
-        apply_intent(Intent::CommitTurn, &mut board, &content, &fresh_board);
-        apply_intent(Intent::Restart, &mut board, &content, &fresh_board);
+        let mut content = DemoContent::default();
+        apply_intent(Intent::MoveRight, &mut board, &mut content, &fresh_board);
+        apply_intent(Intent::CommitTurn, &mut board, &mut content, &fresh_board);
+        apply_intent(Intent::Restart, &mut board, &mut content, &fresh_board);
         assert!(board.cells[0].as_ref().is_some_and(|s| s.faction == Faction::Player));
         assert!(board.cells[1].is_none());
+    }
+
+    #[test]
+    fn fresh_content_grants_subsystems_and_cards() {
+        // The demo loadout: HeatSink + Point-Blank Doctrine installed on
+        // the player ship and one charge of each of the 3 placeholder
+        // cards in their kit.
+        let content = fresh_content();
+        let installed = content.installations.for_ship("player");
+        assert!(installed.contains(&HEAT_SINK.to_string()));
+        assert!(installed.contains(&POINT_BLANK_DOCTRINE.to_string()));
+        // card_at(0..3) should resolve to the 3 placeholder cards.
+        for i in 0..3 {
+            let card = <DemoContent as Content>::card_at(&content, "player", i);
+            assert!(card.is_some(), "expected card at kit slot {} after fresh_content", i);
+        }
+    }
+
+    #[test]
+    fn play_card_intent_appends_synthetic_action_and_decrements_charges() {
+        let mut board = fresh_board();
+        let mut content = fresh_content();
+        // First placeholder card is mass_lock (per content's
+        // grant_placeholder_kit order).
+        let card_id = <DemoContent as Content>::card_at(&content, "player", 0)
+            .expect("kit should have a card at slot 0");
+        let charges_before = content
+            .field_kits
+            .for_ship("player")
+            .and_then(|k| k.find(&card_id))
+            .map(|c| c.charges)
+            .unwrap_or(0);
+        let changed = apply_intent(
+            Intent::PlayCard(card_id.clone()),
+            &mut board,
+            &mut content,
+            &fresh_board,
+        );
+        assert!(changed, "PlayCard with sufficient charges should mutate board");
+        let synth_id = synthetic_card_action_id(&card_id);
+        let player = board.cells[0].as_ref().unwrap();
+        assert_eq!(player.queue.last(), Some(&synth_id), "synthetic card action queued");
+        let charges_after = content
+            .field_kits
+            .for_ship("player")
+            .and_then(|k| k.find(&card_id))
+            .map(|c| c.charges)
+            .unwrap_or(0);
+        assert_eq!(charges_after, charges_before - 1, "play should decrement charges");
+    }
+
+    #[test]
+    fn play_card_intent_rejected_when_card_absent() {
+        let mut board = fresh_board();
+        let mut content = DemoContent::default(); // no kit granted
+        let changed = apply_intent(
+            Intent::PlayCard("mass_lock".into()),
+            &mut board,
+            &mut content,
+            &fresh_board,
+        );
+        assert!(!changed, "PlayCard without inventory should be a no-op");
+        let player = board.cells[0].as_ref().unwrap();
+        assert!(player.queue.is_empty(), "no synthetic queued on rejected play");
     }
 }
