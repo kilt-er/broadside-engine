@@ -40,7 +40,9 @@ glance what is documented vs. what is pending.*
 - [`src/cards.rs`](#srccardsrs) — field-kit Cards: catalog, per-ship inventory, BOARD-note dispatch, play validation
 - [`src/sprites.rs`](#srcspritesrs) — PNG loader for ship sprites, `SpriteRegistry` trait
 - [`src/input.rs`](#srcinputrs) — framework-agnostic key→Intent mapping, synthetic actions, `DemoContent`
+- [`src/audio.rs`](#srcaudiors) — EventBus-driven sound via kira (feature-gated), procedural placeholder samples
 - [`src/bin/broadside.rs`](#srcbinbroadsidesrs) — winit event loop, input → Intent → resolver
+- [`src/bin/render_refs.rs`](#srcbinrender_refsrs) — offline tool: render procedural silhouettes to sprite-ref PNGs
 - [`tests/`](#tests) — integration tests, worked examples
 
 ---
@@ -4565,6 +4567,49 @@ The terse per-binding overlay strings, kept in lockstep with `Key` + `key_to_int
 
 ---
 
+## `src/audio.rs`
+
+*EventBus-driven sound (task #80). Subscribes closures to five gameplay hooks
+(`OnDamageDealt`/`OnLethal`/`OnVent`/`OnReorient`/`OnChainKill`) and plays a short
+sample per hook — procedurally synthesized placeholders by default, replaced by
+`assets/sounds/<slug>.ogg` if present. Renderer-tier and feature-gated (the `audio`
+feature is off by default; the demo bin turns it on) so the resolver/content slices
+never pull in the audio backend. Full companion at
+[`docs/MODULES/audio.md`](MODULES/audio.md).*
+
+**Mirrors:** No TS analog — sound is Rust-side. **Intent:** consume engine events
+without mutating state; run synchronously on the bus thread.
+
+### `struct AudioState` + `new` / `play` (src/audio.rs:84, 95, 116)
+
+Owns the kira `AudioManager` + a 5-slot preloaded sample table (indexed by the
+`HIT`/`EXPLOSION`/… consts). `new` **returns `None`** if the audio device fails to
+open (headless CI, no driver) — the bin treats that as "audio disabled this
+session" and skips the install (non-crash degraded mode). `play` is fire-and-forget
+(logs at `debug` on backend error).
+
+### `fn install_on_bus(board, audio)` (src/audio.rs:127)
+
+**Intent:** Register the five per-hook closures on `board.bus`, each cloning the
+`Rc<RefCell<AudioState>>` and calling `play(<slug>)`. **Must run after every Restart**
+because `Board::bus` is rebuilt with the board — see
+[`broadside.rs`](#srcbinbroadsidesrs)'s `reinstall_audio`. Subscribes to
+[`EventBus`](#srctypesrs) hooks emitted by [`resolve.rs`](#srcresolvers).
+
+### Loader + procedural synthesis (src/audio.rs:164–339)
+
+`load_or_fallback` tries `<dir>/sounds/<slug>.ogg`, falling back to the procedural
+sample on NotFound (silent) or other error (warn) — the same degraded-mode pattern
+as [`sprites.rs`](#srcspritesrs). The five `procedural_*` fns synthesize short
+mono-f32 waveforms (hit/explosion/vent/reorient/chain_kill) via `build_sound`;
+`WangLcg` (src/audio.rs:319) is a deterministic Wang-hash + xorshift RNG (same as
+atlas.rs's starfield) so noise is identical every build, keeping audio
+regression-testable. **Worked examples:** `procedural_hit_has_correct_length`
+(src/audio.rs:363), `procedural_samples_all_finite` (src/audio.rs:372, NaN/inf
+guard), `sound_path_format` (src/audio.rs:387).
+
+---
+
 ## `src/bin/broadside.rs`
 
 *The only executable in the crate. Opens a winit window, owns the wgpu renderer, holds the
@@ -4651,6 +4696,47 @@ path re-requests only while a tween is live, letting a static scene idle), build
 
 **Cross-references:** Drives [`hud`](#srchudrs), [`gfx`](#srcgfxrs), [`runs`](#srcrunsrs),
 [`resolve`](#srcresolvers), [`input`](#srcinputrs), [`sprites`](#srcspritesrs).
+
+---
+
+## `src/bin/render_refs.rs`
+
+*An offline tool binary (not part of the game): renders the procedural ship silhouette at
+fixed view angles and writes PNGs to `docs/sprite-refs/` as visual templates for bruce's
+hand-painted sprite art. The bridge between the procedural renderer's geometry and the
+PNG pipeline [`sprites.rs`](#srcspritesrs) loads. Full companion at
+[`docs/MODULES/render_refs.md`](MODULES/render_refs.md).*
+
+**Mirrors:** No TS analog — a Rust-side art-production aid. Run with
+`cargo run --bin render_refs --features render,runtime`.
+
+**Intent:** Output `<class>_<stance>_<deg>.png` for `frigate` × {bowOnFore, bowOnAft,
+broadside} × {0°, 45°, 90°} (pure side / isometric / top), per SPRITE_SPEC.
+
+### Configuration + `fn main()` (src/bin/render_refs.rs:26–84)
+
+`CLASSES` (currently `frigate`/`FRIGATE_DIMS`), `ANGLES_DEG = [0,45,90]`, the
+`Orientation` enum + `ORIENTATIONS`, and the `BG`/`FILL`/`STROKE` palette (matched to the
+renderer's player-hull colors). `main` triple-loops class × angle × orientation, rendering
++ saving each PNG.
+
+### `fn render_silhouette(dims, orient, deg) -> RgbaImage` (src/bin/render_refs.rs:88)
+
+**Intent:** Render one silhouette — compute the foreshortened total height
+(`height·cos + depth·sin`, mirroring the live renderer's angle response), size a canvas
+with a 16-px margin, center the silhouette, dispatch to the per-stance rasterizer.
+`rasterize_bow_on` (src/bin/render_refs.rs:125, square stern + bow triangle, bow width
+foreshortens with `cos_a`) and `rasterize_broadside` (src/bin/render_refs.rs:164, hull
+rectangle + superstructure bump).
+
+### Raster primitives (src/bin/render_refs.rs:201–275)
+
+`fill_quad` → `fill_polygon` (a convex-polygon scanline fill) and `stroke_line` (Bresenham
+1-px) — a tiny self-contained software rasterizer, so the tool runs headless with no GPU.
+
+**Cross-references:** Reads `ShipDims`/`FRIGATE_DIMS` from [`perspective.rs`](#srcperspectivers);
+produces the PNGs [`SPRITE_SPEC.md`](SPRITE_SPEC.md) documents and that bruce paints over for
+[`sprites.rs`](#srcspritesrs). Standalone — no game-runtime dependency.
 
 ---
 
