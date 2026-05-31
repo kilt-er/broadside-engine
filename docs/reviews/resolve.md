@@ -15,6 +15,8 @@ Status: **APPROVE with 2 noted divergences** (1 edge-case behavioral, 1 intentio
 
 ## Divergence 1 (edge-case behavioral — FLAGGED to resolver)
 
+> **CLOSED (b81b073, verified green).** Resolver lifted the onDamageDealt emit out of the `Some(post_cell)` guard so it fires unconditionally once per action, matching TS executeQueue (source_cell = None on self-destruct, the lane-index analog of TS's dangling-but-live ship reference). Heat/cooldown writes stay guarded (Rust can't mutate an off-board ship). Regression test `run_action_emits_on_damage_dealt_even_when_attacker_self_destructs` asserts emit count == 1 on a hull-3 self-destruct (was 0 pre-fix). Verified vs TS resolve.ts:69. Divergence resolved.
+
 `run_action` guards the post-effect heat/cooldown bookkeeping AND the onDamageDealt emit behind `if let Some(post_cell) = find_cell_by_id(ship_id)` (resolve.rs:394-405). The TS runs both UNCONDITIONALLY after the effect loop (resolve.ts:65-69), with no liveness check on the firing ship.
 
 Consequence: if a ship destroys ITSELF during its own action (self-destruct, or a ReactorBreach splash from a kill it caused rebounding lethally — contrived but possible), TS still emits onDamageDealt with the (dangling) source ship; Rust skips the emit. A subsystem subscribed to onDamageDealt would fire in TS, not in Rust.
