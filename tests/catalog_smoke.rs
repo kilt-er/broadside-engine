@@ -13,18 +13,12 @@
 //! These are the kinds of typos that don't surface until a player presses a
 //! button on the broken action — easier to catch at `cargo test`.
 //!
-//! ## Why `#[ignore]`
+//! ## History
 //!
-//! The catalog asset isn't checked in yet. Until it lands, running this
-//! test on a fresh clone would fail with "file not found" — noise, not a
-//! real regression. `#[ignore]` keeps the test out of the default `cargo
-//! test` run; whoever adds the catalog flips this attribute off.
-//!
-//! Run explicitly with:
-//!
-//! ```sh
-//! cargo test --test catalog_smoke -- --ignored
-//! ```
+//! Held local with `#[ignore]` from initial landing (commit f4901aa) until
+//! the canonical catalog asset landed via content's transformer (#73,
+//! `dcd232a`). Un-ignored at that point — the asset is now committed and
+//! the test runs in the regular `cargo test` suite.
 
 use std::collections::HashSet;
 use std::path::Path;
@@ -34,17 +28,14 @@ use broadside_engine::catalog::load_from_path;
 const CATALOG_PATH: &str = "assets/broadside.catalog.json";
 
 #[test]
-#[ignore = "catalog asset not yet checked in; un-ignore once assets/broadside.catalog.json lands"]
 fn catalog_asset_loads_and_ids_are_unique() {
-    // Defensive guard so a stray `--include-ignored` run on a fresh clone
-    // produces a clear skip message rather than an opaque IO panic.
-    if !Path::new(CATALOG_PATH).exists() {
-        eprintln!(
-            "skipping: {CATALOG_PATH} not present. Drop the design-doc JSON \
-             export there and re-run with `--ignored`.",
-        );
-        return;
-    }
+    // Defensive guard: if the asset ever goes missing again, produce a
+    // clear failure rather than an opaque IO panic deep in serde_json.
+    assert!(
+        Path::new(CATALOG_PATH).exists(),
+        "{CATALOG_PATH} must be checked into the repo; if it's gone, the \
+         catalog transformer (#73) or its output got dropped",
+    );
 
     let cat = load_from_path(CATALOG_PATH).expect("catalog must parse");
 
@@ -93,5 +84,63 @@ fn catalog_asset_loads_and_ids_are_unique() {
                 mod_id,
             );
         }
+    }
+
+    // Unique class ids.
+    let mut cids = HashSet::new();
+    for cl in &cat.classes {
+        assert!(
+            cids.insert(cl.id.as_str()),
+            "duplicate class id in catalog: {}",
+            cl.id,
+        );
+    }
+
+    // Every patrol tier must have a non-empty mod string. The canonical
+    // catalog has one PatrolDef per tier 1..=7; checking the count is
+    // brittle (the design has shifted tiers before) so we just assert
+    // the data shape.
+    for p in &cat.patrols {
+        assert!(!p.r#mod.is_empty(), "patrol tier {} has empty mod field", p.n);
+    }
+}
+
+/// Every action id referenced by a class's `set1` / `set2` / `signature`
+/// must resolve to a real action id in `catalog.actions`. Catches
+/// display-name vs action-id drift (the classic "Pulse Laser" string
+/// where "pulse_laser" was meant).
+///
+/// Task #82 (commit 78d4039) normalized set1/set2 references to action
+/// ids, but the canonical transformer normalizes class signatures
+/// independently (e.g. "Slip — move forward..." -> "slip") and those
+/// normalized signature ids are NOT yet present in `actions[]`. Task
+/// #84 owns the fix (either add Action records for the five class
+/// signatures, or have the transformer auto-mint placeholders).
+/// Un-ignore once #84 lands.
+#[test]
+#[ignore = "Blocked on task #84: class signature ids (slip/ram/phase/throw/swap_toss) \
+            normalize correctly but don't exist as Action entries in the catalog. \
+            Un-ignore once those Action records are added (or the transformer \
+            auto-mints them)."]
+fn class_loadout_action_ids_all_resolve() {
+    assert!(Path::new(CATALOG_PATH).exists());
+    let cat = load_from_path(CATALOG_PATH).expect("catalog must parse");
+
+    let action_ids: HashSet<&str> = cat.actions.iter().map(|a| a.id.as_str()).collect();
+
+    for cl in &cat.classes {
+        for action_ref in cl.set1.iter().chain(cl.set2.iter()) {
+            assert!(
+                action_ids.contains(action_ref.as_str()),
+                "class {} references unknown action in loadout: {action_ref:?}",
+                cl.id,
+            );
+        }
+        assert!(
+            action_ids.contains(cl.signature.as_str()),
+            "class {} signature {:?} does not resolve to an action id",
+            cl.id,
+            cl.signature,
+        );
     }
 }
