@@ -1288,462 +1288,322 @@ No new drift introduced by this update.
 
 ## `src/perspective.rs`
 
-*Screen-space perspective: lane trapezoid layout, cell-to-pixel projection, ship
-sprite polygon vertices. Pure functions over a `LaneGeometry` plus inputs — no wgpu,
-no winit, no rendering state. **The only module in the crate that knows about screen
-coordinates;** everything else lives in lane-cell space. The module's rustdoc on lines
-4–7 says "when this port and the TS disagree, the TS is right (modulo intentional
-Rust-shape changes called out below)," which makes this the only file in the engine
-that opens with an explicit "drift expected, here's why" rider.*
+*Screen-space lane geometry: a flat horizontal strip bisecting the canvas. Cells
+evenly spaced left-to-right at a constant y. Pure functions; no wgpu, no winit, no
+rendering state. **The only module in the crate that knows about screen coordinates;**
+everything else lives in lane-cell space.*
 
-**Mirrors:** `_drive_pull/broadside-engine/engine/perspective.ts`.
-**Design anchor:** Slice A of the renderer plan (HTML Part XIII implementation order
-item — the renderer scaffold sits on top of these primitives). Also see the TS
-`PERSPECTIVE.md` rationale doc.
-**Source commit:** `70155ed` — *Port engine/perspective.ts to src/perspective.rs*.
-462 lines, 15 inline tests, all green. Reviewer audited cleanly.
+*A full 3-D projection lived here once — military-axonometric ship sprites rotated by
+a lane slope, with `CellScreen` / `lane_slope_rad` / `ShipSprite` / `FacePoly` /
+`beam_endpoints` / `cell_footprint` all defined locally. The flat-scene refactor
+(`1d4d540`, **task #55**) deleted all of that. Ship projection now lives in
+[`src/hud.rs`](#srchudrs) and is driven by a runtime `view_angle` scrubber rather
+than baked into screen-space math. What's left here is a near-trivial coordinate
+transform: a `LaneGeometry` struct and two interpolation functions.*
 
-### Module header (lines 1–35)
+**Mirrors:** No longer mirrors the TS `perspective.ts` byte-for-byte; the flat-scene
+refactor diverges intentionally. The TS lives at
+`_drive_pull/broadside-engine/engine/perspective.ts` for historical reference, but the
+Rust port is the canonical reference now for the flat lane.
+**Design anchor:** Tasks #55 (flatten the scene) and #57–#60 (revive the angle
+scrubber on the flat base, parallax planes responding to `view_angle`, promote the
+camera scrubber to permanent feature). The lane is flat; the ships morph along a
+view-angle axis owned by [`src/hud.rs`](#srchudrs).
+**Source commits:** `1d4d540` (flat-scene refactor — delete `CellScreen`,
+`lane_slope_rad`, `ShipSprite`, `FacePoly`, `ship_sprite`, `beam_endpoints`,
+`cell_footprint`). Subsequent ship-dim tuning lives in `8d4a569` / `929fdf1` /
+`4367e8d`. Module is 203 lines, 7 inline tests, all green.
 
-A 35-line `//!` block. Three subsections:
+### Module header (lines 1–12)
 
-**Lines 1–7: intent + tie-breaker.** "Pure functions; no wgpu, no winit, no rendering
-state." The TS-is-canonical rule applies *modulo intentional Rust-shape changes*. That
-caveat is unique in this codebase — every other module's rustdoc says the TS is right
-unconditionally.
+The 12-line `//!` block. The flat-scene reality in one paragraph:
 
-**Lines 9–24: six numbered decisions encoded in the module.** This is the design
-intent every reader needs in their head before reading any function below:
+> *The lane is a horizontal line at `LaneGeometry::center_y`; cells are evenly spaced
+> left to right between `x_left` and `x_right`. The ship sprite math in `hud.rs`
+> rotates around the lane using a `view_angle` parameter, so ships morph from pure
+> side-view (θ = 0) to pure top-down (θ = π/2) while the lane itself stays flat. Both
+> parallax planes — sky above the lane, floor below — foreshorten with the same angle
+> so the background reads as a revolving camera.*
 
-1. The lane is a tilted trapezoid running left-to-right, one-point perspective receding
-   to the right. Vanishing point off-screen.
-2. Cells get smaller along the lane: linear scaling from `scale_near` to `scale_far`.
-3. Ship sprites use **military axonometric** projection: the port-starboard depth axis
-   projects straight up in the ship's local unrotated frame. (No foreshortening on
-   depth — that's the "military" part of military-axonometric, distinguishing it from
-   true axonometric or cabinet projections.)
-4. Every ship sprite is then rotated around its base by the lane's slope angle, so its
-   long axis aligns with the lane (bow-on) or runs perpendicular to it (broadside).
-5. **Only the FRONT face and TOP face are rendered.** Side faces collapse to zero
-   width under military projection — that's intentional, not a bug.
-6. The lane is a straight line, so the rotation angle is a single constant for every
-   cell. A curved lane would compute a per-cell tangent — flagged as a future-care
-   item, not implemented today.
+Three things to know up front, from the rustdoc:
 
-**Lines 26–34: Rust-shape differences from `perspective.ts`.** Two called out (the
-third — radians vs degrees — is documented at the `CellScreen` definition instead).
-See **Drift notes** below for the full list.
+1. **The lane is geometrically flat.** A single horizontal strip; no tilt, no
+   trapezoid, no vanishing point. `cell_to_screen` is a 1-D linear interpolation
+   along `x`. `y` is the same constant for every cell.
+2. **Ship projection is no longer this module's job.** The flat-scene refactor moved
+   the silhouette math into [`src/hud.rs`](#srchudrs). `hud.rs` reads a `view_angle`
+   scrubber (controlled by `bin/broadside.rs`) and morphs each ship's silhouette by
+   stacking a front face of height `dims.height × cos(θ)` underneath a top face of
+   height `dims.beam × sin(θ) / 2`. At θ = 0 ships read as pure side silhouettes; at
+   θ = π/2 they read as pure top-down rectangles.
+3. **This is the only module that knows about screen coordinates.** Everything else
+   in the crate works in cell-space. The rustdoc states this explicitly on line 11.
 
-Lines 36–37: imports — `geometry::range_band` and `types::RangeBand`. The only
-dependency on the rest of the engine is the canonical band-bucket function; everything
-else is local.
+Line 14: `use crate::geometry::range_band;` — the canonical band-bucket function.
+The only engine dependency.
 
 ---
 
-### `struct Point2 { x: f32, y: f32 }` (perspective.rs:43)
+### `struct Point2 { x: f32, y: f32 }` (perspective.rs:19)
 
-**Mirrors:** `perspective.ts` Point2.
 **Intent:** A 2-D screen-space point. Pixels, y-down origin top-left (the canonical
-screen-space convention, matching wgpu's viewport transform). `Copy` so callers pass
-by value with no borrow concerns.
+screen-space convention, matching wgpu's viewport transform). `Copy + Debug +
+PartialEq`. The only return type of the projection functions below.
 
 ---
 
-### `struct LaneGeometry` (perspective.rs:51)
+### `struct LaneGeometry` (perspective.rs:28)
 
-**Mirrors:** `perspective.ts` LaneGeometry.
-**Intent:** The lane's screen-space footprint plus the cell count and scale gradient.
-One source of truth for the entire renderer — every projection function below takes
-`&LaneGeometry` rather than recomputing constants.
+**Intent:** The flat horizontal strip the cells sit on. Four fields — that's the
+entire model now. No back edge, no scale gradient, no slope angle.
 
 Fields:
-- `front_start`, `front_end` (lines 53, 55) — the two endpoints of the lane's front
-  edge on screen. The foreground end (cell 0) and background end (cell N−1). These
-  define both the *position* and the *slope* of the lane.
-- `back_start`, `back_end` (lines 57–58) — the back edge of the lane (the parallel
-  edge farther from camera). Used by `cell_footprint` to compute the trapezoid for
-  selection highlights.
-- `cell_count: u32` (line 60) — 5, 7, or 9 per the design.
-- `scale_near: f32`, `scale_far: f32` (lines 62, 64) — sprite scale at each end. The
-  recession factor; defaults give 1.0 → 0.55 (cells at the back are 55% the size of
-  those at the front).
+- `center_y: f32` (line 30) — vertical position of the lane on screen. The lane
+  bisects the canvas at this y.
+- `x_left: f32` (line 32) — x-coordinate of the leftmost cell's center.
+- `x_right: f32` (line 34) — x-coordinate of the rightmost cell's center.
+- `cell_count: u32` (line 36) — 5, 7, or 9 per the design doc.
 
-### `const DEFAULT_LANE: LaneGeometry` (perspective.rs:71)
+One method on the struct (lines 42–48): `fn cell_width(&self) -> f32` returns half
+the distance between two adjacent cells. Used by `hud.rs` to size ship silhouettes
+relative to the lane spacing. Handles the `cell_count ≤ 1` degenerate by returning
+the full span.
 
-**Mirrors:** `perspective.ts:DEFAULT_LANE`.
-**Intent:** The viewport-agnostic baseline. Tuned for a 660×240 design viewport (the
-TS reference resolution). The Rust gfx layer (`gfx.rs:0c9d358`) either bumps the
-engine's virtual resolution to a superset of 660×240 or supplies its own retuned
-`LaneGeometry` — the math here is the same either way.
+**Drift note: flat-scene refactor (1d4d540, task #55).** This struct used to carry
+eight fields — `front_start`, `front_end`, `back_start`, `back_end`, `cell_count`,
+`scale_near`, `scale_far`, plus a derived slope from `atan2(dy, dx)` over the front
+edge. The flat-scene refactor deleted everything except `cell_count` and replaced
+the four corner points with `center_y` + `x_left` + `x_right`. There is no scale
+gradient any more; ships at cell 0 are the same size as ships at cell 6 because the
+camera is square-on to the lane.
+
+---
+
+### `const DEFAULT_LANE: LaneGeometry` (perspective.rs:54)
+
+**Intent:** Tuned baseline for the engine's 1320×480 virtual canvas. A 7-cell lane
+bisecting the window horizontally, with ~130 px margin on each side for ship
+overhang.
 
 Constants:
-- `front_start: (35, 217)` — left-front corner.
-- `front_end: (615, 162)` — right-front corner. Visible "uphill" slope toward the
-  background (y decreases as x grows, because screen y-down).
-- `back_start: (28, 198)`, `back_end: (615, 153)` — back edge. The front and back are
-  not parallel in screen space; the trapezoid widens slightly toward the foreground.
-- `cell_count: 7`, `scale_near: 1.0`, `scale_far: 0.55`.
+- `center_y: 240.0` — half of `VIRTUAL_H`; the lane is the horizontal midline.
+- `x_left: 130.0`, `x_right: 1190.0` — leaves 130 px margin at each end.
+- `cell_count: 7`.
 
-**Worked example:** every cell test in the module uses these constants. Cell 0 lands
-at `(35, 217)` with scale 1.0; cell 6 at `(615, 162)` with scale 0.55. Test pinning at
-lines 281 and 289.
+The 1320×480 virtual canvas comes from [`src/gfx.rs`](#srcgfxrs) constants
+`VIRTUAL_W` / `VIRTUAL_H`. If those ever change, this constant block needs to follow.
 
----
-
-### `fn lane_slope_rad(geom: &LaneGeometry) -> f32` (perspective.rs:98)
-
-**Mirrors:** `perspective.ts` lane-slope computation (inline in TS, factored out here).
-**Intent:** The slope of the lane's front edge in radians. Used to align ship sprites
-with the lane. Module-private — callers go through `cell_to_screen`'s
-`rotation_rad` field.
-
-Lines 99–101: `atan2(dy, dx)` over the front-edge vector. Returns negative radians
-for `DEFAULT_LANE` because dy is negative (screen y-down + lane rises to the right).
-Tested at `lane_slope_is_modest_uphill_to_the_right` (line 307): expected value
-`-5.418°` (in degrees, for human readability — function returns radians).
+**Worked example (`cell_to_screen_endpoints_match_lane_extents`, line 140):** Cell 0
+lands at `(130, 240)`; cell 6 at `(1190, 240)`. Both have `y = center_y`; only `x`
+varies.
 
 ---
 
-### `struct CellScreen` + `fn cell_to_screen` (perspective.rs:86, 106)
+### `fn cell_to_screen(cell_index: u32, geom: &LaneGeometry) -> Point2` (perspective.rs:63)
 
-**Mirrors:** `perspective.ts` cellToScreen.
-**Intent:** Map a cell index `0..cell_count` to its screen position, sprite scale, and
-the lane-slope rotation to apply. The single function the renderer calls for each
-ship's "where on screen?".
+**Intent:** Map an integer cell index to its screen position. Linear interpolation
+from `x_left` to `x_right`; `y` is constant.
 
-**`struct CellScreen`** fields (line 86):
-- `x: f32, y: f32` — center of the cell on the lane's *front* edge (where the ship's
-  base sits).
-- `scale: f32` — uniform sprite scale at this cell.
-- `rotation_rad: f32` — rotation (in radians) around `(x, y)` to align sprites with
-  the lane. **Radians, not degrees** — see Drift below.
-
-**`fn cell_to_screen`** body (lines 106–113):
-- Line 107: `n = cell_count − 1` (the number of *spans* between cells; n=6 for the
-  default 7-cell lane). `saturating_sub(1)` avoids underflow on a one-cell lane.
-- Line 108: `t = cell_index / n`, or `0` if n is zero (single-cell lane). The
+Body (lines 64–73):
+- Line 64: `n = cell_count − 1` (the number of *spans* between cells; n=6 for
+  the default 7-cell lane). `saturating_sub(1)` avoids underflow on a one-cell lane.
+- Lines 65–69: `t = cell_index / n`, or `0` if `n == 0` (single-cell lane). The
   parametric position along the lane.
-- Lines 109–111: linear interpolate x, y, scale between near and far endpoints.
-- Line 112: return `CellScreen` with `rotation_rad = lane_slope_rad(geom)` —
-  constant across cells (the lane is straight; per the module rustdoc decision #6).
+- Lines 70–73: return `Point2 { x: x_left + t * (x_right - x_left), y: center_y }`.
 
-**Drift note: rotation in radians, not degrees.** The TS `cellToScreen` returns
-degrees because SVG `transform="rotate(deg ...)"` takes degrees natively. Every
-downstream Rust consumer (rotation matrices, `f32::sin`/`cos`, wgpu transforms) wants
-radians. Architect's three-decision approval list flagged this — math is line-for-line
-TS, output unit is the only change. The doc-comment on line 94 calls this out
-explicitly.
+**Returns:** the screen-space center of the cell. The renderer (`hud.rs`) uses this
+as the *base position* for a ship sprite or projectile.
 
-**Worked example (test `cell_to_screen_midpoint_interpolates_evenly`, line 297):** Cell
-3 of 7 lands at `t = 3/6 = 0.5`. x = 35 + 0.5×(615−35) = 325. y = 217 + 0.5×(162−217)
-= 189.5. Scale = 1.0 + 0.5×(0.55−1.0) = 0.775. Linear interpolation, no surprises.
+**Drift note: return type collapsed from `CellScreen` to `Point2`.** The old
+function returned a `CellScreen { x, y, scale, rotation_rad }` struct because the
+sloped lane required per-cell scale and rotation. The flat lane needs neither, so
+the return type is now just the 2-D position. Anything that wanted the old `scale`
+field reads it from `LaneGeometry::cell_width()` if needed (constant across cells);
+anything that wanted `rotation_rad` no longer needs it (lane is geometrically flat).
+
+**Worked example (`cell_to_screen_midpoint_is_halfway`, line 149):** Cell 3 of 7
+lands at `t = 3/6 = 0.5`. `x = 130 + 0.5 × (1190 − 130) = 660`. `y = 240`. Exactly
+the center of the canvas.
 
 ---
 
-### `fn fractional_cell_to_screen(fractional_cell: f32, geom)` (perspective.rs:118)
+### `fn fractional_cell_to_screen(fractional_cell: f32, geom) -> Point2` (perspective.rs:79)
 
-**Mirrors:** `perspective.ts` fractionalCellToScreen.
-**Intent:** Continuous version of `cell_to_screen` for fractional positions along the
-lane. Used by ordnance entities mid-flight (a torpedo at fractional cell 4.3 is
-between cells 4 and 5, sized accordingly).
+**Intent:** Continuous version of `cell_to_screen` for fractional positions along
+the lane. Used by ordnance entities mid-flight — a torpedo at fractional cell 4.3
+is somewhere between cells 4 and 5.
 
-Body identical to `cell_to_screen` *except* line 120 clamps `t` to `[0, 1]` with
+Body identical to `cell_to_screen` *except* line 84 clamps `t` to `[0, 1]` via
 `.clamp(0.0, 1.0)` so an out-of-range fractional position (negative, or beyond
-`cell_count − 1`) renders at the nearest endpoint rather than off-screen. The TS
-version does the same clamp.
+`cell_count − 1`) renders at the nearest endpoint rather than off-screen.
 
-**Worked example (test `fractional_cell_at_4_matches_ts_reference`, line 337):**
-`fractional_cell = 4.0`, `t = 4/6 ≈ 0.6667`. x ≈ 421.67, y ≈ 180.33, scale = 0.7. The
-test asserts to ±0.01 px — these are the canonical values from the TS
-`render-example.ts` reference, used as the cross-port parity check.
+**Worked example (`fractional_cell_intermediate_interpolates_linearly`, line 175):**
+`fractional_cell = 4.0` on a 7-cell lane. `t = 4/6 ≈ 0.6667`. `x = 130 + 0.6667 ×
+1060 ≈ 836.67`. `y = 240`. Straight linear interpolation; no rounding tricks.
 
 ---
 
-### `struct ShipDims` and `const FRIGATE_DIMS` (perspective.rs:132, 139)
+### `struct ShipDims` and `const FRIGATE_DIMS` (perspective.rs:104, 113)
 
-**Mirrors:** `perspective.ts` ShipDims + FRIGATE_DIMS.
-**Intent:** A ship's world-unit dimensions. `length` is bow-stern, `beam` is
-port-starboard, `height` is vertical. Other classes (Capital, Destroyer, etc.) will
-provide their own constants when content adds them.
+**Intent:** A ship's design-pixel dimensions in three world-axes. The fields are
+the same as before the flat-scene refactor (`length` = bow-stern, `beam` =
+port-starboard, `height` = vertical at pure side view), but they're now consumed
+by `hud.rs`'s **view-angle-driven morph** rather than baked into a military-
+axonometric projection here.
 
-`FRIGATE_DIMS = { length: 56, beam: 14, height: 6 }` — units are world-pixels at
-`scale_near`; the projection multiplies by the cell's scale.
+Quoting the doc comment on lines 97–102:
 
----
+> *The view-angle scrubber stacks a FRONT face of vertical extent
+> `height × cos(angle)` underneath a TOP face of vertical extent
+> `beam × sin(angle) / 2`. At angle = 0 the top face collapses and the ship reads
+> as a pure side silhouette; at angle = π/2 the front face collapses and the ship
+> reads as a pure top-down rectangle.*
 
-### `enum Stance { BowOn, Broadside }` (perspective.rs:144)
+**`FRIGATE_DIMS = { length: 168.0, beam: 42.0, height: 50.0 }`** (line 113). The
+silhouette dominates a single lane cell — `DEFAULT_LANE`'s cell width is ~177
+design px (1060 / 6 spans), so a 168-px-long frigate just fits. `beam` is ~25% of
+`length` for a recognisable side / top contrast as the view angle scrubs.
 
-**Mirrors:** `perspective.ts` Stance.
-**Intent:** Which way the hull is turned in the rendering frame. *Not the same as*
-`types::Orientation` — that carries a bow direction too (`Orientation::BowOn { bow:
-LaneEnd }`), needed by the resolver for damage routing. The renderer projects the
-*sprite*, which only cares about along-lane vs. across-lane; the bow direction
-is conveyed by the chevron overlay computed from `bow_dir` below.
-
-**Drift note: separate from `types::Orientation`.** Could in principle have been a
-`From<Orientation>` adapter; architect kept it as a distinct enum because the
-renderer never needs the bow direction at the geometry-projection layer. The mapping
-is the obvious one: `Orientation::BowOn { .. } → Stance::BowOn`,
-`Orientation::Broadside → Stance::Broadside`. Whoever wires the renderer to ship
-state will do that conversion.
-
----
-
-### `type FacePoly = [Point2; 4]` (perspective.rs:153)
-
-**Intent:** The four vertices of a rectangle in the unrotated screen frame. Vertex
-order is **bottom-left, bottom-right, top-right, top-left** (CCW with screen y-down).
-The renderer's vertex shader rotates them as a group around `pivot` by
-`rotation_rad`.
-
-**Drift note: `[Point2; 4]` arrays vs TS formatted strings.** The TS computes face
-polygons as `"x,y x,y x,y x,y"` strings ready to drop into SVG `<polygon points="">`.
-The Rust port returns raw vertex arrays. Architect's approved drift: wgpu wants
-vertex buffers, not formatted strings; formatting at the geometry layer would force
-the renderer to parse strings back into floats. Math is identical; output shape is
-the only change.
+**Drift note: ship dims grew ~3×.** Pre-flat the dims were `{ length: 56, beam: 14,
+height: 6 }`. Multiple tuning rounds (`8d4a569` → `929fdf1` → `4367e8d` plus
+`d4cd468`'s canvas-resize fix) settled at the current `168 / 42 / 50` to give the
+flat scene a recognizable silhouette. Bumps were stop-gaps; the values may move
+again as content/UX tunes around them. The constant is the only knob.
 
 ---
 
-### `struct ShipSprite` (perspective.rs:159)
+### `enum Stance { BowOn, Broadside }` (perspective.rs:119)
 
-**Mirrors:** `perspective.ts` ShipSprite (but with very different field shape — see
-Drift below).
-**Intent:** The output of `ship_sprite`. Everything the renderer needs to draw one
-ship at one cell: two face polygons, the pivot+angle to rotate them, anchors for
-chevron and bridge overlays, and a unit bow-direction vector for beam-origin and
-chevron-direction math.
+**Intent:** Which way the hull is turned in the rendering frame. Same idea as
+before the refactor but consumed by `hud.rs`'s view-angle morph rather than by a
+projection function here. `BowOn` ships run along the lane axis (length along x);
+`Broadside` ships run perpendicular (length along the depth axis, which the view
+angle maps to top-face vertical extent).
 
-Fields:
-- `pivot: Point2` — the rotation pivot, equal to `(cell.x, cell.y)` (the cell's
-  screen position). The whole sprite rotates about this point.
-- `rotation_rad: f32` — lane slope in radians; the rotation to apply about the pivot.
-- `front_face: FacePoly` — four vertices of the front face (small, at the lane
-  surface).
-- `top_face: FacePoly` — four vertices of the top face (larger, above the front
-  face).
-- `top_center: Point2` — center of the top face in the unrotated frame. Chevron
-  anchor.
-- `front_center: Point2` — center of the front face. Bridge / status anchor.
-- `bow_dir: Point2` — **POST-rotation** unit vector along the ship's bow direction.
-  This is the only field that already has the rotation baked in; everything else is
-  in the unrotated frame and gets rotated by the vertex shader. Used for chevron
-  orientation and beam-origin offsets.
-
-**Drift note: pivot + angle vs pre-baked SVG transform string.** The TS `ShipSprite`
-carries a `transform: string` field ready to drop into SVG `<g transform="...">`. The
-Rust port carries `(pivot, rotation_rad)` so the renderer composes the rotation into
-its vertex shader. Architect's approved drift; the renderer never wants strings, the
-SVG-string layer would have to be re-parsed for wgpu's purposes. Third of the three
-approved output-shape drifts (the others: `[Point2; 4]` for polygons, radians for
-rotation).
+**Drift note: separate from `types::Orientation`.** `Orientation` carries the bow
+direction; `Stance` does not. The renderer projects the *sprite*, which only cares
+about along-lane vs. across-lane. Whoever wires the renderer to ship state does
+the mapping `Orientation::BowOn { .. } → Stance::BowOn`, `Orientation::Broadside →
+Stance::Broadside`. That conversion sits in `hud.rs`.
 
 ---
 
-### `fn ship_sprite(cell: CellScreen, dims: ShipDims, stance: Stance) -> ShipSprite` (perspective.rs:185)
+### `fn band_between_cells(source: u32, target: u32) -> RangeBand` (perspective.rs:127)
 
-**Mirrors:** `perspective.ts` shipSprite.
-**Intent:** The core projection function. Compute the polygon vertices and rotation
-transform for one ship at one cell in one stance. Military-axonometric projection in
-the unrotated frame, then a single rotation around the base aligns it with the lane.
+**Intent:** Renderer-side convenience wrapper over `geometry::range_band`. Keeps the
+renderer code self-contained without reaching across module lines. Both paths MUST
+agree — the cross-module test at `perspective.rs:191` asserts agreement over every
+`(source, target)` pair in `0..=9 × 0..=9`.
 
-The walkthrough is long because every line matters; this is the dense geometry of the
-module.
-
-**Line 186:** destructure `CellScreen` — pull x, y, scale, rotation_rad as locals so
-the body reads cleanly without `cell.` prefixes.
-
-**Lines 189–192: stance swap.** The world-axis dimensions stay constant (a Frigate
-is always 56 long × 14 wide × 6 tall) but the *screen-axis assignment* swaps with
-stance. Bow-on: along-lane width is `length × scale`, depth is `beam × scale`.
-Broadside: along-lane width is `beam × scale`, depth is `length × scale`. The visual
-effect: rotating the hull 90° in world swaps the two on-screen axes.
-
-**Line 193:** `screen_h = height × scale` — vertical projection. Independent of
-stance; the hull is the same height bow-on or broadside.
-
-**Lines 194–195:** half-extents — `hw = screen_w / 2` (half on-lane width) and
-`depth_offset = screen_d / 2` (half depth). All polygons sit ±hw and ±depth_offset
-from the center.
-
-**Lines 197–202: front face polygon.** Four vertices in CCW order:
-- `(x - hw, y)` — bottom-left (lane-surface, left side)
-- `(x + hw, y)` — bottom-right
-- `(x + hw, y - screen_h)` — top-right (above the lane surface by the hull height)
-- `(x - hw, y - screen_h)` — top-left
-
-(Screen y-down: `y - screen_h` is *above* the lane on screen.)
-
-**Lines 203–208: top face polygon.** The top of the hull, projected up by
-`depth_offset` (military axonometric: depth projects straight up, no foreshortening):
-- `(x - hw, y - screen_h)` — front-left edge (shared with the front face's top-left)
-- `(x + hw, y - screen_h)` — front-right
-- `(x + hw, y - screen_h - depth_offset)` — back-right (further up by depth)
-- `(x - hw, y - screen_h - depth_offset)` — back-left
-
-Note vertices [0] and [1] of `top_face` are the same as [3] and [2] of `front_face`
-— the two faces share the hull's top-edge ridge. Renderer can dedupe if it cares
-about vertex count; the projection itself emits both for clarity.
-
-**Lines 214–218: bow direction (POST-rotation).** This is the only field that bakes
-in the lane rotation, because the renderer needs an angle-aware direction for
-chevron placement.
-
-- Compute `cos_r, sin_r` from `rotation_rad` once.
-- `Stance::BowOn`: bow points along +x in the local unrotated frame. After rotation
-  by `rotation_rad`, that becomes `(cos_r, sin_r)`. For `DEFAULT_LANE`'s slope
-  ≈ -5.4°, this gives ≈ (0.996, -0.094) — pointing slightly up and strongly right.
-- `Stance::Broadside`: bow points along +depth in the local unrotated frame, which
-  projects to -y in screen coordinates (depth projects straight up = -y). After
-  rotation, that becomes `(-sin_r, -cos_r)`. For the default slope, ≈ (0.094,
-  -0.996) — pointing strongly up with a small rightward skew.
-
-The bow-direction tests at lines 391 and 404 pin these unit vectors with the actual
-default slope and assert unit length.
-
-**Lines 220–228: assemble the struct.** Pivot at `(x, y)`, `top_center` and
-`front_center` at the geometric centers of their respective faces (in the unrotated
-frame), and the computed `bow_dir`.
-
-**Worked examples in tests:**
-- `ship_sprite_bow_on_long_axis_runs_along_lane` (line 348): Frigate at cell 0,
-  scale 1.0. Front face: 56 wide, 6 tall. Top face depth: 7. Asserts exact dimensions
-  in the unrotated frame.
-- `ship_sprite_broadside_rotates_dimensions_90_degrees` (line 366): same Frigate,
-  broadside. Front face: 14 wide (beam), 6 tall. Top face depth: 28 (length / 2).
-- `ship_sprite_scales_with_cell_distance` (line 381): far/near ratio = 0.55.
-- `ship_sprite_bow_dir_bow_on_points_along_lane` (line 391): unit length, +x heavy.
-- `ship_sprite_bow_dir_broadside_points_off_lane` (line 404): unit length, -y heavy.
+Body (line 128): one line — `range_band(source as usize, target as usize)`. The
+`u32 → usize` cast is infallible on any 32-bit-or-wider platform. Same identity-
+modulo-cast as the pre-flat version; this is the only public function that survived
+the refactor unchanged.
 
 ---
 
-### `fn beam_endpoints(source_cell, target_cell, geom) -> (Point2, Point2)` (perspective.rs:235)
+### Deleted functions
 
-**Mirrors:** `perspective.ts` beamEndpoints.
-**Intent:** Endpoints for a weapon beam from one cell to another. Both endpoints sit
-on the lane's front edge, so the beam visually follows the lane plane automatically
-— no explicit z-axis needed.
+The flat-scene refactor (`1d4d540`, task #55) deleted six items that previously lived
+in this module. Listed here so readers searching the old API find the migration
+target:
 
-Lines 236–238: `cell_to_screen` for source and target, then strip out just the
-`(x, y)` positions. The full `CellScreen` is overkill for this caller; only the
-position is used.
+- **`fn lane_slope_rad`** — gone. The lane has no slope.
+- **`struct CellScreen`** + **`fn cell_to_screen`'s extended return** — `cell_to_screen`
+  now returns `Point2`. Anything that wanted `scale` reads `LaneGeometry::cell_width()`
+  (constant); anything that wanted `rotation_rad` no longer needs it.
+- **`type FacePoly = [Point2; 4]`** — gone. Face polygons are computed by `hud.rs`'s
+  ship-sprite path against the runtime `view_angle`.
+- **`struct ShipSprite`** — gone. Ship projection moved to `hud.rs`; the renderer no
+  longer needs a separate projection-output type.
+- **`fn ship_sprite(cell, dims, stance) -> ShipSprite`** — gone. The whole
+  military-axonometric projection algorithm (front-face rect, top-face rect with
+  depth-offset, lane-slope rotation, post-rotation `bow_dir`) is replaced by
+  `hud.rs`'s view-angle morph.
+- **`fn beam_endpoints(source, target, geom) -> (Point2, Point2)`** — gone. Beam
+  endpoints are computed inline in `hud.rs`'s beam-rendering path.
+- **`fn cell_footprint(cell_index, geom) -> [Point2; 4]`** — gone. There is no
+  trapezoid to highlight; cell highlights are axis-aligned rectangles drawn by
+  `hud.rs` directly.
 
-**Worked example (test `beam_endpoints_run_along_the_lane_front_edge`, line 416):**
-Beam from cell 0 to cell 6. Endpoints at `(35, 217)` and `(615, 162)`. The slope
-between them must equal the lane's front-edge slope (-55 / 580 ≈ -0.0948); test
-asserts to ±1e-4.
-
----
-
-### `fn cell_footprint(cell_index, geom) -> [Point2; 4]` (perspective.rs:244)
-
-**Mirrors:** `perspective.ts` cellFootprint.
-**Intent:** The four corners of a cell's footprint on the lane top surface — a
-parallelogram in the lane plane. Used for selection highlights and cell-hover
-overlays.
-
-Body (lines 245–257):
-- `n = cell_count` (note: not `cell_count − 1` like `cell_to_screen` — this function
-  divides the lane into n equal strips, not n−1 spans between n centers).
-- `t0 = cell_index / n`, `t1 = (cell_index + 1) / n` — the parametric bounds of this
-  cell's strip.
-- A `lerp_pt` closure does linear interpolation between two points.
-- Return four vertices in order: **front-near, front-far, back-far, back-near**
-  (line 252–256). This ordering is important for the renderer's index buffer; the
-  comment on line 244 specifies it.
-
-**Worked example (test `cell_footprint_returns_four_distinct_points`, line 429):**
-Cell 3's front edge must lie on the lane's front line (same slope), back edge on the
-back line. Tested to ±1e-4.
+The math these functions encoded — military-axonometric projection, lane-slope
+trigonometry — is no longer load-bearing. The new model is conceptually simpler: a
+flat 1-D strip, with the *appearance* of perspective driven entirely by `hud.rs`'s
+view-angle morph and the parallax planes' `cos(θ) / sin(θ)` reactions.
 
 ---
 
-### `fn band_between_cells(source: u32, target: u32) -> RangeBand` (perspective.rs:264)
+### `#[cfg(test)] mod tests` (perspective.rs:131–203)
 
-**Mirrors:** `perspective.ts` bandBetweenCells.
-**Intent:** Thin convenience wrapper over `geometry::range_band` so renderer code can
-stay in this module without reaching into the resolver-side `geometry`. **Both paths
-MUST agree** — the test at line 444 cross-checks every cell-distance combination
-0..=9.
-
-Line 265: `range_band(source as usize, target as usize)`. The `u32 → usize` cast is
-infallible on 32-bit-or-wider platforms (all targets we care about). Could in
-principle change the type of `geometry::range_band` to accept `u32` instead, but
-that would ripple into every resolver call site for no benefit — the cast is local
-and free.
-
-**Drift note: rename.** TS was `bandBetweenCells`; Rust is `band_between_cells`
-(snake_case per the language convention). Function-body math is identical.
-
-**Cross-reference test (`band_between_cells_matches_geometry_range_band`, line 443):**
-Iterates every `(s, t)` in `0..=9 × 0..=9` and asserts
-`band_between_cells(s, t) == range_band(s, t)`. Drift guard — if `geometry::range_band`
-ever changes its bucket boundaries, this test fires before merge.
-
----
-
-### `#[cfg(test)] mod tests` (perspective.rs:273–458)
-
-15 tests covering every public function plus the cross-port reference points. Test
-names read as sentences:
+7 inline tests, one per public function plus the cross-module drift guard:
 
 ```
-cell_to_screen_near_matches_front_start
-cell_to_screen_far_matches_front_end
-cell_to_screen_midpoint_interpolates_evenly
-lane_slope_is_modest_uphill_to_the_right
+cell_to_screen_endpoints_match_lane_extents
+cell_to_screen_midpoint_is_halfway
 cell_to_screen_single_cell_lane_is_safe
 fractional_cell_clamps_into_bounds
-fractional_cell_at_4_matches_ts_reference
-ship_sprite_bow_on_long_axis_runs_along_lane
-ship_sprite_broadside_rotates_dimensions_90_degrees
-ship_sprite_scales_with_cell_distance
-ship_sprite_bow_dir_bow_on_points_along_lane
-ship_sprite_bow_dir_broadside_points_off_lane
-beam_endpoints_run_along_the_lane_front_edge
-cell_footprint_returns_four_distinct_points
+fractional_cell_intermediate_interpolates_linearly
+cell_width_matches_lane_span_divided_by_n_minus_1
 band_between_cells_matches_geometry_range_band
 ```
 
-The TS-reference parity test (`fractional_cell_at_4_matches_ts_reference`, line 337)
-is the canonical cross-port check; it asserts exact numeric output against the TS
-`render-example.ts` reference values to ±0.01 px. If a future port change drifts the
-projection math, this test fires first.
+The last one — **`band_between_cells_matches_geometry_range_band`** — iterates `(s, t)`
+in `0..=9 × 0..=9` and asserts the renderer-side wrapper agrees with
+`geometry::range_band` on every pair. The canonical drift guard against geometry /
+perspective getting out of sync on bucket boundaries. Pinning a different bucket
+boundary in either module fires this test before merge.
 
-The cross-module agreement test (`band_between_cells_matches_geometry_range_band`,
-line 443) is the canonical drift guard against `geometry::range_band` and
-`perspective::band_between_cells` getting out of sync. Run on every `cargo test`.
+The other six tests are linear-interpolation sanity checks plus the single-cell
+degenerate (`cell_count = 1 → n = 0`, division-by-zero guard must hold).
 
 ---
 
-### Drift watch list (approved by team-lead, recorded in `70155ed`)
+### Drift from the pre-flat module (resolved by `1d4d540` + tuning rounds)
 
-Three intentional drifts from TS, all output-shape only — math is line-for-line TS:
+The pre-flat module is documented at commit `47e9670`. Differences as of HEAD:
 
-1. **`(pivot: Point2, rotation_rad: f32)` instead of pre-baked SVG `transform` string.**
-   The TS produces a `"rotate(deg cx cy)"` string ready for SVG; Rust returns the
-   pivot point and angle separately. Reason: the wgpu vertex shader composes the
-   rotation into its instance transform; it never wants strings, and parsing a TS-
-   formatted transform back into floats would be wasted work. Math identical.
+1. **Lane geometry: flat horizontal strip, not tilted trapezoid.** `LaneGeometry`
+   shrank from 8 fields to 4. `front_start` / `front_end` / `back_start` / `back_end`
+   / `scale_near` / `scale_far` are gone; only `center_y` / `x_left` / `x_right` /
+   `cell_count` remain. The camera is square-on; cells at the far end of the lane
+   are the same size as cells at the near end. The visual depth cue comes from the
+   view-angle scrubber (in `hud.rs`) and the parallax planes (sky + floor reacting
+   to `cos(θ)` / `sin(θ)`), not from per-cell scale.
+2. **`cell_to_screen` returns `Point2`, not `CellScreen`.** Sprite scale is constant
+   (read via `LaneGeometry::cell_width()` if a caller needs the cell pitch); there
+   is no per-cell rotation because the lane has no slope.
+3. **Ship projection moved to `hud.rs`.** The military-axonometric algorithm
+   (front-face + top-face polygons with depth-offset, lane-slope rotation,
+   post-rotation `bow_dir`) is gone. `hud.rs` now stacks a front face of vertical
+   extent `height × cos(θ)` underneath a top face of `beam × sin(θ) / 2`, morphing
+   the silhouette as the view-angle scrubber moves. At θ = 0 ships read as pure
+   side silhouettes; at θ = π/2 they read as pure top-down rectangles. Default is
+   45° per task #57 (`2caa712`).
+4. **Ship dimensions grew ~3× to fill the flat-scene cell.** `FRIGATE_DIMS` went from
+   `{ length: 56, beam: 14, height: 6 }` (designed for the small old `DEFAULT_LANE`)
+   to `{ length: 168, beam: 42, height: 50 }` after multiple tuning rounds. The
+   `length` is now ~95% of the default cell width (1060/6 ≈ 177 px).
+5. **TS is no longer canonical for this file.** The flat scene is a deliberate
+   Rust-port-specific direction the analysis doc didn't specify. The TS
+   `perspective.ts` still exists in the reference repo, but the Rust module's
+   rustdoc no longer cites it as the tie-breaker.
 
-2. **`[Point2; 4]` polygon arrays instead of formatted `"x,y x,y"` strings.** The TS
-   builds polygon point strings for SVG `<polygon points="...">`. Rust returns the
-   raw vertex array. Reason: wgpu wants vertex buffers, not strings. Same vertex
-   positions, same order, just unformatted.
+**Three pre-flat drifts no longer apply** because the underlying functions are gone:
 
-3. **Rotation in radians, not degrees.** The TS returns degrees because SVG
-   `transform="rotate(deg ...)"` takes degrees natively. Rust returns radians because
-   every downstream consumer (`f32::sin`/`cos`, rotation matrices, wgpu's WGSL math)
-   wants radians. Conversion is `to_degrees()` / `to_radians()` if any caller needs
-   the other unit; in practice none does.
+- ~~`(pivot, rotation_rad)` vs pre-baked SVG transform string~~ — `ShipSprite`
+  deleted.
+- ~~`[Point2; 4]` polygon arrays vs formatted strings~~ — `FacePoly` deleted.
+- ~~rotation in radians, not degrees~~ — `cell_to_screen` no longer returns a
+  rotation field.
 
-All three are documented inline in the module: rustdoc lines 26–34 cover (1) and (2);
-the `CellScreen.rotation_rad` doc comment on line 92 covers (3).
+**One pre-flat drift survives:** the `bandBetweenCells` → `band_between_cells`
+snake_case rename. That function is unchanged.
 
-**No other drift introduced by this commit.** The math (linear interpolation along the
-lane, military-axonometric projection, atan2 slope) is line-for-line ported from the
-TS. The renderer plan rests on this; if any of the three approved drifts grow to a
-fourth, it should also land in this section as a new Drift note.
+**No open architectural items.** The flat-scene refactor took perspective.rs from a
+mid-complexity projection module to a near-trivial coordinate transform. If ship
+sprites or beams need new rendering primitives in the future, they're more likely
+to land in `hud.rs` than here — this module's API is essentially complete.
+
 
 ---
 
