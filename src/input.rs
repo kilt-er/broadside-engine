@@ -470,12 +470,14 @@ impl Content for DemoContent {
 
     fn damage_modifier(
         &self,
-        target: &Ship,
+        attacker: &Ship,
         band: crate::types::RangeBand,
         board: &crate::types::Board,
     ) -> i32 {
-        let installed = self.installations.for_ship(&target.id);
-        crate::subsystems::damage_modifier_for(installed, target, band, board)
+        // Audit #67: subsystem damage bonuses fire from the attacker's
+        // installed fittings, not the target's.
+        let installed = self.installations.for_ship(&attacker.id);
+        crate::subsystems::damage_modifier_for(installed, attacker, band, board)
     }
 
     fn on_turn_end(&self, board: &mut crate::types::Board) {
@@ -788,19 +790,20 @@ mod tests {
 
     /* ---- Phase 2 subsystem integration ------------------------------- */
 
-    /// End-to-end: Marksman installed on the target ship adds +1 to a
+    /// End-to-end: Marksman installed on the **attacker** adds +1 to a
     /// Long-range hit, routed through the canonical damage pipeline via
     /// `Content::damage_modifier`. Pin against a future regression that
-    /// drops the registry lookup.
+    /// drops the registry lookup OR re-inverts the audit #67 fix.
     #[test]
     fn marksman_subsystem_adds_one_through_apply_damage() {
         use crate::resolve::apply_damage;
         use crate::subsystems::MARKSMAN;
         use crate::types::{Board, EventBus, ShieldFace, ShieldProfile};
 
-        // Attacker at cell 0, target at cell 5 (Long range). Target has
-        // armour 0 on every face so the modifier change shows up in hull.
-        let attacker = player_with_mounts(0);
+        // Attacker "p" at cell 0, target at cell 5 (Long range). Target
+        // has armour 0 on every face so the modifier change shows up in
+        // hull cleanly.
+        let attacker = player_with_mounts(0); // id "p"
         let mut target = player_with_mounts(0);
         target.id = "target".into();
         target.cell = 5;
@@ -834,13 +837,27 @@ mod tests {
         apply_damage(5, 4, 0, &weapon, &mut board, &content);
         assert_eq!(board.cells[5].as_ref().unwrap().hull, 6, "no marksman: 4 lands");
 
-        // Reset target, install Marksman, fire again. Hull should drop by 5.
+        // Reset hull, install Marksman on the ATTACKER, fire again. Hull
+        // should drop by 5. Per audit #67, Marksman is attacker-side: the
+        // bonus comes from the firing ship's fittings, not the target's.
         board.cells[5].as_mut().unwrap().hull = 10;
-        content.install_subsystem("target", MARKSMAN);
+        content.install_subsystem("p", MARKSMAN);
         apply_damage(5, 4, 0, &weapon, &mut board, &content);
         assert_eq!(
             board.cells[5].as_ref().unwrap().hull, 5,
-            "marksman: 4 base + 1 mod at Long = 5 lands"
+            "marksman on ATTACKER: 4 base + 1 attacker-side mod at Long = 5 lands"
+        );
+
+        // Negative case: Marksman on the TARGET should NOT add. Reset
+        // hull, drop the attacker's Marksman, install one on the target
+        // instead. Hull should drop by exactly 4 again.
+        board.cells[5].as_mut().unwrap().hull = 10;
+        content = DemoContent::default();
+        content.install_subsystem("target", MARKSMAN);
+        apply_damage(5, 4, 0, &weapon, &mut board, &content);
+        assert_eq!(
+            board.cells[5].as_ref().unwrap().hull, 6,
+            "marksman on TARGET must NOT apply (audit #67 direction pin)",
         );
     }
 

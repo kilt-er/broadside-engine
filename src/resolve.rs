@@ -57,12 +57,22 @@ pub trait Content {
     /// patterns straightforward.
     fn spawn_projectile(&self, kind: &str, owner: &Ship) -> Projectile;
 
-    /// Total additive subsystem damage modifier against `target` at `band`.
-    /// Called by [`apply_modifiers`] inside the canonical damage pipeline
-    /// **after** band falloff and **before** target-lock doubling. Concrete
-    /// `Content` impls scan their installed subsystem list and sum each
-    /// match's contribution — Marksman is `+1` flat, Point-Blank Doctrine
-    /// is `+2` when `band == PointBlank`, and so on.
+    /// Total additive subsystem damage modifier emitted by `attacker`
+    /// at `band`. Called by [`apply_modifiers`] inside the canonical
+    /// damage pipeline **after** band falloff and **before** target-lock
+    /// doubling. Concrete `Content` impls scan the **attacker's**
+    /// installed subsystem list and sum each match's contribution —
+    /// Marksman is `+1` flat, Point-Blank Doctrine is `+2` when
+    /// `band == PointBlank`, and so on.
+    ///
+    /// **Direction (audit #67):** modifiers fire from the attacker's
+    /// fittings, NOT the target's. The analysis HTML's catalog descs
+    /// for these subsystems read "+1 damage **when firing** at long
+    /// range" (Marksman), "+2 damage **at point-blank**" (Point-Blank
+    /// Doctrine) — all attacker-frame verbs and pronouns. The pre-audit
+    /// implementation consulted the target's subsystems, which was
+    /// backwards; tests passed because each Phase 2 demo installed the
+    /// same subsystem set on both sides.
     ///
     /// Default impl returns `0` so existing test / demo `Content` impls
     /// don't need to be updated. The runtime subsystem registry lives on
@@ -76,7 +86,7 @@ pub trait Content {
     ///   step inside the pipeline.
     ///
     /// Team-lead approved this trait extension; architect notified.
-    fn damage_modifier(&self, _target: &Ship, _band: RangeBand, _board: &Board) -> i32 {
+    fn damage_modifier(&self, _attacker: &Ship, _band: RangeBand, _board: &Board) -> i32 {
         0
     }
 
@@ -591,8 +601,10 @@ pub fn apply_damage(
 
     // 2. Subsystem damage modifiers. Routed through Content so the runtime
     //    subsystem registry stays on the content layer and doesn't leak
-    //    onto Board.
-    dmg = apply_modifiers(dmg, target_cell, band, board, content);
+    //    onto Board. Audit #67: modifiers are attacker-side (the
+    //    attacker's installed subsystems fire), so we look up by
+    //    `atk_cell`, not `target_cell`.
+    dmg = apply_modifiers(dmg, atk_cell, band, board, content);
 
     // 3. Target-lock doubles the incoming hit and is consumed.
     if let Some(target) = board.cells[target_cell].as_mut() {
@@ -1018,17 +1030,25 @@ fn dummy_weapon() -> Action {
 /// is a pass-through for all current test / demo content. Concrete Content
 /// types that install subsystems (the real game loader, future tests)
 /// override it to scan their registry.
+///
+/// **Audit #67:** `atk_cell` is the **attacker's** cell, not the target.
+/// Subsystem damage bonuses are attacker-side per analysis HTML §VI
+/// (the catalog descs all read "when firing" / "when striking" —
+/// Marksman, PBD, Rear Gunner, Center Mass, Strafing Run). NOT the
+/// target's subsystems. A future cross-cutting subsystem like Crossfire
+/// (board-state predicate, owned by player, grants bonus to attacking
+/// enemies) is out of scope for this trait; revisit when it lands.
 fn apply_modifiers(
     dmg: i32,
-    target_cell: usize,
+    atk_cell: usize,
     band: RangeBand,
     board: &Board,
     content: &dyn Content,
 ) -> i32 {
-    let Some(target) = board.cells[target_cell].as_ref() else {
+    let Some(attacker) = board.cells[atk_cell].as_ref() else {
         return dmg;
     };
-    let bonus = content.damage_modifier(target, band, board);
+    let bonus = content.damage_modifier(attacker, band, board);
     (dmg + bonus).max(0)
 }
 
@@ -2537,11 +2557,13 @@ mod tests {
     /* ---- subsystem modifiers --------------------------------------------- */
 
     /// A Content impl that always returns a fixed damage modifier.
+    /// Tests using this don't care which ship is the attacker — the
+    /// modifier is unconditional — so the trait param can stay anonymous.
     struct FixedModifier(i32);
     impl Content for FixedModifier {
         fn action(&self, _: &str) -> Option<&Action> { None }
         fn spawn_projectile(&self, _: &str, _: &Ship) -> Projectile { unreachable!() }
-        fn damage_modifier(&self, _t: &Ship, _b: RangeBand, _board: &Board) -> i32 {
+        fn damage_modifier(&self, _attacker: &Ship, _b: RangeBand, _board: &Board) -> i32 {
             self.0
         }
     }

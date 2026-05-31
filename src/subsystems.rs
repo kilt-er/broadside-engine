@@ -95,7 +95,7 @@ impl Installations {
  * Behavioral dispatch.
  *
  * Two entry points, one per Content trait method:
- *   damage_modifier_for(installed, target, band, board) -> i32
+ *   damage_modifier_for(installed, attacker, band, board) -> i32
  *   on_turn_end_for(installed, board)
  *
  * Each walks the list of installed subsystem ids and sums / applies
@@ -124,17 +124,24 @@ pub const HEAT_SINK: &str = "heat_sink";
 /// and an arm in both dispatch fns.
 pub const SUBSYSTEM_IDS: &[&str] = &[MARKSMAN, POINT_BLANK_DOCTRINE, HEAT_SINK];
 
-/// Step 2 of the damage pipeline: walk every subsystem installed on
-/// `target` and sum its per-hit damage bonus. Called by the
+/// Step 2 of the damage pipeline: walk every subsystem installed on the
+/// **attacker** and sum its per-hit damage bonus. Called by the
 /// `Content::damage_modifier` impl on [`crate::input::DemoContent`].
 ///
 /// `band` is the post-falloff range bucket. The bonus is additive — for
 /// the current three subsystems, only Marksman and Point-Blank Doctrine
 /// contribute and they contribute at most one band each. Returns 0 if no
-/// subsystem on the target matches the band.
+/// subsystem on the attacker matches the band.
+///
+/// **Direction (audit #67):** modifiers are attacker-side. The analysis
+/// HTML's catalog descs all read "+1 damage **when firing**" / "**when
+/// striking**" — attacker-frame verbs. Pre-audit code consulted the
+/// target's subsystems and tests passed because each Phase 2 demo
+/// installed the same subsystem set on both sides. Caller must pass the
+/// attacker's installed list (not the target's).
 pub fn damage_modifier_for(
     installed: &[SubsystemId],
-    _target: &Ship,
+    _attacker: &Ship,
     band: RangeBand,
     _board: &Board,
 ) -> i32 {
@@ -249,30 +256,30 @@ mod tests {
 
     #[test]
     fn marksman_only_adds_at_long() {
-        let target = naked_ship("p", 0, 0, 6);
-        let board = empty_board(vec![target.clone()]);
+        let attacker = naked_ship("p", 0, 0, 6);
+        let board = empty_board(vec![attacker.clone()]);
         let installed = vec![MARKSMAN.to_string()];
-        assert_eq!(damage_modifier_for(&installed, &target, RangeBand::PointBlank, &board), 0);
-        assert_eq!(damage_modifier_for(&installed, &target, RangeBand::Close, &board), 0);
-        assert_eq!(damage_modifier_for(&installed, &target, RangeBand::Mid, &board), 0);
-        assert_eq!(damage_modifier_for(&installed, &target, RangeBand::Long, &board), 1);
-        assert_eq!(damage_modifier_for(&installed, &target, RangeBand::Extreme, &board), 0);
+        assert_eq!(damage_modifier_for(&installed, &attacker, RangeBand::PointBlank, &board), 0);
+        assert_eq!(damage_modifier_for(&installed, &attacker, RangeBand::Close, &board), 0);
+        assert_eq!(damage_modifier_for(&installed, &attacker, RangeBand::Mid, &board), 0);
+        assert_eq!(damage_modifier_for(&installed, &attacker, RangeBand::Long, &board), 1);
+        assert_eq!(damage_modifier_for(&installed, &attacker, RangeBand::Extreme, &board), 0);
     }
 
     #[test]
     fn point_blank_doctrine_only_adds_at_point_blank() {
-        let target = naked_ship("p", 0, 0, 6);
-        let board = empty_board(vec![target.clone()]);
+        let attacker = naked_ship("p", 0, 0, 6);
+        let board = empty_board(vec![attacker.clone()]);
         let installed = vec![POINT_BLANK_DOCTRINE.to_string()];
-        assert_eq!(damage_modifier_for(&installed, &target, RangeBand::PointBlank, &board), 2);
-        assert_eq!(damage_modifier_for(&installed, &target, RangeBand::Close, &board), 0);
-        assert_eq!(damage_modifier_for(&installed, &target, RangeBand::Long, &board), 0);
+        assert_eq!(damage_modifier_for(&installed, &attacker, RangeBand::PointBlank, &board), 2);
+        assert_eq!(damage_modifier_for(&installed, &attacker, RangeBand::Close, &board), 0);
+        assert_eq!(damage_modifier_for(&installed, &attacker, RangeBand::Long, &board), 0);
     }
 
     #[test]
     fn multiple_subsystems_stack_additively() {
-        let target = naked_ship("p", 0, 0, 6);
-        let board = empty_board(vec![target.clone()]);
+        let attacker = naked_ship("p", 0, 0, 6);
+        let board = empty_board(vec![attacker.clone()]);
         // Two Marksmen, two PBDs (the catalog wouldn't normally let this
         // happen — they're maxLevel-bounded — but the runtime layer must
         // sum without surprise).
@@ -281,9 +288,9 @@ mod tests {
             POINT_BLANK_DOCTRINE.to_string(), POINT_BLANK_DOCTRINE.to_string(),
         ];
         // At PB: only PBD applies, 2×2 = 4 bonus.
-        assert_eq!(damage_modifier_for(&installed, &target, RangeBand::PointBlank, &board), 4);
+        assert_eq!(damage_modifier_for(&installed, &attacker, RangeBand::PointBlank, &board), 4);
         // At Long: only Marksman applies, 2×1 = 2 bonus.
-        assert_eq!(damage_modifier_for(&installed, &target, RangeBand::Long, &board), 2);
+        assert_eq!(damage_modifier_for(&installed, &attacker, RangeBand::Long, &board), 2);
     }
 
     #[test]
