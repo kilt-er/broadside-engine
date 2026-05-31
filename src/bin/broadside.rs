@@ -46,7 +46,8 @@ use broadside_engine::cards::PlayResult;
 use broadside_engine::geometry::default_shield_profile;
 use broadside_engine::gfx::{Gfx, VIRTUAL_H, VIRTUAL_W};
 use broadside_engine::hud::{
-    self, push_between_encounter_overlay, win_state, BetweenEncounterChoice, TweenState, WinState,
+    self, push_between_encounter_overlay, push_run_defeated_overlay, push_salvage_hud,
+    win_state, BetweenEncounterChoice, TweenState, WinState,
 };
 use broadside_engine::runs::{
     advance_after_win, build_encounter_board, current_encounter, encounter_outcome, fallback_ship_for_spawn,
@@ -401,13 +402,7 @@ impl App {
             camera_angle_idx: CAMERA_ANGLE_DEFAULT_INDEX,
             tween_anchors: HashMap::new(),
             sectors: placeholder_sectors(),
-            run: Run {
-                current_sector_idx: 0,
-                salvage: 0,
-                completed_encounters: 0,
-                defeated: false,
-                victorious: false,
-            },
+            run: Run::new(Self::fresh_player_ship()),
             demo_state: DemoState::Playing,
             #[cfg(feature = "audio")]
             audio: None,
@@ -450,13 +445,7 @@ impl App {
     /// start. Called on Restart from `RunComplete` / `RunDefeated`
     /// overlays. Also re-installs audio on the new board's EventBus.
     fn restart_run(&mut self) {
-        self.run = Run {
-            current_sector_idx: 0,
-            salvage: 0,
-            completed_encounters: 0,
-            defeated: false,
-            victorious: false,
-        };
+        self.run = Run::new(Self::fresh_player_ship());
         self.content = fresh_content();
         self.board = self
             .build_current_board()
@@ -766,8 +755,15 @@ impl ApplicationHandler for App {
                 let active_tween = self.has_active_tween(now);
                 let demo_state = self.demo_state;
                 let sector_idx = self.run.current_sector_idx;
+                let salvage = self.run.salvage;
                 let Some(gfx) = self.gfx.as_mut() else { return };
                 let mut instances = hud::compose_scene_tweened(&self.board, &self.lane, angle, gfx, &tween);
+                // In-game salvage counter (top-right) — only shown
+                // during Playing state. The modal overlays surface
+                // salvage in their own banners.
+                if matches!(demo_state, DemoState::Playing) {
+                    push_salvage_hud(&mut instances, salvage);
+                }
                 // Push the appropriate demo-state overlay on top.
                 // Compose no longer auto-pushes — the bin owns the
                 // overlay decision since #77.
@@ -776,17 +772,17 @@ impl ApplicationHandler for App {
                     DemoState::EncounterComplete => {
                         push_between_encounter_overlay(
                             &mut instances,
-                            BetweenEncounterChoice::EncounterComplete { sector_idx },
+                            BetweenEncounterChoice::EncounterComplete { sector_idx, salvage },
                         );
                     }
                     DemoState::RunComplete => {
                         push_between_encounter_overlay(
                             &mut instances,
-                            BetweenEncounterChoice::RunComplete,
+                            BetweenEncounterChoice::RunComplete { salvage },
                         );
                     }
                     DemoState::RunDefeated => {
-                        hud::push_end_state_overlay(&mut instances, WinState::Defeat);
+                        push_run_defeated_overlay(&mut instances, salvage);
                     }
                 }
                 match gfx.render(&instances) {

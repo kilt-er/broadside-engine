@@ -1039,6 +1039,46 @@ pub fn push_end_state_overlay(out: &mut Vec<DrawCommand>, state: WinState) {
     push_centered_banner(out, banner, VIRTUAL_H as f32 / 2.0, 4.0);
 }
 
+/// Run-end overlay used by the bin's `DemoState::RunDefeated` arm.
+/// Like the Phase-1 [`push_end_state_overlay`] `Defeat` variant but
+/// also surfaces the run's earned-salvage total so the player sees
+/// what their meta-progression contribution was before dying.
+pub fn push_run_defeated_overlay(out: &mut Vec<DrawCommand>, salvage: u32) {
+    use crate::gfx::{VIRTUAL_H, VIRTUAL_W};
+    let center_x = VIRTUAL_W as f32 / 2.0;
+    let center_y = VIRTUAL_H as f32 / 2.0;
+    push_sprite(out, SpriteInstance::axis_aligned(
+        [center_x, center_y],
+        [center_x, center_y],
+        DEFEAT_TINT,
+        atlas::cell_uvs(atlas::SOLID_WHITE),
+    ));
+    push_centered_banner(out, "DEFEATED", center_y - 60.0, 5.0);
+    push_centered_banner(out, &format!("TOTAL SALVAGE: {}", salvage), center_y + 10.0, 3.0);
+    push_centered_banner(out, "PRESS ENTER TO RESTART", center_y + 60.0, 2.5);
+}
+
+/// Top-right in-game salvage counter. Small inline-font readout that
+/// stays present during `Playing` state so the player can verify the
+/// counter ticks up on each encounter win. Pushes a single row of
+/// 5×7 glyphs ~16px from the top-right canvas edge.
+pub fn push_salvage_hud(out: &mut Vec<DrawCommand>, salvage: u32) {
+    use crate::gfx::VIRTUAL_W;
+    let banner = format!("SALVAGE: {}", salvage);
+    let pixel = 2.0;
+    let glyph_w_px = 5.0 * pixel;
+    let space_px = pixel;
+    let advance = glyph_w_px + space_px;
+    let total_w: f32 = banner.len() as f32 * advance - space_px;
+    let right_pad = 20.0;
+    let start_x = VIRTUAL_W as f32 - total_w - right_pad;
+    let y = 8.0;
+    for (i, ch) in banner.chars().enumerate() {
+        let x = start_x + i as f32 * advance;
+        push_glyph_5x7(out, ch, x, y, pixel, WHITE);
+    }
+}
+
 /// Centered single-line banner using the inline 5×7 font. `pixel` is
 /// the size of one font "pixel" in virtual pixels (typically 4 for
 /// title-style banners, 2 for body text). `y` is the vertical center
@@ -1064,11 +1104,15 @@ pub enum BetweenEncounterChoice {
     /// Encounter just cleared. Player picks 1/2/3 (repair / upgrade /
     /// continue). `sector_idx` is the run's CURRENT sector index
     /// (zero-based); displayed as sector_idx+1 in the banner.
-    EncounterComplete { sector_idx: usize },
+    /// `salvage` is the run's current `Run::salvage` total after the
+    /// just-completed encounter's award.
+    EncounterComplete { sector_idx: usize, salvage: u32 },
     /// Final encounter of final sector cleared. Player won the run.
     /// Distinct from `WinState::Victory` (which fires on any single
     /// encounter win) — this is for the campaign-end overlay only.
-    RunComplete,
+    /// `salvage` is the run's final salvage total — surfaced as
+    /// "TOTAL SALVAGE: N" on the overlay.
+    RunComplete { salvage: u32 },
 }
 
 /// Render the between-encounter overlay. Three-line layout:
@@ -1091,7 +1135,7 @@ pub fn push_between_encounter_overlay(
     let center_y = VIRTUAL_H as f32 / 2.0;
     let tint = match choice {
         BetweenEncounterChoice::EncounterComplete { .. } => [0.10, 0.20, 0.35, 0.65],
-        BetweenEncounterChoice::RunComplete => VICTORY_TINT,
+        BetweenEncounterChoice::RunComplete { .. } => VICTORY_TINT,
     };
     // Full-canvas tinted overlay.
     push_sprite(out, SpriteInstance::axis_aligned(
@@ -1102,18 +1146,21 @@ pub fn push_between_encounter_overlay(
     ));
 
     match choice {
-        BetweenEncounterChoice::EncounterComplete { sector_idx } => {
+        BetweenEncounterChoice::EncounterComplete { sector_idx, salvage } => {
             // Banner row: "ENCOUNTER COMPLETE - SECTOR N" at y_center - 60.
             let pixel = 3.0;
             let sector_num = sector_idx + 1;
             let banner = format!("ENCOUNTER COMPLETE - SECTOR {}", sector_num);
             push_centered_banner(out, &banner, center_y - 60.0, pixel);
-            // Choice row: "1 REPAIR    2 UPGRADE    3 CONTINUE" at y_center + 20.
-            push_centered_banner(out, "1 REPAIR  2 UPGRADE  3 CONTINUE", center_y + 20.0, pixel);
+            // Salvage row: "SALVAGE: N" between banner and choices.
+            push_centered_banner(out, &format!("SALVAGE: {}", salvage), center_y - 15.0, pixel);
+            // Choice row: "1 REPAIR    2 UPGRADE    3 CONTINUE" at y_center + 35.
+            push_centered_banner(out, "1 REPAIR  2 UPGRADE  3 CONTINUE", center_y + 35.0, pixel);
         }
-        BetweenEncounterChoice::RunComplete => {
-            push_centered_banner(out, "RUN COMPLETE", center_y - 30.0, 5.0);
-            push_centered_banner(out, "PRESS ENTER TO RESTART", center_y + 30.0, 3.0);
+        BetweenEncounterChoice::RunComplete { salvage } => {
+            push_centered_banner(out, "RUN COMPLETE", center_y - 50.0, 5.0);
+            push_centered_banner(out, &format!("TOTAL SALVAGE: {}", salvage), center_y + 15.0, 3.0);
+            push_centered_banner(out, "PRESS ENTER TO RESTART", center_y + 55.0, 2.5);
         }
     }
 }
@@ -1163,6 +1210,7 @@ fn push_glyph_5x7(
         '8' => [0b01110, 0b10001, 0b10001, 0b01110, 0b10001, 0b10001, 0b01110],
         '9' => [0b01110, 0b10001, 0b10001, 0b01111, 0b00001, 0b00010, 0b01100],
         '-' => [0b00000, 0b00000, 0b00000, 0b11111, 0b00000, 0b00000, 0b00000],
+        ':' => [0b00000, 0b00100, 0b00100, 0b00000, 0b00100, 0b00100, 0b00000],
         ' ' => return,
         _ => return, // unknown char = blank glyph
     };
@@ -1409,10 +1457,10 @@ mod tests {
         let mut out: Vec<DrawCommand> = Vec::new();
         push_between_encounter_overlay(
             &mut out,
-            BetweenEncounterChoice::EncounterComplete { sector_idx: 0 },
+            BetweenEncounterChoice::EncounterComplete { sector_idx: 0, salvage: 7 },
         );
         assert!(out.len() > 50,
-            "encounter-complete overlay should emit tint + banner + choice glyphs, got {}",
+            "encounter-complete overlay should emit tint + banner + salvage + choice glyphs, got {}",
             out.len());
         // Tint quad: full-canvas sprite with half_size = canvas/2.
         let has_overlay_quad = out.iter().any(|c| {
@@ -1424,9 +1472,52 @@ mod tests {
     }
 
     #[test]
+    fn push_salvage_hud_emits_glyphs() {
+        // The top-right HUD readout should always emit at least the
+        // tint-free font glyphs for the "SALVAGE: 0" baseline string.
+        let mut out: Vec<DrawCommand> = Vec::new();
+        push_salvage_hud(&mut out, 0);
+        assert!(out.len() > 20,
+            "salvage HUD should emit a row of font glyph quads, got {}",
+            out.len());
+        // No full-canvas overlay quad — this is an in-game indicator,
+        // not a modal screen.
+        let has_overlay_quad = out.iter().any(|c| {
+            matches!(c, DrawCommand::Sprite(s)
+                if s.half_size[0] >= crate::gfx::VIRTUAL_W as f32 / 2.0
+                && s.half_size[1] >= crate::gfx::VIRTUAL_H as f32 / 2.0)
+        });
+        assert!(!has_overlay_quad,
+            "salvage HUD must NOT emit a full-canvas tint quad");
+    }
+
+    #[test]
+    fn push_salvage_hud_scales_with_value() {
+        // Multi-digit salvage values should emit MORE glyph quads than
+        // single-digit values — verifies the counter actually
+        // renders the number (not just the "SALVAGE:" prefix).
+        let mut small: Vec<DrawCommand> = Vec::new();
+        let mut large: Vec<DrawCommand> = Vec::new();
+        push_salvage_hud(&mut small, 7);       // 1 digit
+        push_salvage_hud(&mut large, 12345);   // 5 digits
+        assert!(large.len() > small.len(),
+            "5-digit salvage HUD ({}) should emit more glyphs than 1-digit ({})",
+            large.len(), small.len());
+    }
+
+    #[test]
+    fn push_run_defeated_overlay_emits_total_salvage_line() {
+        let mut out: Vec<DrawCommand> = Vec::new();
+        push_run_defeated_overlay(&mut out, 42);
+        assert!(out.len() > 50,
+            "run-defeated overlay should emit tint + banner + salvage + restart glyphs, got {}",
+            out.len());
+    }
+
+    #[test]
     fn push_between_encounter_overlay_run_complete_variant_renders() {
         let mut out: Vec<DrawCommand> = Vec::new();
-        push_between_encounter_overlay(&mut out, BetweenEncounterChoice::RunComplete);
+        push_between_encounter_overlay(&mut out, BetweenEncounterChoice::RunComplete { salvage: 17 });
         assert!(out.len() > 50,
             "run-complete overlay should emit tint + banner glyphs, got {}",
             out.len());
