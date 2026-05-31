@@ -30,6 +30,9 @@ glance what is documented vs. what is pending.*
 - [`src/resolve.rs`](#srcresolvers) — the four-phase round, queue gate, damage pipeline, effect dispatch, all movement/AI/modifier bodies
 - [`src/catalog.rs`](#srccatalogrs) — catalog loader + `LoadError` + strict/canonical format auto-detect
 - [`src/catalog_canonical.rs`](#srccatalog_canonicalrs) — canonical (design-doc) → strict catalog transformer
+- [`src/runs.rs`](#srcrunsrs) — Phase 3 run-loop: encounter outcome, run advancement, board materialization, placeholder sectors
+- [`src/meta.rs`](#srcmetars) — cross-run meta-progression: salvage math, unlock-threshold ladder, persistence
+- [`src/save.rs`](#srcsavers) — per-run save/load (atomic JSON write), `SaveError`
 - [`src/gfx.rs`](#srcgfxrs) — wgpu state, four pipelines, virtual-res offscreen + integer-scale blit
 - [`src/atlas.rs`](#srcatlasrs) — procedural 256×256 sprite atlas
 - [`src/hud.rs`](#srchudrs) — scene compositor (DrawCommand list)
@@ -4041,6 +4044,220 @@ variants consumed by the resolver's `apply_damage` / effect dispatch.
 **Drift — inferred numerics.** Effect amounts/durations/distances are inferred from
 archetype + heat, not present in canonical data — conservative defaults meant to be tuned
 by playtesting, not authoritative balance.
+
+---
+
+## `src/runs.rs`
+
+*Phase 3 run-loop logic — the campaign state machine. Reads a live [`Board`](#srctypesrs)
+to decide if an encounter is won/lost (`encounter_outcome`), mutates a [`Run`](#srctypesrs)
+to advance through the sector map (`advance_after_win`), and materializes a fresh `Board`
+for each encounter from a spawn list plus the player's carried-over ship
+(`build_encounter_board`). Ships three placeholder sectors with a final boss. Full
+companion at [`docs/MODULES/runs.md`](MODULES/runs.md).*
+
+**Mirrors:** No TS analog. `demo.ts` is a single hand-built board with no campaign layer.
+Phase-3-only. Architect's #75 supplies the types; this is the runtime layer on top.
+
+**Intent:** Turn the inert `Sector`/`EncounterDef`/`Run`/`ShipSpawn` structs into a
+working campaign. The bin's loop: resolve a round → `encounter_outcome` → on `Won`,
+`advance_after_win` + build the next board → on `Lost`, `mark_defeated`. Two design calls
+baked in: placeholder sectors live in a stand-alone function (not on `DemoContent`) because
+they're read once per transition, not per frame; and spawns reference a `class_id` resolved
+by a builder closure, so the same encounter code works with placeholder and real catalog
+data.
+
+### `enum EncounterOutcome` + `fn encounter_outcome(board) -> EncounterOutcome` (src/runs.rs:63, 80)
+
+**Intent:** One cheap single-pass scan of `board.cells` classifies the board as
+`InProgress` / `Won` / `Lost`. Line 91-97: no player → `Lost` (loss takes precedence; an
+empty board returns `Lost` as the more honest signal); no enemy → `Won`; else `InProgress`.
+**Cross-references:** called by the bin after each `resolve_round`; gates `advance_after_win`
+vs `mark_defeated`. **Worked examples** (src/runs.rs:659-687): both present → `InProgress`;
+no enemies → `Won`; no player or empty → `Lost`.
+
+### `enum AdvanceResult` + `fn advance_after_win(run, sectors) -> AdvanceResult` (src/runs.rs:106, 130)
+
+**Intent:** Advance a confirmed-won run; mutates `completed_encounters` and possibly
+`current_sector_idx` / `victorious`. **Pre-condition:** caller already confirmed the win via
+`encounter_outcome` — this function never touches the board. Line 131-133: an already-ended
+run → `AlreadyEnded`. Line 135-141: out-of-bounds sector → defensively declare victory. Line
+144-150: more encounters in this sector → increment, `NextEncounter`. Line 153-158: next
+sector exists → advance idx, reset `completed_encounters` to 0, `NextSector`. Line 162-163:
+final sector cleared → set `victorious`, `Victorious`. The bin branches on the four variants
+to pick the between-encounter UI / end-of-sector / final-victory screen.
+
+**Worked examples** (src/runs.rs:695-746): within-sector → `NextEncounter`; last-of-sector →
+`NextSector` (idx 1, encounters reset 0); last-of-last-sector → `Victorious`; already
+ended → `AlreadyEnded`.
+
+### `fn mark_defeated(run)` + `fn current_encounter(run, sectors) -> Option<&EncounterDef>` (src/runs.rs:169, 176)
+
+`mark_defeated` flips `run.defeated` (idempotent), called on `Lost`. `current_encounter`
+indexes `sectors[current_sector_idx].encounters[completed_encounters]`, returning `None` on
+an ended run or out-of-bounds indices (bin shows the end-of-run overlay).
+**Worked examples** (src/runs.rs:757-781): ended run → `None`; fresh → `"drift_belt_a"`;
+after one win → `"drift_belt_b"`.
+
+### `fn build_encounter_board<F>(encounter, player, class_to_ship) -> Board` (src/runs.rs:206)
+
+**Intent:** Instantiate a fresh board for an encounter. The player's *current* ship
+(hull/heat/cooldown/status carried over) is placed at cell 0 with its `cell` normalized to
+0 ("start at the lane mouth"); enemy spawns populate the rest via the `class_to_ship`
+closure; hazards drop in. Line 216-223: lane size from the max occupied cell, rounded up to
+canonical 5/7/9. Line 233-252: place each spawn, **skipping** off-board, cell-0 (player
+collision), or occupied cells; apply `orientation` and `hp_override`. Line 261-269: assemble
+with a fresh `EventBus::default()`. The closure parameter is the flexibility seam — bin
+passes a catalog-aware builder, tests pass `fallback_ship_for_spawn`.
+
+**Worked examples** (src/runs.rs:847-920): player at cell 0 with hull preserved; enemies at
+their cells with override applied; a cell-0 spawn dropped to protect the player.
+
+### `fn canonical_lane_size(max_cell) -> usize` (src/runs.rs:275)
+
+`0..=4 → 5`, `5..=6 → 7`, `_ → 9` — the analysis doc's early/mid/late lane lengths. Pinned
+by `build_board_uses_canonical_lane_size` (src/runs.rs:978).
+
+### `fn boss_ship_for_spawn(spawn) -> Ship` + `fn fallback_ship_for_spawn(spawn) -> Ship` (src/runs.rs:315, 362)
+
+**Intent:** Two spawn→`Ship` builders. `boss_ship_for_spawn` is the Citadel Warlord (#83):
+hull 14 (double the regular cap), bow armour 3 (hard frontal approach, soft stern flank),
+three mounts (forward `pulse_laser` + `beam_cannon`, broadside `missile_salvo` — so the AI
+telegraph surfaces real threats), and `Trait::ReactorBreach` (death splashes neighbors via
+the resolver's `destroy()`). `hp_override` still wins if set. `fallback_ship_for_spawn` is
+the "any enemy" default — hull 3, one forward `pulse_laser`. The bin's spawn callback routes
+`class_id == "warlord"` to the boss builder, everything else to the fallback.
+
+**Worked examples:** `boss_ship_for_spawn_has_climactic_loadout` (src/runs.rs:922) pins hull
+≥14, `ReactorBreach`, ≥3 mounts, bow armour ≥3; `boss_ship_for_spawn_honors_hp_override`
+(src/runs.rs:962) — override 20 beats the 14 default.
+
+### `fn placeholder_sectors() -> Vec<Sector>` (src/runs.rs:413)
+
+**Intent:** Three demo sectors of ascending difficulty: Drift Belt (patrol 1, two weak
+encounters), Ion Reefs (patrol 2, three encounters with trait variety), Citadel Approach
+(patrol 3, two encounters + the `is_boss: true` Citadel Warlord encounter flanked by two
+`voidrunner` escorts). Returned as a plain `Vec<Sector>` so swapping to a typed
+`Catalog::sectors` is mechanical. `spawn` / `enc` (src/runs.rs:421, 430) are terse local
+constructors.
+
+**Worked examples** (src/runs.rs:785-843): three sectors, ascending patrol tiers; every
+sector has ≥1 encounter; exactly one boss, at the very end; loose density progression.
+
+**Drift — placeholder data.** The sectors are Rust literals standing in until
+`Catalog::sectors` (currently `Vec<serde_json::Value>`) is typed. `ShipSpawn::class_id` has
+a deferred `→ template_id` rename noted in types.rs.
+
+---
+
+## `src/meta.rs`
+
+*Cross-run meta-progression — the persistent layer that survives death. Owns the
+`MetaProgression` struct (unlocked subsystems/cards + cumulative `total_salvage_earned`),
+the salvage-per-kill math, and the salvage-gated unlock ladder. On run end the bin calls
+`accumulate_into_meta` to roll the run's salvage forward and apply any thresholds crossed.
+Full companion at [`docs/MODULES/meta.md`](MODULES/meta.md).*
+
+**Mirrors:** No TS analog. Phase-3-only. Defines structure + persistence + threshold logic;
+the between-encounter purchase UI is renderer's #77 screen on top.
+
+### `struct MetaProgression` + `enum MetaError` (src/meta.rs:72, 91)
+
+`MetaProgression` is three `#[serde(default)]` fields: `unlocked_subsystems`,
+`unlocked_cards` (reserved, empty in Phase 3), `total_salvage_earned` (never decremented).
+`MetaError` is `Io`/`Parse`, mirroring [`catalog::LoadError`](#srccatalogrs) so callers `?`
+uniformly.
+
+### `impl MetaProgression` — persistence + queries (src/meta.rs:121)
+
+`load_from_disk` (src/meta.rs:125) returns `Ok(default)` on a **missing file** (first-run is
+not an error). `save_to_disk` (src/meta.rs:136) creates parent dirs and does a plain
+`fs::write` — **not** the atomic tmp+rename of `Run::save_to_disk`, because a torn meta write
+at worst loses one rollover. `has_subsystem` (src/meta.rs:150) covers starter + unlocked in
+one check; `available_subsystems` (src/meta.rs:159) returns the full pool as a `HashSet`.
+`STARTER_SUBSYSTEMS` (src/meta.rs:169) pulls the three always-available ids from
+`subsystems.rs` constants to avoid string drift.
+
+### Salvage math (src/meta.rs:195, 220, 251)
+
+`salvage_for_destroyed` — hull-weighted: `≤3 → 1`, `≤6 → 2`, `7+ → 3`.
+`salvage_for_encounter_win` — sums over the encounter's **spawn list** (the board is empty
+by win time), honoring `hp_override`, then `×2` for `is_boss`. `award_run_salvage` —
+`saturating_add` into the live `Run`, called once per encounter-complete.
+
+**Worked examples:** `salvage_for_encounter_sums_per_enemy` (src/meta.rs:387) — 1+1+3 = 5;
+`salvage_for_boss_encounter_doubles` (src/meta.rs:421) — 3 × 2 = 6;
+`award_run_salvage_saturates_not_overflows` (src/meta.rs:461).
+
+### Unlock ladder + `fn accumulate_into_meta(meta, run) -> Vec<String>` (src/meta.rs:272, 293)
+
+`SUBSYSTEM_UNLOCK_THRESHOLDS` (src/meta.rs:272) is the single source of truth:
+`rear_gunner` 10, `chain_bounty` 25, `overcharge` 50, `crossfire` 100. `accumulate_into_meta`
+rolls the run's salvage into the persistent total (`saturating_add`) and **edge-triggers**
+each unlock with `prev_total < threshold && new_total >= threshold` (a `contains` guard
+prevents duplicates), returning the newly-unlocked ids for the run-end "UNLOCKED: …"
+overlay. Called on **every** run end, win or loss — the design rewards engagement.
+Idempotent only at the caller's level; the bin must fire it once.
+
+**Worked examples:** `accumulate_crosses_threshold_unlocks_subsystem` (src/meta.rs:514) —
+salvage 10 unlocks `rear_gunner`; `accumulate_multiple_thresholds_in_one_jump`
+(src/meta.rs:525) — salvage 26 unlocks two; `accumulate_idempotent_for_already_unlocked`
+(src/meta.rs:537) — no duplicate. The `unlock_thresholds_are_in_ascending_order` invariant
+(src/meta.rs:604) guarantees the ladder is monotonic, which the edge-trigger relies on.
+
+**Cross-references:** Reads `subsystems.rs` constants; consumes [`Run::salvage`](#srctypesrs);
+called by the bin between `Run::delete_save` and `MetaProgression::save_to_disk` on run end.
+
+---
+
+## `src/save.rs`
+
+*Per-run save/load: three methods on [`Run`](#srctypesrs) (`save_to_disk` /
+`load_from_disk` / `delete_save`) plus a `SaveError` enum. Persists the in-progress run only;
+cross-run progression lives separately in [`meta.rs`](#srcmetars) so deleting a save on
+Game-Over never wipes permanent unlocks. Full companion at
+[`docs/MODULES/save.md`](MODULES/save.md).*
+
+**Mirrors:** No TS analog. Phase-3-only.
+
+**Drift — JSON, not postcard.** Task #79's brief asked for `postcard`. The module ships
+**JSON** because postcard can't encode internally-tagged enums and
+[`Orientation`](#srctypesrs) is `#[serde(tag = "stance")]`; JSON costs no new deps, matches
+the `MetaProgression` precedent, and the format asymmetry the brief anticipated turned out
+not to be load-bearing (src/save.rs:20-31).
+
+### `enum SaveError` (src/save.rs:69)
+
+`Io` / `Encode` / `Decode`. The `Encode` vs `Decode` split is the meaningful one: "couldn't
+write" (prompt / fall back to memory) vs "couldn't read the file we have" (prompt to delete
++ start fresh). There is **no** blanket `From<serde_json::Error>` — it would be ambiguous
+between the two — so each call site maps explicitly.
+
+### `fn Run::save_to_disk(&self, path)` (src/save.rs:113)
+
+**Intent:** Pretty-JSON serialize, written **atomically** via tmp+rename so a crash mid-write
+can't leave a partial save. Line 115-119: bootstrap parent dir. Line 120: serialize
+(`map_err(SaveError::Encode)`). Line 121-123: write `<path>.tmp`, then `fs::rename` (the
+cross-platform atomic-replace). **Worked example** (`save_writes_atomically_no_tmp_file_left_behind`,
+src/save.rs:287): the tmp file is renamed away, leaving no cruft.
+
+### `fn Run::load_from_disk(path) -> Result<Option<Run>, SaveError>` (src/save.rs:132)
+
+**Intent:** The `Option` encodes first-run as a non-error: `Ok(None)` = no save exists,
+distinct from `Err` = save exists but is broken. Line 138: parse failure →
+`SaveError::Decode`. **Worked examples** (src/save.rs:242-285): round-trips a populated run;
+missing file → `None`; garbage → `Decode`.
+
+### `fn Run::delete_save(path)` (src/save.rs:147) + `fn tmp_path_for(path)` (src/save.rs:159)
+
+`delete_save` removes the file **idempotently** (already-absent is `Ok`), intended for
+Game-Over, and does **not** touch the meta save. `tmp_path_for` computes the same-directory
+`.tmp` path used by the atomic write (same filesystem guarantees the rename is atomic).
+**Worked example:** `delete_is_idempotent` (src/save.rs:263).
+
+**Cross-references:** Called by the bin at startup (`load_from_disk`), on turn-commit /
+transitions (`save_to_disk`), and on run end (`delete_save`). The end-of-run sequence pairs
+with [`meta.rs`](#srcmetars)'s `accumulate_into_meta` + `MetaProgression::save_to_disk`.
 
 ---
 
