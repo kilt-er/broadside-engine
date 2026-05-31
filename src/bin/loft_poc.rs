@@ -429,11 +429,18 @@ mod parts {
     const MAT_GUN: [f32; 3] = [1.0, 0.541, 0.282]; // 0xff8a48
     const MAT_BATT: [f32; 3] = [1.0, 0.847, 0.420]; // 0xffd86b
     const MAT_ENGINE: [f32; 3] = [0.435, 0.878, 1.0]; // 0x6fe0ff
-                                                      // Greeble accent colors — pushed to high hull-contrast so the panel
-                                                      // scatter reads clearly (bruce: "make them pop"). Very-dark recess vs the
-                                                      // ~0.7-grey hull, plus a warm amber light.
-    const GREEB_DARK: [f32; 3] = [0.08, 0.10, 0.16];
-    const GREEB_LIGHT: [f32; 3] = [1.0, 0.78, 0.42];
+
+    // Greeble PANEL tones — quiet value-steps off the hull albedo (0xb4c6e0 ≈
+    // [0.706, 0.776, 0.878]), NOT saturated accents. The bulk of dorsal
+    // greebles read as plating / panel lines (±~18% darker / lighter), with
+    // only an occasional genuine running-light accent. (Earlier the 3-color
+    // near-black / blue / amber palette read as confetti — bruce: tone to hull
+    // panels; the size/density was fine, only the color was wrong.)
+    const PANEL_DARK: [f32; 3] = [0.58, 0.64, 0.72]; // ~18% darker plate
+    const PANEL_LIGHT: [f32; 3] = [0.84, 0.90, 1.0]; // ~18% lighter plate
+    /// Rare genuine accent (a running light) — used for only a small fraction
+    /// of greebles so it punctuates rather than confettis.
+    const GREEB_ACCENT: [f32; 3] = [0.373, 0.847, 1.0]; // canopy-blue light
 
     fn width_at(plan: &[[f32; 2]], u: f32) -> f32 {
         let n = plan.len();
@@ -450,6 +457,20 @@ mod parts {
     /// effectively constant — but expressing it via the loft math keeps parts
     /// seated if a height profile is later introduced. Attached parts add their
     /// own half-height to this so the box bottom rests ON the skin.
+    /// The section's widest point — the chine `(z_factor, y)`. Side-mounted
+    /// parts (battery blisters) seat here, where `z = z_factor * half_width` is
+    /// the true hull edge; above/below the chine the section curves inward so a
+    /// fixed height would float off the narrower surface.
+    fn chine(section: &[[f32; 2]]) -> (f32, f32) {
+        let mut best = section[0];
+        for p in section {
+            if p[0] > best[0] {
+                best = *p;
+            }
+        }
+        (best[0], best[1])
+    }
+
     fn dorsal_y(section: &[[f32; 2]], h: f32) -> f32 {
         section[0][1] * h
     }
@@ -547,6 +568,13 @@ mod parts {
             MAT_GUN,
         );
 
+        // Broadside batteries seat AT the chine (the section's widest point),
+        // where z = chine_zf * half_width is the true hull edge. Seating them
+        // at a fixed height above the chine floated them off the inward-curving
+        // surface. The blister center is pulled in by half its own width so it
+        // sits on the skin, not half-embedded past it.
+        let (chine_zf, chine_yf) = chine(section);
+        let batt_w = h * 0.08;
         let count = lerp(3.0, 14.0, greeb).round() as usize;
         for sgn in [-1.0f32, 1.0] {
             for i in 0..count {
@@ -557,11 +585,12 @@ mod parts {
                 };
                 let sx = lerp(-l * 0.85, l * 0.6, t);
                 let w_at = width_at(plan, sx / (2.0 * l) + 0.5);
+                let edge_z = chine_zf * w_at;
                 m.add_box(
-                    [sx, h * 0.12, sgn * w_at * 0.98],
+                    [sx, chine_yf * h, sgn * (edge_z - batt_w * 0.5)],
                     l * 0.05,
-                    h * 0.08,
-                    h * 0.08,
+                    batt_w,
+                    batt_w,
                     MAT_BATT,
                 );
             }
@@ -597,15 +626,16 @@ mod parts {
                     if hash01(seed) > 0.7 {
                         continue;
                     }
-                    // Three-way pick for tonal variety + contrast: very-dark
-                    // panel, bright canopy-blue, or warm amber light.
+                    // Mostly quiet hull-tone panels (darker/lighter plating),
+                    // with only ~1-in-8 a genuine accent light, so the dorsal
+                    // reads as plated hull detail rather than confetti.
                     let pick = hash01(seed.wrapping_add(7));
-                    let col = if pick > 0.66 {
-                        GREEB_DARK
-                    } else if pick > 0.33 {
-                        MAT_CANOPY
+                    let col = if pick > 0.88 {
+                        GREEB_ACCENT
+                    } else if pick > 0.44 {
+                        PANEL_LIGHT
                     } else {
-                        GREEB_LIGHT
+                        PANEL_DARK
                     };
                     // Seat the block ON the dorsal skin: its center sits at the
                     // skin height plus half the block's own height, so the box
@@ -657,6 +687,13 @@ const STEER_PITCH_DEG_PER_SEC: f32 = 60.0;
 /// Pitch clamp so the camera never crosses the poles (degrees).
 const PITCH_MIN_DEG: f32 = 2.0;
 const PITCH_MAX_DEG: f32 = 88.0;
+
+/// Ortho zoom clamp (camera view-scale = 9 / zoom; >1 zooms in). Scroll wheel
+/// and +/- adjust it. 0.5×..6× keeps the ship from vanishing or overflowing.
+const ZOOM_MIN: f32 = 0.5;
+const ZOOM_MAX: f32 = 6.0;
+/// Multiplicative zoom step per +/- keypress or wheel notch.
+const ZOOM_STEP: f32 = 1.12;
 
 /// The four canonical stance yaws (degrees) — right / left / fore / aft. These
 /// are *reference snap points only* (press 1–4 to jump to one). The POC's
@@ -846,6 +883,9 @@ struct Gpu {
     steer_right: bool,
     steer_up: bool,
     steer_down: bool,
+    /// Ortho zoom (camera view-scale = 9 / zoom). >1 zooms in. Scroll wheel
+    /// and +/- adjust it; clamped to ZOOM_MIN..ZOOM_MAX.
+    zoom: f32,
     /// Wall-clock of the previous frame, for frame-rate-independent motion.
     last_frame: Instant,
 }
@@ -1160,7 +1200,17 @@ impl Gpu {
             steer_right: false,
             steer_up: false,
             steer_down: false,
+            zoom: 1.0,
             last_frame: Instant::now(),
+        }
+    }
+
+    /// Multiply the ortho zoom by `factor`, clamped. Scroll/`+`/`-` call this.
+    fn adjust_zoom(&mut self, factor: f32) {
+        let z = (self.zoom * factor).clamp(ZOOM_MIN, ZOOM_MAX);
+        if (z - self.zoom).abs() > f32::EPSILON {
+            self.zoom = z;
+            eprintln!("[loft_poc] zoom: {:.2}x", self.zoom);
         }
     }
 
@@ -1316,7 +1366,7 @@ impl Gpu {
         let pitch = self.pitch_deg.to_radians();
         let (low_w, low_h) = RES_LADDER[self.res_idx];
         let aspect = low_w as f32 / low_h as f32;
-        let view_proj = math3::camera_view_proj(yaw, pitch, aspect, 1.0);
+        let view_proj = math3::camera_view_proj(yaw, pitch, aspect, self.zoom);
         let model = math3::rotate_y(0.0);
 
         // Lights ported from the tool's setLight (laz -50, lel 60) / fixed fill
@@ -1427,7 +1477,7 @@ impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         let attrs = Window::default_attributes()
             .with_title(
-                "Loft POC — ←→ yaw · ↑↓ pitch · Space pause · 1-4 snap · [ ] res · - = bands",
+                "Loft POC — ←→ yaw · ↑↓ pitch · Space pause · 1-4 snap · [ ] res · - = bands · scroll/Z X zoom",
             )
             .with_inner_size(winit::dpi::LogicalSize::new(
                 (RES_LADDER[DEFAULT_RES_IDX].0 * 3) as f64,
@@ -1445,6 +1495,21 @@ impl ApplicationHandler for App {
             WindowEvent::Resized(size) => {
                 if let Some(gpu) = self.gpu.as_mut() {
                     gpu.resize(size.width, size.height);
+                }
+            }
+            WindowEvent::MouseWheel { delta, .. } => {
+                if let Some(gpu) = self.gpu.as_mut() {
+                    // Wheel up (positive) zooms in, down zooms out. Line and
+                    // pixel deltas both reduce to their vertical sign.
+                    let dir = match delta {
+                        winit::event::MouseScrollDelta::LineDelta(_, y) => y,
+                        winit::event::MouseScrollDelta::PixelDelta(p) => p.y as f32,
+                    };
+                    if dir > 0.0 {
+                        gpu.adjust_zoom(ZOOM_STEP);
+                    } else if dir < 0.0 {
+                        gpu.adjust_zoom(1.0 / ZOOM_STEP);
+                    }
                 }
             }
             WindowEvent::KeyboardInput {
@@ -1474,6 +1539,11 @@ impl ApplicationHandler for App {
                         // - / = cycle the posterize band count.
                         KeyCode::Minus if pressed => gpu.cycle_bands(-1),
                         KeyCode::Equal if pressed => gpu.cycle_bands(1),
+                        // Z / X zoom out / in (scroll wheel does the same).
+                        // -/= are already the band knob, so zoom gets its own
+                        // keys to avoid the collision.
+                        KeyCode::KeyZ if pressed => gpu.adjust_zoom(1.0 / ZOOM_STEP),
+                        KeyCode::KeyX if pressed => gpu.adjust_zoom(ZOOM_STEP),
                         // 1-4 snap yaw to a canonical stance (reference points,
                         // not the motion model) and pause so it can be studied.
                         KeyCode::Digit1 if pressed => {
