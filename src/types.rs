@@ -905,6 +905,122 @@ pub struct ClassDef {
 }
 
 /* =========================================================================
+ * 9. Run loop — Sector / Encounter / Run / SaveState
+ *
+ * Phase 3 foundation. The TS engine doesn't model these yet (`Catalog.sectors`
+ * is still `unknown[]` at `broadside-engine/engine/types.ts:208`); this Rust
+ * port locks the shape in. Future canonical-catalog imports should parse
+ * cleanly because the field set mirrors what the analysis HTML Section XI
+ * sector-map design implies.
+ * ====================================================================== */
+
+/// A campaign-map node: one named sector with a list of encounters the player
+/// works through. `patrol_tier` mirrors [`Board::patrol`] (u8 because the
+/// design caps it at 7).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Sector {
+    pub id: String,
+    pub name: String,
+    pub patrol_tier: u8,
+    pub encounters: Vec<EncounterDef>,
+}
+
+/// A single battle within a [`Sector`] — spawn templates for the enemy
+/// fleet and the hazards already on the board when the encounter opens.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct EncounterDef {
+    pub id: String,
+    pub enemy_ships: Vec<ShipSpawn>,
+    /// Hazards already on the lane at encounter start. Reuses the existing
+    /// [`Hazard`] shape — there are no spawn-only fields yet.
+    pub hazards: Vec<Hazard>,
+    pub is_boss: bool,
+}
+
+/// Spawn template for one enemy ship at encounter start. `class_id` refers
+/// to a [`ClassDef::id`] in the catalog; `hp_override` lets the encounter
+/// patch hull to a tier-scaled value without minting a whole new ClassDef.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShipSpawn {
+    pub class_id: String,
+    pub cell: usize,
+    pub orientation: Orientation,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hp_override: Option<i32>,
+}
+
+/// Cross-encounter run state — accumulates progress through a campaign
+/// from the player's first sector entry through victory or defeat.
+/// `salvage` is the meta-currency spent on between-encounter cards;
+/// `completed_encounters` indexes within the *current* sector. The
+/// `defeated` / `victorious` pair is mutually exclusive at end of run
+/// (both `false` while the run is live).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct Run {
+    pub current_sector_idx: usize,
+    pub salvage: u32,
+    pub completed_encounters: u32,
+    pub defeated: bool,
+    pub victorious: bool,
+}
+
+/// Persistable snapshot of a live [`Board`]. [`Board`] itself is intentionally
+/// non-serde (it holds the [`EventBus`] and the transient
+/// `destroys_this_window` counter — see Board's docstring). This snapshot
+/// captures the persistable subset; the resolver re-subscribes subsystems
+/// to a fresh [`EventBus`] on load via [`BoardSnapshot::into_board`].
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct BoardSnapshot {
+    pub size: usize,
+    pub cells: Vec<Option<Ship>>,
+    pub ordnance: Vec<Projectile>,
+    pub hazards: Vec<Vec<Hazard>>,
+    pub patrol: u8,
+}
+
+impl From<&Board> for BoardSnapshot {
+    /// Snapshot the persistable fields of `board`. The `EventBus` and the
+    /// `destroys_this_window` counter are deliberately dropped — both are
+    /// runtime-only state that the resolver reconstructs.
+    fn from(board: &Board) -> Self {
+        Self {
+            size: board.size,
+            cells: board.cells.clone(),
+            ordnance: board.ordnance.clone(),
+            hazards: board.hazards.clone(),
+            patrol: board.patrol,
+        }
+    }
+}
+
+impl BoardSnapshot {
+    /// Rebuild a live [`Board`] from this snapshot. The caller supplies a
+    /// fresh [`EventBus`] (typically `EventBus::default()`, then re-subscribe
+    /// the subsystem registrations via the resolver's content layer);
+    /// `destroys_this_window` resets to 0.
+    pub fn into_board(self, bus: EventBus) -> Board {
+        Board {
+            size: self.size,
+            cells: self.cells,
+            ordnance: self.ordnance,
+            hazards: self.hazards,
+            patrol: self.patrol,
+            bus,
+            destroys_this_window: 0,
+        }
+    }
+}
+
+/// What the save file holds: cross-encounter [`Run`] state plus the live
+/// [`BoardSnapshot`] of the current encounter. Future fields (meta-progression
+/// unlocks, run-seed for replay, etc.) land here as Phase 3 grows.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SaveState {
+    pub run: Run,
+    pub board: BoardSnapshot,
+}
+
+/* =========================================================================
  * Tests — schema parity smoke-tests
  * ====================================================================== */
 
@@ -1203,6 +1319,133 @@ mod tests {
     // Tester's task #22 verifies the invariant (callback's view of the bus
     // is a placeholder); #25 verifies that direct resolver-function calls
     // from inside a callback DO emit through the live bus after return.
+
+    #[test]
+    fn sector_with_one_encounter_roundtrips() {
+        // Minimal sector + encounter built around the existing types
+        // (Ship/Orientation/Hazard) so the roundtrip exercises the spawn
+        // refs end-to-end.
+        let enc = EncounterDef {
+            id: "skirmish_alpha".into(),
+            enemy_ships: vec![ShipSpawn {
+                class_id: "wanderer".into(),
+                cell: 3,
+                orientation: Orientation::BowOn { bow: LaneEnd::Aft },
+                hp_override: Some(4),
+            }],
+            hazards: vec![Hazard {
+                id: "mine_a".into(),
+                kind: HazardKind::Mine,
+                cell: 2,
+                payload: vec![Effect::DAMAGE { amount: 2, band_falloff: Some(false) }],
+                ttl: None,
+            }],
+            is_boss: false,
+        };
+        let sector = Sector {
+            id: "training_grounds".into(),
+            name: "Training Grounds".into(),
+            patrol_tier: 1,
+            encounters: vec![enc],
+        };
+        let json = serde_json::to_string(&sector).unwrap();
+        let back: Sector = serde_json::from_str(&json).unwrap();
+        assert_eq!(sector, back);
+
+        // hp_override None must be omitted (skip_serializing_if).
+        let ship_spawn_no_hp = ShipSpawn {
+            class_id: "wanderer".into(),
+            cell: 0,
+            orientation: Orientation::Broadside,
+            hp_override: None,
+        };
+        let s = serde_json::to_string(&ship_spawn_no_hp).unwrap();
+        assert!(!s.contains("hp_override"), "None must omit, got {s}");
+    }
+
+    #[test]
+    fn run_roundtrips_through_json() {
+        let run = Run {
+            current_sector_idx: 2,
+            salvage: 17,
+            completed_encounters: 4,
+            defeated: false,
+            victorious: false,
+        };
+        let json = serde_json::to_string(&run).unwrap();
+        let back: Run = serde_json::from_str(&json).unwrap();
+        assert_eq!(run, back);
+    }
+
+    #[test]
+    fn save_state_roundtrips_and_board_snapshot_drops_bus() {
+        // Build a live Board (with the runtime-only bus + counter), snapshot
+        // it, roundtrip through JSON, then rebuild a Board from the parsed
+        // snapshot with a fresh EventBus. The snapshot must NOT carry the
+        // bus or the destroys_this_window counter.
+        let mut shield = ShieldProfile {
+            bow:       ShieldFace { armour: 2, charge: 0 },
+            stern:     ShieldFace { armour: 0, charge: 0 },
+            port:      ShieldFace { armour: 1, charge: 0 },
+            starboard: ShieldFace { armour: 1, charge: 0 },
+        };
+        shield.bow.charge = 1;
+        let ship = Ship {
+            id: "frigate".into(),
+            faction: Faction::Player,
+            cell: 0,
+            orientation: Orientation::BowOn { bow: LaneEnd::Fore },
+            hull: 10, max_hull: 10,
+            heat: 2, heat_max: 6, locked_out: false,
+            shield_profile: shield,
+            mounts: vec![Mount { id: "m1".into(), arc: Arc::Forward, weapon: "pulse_laser".into() }],
+            queue: vec![],
+            cooldowns: HashMap::new(),
+            statuses: vec![],
+            traits: vec![],
+            klass: Some("wanderer".into()),
+        };
+        let mut board = Board {
+            size: 3,
+            cells: vec![Some(ship), None, None],
+            ordnance: vec![],
+            hazards: vec![vec![], vec![], vec![]],
+            patrol: 1,
+            bus: EventBus::default(),
+            destroys_this_window: 7,  // runtime junk that must NOT round-trip
+        };
+        // Register a callback so the bus is non-empty at snapshot time —
+        // the snapshot still must not carry it.
+        board.bus.on(Hook::OnDamageDealt, |_ctx| { /* canary */ });
+
+        let snap = BoardSnapshot::from(&board);
+        let save = SaveState { run: Run {
+            current_sector_idx: 0, salvage: 0, completed_encounters: 0,
+            defeated: false, victorious: false,
+        }, board: snap };
+
+        let json = serde_json::to_string(&save).unwrap();
+        // Snapshot must not contain the bus or the destroys counter, even
+        // as field names — they're structurally absent.
+        assert!(!json.contains("\"bus\""), "BoardSnapshot leaked bus into JSON: {json}");
+        assert!(!json.contains("destroys_this_window"),
+            "BoardSnapshot leaked destroys_this_window: {json}");
+
+        let back: SaveState = serde_json::from_str(&json).unwrap();
+        assert_eq!(save, back);
+
+        // Rebuild a Board from the parsed snapshot with a fresh bus.
+        let rebuilt = back.board.into_board(EventBus::default());
+        assert_eq!(rebuilt.size, 3);
+        assert_eq!(rebuilt.patrol, 1);
+        assert_eq!(rebuilt.destroys_this_window, 0,
+            "rebuilt board resets the chain-kill counter to 0");
+        // The Ship's pre-save state is preserved (cell, hull, heat, charge).
+        let s = rebuilt.cells[0].as_ref().unwrap();
+        assert_eq!(s.heat, 2);
+        assert_eq!(s.shield_profile.bow.charge, 1);
+        assert_eq!(s.klass.as_deref(), Some("wanderer"));
+    }
 
     #[test]
     fn class_affinity_serializes_camel_case() {
