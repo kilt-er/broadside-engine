@@ -45,6 +45,7 @@
 pub mod types;
 pub mod cards;
 pub mod catalog;
+pub mod catalog_canonical;
 pub mod classes;
 pub mod geometry;
 pub mod input;

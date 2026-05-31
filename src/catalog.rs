@@ -59,15 +59,31 @@ impl From<serde_json::Error> for LoadError {
 }
 
 /// Read the catalog JSON file at `path` and decode it into a [`Catalog`].
+///
+/// Tries the strict shape first (the engine's native format); on parse
+/// failure falls back to the canonical / design-doc-export shape via
+/// [`crate::catalog_canonical::from_canonical_value`]. Either shape lands
+/// in the same `Catalog` struct after this call — the resolver doesn't
+/// see the format split.
+///
+/// The auto-detect path means tester's `tests/catalog_smoke.rs` and the
+/// demo bin's startup loader both accept the canonical JSON bruce
+/// exported from the analysis doc without per-caller plumbing.
 pub fn load_from_path(path: impl AsRef<Path>) -> Result<Catalog, LoadError> {
     let bytes = fs::read(path)?;
-    let catalog: Catalog = serde_json::from_slice(&bytes)?;
-    Ok(catalog)
+    load_from_bytes(&bytes)
 }
 
 /// Decode an in-memory JSON byte slice (useful for embedded test fixtures).
+/// Same auto-detect dispatch as [`load_from_path`].
 pub fn load_from_bytes(bytes: &[u8]) -> Result<Catalog, LoadError> {
-    Ok(serde_json::from_slice(bytes)?)
+    // Strict shape first — fast path for engine-emitted JSON.
+    if let Ok(c) = serde_json::from_slice::<Catalog>(bytes) {
+        return Ok(c);
+    }
+    // Fallback: parse to a loose Value and run the canonical transformer.
+    let v: serde_json::Value = serde_json::from_slice(bytes)?;
+    Ok(crate::catalog_canonical::from_canonical_value(v)?)
 }
 
 #[cfg(test)]
