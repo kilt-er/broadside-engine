@@ -36,6 +36,8 @@ glance what is documented vs. what is pending.*
 - [`src/gfx.rs`](#srcgfxrs) — wgpu state, four pipelines, virtual-res offscreen + integer-scale blit
 - [`src/atlas.rs`](#srcatlasrs) — procedural 256×256 sprite atlas
 - [`src/hud.rs`](#srchudrs) — scene compositor (DrawCommand list)
+- [`src/subsystems.rs`](#srcsubsystemsrs) — runtime subsystem behavior: install registry, attacker-side damage modifier, end-of-turn heat
+- [`src/cards.rs`](#srccardsrs) — field-kit Cards: catalog, per-ship inventory, BOARD-note dispatch, play validation
 - [`src/sprites.rs`](#srcspritesrs) — PNG loader for ship sprites, `SpriteRegistry` trait
 - [`src/input.rs`](#srcinputrs) — framework-agnostic key→Intent mapping, synthetic actions, `DemoContent`
 - [`src/bin/broadside.rs`](#srcbinbroadsidesrs) — winit event loop, input → Intent → resolver
@@ -4321,6 +4323,108 @@ Game-Over, and does **not** touch the meta save. `tmp_path_for` computes the sam
 **Cross-references:** Called by the bin at startup (`load_from_disk`), on turn-commit /
 transitions (`save_to_disk`), and on run end (`delete_save`). The end-of-run sequence pairs
 with [`meta.rs`](#srcmetars)'s `accumulate_into_meta` + `MetaProgression::save_to_disk`.
+
+---
+
+## `src/subsystems.rs`
+
+*The runtime behavioral layer for subsystems: a per-ship install registry plus two dispatch
+functions the resolver calls (`damage_modifier_for` at damage step 2, `on_turn_end_for` at
+end-of-turn). Subsystems are content-side plain data — NOT EventBus closures — because the
+damage modifier must apply at a pipeline point before the OnDamageDealt emit, and closures
+would need an Rc graph to know which ship has what. Full companion at
+[`docs/MODULES/subsystems.md`](MODULES/subsystems.md).*
+
+**Mirrors:** No TS analog — the TS engine had no subsystem layer.
+
+**Intent:** Turn "this ship has Marksman installed" into actual damage/heat math.
+[`SubsystemDef`](#srctypesrs) is the catalog wire shape; this is the behavior.
+
+### `type SubsystemId` + `struct Installations` (src/subsystems.rs:66, 70)
+
+`SubsystemId = String` (the catalog id). `Installations` is `HashMap<ship_id →
+Vec<SubsystemId>>` owned by the Content impl. `install` (:83) appends (order doesn't matter
+— effects commute); `for_ship` (:89) returns the installed slice. Pinned by
+`installations_install_and_lookup` (src/subsystems.rs:246).
+
+### The example subsystems (src/subsystems.rs:109–125)
+
+`MARKSMAN` (+1 at Long), `POINT_BLANK_DOCTRINE` (+2 at PointBlank), `HEAT_SINK` (-1 extra
+heat/turn, stacks). `SUBSYSTEM_IDS` lists all three; adding one touches the const, the list,
+and both dispatch fns.
+
+### `fn damage_modifier_for(installed, attacker, band, board) -> i32` (src/subsystems.rs:142)
+
+**Intent:** Sum the per-hit damage bonus from every subsystem on the **attacker** —
+`MARKSMAN` +1 at Long, `POINT_BLANK_DOCTRINE` +2 at PointBlank, additive. **Drift / audit
+#67:** modifiers are attacker-side (the catalog descs are attacker-frame "when firing"
+verbs); pre-audit code consulted the target and passed only because the demo installed the
+same set on both sides. Called by [`DemoContent::damage_modifier`](#srcinputrs) at
+`apply_damage` step 2. **Worked examples:** `marksman_only_adds_at_long` (src/subsystems.rs:257),
+`multiple_subsystems_stack_additively` (src/subsystems.rs:279).
+
+### `fn on_turn_end_for(installations, board)` (src/subsystems.rs:168)
+
+**Intent:** End-of-turn pass — subtract each ship's HeatSink count from its heat (floored at
+0), clearing lockout if it drops below `heat_max`. Called by [`end_of_turn`](#srcresolvers)
+after base dissipation, before the `OnTurnEnd` emit (so subscribers see cooled heat).
+**Worked examples:** `heat_sink_dissipates_one_extra_heat_per_turn_end` (src/subsystems.rs:296),
+`heat_sink_stacks` (src/subsystems.rs:329), `heat_sink_floors_at_zero` (src/subsystems.rs:319).
+
+---
+
+## `src/cards.rs`
+
+*The field-kit Cards runtime layer: card catalog, per-ship charge inventory, the
+play-validation gate (`try_play_card`/`PlayResult`), and the board-wide dispatch
+(`apply_card_effect`). Cards resolve through an `Effect::BOARD { note }` indirection — a card
+play queues a synthetic action whose only effect is `BOARD { note: <card_id> }`, dispatched
+by note string in the content layer, so new cards need no new `Effect` variant or resolver
+change. Full companion at [`docs/MODULES/cards.md`](MODULES/cards.md).*
+
+**Mirrors:** TS `Effect::BOARD` carries the same `{ note }` shape; the dispatch indirection
+matches it. Runtime layer is Rust-side.
+
+**Intent:** Tempo-free consumables that apply board-wide effects (lock/breach/clear every
+enemy). Inventory + catalog live on [`DemoContent`](#srcinputrs) until `Ship::field_kit`
+lands.
+
+### Catalog + inventory types (src/cards.rs:47–146)
+
+`Card { id, name, cost }`; `CardCharge { card_id, charges }`; `FieldKit` (a ship's
+`Vec<CardCharge>`, `grant` accumulates); `FieldKitRegistry` (`HashMap<ship_id → FieldKit>`);
+`CardCatalog` (`HashMap<id → Card>` for cost lookup). **Worked examples:**
+`field_kit_grant_then_find` (src/cards.rs:358), `registry_grants_to_named_ship_only`
+(src/cards.rs:369).
+
+### Placeholder cards (src/cards.rs:152–178)
+
+`mass_lock` / `mass_breach` / `sensor_pulse` consts, `placeholder_catalog` (cost 1 each),
+`grant_placeholder_kit` (one charge of each). `grant_placeholder_kit_yields_three_cards`
+(src/cards.rs:380).
+
+### `fn apply_card_effect(note, source_cell, board)` (src/cards.rs:191)
+
+**Intent:** The BOARD-dispatch. Derives the **target faction** from the source ship
+(faction-symmetric — player cards hit enemies, enemy cards hit the player). `mass_lock` →
+`TargetLock` dur 1 on every opposite-faction ship; `mass_breach` → `HullBreach` dur 3 (max
+with existing); `sensor_pulse` → clear every opposite-faction queue (one-turn relief, AI
+re-fills); unknown note → silent no-op. Called by [`DemoContent::apply_board_effect`](#srcinputrs)
+from the `BOARD` arm of [`apply_effect`](#srcresolvers). **Worked examples:**
+`mass_lock_applies_target_lock_to_every_enemy` (src/cards.rs:439, player not self-locked),
+`enemy_played_card_targets_player` (src/cards.rs:501, faction symmetry),
+`sensor_pulse_does_not_clear_player_queue` (src/cards.rs:487).
+
+### `enum PlayResult` + `fn try_play_card(reg, cat, ship_id, card_id)` (src/cards.rs:266, 284)
+
+**Intent:** The validation gate — `Played` / `NotCarried` / `InsufficientCharges` /
+`UnknownCard`. Checks catalog cost, finds the inventory entry, verifies + decrements charges.
+**Splitting validation from queueing** keeps the queue a pure `Vec<String>` — no
+card-resource bookkeeping leaks into the resolver; the caller pushes the synthetic only on
+`Played`. Called by [`DemoContent::try_play_card`](#srcinputrs) from
+[`broadside.rs::apply_intent`](#srcbinbroadsidesrs)'s `PlayCard` arm. **Worked examples:**
+`try_play_success_decrements_charges` (src/cards.rs:426),
+`try_play_insufficient_charges_rejected` (src/cards.rs:415).
 
 ---
 
