@@ -2482,6 +2482,591 @@ No open architectural items.
 
 ---
 
+## `src/hud.rs`
+
+*Scene compositor. Turns a `Board` + `LaneGeometry` + `view_angle_rad` into a
+back-to-front `Vec<DrawCommand>` that `gfx.rs::Gfx::render` consumes. Every
+draw call the renderer makes originates here. This is the largest renderer-side
+module (1455 lines) and the one that owns the most visual decisions: ship
+silhouette morphing, the camera-revolves parallax, the LCG starfield painter,
+the inline 5×7 bitmap font, and all five per-ship HUD overlays.*
+
+**Mirrors:** No TS analog. The TS engine is headless; scene composition is a
+Rust-port concern from day one. **No Drift section — absent by design.**
+**Design anchor:** Tasks #29 (Slice D — compose scene in hud.rs in the
+documented render order) + #45 (win/lose overlays) + #46 (animation tweens) +
+#58 (single-silhouette + bow morph) + #59 (parallax planes respond to
+view_angle) + #77–#78 (between-encounter screen + salvage HUD).
+**Source commit:** stabilized through Phase 3 Slice E. 1455 lines, inline tests
+near the bottom (1 explicit + the integration suites consume the public surface).
+Reviewer audited.
+
+### Module rustdoc (lines 1–25)
+
+The 25-line `//!` block sets the layout philosophy and the **canonical render
+order** every frame must follow. Read it before touching any `push_*` function.
+
+**Layout:** flat side-view. A horizontal lane bisects the canvas at
+`LaneGeometry::center_y`; the area above is the "sky" (back-wall parallax:
+stars, nebula, distant planet); below is the "floor" (foreground dust). Ships
+are asymmetric side-view silhouettes anchored on the lane line.
+
+**Render order (back to front):**
+
+1. Sky parallax (stars + nebula + planet, upper half).
+2. Floor parallax (dust, lower half).
+3. Lane stroke (the horizon line + per-cell ticks).
+4. Range-band tick marks (relative to the player ship).
+5. Hazards.
+6. Ships (one silhouette per occupied cell).
+7. Live ordnance.
+8. Heat bars + shield pips (per ship).
+9. Action queue glyphs (stacked above each ship).
+10. Status badges.
+11. End-state overlays (defeat / victory / between-encounter).
+
+`gfx.rs::Gfx::render` does **not** depth-sort — the back-to-front list is
+authoritative. Reordering anything in this list reorders what the player sees.
+
+---
+
+### Palette (lines 38–66)
+
+15 RGBA-as-`[f32; 4]` constants, all derived from the analysis HTML's CSS
+tokens scaled to `[0, 1]`. Notable groupings:
+
+- **`PLAYER_HULL_*`** / **`ENEMY_HULL_*`** — fill + stroke pairs that make
+  faction visually obvious without reading the queue.
+- **`LANE_STROKE`** / **`LANE_TICK`** — the horizon line and the per-cell tick
+  marks.
+- **`BAND_*`** — the five range-band tint colors (point-blank vermillion →
+  extreme purple), matching the same archetype-palette family as the design
+  HTML's range-band ruler.
+- **`HEAT_*`** — heat bar background, normal fill, and lockout-red.
+- **`SHIELD_PIP_CHARGE`** — gold for active charges.
+- **`DEFEAT_TINT`** / **`VICTORY_TINT`** — the end-state overlay tints.
+
+The intent is for a screenshot of any frame to read color-correct against the
+design document by inspection.
+
+---
+
+### Entry points: three compose_scene shims (lines 81–175)
+
+Three public entry points form a chain. **The bin calls
+`compose_scene_tweened` directly;** the other two exist for hud's own tests and
+for callers that don't need a tween state. Renderer flagged the call hierarchy
+explicitly:
+
+```
+compose_scene(board, lane, view_angle_rad)
+   └─► compose_scene_with(board, lane, view_angle_rad, &EmptySpriteRegistry)
+          └─► compose_scene_tweened(board, lane, view_angle_rad, sprites, &TweenState::default())
+                  // ← this is the real implementation; the others forward
+                  //   default values for one argument each.
+```
+
+#### `fn compose_scene(board, lane, view_angle_rad) -> Vec<DrawCommand>` (line 81)
+
+The simplest entry point. No sprite registry, no tween state. Forwards to
+`compose_scene_with` with `EmptySpriteRegistry`. Used by tests that don't load
+art assets.
+
+#### `fn compose_scene_with(board, lane, view_angle_rad, sprites) -> Vec<DrawCommand>` (line 90)
+
+Adds sprite-registry awareness. If both `side` and `top` PNGs are registered
+for a ship's class/stance, the ship draws as a `TexturedShipInstance` (the
+side/top blend pipeline) instead of the procedural silhouette polygon. Forwards
+to `compose_scene_tweened` with a default `TweenState`.
+
+#### `struct TweenState` (line 109)
+
+```rust
+pub struct TweenState {
+    pub visual_cells: std::collections::HashMap<String, f32>,
+}
+```
+
+Per-ship visual cell-position overrides keyed by `Ship::id`. Each entry is a
+*fractional* cell index used in place of the ship's logical `ship.cell`.
+
+The doc comment on lines 105–108 explains the pattern: *"The bin captures
+previous cell positions before each input mutation and lerps `prev -> current`
+over ~200ms using ease-out, producing a `TweenState` per frame that smooths
+out the per-input snap under Shogun-Showdown turn semantics."* This is what
+makes movement feel animated under the otherwise-instant SS turn model.
+
+`TweenState::cell_for(ship)` (line 118) returns the visual cell or falls back
+to `ship.cell as f32` when the ship is absent from the map. Returned as `f32`
+so callers can feed it straight into `fractional_cell_to_screen`.
+
+#### `fn compose_scene_tweened(board, lane, view_angle_rad, sprites, tween) -> Vec<DrawCommand>` (line 131)
+
+**The canonical entry point.** Everything else is a shim around this. Walks
+the render-order list:
+
+1. `push_parallax(out, lane, view_angle_rad)` — both planes.
+2. `push_lane(out, lane)` — horizon line + ticks.
+3. `push_range_band_ticks(out, board, lane)` — colored band marks above lane.
+4. `push_hazards(out, board, lane)`.
+5. For each ship on the board: `push_ship(out, ship, visual_cell, lane,
+   view_angle_rad, sprites)` — uses tweened cell.
+6. For each projectile: `push_projectile(out, proj, lane)`.
+7. For each ship (second pass): `push_heat_bar`, `push_shield_pips`,
+   `push_queue_glyphs`, `push_status_badges` — all using the **same**
+   tweened cell so HUD overlays track the smoothed silhouette.
+8. `push_view_angle_overlay(out, view_angle_rad)` — the angle-scrubber readout.
+   Paints a single bar + 7 tick marks at the top-right of the canvas indicating
+   the current `view_angle` position. Not deep-walked here; trivial geometry.
+
+**End-state overlays are NOT pushed here.** The doc comment at lines 164–172
+notes the explicit refactor reason: through #45 the module auto-pushed
+`push_end_state_overlay(out, win_state(board))`, but Phase 3's
+between-encounter screens introduced overlay states beyond what
+`win_state(&Board)` can describe (e.g. "encounter complete, awaiting path
+choice"). The bin now drives the overlay-vs-no-overlay decision and calls
+`push_end_state_overlay` / `push_between_encounter_overlay` /
+`push_run_defeated_overlay` directly on top of this list when needed.
+
+---
+
+### `fn ship_bbox(ship, view_angle_rad) -> (f32, f32)` (line 181)
+
+**Intent:** On-screen silhouette bounding box for a ship at the current view
+angle. Returns `(width, total_h)` so the five overlay helpers (heat bar,
+shield pips, queue glyphs, status badges, plus chevron placement) position
+consistently against the current silhouette regardless of stance or angle.
+
+**The total-height formula** is the canonical camera-revolves math, identical
+to what SPRITE_SPEC.md documents:
+
+```
+total_h = FRIGATE_DIMS.height × cos(view_angle) + depth_dim × sin(view_angle)
+```
+
+where `depth_dim` is the off-lane axis: `FRIGATE_DIMS.beam` for `BowOn`,
+`FRIGATE_DIMS.length` for `Broadside`. At `view_angle = 0` the height term
+dominates (camera at side: silhouette is `height` tall); at `view_angle = π/2`
+the depth term dominates (camera overhead: silhouette is `depth_dim` tall).
+
+Width is fixed (no horizontal foreshortening) — `length` for `BowOn`, `beam`
+for `Broadside`.
+
+This function is called by every per-ship overlay below; **drift here ripples
+through every HUD element**. Tested at `tests/perspective.rs` via the
+SPRITE_SPEC reference values.
+
+---
+
+### Parallax — `push_parallax` (line 225)
+
+The single longest function in the file (~105 lines). Renders **two foreshortening
+planes** anchored at the lane line, plus the camera-revolves model that makes
+the background read as a revolving camera.
+
+**The two planes** (lines 235–238):
+
+```
+back_wall_h = (canvas above lane) × cos(view_angle)        // collapses at π/2
+floor_h     = (canvas below lane) × sin(view_angle)        // collapses at 0
+```
+
+At `view_angle = 0` the back wall fills the upper half and the floor collapses
+to nothing — pure side view. At `view_angle = π/2` the wall collapses and the
+floor fills — pure top-down. At intermediate angles both are visible,
+foreshortened. The lane line itself never moves; it's the **horizon between
+the two planes** at every angle.
+
+**Back-wall content** (lines 241–298):
+
+- **3 nebula patches** (lines 246–259) — `PARALLAX_NEBULA` atlas cell tiled at
+  fixed widths across the upper third of the wall. The atlas tile has a baked
+  vertical extent, so it doesn't compress with the wall — it just slides.
+- **1 distant planet** (lines 262–268) — `PARALLAX_DISTANT_PLANET` atlas cell
+  at upper-right, ~30% down from wall top. One cell = one whole planet on
+  screen.
+- **60 far-star sprites** (lines 271–280) — single-pixel SOLID_WHITE quads
+  scattered across the sky band via the LCG (see below). Alpha varies per-star
+  via `lcg_unit(...)` so they twinkle slightly without animation.
+- **24 mid-star sprites** (lines 282–297) — same LCG approach, slightly bigger
+  (1.0 × 1.0 px), brighter alpha, packed into the top half of the wall.
+
+**Floor content** (lines 301–326):
+
+- **~18 dust speckles** (line 305) — count scaled by `0.4 + 0.6 × sin(angle)`,
+  so the floor "fills in" as the camera tilts down.
+- **1 `PARALLAX_FOREGROUND_DUST` atlas-cell sample** (lines 319–326) — drawn
+  only when `sin(angle) > 0.2`. Hidden at low angles where the floor is
+  edge-on.
+
+**Drift note: the two starfield atlas cells are vestigial.** Atlas cells
+`PARALLAX_FAR_STARS` (atlas.rs:59) and `PARALLAX_MID_STARS` (atlas.rs:62)
+exist but are **never referenced by `hud.rs`**. The actual on-screen
+starfield is painted per-frame via the LCG into single-pixel SOLID_WHITE
+quads. The atlas cells are leftover scaffold from before the LCG-driven
+starfield landed. Renderer flagged this as a future cleanup; documented here
+so the discrepancy doesn't surprise future readers.
+
+---
+
+### The LCG: deterministic pseudo-random for the starfield (lines 331–352)
+
+Three private functions form the LCG-style hash that powers the live
+starfield painter:
+
+#### `fn lcg_canvas_pos(seed: u32, rect: [f32; 4]) -> (f32, f32)` (line 331)
+
+Returns a deterministic two-axis position inside the rectangle `[x, y, w, h]`,
+seeded by `seed`. Hashes `seed` for x and `seed + 0x9E3779B9` (the golden-ratio
+constant) for y, so the two axes don't correlate.
+
+#### `fn lcg_unit(seed: u32) -> f32` (line 340)
+
+Returns a deterministic float in `[0, 1]` for the supplied seed. Used for
+per-star alpha variation.
+
+#### `fn wang_hash(mut x: u32) -> u32` (line 344)
+
+The actual hash — a **Wang hash** (Thomas Wang's variant), not a classical
+linear-congruential generator. Three multiply + XOR + shift rounds with
+specific magic constants:
+
+```rust
+x = (x ^ 61).wrapping_mul(0x27D4_EB2D);
+x ^= x >> 16;
+x = x.wrapping_mul(0x85EB_CA6B);
+x ^= x >> 13;
+x = x.wrapping_mul(0xC2B2_AE35);
+x ^= x >> 16;
+```
+
+**Why a Wang hash and not `rand`?** Two reasons, both load-bearing:
+
+1. **Determinism.** The same seed always produces the same star positions.
+   This means the starfield is byte-identical across runs, frames, machines.
+   Visual-regression tests that compare rendered frames don't have to seed
+   anything; the LCG is "the seed."
+2. **Zero-dep.** No `rand` crate, no per-frame RNG state. The seed is the
+   input parameter; the function is pure. Works under the default-features
+   build with no extra dependencies pulled in.
+
+**The "LCG" naming is slightly inaccurate** — this is a Wang hash, not a
+linear-congruential generator. The Rust functions are named `lcg_canvas_pos` /
+`lcg_unit` for brevity; the underlying primitive is `wang_hash`. Documentation
+preserves the source-side naming for greppability but flags the technical
+distinction here so future readers know what to look up.
+
+**The two starfields:** atlas.rs's `PARALLAX_FAR_STARS` / `PARALLAX_MID_STARS`
+cells have hardcoded `(x, y)` arrays for 12 stars each (intended as 32×32
+texture tiles). The live HUD starfield in `hud.rs` uses the Wang-hash LCG to
+paint ~60 far + ~24 mid stars per frame as individual SOLID_WHITE pixels
+scattered across the sky band. The atlas cells are vestigial; the LCG is
+canonical.
+
+---
+
+### `fn push_lane` (line 358), `fn push_range_band_ticks` (line 385), `fn push_hazards` (line 418)
+
+Three small back-to-front layers, all rendering via SOLID_WHITE quads tinted
+by per-instance color:
+
+- **`push_lane`** — one thin horizontal stroke at `lane.center_y` spanning the
+  full canvas width, plus one short vertical tick per cell just below the
+  lane line.
+- **`push_range_band_ticks`** — for each cell within ±7 of the player, a short
+  vertical mark above the lane line, colored by the range band that cell sits
+  in (`BAND_POINT_BLANK` through `BAND_EXTREME`). Skip if no player on the
+  board.
+- **`push_hazards`** — small tinted squares above the lane at each hazard's
+  cell. `Mine` → red, `Drone` → green, `Debris` → grey.
+
+All three are short, mechanical, and well-commented in the source. Their order
+in the render list (3, 4, 5) places them above parallax but below ships, so
+ships occlude lane ticks where they overlap.
+
+---
+
+### `fn push_ship` (line 477) and the silhouette stack
+
+The single most-read function in the file. ~125 lines covering: stance
+inference, view-angle silhouette dimensioning, PNG-vs-procedural dispatch, and
+optional chevron overlay.
+
+**Inputs:** `ship`, `visual_cell` (the tweened fractional cell), `lane`,
+`view_angle_rad`, `&dyn SpriteRegistry`.
+
+**Body walkthrough:**
+
+1. **Locate the ship on screen** (line 485): `fractional_cell_to_screen` maps
+   the tweened cell to a `Point2`.
+2. **Pick faction colors** (lines 486–490): player vs enemy.
+3. **Infer Stance from Orientation** (lines 492–495): `BowOn → Stance::BowOn`,
+   `Broadside → Stance::Broadside`. The renderer's `Stance` carries no bow
+   direction; `bow_fore` is captured separately at line 496.
+4. **Compute the silhouette bbox** (lines 498–514) using the camera-revolves
+   formula from `ship_bbox` (inlined here for performance). Width is along-lane
+   (`length` for BowOn, `beam` for Broadside); `total_h` uses the
+   `cos(θ) + sin(θ)` blend.
+5. **Center the silhouette vertically on the lane line.** Per the doc comment
+   at lines 510–514: *"Silhouette is CENTERED on the lane line: half above,
+   half below. The lane bisects the ship vertically at every angle."* `top_y =
+   p.y - half_h`, `base_y = p.y + half_h`.
+6. **PNG dispatch** (lines 516–544): if `sprites.has_pair(class, stance)`
+   returns true, emit a `TexturedShipInstance` with the bbox corners + slug
+   pair + `blend_t = sin(view_angle)`. Return early — skip the procedural
+   silhouette and the chevron (the painted PNGs own bow direction). Heat
+   bars / shield pips / queue glyphs / status badges still draw on top
+   regardless.
+7. **Procedural silhouette dispatch** (lines 546–553): if no PNG pair is
+   loaded, call `push_bow_on_silhouette` or `push_broadside_silhouette` to
+   emit the polygon set.
+8. **Bow chevron overlay** (lines 555–580): when `sin(angle) > 0.05` and the
+   silhouette is tall enough (`total_h > 6`), overlay a chevron sprite with
+   alpha = `sin(angle)`. The chevron position differs by stance — for BowOn
+   it's offset toward the bow end; for Broadside it's centered at the top,
+   pointing off-lane.
+
+**Why a chevron at all?** From the renderer team: the bow chevron is the
+visual cue for "which way is the bow." At pure side view (`angle = 0`) the
+silhouette's pointy bow taper carries that information; at pure top-down
+(`angle = π/2`) the taper collapses and the chevron has to provide it
+instead. The alpha = `sin(angle)` blend makes the chevron invisible at side
+view (where it would clutter the silhouette) and fully opaque at top-down
+(where it's the only readable bow indicator).
+
+---
+
+### `fn push_bow_on_silhouette` (line 601), `fn push_broadside_silhouette` (line 668)
+
+Two procedural-silhouette polygon emitters. Each emits one filled polygon +
+4 edge sprites to trace an outline. The polygons use the SOLID_WHITE atlas
+cell and a per-instance color tint.
+
+**`push_bow_on_silhouette`** emits a **5-vertex polygon** with a triangular
+bow taper:
+
+```
+  stern-top ----------- bow-top
+  |                            \
+  |                             bow-tip
+  |                            /
+  stern-bot ----------- bow-bot
+```
+
+The bow taper width is `(length × 0.25) × cos(view_angle)` — at side view
+the bow has its full pointy taper; at top-down it collapses to a rectangle.
+The mirror-for-aft case is handled by negating the bow-end offset.
+
+**`push_broadside_silhouette`** emits a stubbier rectangle (the broadside
+hull has no preferred bow direction at any angle; both ends face off-lane).
+No bow taper, no horizontal mirror.
+
+**Important asymmetry** flagged in the source at lines 454–457: the procedural
+broadside silhouette uses `length = beam, height = length / 3` rather than
+the more obvious `length / beam` swap. Per the doc comment: *"For the flat
+side-view model we don't have a great way to show broadside, so we use a
+stubbier polygon (length = beam, height = length / 3) without the bow taper."*
+A future content pass with custom broadside art would render a more
+distinctive silhouette via the textured-ship path.
+
+---
+
+### `fn push_projectile` (line 797)
+
+Single-line summary: emit a small tinted sprite at the projectile's
+fractional cell position via `fractional_cell_to_screen`. Color is
+ord-archetype gold for friendly, vermillion for hostile. Size is fixed.
+
+Projectiles do not currently morph with view angle — they're flat sprites at
+all angles. A future pass could tilt projectile orientation toward its
+heading.
+
+---
+
+### Per-ship HUD overlay helpers (lines 821–1005)
+
+Four functions that draw on top of every ship. All four take `visual_cell:
+f32` so they ride along with the tween-smoothed position, and all four call
+`ship_bbox` internally to size against the current silhouette regardless of
+stance / angle.
+
+#### `fn push_heat_bar(ship, visual_cell, lane, view_angle_rad)` (line 821)
+
+A horizontal bar above each ship's silhouette. Background tint is
+`HEAT_BG`; fill is `HEAT_FILL` (orange) at normal heat, `HEAT_LOCKOUT` (red)
+when `ship.locked_out`. Bar width is fixed; fill ratio is
+`ship.heat / ship.heat_max`.
+
+#### `fn push_shield_pips(ship, visual_cell, lane, view_angle_rad)` (line 861)
+
+One small pip per active shield charge, placed below the heat bar. Pip color
+is `SHIELD_PIP_CHARGE` (gold). Scans `ship.shield_profile` for each zone's
+`charge` count and draws one pip per held charge.
+
+#### `fn push_queue_glyphs(ship, visual_cell, lane, view_angle_rad)` (line 911)
+
+For each action in `ship.queue`, look up the action's archetype and draw the
+corresponding atlas glyph (`GLYPH_BEAM`, `GLYPH_ORDNANCE`, etc.) stacked
+above the ship. The bottom glyph is the next-to-fire action; subsequent
+glyphs stack upward. This is the "queue contents over each ship" feature
+the design HTML calls for.
+
+#### `fn push_status_badges(ship, visual_cell, lane, view_angle_rad)` (line 959)
+
+For each active status on a ship, draw the corresponding atlas badge
+(`STATUS_HULL_BREACH`, `STATUS_SYSTEMS_OFFLINE`, etc.) at a fixed offset.
+Multiple active statuses stack horizontally.
+
+---
+
+### `fn win_state(board) -> WinState` (line 1011)
+
+A small `pub fn` that derives the end-state from the board. Three variants:
+
+- `Victory` — no Enemy ships remain (and at least one Player ship survives).
+- `Defeat` — no Player ship remains (irrespective of enemy count).
+- `Playing` — otherwise.
+
+The doc-comment notes the both-empty case: *"If both factions are empty
+(shouldn't happen in normal play) Defeat wins — there's nobody to be
+victorious."*
+
+Tested at `win_state_classifies_factions_correctly` (line 1393).
+
+---
+
+### End-state overlay surface (lines 1025–1166)
+
+Three overlay-pushing functions that the bin calls on top of
+`compose_scene_tweened`'s output when appropriate state is active:
+
+#### `fn push_end_state_overlay(out, state)` (line 1025)
+
+Phase 1's win/lose overlay. For `Defeat` / `Victory`, pushes a full-canvas
+tinted quad + a centered banner via `push_centered_banner`. `Playing` is a
+no-op. Banner text: `"DEFEATED - PRESS ENTER TO RESTART"` or `"VICTORY - PRESS
+ENTER TO RESTART"`.
+
+#### `fn push_run_defeated_overlay(out, salvage)` (line 1046)
+
+Phase 3 evolution. Like `push_end_state_overlay`'s `Defeat` variant but also
+surfaces the run's earned salvage total: `"DEFEATED"` + `"TOTAL SALVAGE: {n}"`
++ `"PRESS ENTER TO RESTART"` as a three-banner stack. **The bin calls this
+function, not the older `push_end_state_overlay(WinState::Defeat)`**, for the
+`DemoState::RunDefeated` path — since salvage surfacing landed (#88/#89), the
+older overlay is no longer touched by the run-defeat flow. It remains public
+surface for callers that don't carry salvage state, but the canonical Phase-3
+run-defeat overlay is this function.
+
+#### `fn push_salvage_hud(out, salvage)` (line 1065)
+
+The in-game top-right counter. A single row of inline 5×7 glyphs showing
+`"SALVAGE: {n}"` ~16px from the top-right edge. Always visible during
+`Playing` state so the player sees the counter tick up on encounter wins.
+
+#### `enum BetweenEncounterChoice` (line 1103) + `fn push_between_encounter_overlay` (line 1129)
+
+Phase 3 between-encounter and run-complete overlays. Two variants:
+
+- `EncounterComplete { sector_idx, salvage }` — *"ENCOUNTER COMPLETE - SECTOR
+  N"* + *"SALVAGE: N"* + *"1 REPAIR  2 UPGRADE  3 CONTINUE"* (three-banner
+  stack with the choice row at the bottom).
+- `RunComplete { salvage }` — *"RUN COMPLETE"* + *"TOTAL SALVAGE: N"* +
+  *"PRESS ENTER TO RESTART"*.
+
+The doc-comment at lines 1110–1115 notes `RunComplete` is **distinct from
+`WinState::Victory`** — Victory fires on any single encounter win; `RunComplete`
+is the campaign-end overlay only.
+
+---
+
+### The inline 5×7 bitmap font (lines 1168–end of file)
+
+**Renderer:** *"Where does the renderer get text?"* — Answer: from this file,
+in the `push_glyph_5x7` function at line 1175. **Not the atlas, not a font
+crate.** A hand-rolled match arm with 7 rows of 5 bits per glyph.
+
+#### `fn push_glyph_5x7(out, ch, x, y, pixel, color)` (line 1175)
+
+Renders one character at `(x, y)` in virtual-pixel space, scaled by `pixel`
+(typically 4 for title-style banners, 2 for body text, 2.5 for sub-banners).
+The function does a giant `match` over the character literal returning a
+`[u8; 7]` of 5-bit rows; iterates the 7×5 grid and emits one SOLID_WHITE
+quad per lit bit.
+
+**Character coverage** (line 1183–end): A, C, D, E, F, G, I, L, M, N, O, P,
+R, S, T, U, V, Y, 0-9, `-`, `:`, space. **Sparse — only the characters that
+appear in the overlay banner strings are defined.** Unknown characters
+render as blank glyphs (5×7 of zeros) without erroring.
+
+If a future overlay needs additional characters, add the match arm here. The
+test suite doesn't pin font coverage; the symptom of a missing character is
+"banner has gaps" rather than a panic.
+
+**Why inline instead of atlas-packed?** Three reasons that came up during
+Phase 1's win/lose work (#45):
+
+1. **Variable character sizes.** A title-style banner wants `pixel = 4`
+   (20×28 effective glyph); the salvage counter wants `pixel = 2` (10×14).
+   An atlas-packed font would need to be packed at the largest size or
+   render with bilinear filtering — neither matches the crisp pixel-art
+   look.
+2. **Sparse character set.** The full overlay vocabulary is ~30 characters.
+   Packing them into atlas cells would consume 30 slots out of 64; leaving
+   the inline `match` keeps the atlas free for game art.
+3. **Build-time changes.** Adjusting a glyph is a one-line code change. With
+   atlas-packed text, the atlas regeneration cycle adds friction for a
+   feature that already has a clean inline solution.
+
+#### `fn push_centered_banner(out, banner, y_center, pixel)` (line 1086)
+
+Wrapper that centers a string at `y_center`. Computes total width, derives
+`start_x`, walks the character iterator calling `push_glyph_5x7` for each
+with the advance distance baked in. Space between glyphs is `pixel` (one
+font-pixel wide).
+
+---
+
+### `#[cfg(test)] mod tests` (line ~1380 onward)
+
+The module's inline tests are minimal — most coverage lives in integration
+tests (`tests/hud_layout.rs`, `tests/render_example.rs`, the bin's
+event-loop tests). One inline test pinned in this file:
+
+- **`win_state_classifies_factions_correctly`** (line 1393) — pins the
+  three-variant `WinState` semantics including the both-empty edge case.
+
+---
+
+### Drift note: vestigial atlas cells
+
+Two atlas cells — `PARALLAX_FAR_STARS` (atlas.rs:59) and `PARALLAX_MID_STARS`
+(atlas.rs:62) — are defined in `atlas.rs` and drawn by `atlas::generate_atlas`,
+but **never referenced by `hud.rs`**. The actual on-screen starfield is
+painted per-frame via the Wang-hash LCG into single-pixel SOLID_WHITE quads
+(see the parallax section above). The atlas cells are scaffold from before
+the LCG-driven approach landed.
+
+Possible cleanup options for a future pass:
+
+1. **Remove the cells** from atlas.rs (frees rows-4 slots 0 and 3) and update
+   SPRITE_SPEC.md.
+2. **Keep the cells, document the divergence** — which is what the docs do
+   now.
+3. **Switch the starfield to atlas-cell-tiled** (reverting the LCG approach)
+   — would lose the per-frame deterministic-randomness property and would
+   need a different solution to the "60 stars without 60 fixed positions"
+   problem.
+
+The current state (option 2) keeps documentation honest without forcing a
+cleanup that nobody has prioritised. Renderer-owned decision.
+
+---
+
+No open architectural items.
+
+---
+
 ## `src/resolve.rs`
 
 *The combat resolver. One execution path serves player, enemy, and ordnance. The
