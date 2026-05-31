@@ -442,6 +442,17 @@ mod parts {
         let uu = f - i as f32;
         plan[i][1] + (plan[i + 1][1] - plan[i][1]) * uu
     }
+
+    /// World y of the hull's dorsal (top) skin at a station, in ship space.
+    /// The dorsal apex is the first SECTION point (`[0.0, 0.55]` for the
+    /// dagger: z=0, y=0.55), so seat-on-skin y = `top.y * hscale * heightMult`.
+    /// heightMult is 1.0 in the default (no traced side profile), so this is
+    /// effectively constant — but expressing it via the loft math keeps parts
+    /// seated if a height profile is later introduced. Attached parts add their
+    /// own half-height to this so the box bottom rests ON the skin.
+    fn dorsal_y(section: &[[f32; 2]], h: f32) -> f32 {
+        section[0][1] * h
+    }
     fn lerp(a: f32, b: f32, t: f32) -> f32 {
         a + (b - a) * t
     }
@@ -456,10 +467,19 @@ mod parts {
 
     /// All attached parts in ship space — direct port of rebuild()'s primitive
     /// layer. `l`/`h` = hull world half-length/height; `plan` = half-width
-    /// outline; `greeb` = density (tool default 0.6).
-    pub fn build_parts(l: f32, h: f32, plan: &[[f32; 2]], greeb: f32) -> ColoredMesh {
+    /// outline; `section` = cross-section profile (for seating parts on the
+    /// dorsal skin); `greeb` = density (tool default 0.6).
+    pub fn build_parts(
+        l: f32,
+        h: f32,
+        plan: &[[f32; 2]],
+        section: &[[f32; 2]],
+        greeb: f32,
+    ) -> ColoredMesh {
         let mut m = ColoredMesh::default();
         let stern_w = plan[0][1];
+        // Dorsal skin height (the surface greebles sit on).
+        let skin_y = dorsal_y(section, h);
 
         let tower_x = -l * 0.6;
         m.add_box(
@@ -502,17 +522,14 @@ mod parts {
 
         let ne = 4usize;
         for i in 0..ne {
-            let z = (i as f32 / (ne - 1) as f32 - 0.5) * stern_w * 1.4;
+            // Clamp the cluster z-spread to ≤ stern half-width so every bell
+            // sits within the stern face (was stern_w * 1.4 → outer bells hung
+            // off the edges). Seat the bell x just inside the broad stern (the
+            // hull ends at x = -l) so they read as mounted, not hovering behind.
+            let z = (i as f32 / (ne - 1) as f32 - 0.5) * stern_w * 0.8;
+            m.add_cylinder_x([-l * 0.9, 0.0, z], h * 0.28, h * 0.34, h * 0.3, 8, MAT_DARK);
             m.add_cylinder_x(
-                [-l * 0.98, 0.0, z],
-                h * 0.28,
-                h * 0.34,
-                h * 0.3,
-                8,
-                MAT_DARK,
-            );
-            m.add_cylinder_x(
-                [-l * 1.05, 0.0, z],
+                [-l * 0.99, 0.0, z],
                 h * 0.2,
                 h * 0.2,
                 h * 0.08,
@@ -568,8 +585,11 @@ mod parts {
                     };
                     let sx = lerp(-l * 0.9, l * 0.7, t);
                     let w_at = width_at(plan, sx / (2.0 * l) + 0.5);
+                    // Clamp the z scatter to the actual half-width at this x
+                    // (0.7× keeps panels on the dorsal deck, off the chine
+                    // edges) so none hang past the hull sides where it tapers.
                     let zz = if rows > 1 {
-                        (r as f32 / (rows - 1) as f32 - 0.5) * w_at * 1.2
+                        (r as f32 / (rows - 1) as f32 - 0.5) * w_at * 0.7
                     } else {
                         0.0
                     };
@@ -587,9 +607,19 @@ mod parts {
                     } else {
                         GREEB_LIGHT
                     };
-                    // ~2× the old block size, raised slightly off the dorsal
-                    // so it stands proud of the hull.
-                    m.add_box([sx, h * 0.36, zz], l * 0.025, h * 0.06, h * 0.06, col);
+                    // Seat the block ON the dorsal skin: its center sits at the
+                    // skin height plus half the block's own height, so the box
+                    // bottom rests on the hull rather than floating at a fixed
+                    // height (the prior `h*0.36` floated where the hull is
+                    // lower). Block is ~2× the original size for read.
+                    let box_h = h * 0.06;
+                    m.add_box(
+                        [sx, skin_y + box_h * 0.5, zz],
+                        l * 0.025,
+                        box_h,
+                        h * 0.06,
+                        col,
+                    );
                 }
             }
         }
@@ -879,7 +909,13 @@ impl Gpu {
             mesh.normals.push(*n);
             mesh.colors.push(HULL_ALBEDO);
         }
-        let parts_mesh = parts::build_parts(hull_l, hull_h, loft::DAGGER_PLAN, GREEB);
+        let parts_mesh = parts::build_parts(
+            hull_l,
+            hull_h,
+            loft::DAGGER_PLAN,
+            loft::DAGGER_SECTION,
+            GREEB,
+        );
         mesh.append(&parts_mesh);
 
         let verts: Vec<Vertex> = (0..mesh.positions.len())
