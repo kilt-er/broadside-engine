@@ -37,6 +37,7 @@ glance what is documented vs. what is pending.*
 - [`src/atlas.rs`](#srcatlasrs) — procedural 256×256 sprite atlas
 - [`src/hud.rs`](#srchudrs) — scene compositor (DrawCommand list)
 - [`src/sprites.rs`](#srcspritesrs) — PNG loader for ship sprites, `SpriteRegistry` trait
+- [`src/input.rs`](#srcinputrs) — framework-agnostic key→Intent mapping, synthetic actions, `DemoContent`
 - [`src/bin/broadside.rs`](#srcbinbroadsidesrs) — winit event loop, input → Intent → resolver
 - [`tests/`](#tests) — integration tests, worked examples
 
@@ -4380,6 +4381,83 @@ A read-only "which sprites are uploaded?" query. [`hud::compose_scene`](#srchudr
 implements it. `has_pair` is a default ("both views"). `EmptySpriteRegistry` returns `false`
 for everything (tests / no-GPU callers always get procedural). The trait keeps `hud`
 GPU-agnostic.
+
+---
+
+## `src/input.rs`
+
+*The input plumbing between the winit binary and the resolver: a framework-agnostic `Key`
+enum, the canonical `key_to_intent` mapping, the synthetic move/flip/vent/card actions that
+flow through the normal resolver pipeline, and `DemoContent` — the demo's concrete `Content`
+impl (action registry + subsystem/card registries). Keeps the library winit-free. Full
+companion at [`docs/MODULES/input.md`](MODULES/input.md).*
+
+**Mirrors:** No TS analog — TS handled input inline in browser event handlers. Phase-1+
+Rust plumbing.
+
+**Intent:** Turn a keypress into something the resolver understands, and supply the demo's
+content. Flow: bin translates winit keycode → `Key`; `key_to_intent` → `Intent`;
+`intent_to_action_id` → action id pushed to the queue; the resolver fires it.
+
+### `enum Key` / `enum Intent` (src/input.rs:47, 80)
+
+`Key` is one variant per advertised binding (`Left`/`Right`/`Tab`/`V`, `D1`-`D3` mounts,
+`D5`-`D7` cards, `R`/`Space`/`Enter`) — the bin maps `winit::KeyCode` onto it so the lib
+never imports winit. `Intent` is what the player meant: `QueueAction(id)` (a real mount
+weapon), the four synthetics, `PlayCard(id)`, `CommitTurn`, `Restart`.
+
+### `fn key_to_intent(key, ship, content) -> Option<Intent>` (src/input.rs:127)
+
+**Intent:** The binding table. Digit keys are **inventory-gated**: `D1`/`D2`/`D3` →
+`ship.mounts[N].weapon` only if mount `N` exists (`mount_action`, src/input.rs:144);
+`D5`/`D6`/`D7` → `content.card_at(ship.id, N)` only if that card slot has charges. Unbound
+keys and out-of-range digits → `None`. Mounts come from `ship`, cards from `content` (the
+runtime FieldKit lives on Content until `Ship::field_kit` lands). **Worked examples:**
+`key_to_intent_digits_resolve_to_mount_weapons` (src/input.rs:651),
+`key_to_intent_out_of_range_digits_return_none` (src/input.rs:669).
+
+### `fn intent_to_action_id(intent) -> Option<&str>` (src/input.rs:158)
+
+`QueueAction` passes its id through; synthetics → their `__`-prefixed const ids; `None` for
+`CommitTurn`/`Restart` (control flow) and `PlayCard` (needs the separate validate +
+charge-decrement step, then a manual `synthetic_card_action_id` push). The `__` prefix
+prevents collision with real catalog actions. `synthetic_card_action_id(card_id)`
+(src/input.rs:180) returns `"__card_<id>"`.
+
+### Synthetic actions (src/input.rs:193–304)
+
+The `SYNTHETIC_*` const ids + `Action` builders, so synthetics flow through the normal
+`fire_player_queue`/`run_action` pipeline with no resolver special-casing. `synthetic_move_left`/
+`_right` use `DISPLACE_SELF { direction: Some(Aft/Fore) }` — the **lane-relative** override
+(#50) so Left always moves leftward on screen regardless of bow (AI passes `direction: None`
+for orientation-relative movement). `synthetic_reorient_flip` → `REORIENT{Flip}`,
+`synthetic_vent` → `VENT_HEAT{3, recharge}`. Helpers: `all_bands` (five-band coverage),
+`self_targeting` (SELF, no arc), `zero_cost` (free + advances turn). **Worked example:**
+`synthetic_vent_flows_through_execute_queue` (src/input.rs:794).
+
+### `struct DemoContent` + `impl Content` (src/input.rs:326, 480)
+
+**Intent:** The demo's concrete [`Content`](#srcresolvers) impl — an `actions` registry plus
+`subsystems::Installations`, `cards::CardCatalog`, and `cards::FieldKitRegistry` (these live
+on Content, not Board, because the resolver queries them every shot/turn). `Default`
+(src/input.rs:425) pre-loads the four input synthetics + three card synthetics + three class
+Signatures + the placeholder card catalog + `pulse_laser`/`torpedo` mounts — matching
+`broadside.rs::render_example_board`. The `Content` impl: `action` (registry lookup);
+`damage_modifier` (routes through the **attacker's** subsystems, audit #67); `on_turn_end`
+(subsystem hooks); `apply_board_effect` (card BOARD dispatch); `card_at`/`try_play_card`
+(field-kit read + play); `spawn_projectile` (hardcoded torpedo/missile table, unknown →
+0-damage dummy). **Worked examples:** `demo_content_serves_every_synthetic` (src/input.rs:728),
+`marksman_subsystem_adds_one_through_apply_damage` (src/input.rs:829),
+`mass_lock_card_play_through_execute_queue` (src/input.rs:929).
+
+### `fn tutorial_lines()` (src/input.rs:574)
+
+The terse per-binding overlay strings, kept in lockstep with `Key` + `key_to_intent`
+(`tutorial_lines_cover_every_binding`, src/input.rs:761).
+
+**Cross-references:** Called by [`broadside.rs`](#srcbinbroadsidesrs); implements
+[`resolve::Content`](#srcresolvers); drives [`subsystems`](#srcsubsystemsrs) and
+[`cards`](#srccardsrs).
 
 ---
 
