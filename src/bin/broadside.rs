@@ -56,6 +56,7 @@ use broadside_engine::runs::{
 use broadside_engine::input::{
     intent_to_action_id, key_to_intent, synthetic_card_action_id, DemoContent, Intent, Key,
 };
+use broadside_engine::catalog::{enemy_ship_from_catalog, load_from_path};
 use broadside_engine::perspective::{LaneGeometry, DEFAULT_LANE};
 use broadside_engine::resolve::{
     apply_instant_action, find_player_id, fire_player_queue, run_world_phase, Content,
@@ -235,6 +236,25 @@ fn fresh_content() -> DemoContent {
     c
 }
 
+/// Load the canonical catalog from `assets/broadside.catalog.json` for
+/// catalog-driven enemy synthesis. Logs and returns `None` on a missing or
+/// unparseable asset — the demo then falls back to placeholder enemy
+/// synthesis, so it still runs without the file (headless CI, fresh
+/// checkout). Loaded once at startup; the catalog is immutable for the run.
+fn load_catalog() -> Option<broadside_engine::types::Catalog> {
+    let path = std::path::Path::new("assets/broadside.catalog.json");
+    match load_from_path(path) {
+        Ok(cat) => {
+            log::info!("catalog loaded: {} enemies for catalog-driven synthesis", cat.enemies.len());
+            Some(cat)
+        }
+        Err(e) => {
+            log::warn!("catalog load failed ({e}); falling back to placeholder enemy synthesis");
+            None
+        }
+    }
+}
+
 /// Mirrors the board state hard-coded in `render-example.ts`. Used as both
 /// the startup scene and the Restart target.
 fn render_example_board() -> Board {
@@ -377,6 +397,13 @@ struct App {
     board: Board,
     lane: LaneGeometry,
     content: DemoContent,
+    /// Canonical catalog (assets/broadside.catalog.json), loaded once at
+    /// startup. `None` if the asset is missing or fails to parse — the
+    /// spawn closure then falls back to the placeholder synthesizers, so
+    /// the demo still runs headless / without the asset. Drives
+    /// catalog-backed enemy synthesis (real hull / mounts / traits per
+    /// the canonical `enemies[]`).
+    catalog: Option<broadside_engine::types::Catalog>,
     /// Index into `CAMERA_ANGLE_STEPS_DEG`. Cycled by `[` and `]`.
     camera_angle_idx: usize,
     /// Per-ship tween anchors keyed by `Ship::id`. Populated whenever an
@@ -412,6 +439,7 @@ impl App {
             board: render_example_board(),
             lane: demo_lane(),
             content: fresh_content(),
+            catalog: load_catalog(),
             camera_angle_idx: CAMERA_ANGLE_DEFAULT_INDEX,
             tween_anchors: HashMap::new(),
             sectors: placeholder_sectors(),
@@ -442,26 +470,33 @@ impl App {
         player_ship(0)
     }
 
-    /// Build the [`Board`] for the current encounter. Uses
-    /// [`build_encounter_board`] with [`fallback_ship_for_spawn`] for
-    /// class-id resolution — content's class catalog isn't required
-    /// for the demo to function. Returns `None` if the run has no
-    /// current encounter (defeated, victorious, or sector index past
-    /// the end of `self.sectors`).
+    /// Build the [`Board`] for the current encounter. Returns `None` if
+    /// the run has no current encounter (defeated, victorious, or sector
+    /// index past the end of `self.sectors`).
+    ///
+    /// Spawn → ship dispatch, in priority order:
+    /// 1. The final boss (`warlord`, task #83) keeps its hand-tuned
+    ///    [`boss_ship_for_spawn`] loadout (hull 14, ReactorBreach,
+    ///    multi-mount) — richer than the catalog's plain `warlord`
+    ///    EnemyDef, so the climax stays climactic.
+    /// 2. Every other spawn is synthesized from the canonical catalog via
+    ///    [`enemy_ship_from_catalog`] — real hull, mounts (display-name →
+    ///    action-id), and **traits**, so the AI's Pursuit / BurnHard /
+    ///    Agile nudges in `decide_enemy_action` actually fire.
+    /// 3. If the catalog is absent or the class_id isn't in `enemies[]`,
+    ///    fall back to [`fallback_ship_for_spawn`] so a missing asset or a
+    ///    typo'd class degrades gracefully instead of crashing.
     fn build_current_board(&self) -> Option<Board> {
         let enc = current_encounter(&self.run, &self.sectors)?;
         let player = Self::fresh_player_ship();
         Some(build_encounter_board(enc, player, |spawn| {
-            // Final boss (task #83) gets the rich `boss_ship_for_spawn`
-            // loadout; every other class_id falls through to the
-            // minimal `fallback_ship_for_spawn`. When a real class
-            // registry lands (catalog-driven enemy synthesis), this
-            // dispatch goes away.
             if spawn.class_id == "warlord" {
-                Some(boss_ship_for_spawn(spawn))
-            } else {
-                Some(fallback_ship_for_spawn(spawn))
+                return Some(boss_ship_for_spawn(spawn));
             }
+            self.catalog
+                .as_ref()
+                .and_then(|cat| enemy_ship_from_catalog(cat, spawn))
+                .or_else(|| Some(fallback_ship_for_spawn(spawn)))
         }))
     }
 
