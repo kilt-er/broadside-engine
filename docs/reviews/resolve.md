@@ -21,6 +21,8 @@ Consequence: if a ship destroys ITSELF during its own action (self-destruct, or 
 
 Severity: low (requires a ship to die from its own queued action). Not a correctness hazard for current content. Documented so it's a known, deliberate-able choice rather than silent drift. Resolver's call whether to match TS (emit with last-known cell) or keep the guard.
 
+**Disposition (team-lead):** bundled with the pending ram-collision design decision — both live in the same self-damage/self-destruct path (ram currently self-rams the operator, one way a firing ship can self-destruct). Resolver addresses the onDamageDealt-emit fidelity together with ram semantics once bruce rules, avoiding a second touch of that area. If it proves independent of ram, it's a standalone low-pri resolver fix. Latent/non-blocking either way.
+
 ## Divergence 2 (intentional enhancement — no action needed)
 
 `detect_chain` (resolve.rs:1727) is LIVE: returns `destroys_this_window >= 2`, backed by Board::destroys_this_window reset at each window boundary (fire_player_queue, run_world_phase ordnance pass) and incremented in destroy(). The TS detectChain (resolve.ts:346-349) is a stub returning `false`. So onChainKill fires in Rust where it never did in TS. This is the intended completion of a TS TODO, not drift.
