@@ -2158,6 +2158,330 @@ No open architectural items.
 
 ---
 
+## `src/atlas.rs`
+
+*The procedural sprite atlas. Generates a single 256×256 RGBA8 texture at startup,
+packed as an 8×8 grid of 32×32 cells, holding every HUD glyph, projectile sprite,
+status badge, telegraph icon, parallax pixel-art tile, and a single SOLID_WHITE cell
+for flat-color tinted quads. Decorative only — ship hulls are drawn as procedural
+polygon silhouettes by `hud.rs`, so the atlas does **not** carry ship art.*
+
+**Mirrors:** No TS analog. The TS engine is headless; there is no `atlas.ts`.
+**Atlas is a pure Broadside-port concern from day one — the absence of a Drift
+section in this walkthrough is intentional, not an oversight.**
+**Design anchor:** Task #28 (Slice C — flesh out atlas with ship faces, chevron,
+ordnance, HUD glyphs, parallax art). Cell layout canonically documented in
+[`docs/SPRITE_SPEC.md`](../SPRITE_SPEC.md) § "Atlas slot allocation"; this
+walkthrough explains *the generation* and *the constants*, not the slot map.
+**Source commit:** stabilized through Slice C / D. 818 lines, 7 inline tests, all
+green. Reviewer audited.
+
+### Module rustdoc (lines 1–17)
+
+A 17-line `//!` block. Three things every reader needs to know up front:
+
+1. **Fixed 8×8 grid of 32×32 cells = 256×256 total.** A cell is referenced by
+   `(col, row)`; `cell_uvs((c, r))` converts that to the normalized UV rectangle
+   the sprite shader samples.
+2. **The atlas is decorative.** Ship hulls are drawn by `hud.rs` as procedural
+   tinted polygons (using the `SOLID_WHITE` cell as the texture source + the
+   instance color tint). The atlas does not carry ship-class art. Direction-
+   specific detail the polygon math can't supply — bow chevron, torpedo
+   silhouette — lives here; ship sprites do not.
+3. **Palette is sampled from the analysis HTML's CSS tokens.** `--ink`, `--gold`,
+   `--vermillion`, `--c-beam`, `--c-ord`, … transcribed to RGBA at the top of the
+   palette section. Each cell function picks a few to stay on-brand with the
+   design document's visual language.
+
+### Why an 8×8 grid of 32×32 cells
+
+Three design decisions encoded in the constants:
+
+- **8×8 grid (one texture binding for the whole HUD/parallax/glyph surface).**
+  The sprite pipeline and polygon pipeline both sample from a single atlas
+  texture binding (group 0, binding 1 in `gfx.rs`). Packing every glyph into one
+  256×256 texture means *no per-cell texture switches* — every HUD draw is one
+  pipeline rebind at most. If glyphs lived in separate textures, the renderer
+  would have to either bind each at draw time (kills batching) or keep a
+  per-glyph bind group.
+- **32×32 cells (smallest unit that holds readable detail at native virtual res).**
+  At 1320×480 a 32-px cell is ~2.5% of the canvas width — about the right size
+  for a status badge or queue glyph at native scale. Smaller would lose
+  recognisability; larger would waste the grid.
+- **Procedural, not baked.** `generate_atlas()` runs once at startup and produces
+  the texture in memory. No PNG asset file in the repo, no asset-versioning
+  story for art tweaks: change a `draw_*` function, rebuild, the new atlas ships
+  with the binary. Bruce's hand-painted ship sprites are the exception — they
+  *are* PNG assets loaded by `sprites.rs` and live outside this module.
+
+---
+
+### Constants (lines 18–20)
+
+| Constant         | Value | Role                                                    |
+|------------------|------:|---------------------------------------------------------|
+| `ATLAS_SIZE`     | `256` | Side length of the RGBA8 texture in pixels.             |
+| `CELL_SIZE`      | `32`  | Side length of one cell in pixels.                      |
+| `CELLS_PER_ROW`  | `8`   | `ATLAS_SIZE / CELL_SIZE`. Derived, not free-set.        |
+
+The constants are public so `gfx.rs::Gfx::new` can use `ATLAS_SIZE` when sizing the
+GPU texture and `CELL_SIZE * 4` for the bytes-per-row on upload.
+
+---
+
+### Cell map (lines 22–68)
+
+26 named `(col, row)` cell coordinates, grouped by row. The full slot allocation
+table is in [`docs/SPRITE_SPEC.md`](../SPRITE_SPEC.md) § "Atlas slot allocation";
+this section summarises the row-by-row intent.
+
+| Row | Content                                                              |
+|-----|----------------------------------------------------------------------|
+| 0   | Projectiles + chevron: `BOW_CHEVRON` (0,0), `TORPEDO` (1,0), `MISSILE` (2,0). |
+| 1   | Action-queue glyphs — one per `WeaponArchetype`, 7 total.            |
+| 2   | Telegraph intent icons — 6.                                          |
+| 3   | Status badges — 4 (`HullBreach`, `SystemsOffline`, `TargetLock`, `ShieldsUp`). |
+| 4   | Parallax layer art — 5 (far stars, nebula, distant planet, mid stars, foreground dust). |
+| 5–6 | Reserved for future ship-class detail / decals.                       |
+| 7   | `SOLID_WHITE` at (7, 7) — the flat-color tint source.                |
+
+`SOLID_WHITE` is the workhorse of the entire renderer: every heat bar, range-band
+tick, ship face, lane plate, end-state overlay samples this single cell and lets
+the per-instance `color` tint do the actual coloring. Tested explicitly at
+`solid_white_cell_is_white` (line 719).
+
+---
+
+### `fn cell_uvs(cell: (u32, u32)) -> ([f32; 2], [f32; 2])` (line 72)
+
+**Intent:** Convert a `(col, row)` cell coordinate to a `(uv_min, uv_max)` tuple in
+normalized `[0, 1]` texture space. The single function call sites use to derive UV
+coordinates for sprite + polygon instances.
+
+Body (lines 73–78):
+- `s = CELL_SIZE / ATLAS_SIZE` (i.e. `32 / 256 = 0.125`).
+- `uv_min = (c * s, r * s)`.
+- `uv_max = ((c + 1) * s, (r + 1) * s)`.
+
+Linear math, no edge cases. Tested at `cell_uvs_at_origin_is_unit_cell` (line 696)
+and `cell_uvs_at_corner_is_inside_unit_square` (line 705).
+
+---
+
+### `fn generate_atlas() -> Vec<u8>` (line 83)
+
+**Intent:** Generate the entire atlas as a tight RGBA8 byte buffer
+(`ATLAS_SIZE * ATLAS_SIZE * 4 = 262144` bytes). Called once by `Gfx::new` and
+uploaded to GPU; the buffer is dropped after upload.
+
+Body structure (lines 84–121):
+
+1. **Allocate** a zero-filled buffer of `262144` bytes (line 84). All cells start
+   as transparent black `(0, 0, 0, 0)`.
+2. **Fill `SOLID_WHITE` first** (line 88) — explicit comment at lines 86–87 notes
+   *"so every tinted-quad path works even if the rest of the atlas hasn't run
+   yet."* If any subsequent `draw_*` call panicked, the renderer would still have
+   a working flat-color cell.
+3. **Call each named `draw_*` function in row order** (lines 90–118). One call per
+   named cell, 25 calls total covering rows 0–4.
+
+The buffer is returned; the GPU upload happens in `Gfx::new` (lines 657–671).
+
+**No mutable state outside the buffer.** Determinism is total — the same build
+always produces byte-identical atlas bytes, which matters for visual regression
+testing.
+
+---
+
+### Low-level primitives (lines 125–152)
+
+Three module-internal helpers used by every `draw_*` function:
+
+- **`put_pixel(buf, x, y, rgba)`** (line 125) — write 4 RGBA bytes at `(x, y)` in
+  the atlas-wide pixel space. Silently bounds-checked: out-of-range coordinates
+  no-op rather than panic, which lets `draw_*` functions write near cell edges
+  without explicit clipping.
+- **`fill_rect(buf, x, y, w, h, rgba)`** (line 136) — solid rectangle of `rgba`
+  pixels via two nested loops over `put_pixel`. The workhorse primitive.
+- **`fill_cell(buf, cell, rgba)`** (line 144) — fill an entire 32×32 cell with one
+  color. Used by `generate_atlas` for `SOLID_WHITE`.
+- **`cell_origin(cell) -> (u32, u32)`** (line 150) — the atlas-pixel-space
+  top-left corner of a named cell. Every `draw_*` calls this first to convert its
+  local cell coordinate to atlas coordinates.
+
+Visibility is `pub(crate)` — atlas helpers are used by no other module today, but
+the renderer team kept them crate-visible in case `gfx.rs` or `hud.rs` ever needs
+to render directly into the atlas buffer at runtime.
+
+---
+
+### Palette (lines 154–168)
+
+Ten compile-time RGBA constants transcribed from the analysis HTML's CSS tokens.
+The doc-comment at lines 154–157 names the source:
+
+| Constant       | Hex      | CSS token            | Use                                        |
+|----------------|----------|----------------------|--------------------------------------------|
+| `GOLD`         | #54CFC9  | `--gold` (teal)      | Bow chevron, reorient ring, shields badge. |
+| `VERMILLION`   | #E07A3C  | `--vermillion`       | Fire telegraph, target-lock variants.      |
+| `C_BEAM`       | #5AD1CB  | beam archetype       | Beam glyph.                                |
+| `C_ORD`        | #E0A23C  | ordnance archetype   | Ordnance glyph, deploy telegraph.          |
+| `C_BROAD`      | #E0664A  | broadside archetype  | Broadside glyph.                           |
+| `C_DISP`       | #9B8CDB  | displacement         | Displacement glyph, push/pull telegraphs.  |
+| `C_CTRL`       | #6FBF7A  | control archetype    | Control glyph.                             |
+| `C_MOVE`       | #5A9FE0  | movement archetype   | Movement glyph.                            |
+| `C_DEF`        | #8AA0B8  | defensive archetype  | Defensive glyph.                           |
+| `PAPER_DIM`    | #93A6BD  | `--paper-dim`        | Systems-offline ring.                      |
+
+These map 1:1 to the **same colors the design HTML uses** to color-code archetypes
+on its weapon cards — so the renderer's queue-glyph row reads exactly like the
+designer's archetype legend.
+
+---
+
+### The 25 `draw_*` functions (lines 170–671)
+
+Grouped by row of the atlas. Each is a private helper writing a single
+hand-tuned pixel-art glyph into one named cell. I won't walk every function
+line-by-line — the math is small fixed-coordinate `put_pixel` / `fill_rect`
+calls — but here's the per-group summary:
+
+#### Projectiles (lines 170–244)
+
+- **`draw_bow_chevron`** (line 175) — a right-pointing `>` chevron made of two
+  diagonal pixel runs plus a tip highlight. Renderer rotates it around its center
+  by the lane direction + bow-on/aft.
+- **`draw_torpedo`** (line 199) — horizontal capsule body, nose taper, tapering
+  tail flame. Points right in the unrotated cell.
+- **`draw_missile`** (line 227) — smaller, faster-looking variant: 3-pixel-tall
+  body, two-pixel flame, sharper nose. Same orientation convention as torpedo.
+
+#### Action-queue glyphs (lines 246–373)
+
+One per `WeaponArchetype`, each centered ~16×16 inside the cell:
+
+- `draw_glyph_beam` — horizontal lightning bolt zig-zag (`C_BEAM`).
+- `draw_glyph_ordnance` — small filled circle + two trail dots (`C_ORD`).
+- `draw_glyph_broadside` — two opposing arrows in a vertical band (`C_BROAD`).
+- `draw_glyph_displacement` — stacked `⇄` arrow pair (`C_DISP`).
+- `draw_glyph_control` — cross-hairs + diagonals through center (`C_CTRL`).
+- `draw_glyph_movement` — forward chevron (`C_MOVE`).
+- `draw_glyph_defensive` — shield outline with pointed bottom (`C_DEF`).
+
+Each picks its archetype's brand color from the palette block above. Stacked
+above the player by `hud::compose_scene` to show the queue contents.
+
+#### Telegraph icons (lines 375–494)
+
+Six per-intent icons drawn over enemy ships to telegraph their next action:
+
+- `draw_telegraph_fire` — explosive starburst (`VERMILLION`).
+- `draw_telegraph_lock` — square reticle with corners only + center dot.
+- `draw_telegraph_push` — right-pointing arrow with arrowhead.
+- `draw_telegraph_pull` — left-pointing arrow with arrowhead.
+- `draw_telegraph_reorient` — circular arrow (ring with gap + arrowhead).
+- `draw_telegraph_deploy` — downward arrow + hazard square at the bottom.
+
+#### Status badges (lines 496–561)
+
+Small badges drawn next to a ship for active statuses:
+
+- `draw_status_hull_breach` — teardrop flame with inner highlight.
+- `draw_status_systems_offline` — power-off ring (broken ring + vertical line).
+- `draw_status_target_lock` — slim cross-hairs + tinted dot.
+- `draw_status_shields_up` — gold shield outline with pointed bottom.
+
+#### Parallax layer art (lines 563–671)
+
+Five depth layers tiled across the backdrop:
+
+- **`draw_parallax_far_stars`** (line 567) — 12 hardcoded `(x, y)` star positions
+  per cell. The first paragraph of renderer's hint suggested this used a "Wang-
+  hash LCG" for placement — **that's not the case in the current code.** The
+  starfield uses a fixed `[(3,5), (7,11), …]` coordinate array; the four-cycle
+  bright/dim tint pattern from `i % 4 == 0` is the only "randomness" in play.
+  Determinism is achieved by the hardcoded coordinates, not by a seeded RNG.
+- **`draw_parallax_nebula`** (line 584) — two soft blobs (squared-distance
+  threshold) in dusty purple + dusty blue tints. The first procedural-rather-
+  than-fixed-pixel cell.
+- **`draw_parallax_distant_planet`** (line 605) — a shaded sphere via
+  squared-distance with light-from-upper-left shading. One cell = one whole
+  planet on screen.
+- **`draw_parallax_mid_stars`** (line 634) — 12 hardcoded positions, brighter
+  than far stars, with `+`-shaped sparkle on every third star.
+- **`draw_parallax_foreground_dust`** (line 658) — 4 hardcoded mote positions,
+  each a 2×2 highlight + 1-pixel halo on each side. Bright, sparse, drifts near
+  the camera.
+
+---
+
+### `fn filled_circle(buf, cx, cy, radius, rgba)` (line 676)
+
+The one shared helper used by both `draw_glyph_ordnance` and
+`draw_telegraph_fire`. Brute-force `(dx, dy)` scan within `radius², pixel if
+`dx² + dy² ≤ radius²`. Bounds-checked; clips out-of-atlas coordinates silently.
+
+---
+
+### `#[cfg(test)] mod tests` (lines 692–818)
+
+7 inline tests, all green:
+
+```
+cell_uvs_at_origin_is_unit_cell
+cell_uvs_at_corner_is_inside_unit_square
+generate_atlas_sized_correctly
+solid_white_cell_is_white
+every_cell_inside_atlas_bounds
+named_cells_are_distinct
+every_cell_has_some_content
+```
+
+The last three are the load-bearing **drift guards**:
+
+- **`every_cell_inside_atlas_bounds`** (line 727) — iterates every named cell
+  constant and asserts `col < CELLS_PER_ROW` and `row < CELLS_PER_ROW`. Catches
+  off-by-one errors when adding new named cells.
+- **`named_cells_are_distinct`** (line 748) — `O(n²)` pairwise check that no two
+  named cells share a `(col, row)`. The "two glyphs accidentally point at the
+  same slot" drift guard.
+- **`every_cell_has_some_content`** (line 771) — runs the full `generate_atlas`,
+  then for every named cell scans its 32×32 region looking for at least one
+  pixel with alpha > 0. Catches the "forgot to wire a `draw_*` call in
+  `generate_atlas`" failure mode.
+
+These three tests together let a future maintainer add a new named cell + its
+`draw_*` function with confidence — adding the cell to either the constants block
+*or* the `generate_atlas` call list (but not both) trips one of the three.
+
+---
+
+### No Drift section
+
+This module has no Drift section because **there is no TS analog**. The TS engine
+is headless; sprite atlases are a Rust-port concern. Listed here as an explicit
+"absent by design" callout so future readers don't think the section was
+accidentally omitted.
+
+The absence of drift is itself a small load-bearing fact: any contributor
+extending this module is free to design ergonomically without checking against a
+canonical TS reference. The only cross-module agreement to maintain is the cell
+layout in [`docs/SPRITE_SPEC.md`](../SPRITE_SPEC.md), which mirrors the constants
+at the top of this file.
+
+**Known stale source-side note:** the module rustdoc at `atlas.rs:9` references
+`crate::perspective::ship_sprite`, which was deleted in the flat-scene refactor
+(`1d4d540`, task #55). The dangling link doesn't affect behavior — ship hulls are
+in fact drawn as procedural polygons by `hud.rs` per the post-refactor
+architecture — but the rustdoc should eventually drop the
+`crate::perspective::ship_sprite` reference. Renderer-owned cleanup; flagged here
+so the doc and the source stay in sync. This walkthrough already paraphrases
+around it.
+
+No open architectural items.
+
+---
+
 ## `src/resolve.rs`
 
 *The combat resolver. One execution path serves player, enemy, and ordnance. The
