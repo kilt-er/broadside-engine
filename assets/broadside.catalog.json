@@ -1,0 +1,1480 @@
+{
+  "meta": {
+    "schema": "broadside-action-verb v1",
+    "lane": [
+      5,
+      7,
+      9
+    ],
+    "newAxes": [
+      "rangeBands",
+      "orientation",
+      "ordnanceEntities",
+      "heat"
+    ],
+    "bands": [
+      "pointBlank",
+      "close",
+      "mid",
+      "long",
+      "extreme"
+    ]
+  },
+  "archetypes": {
+    "beam": {
+      "c": "var(--c-beam)",
+      "label": "Beam · instant energy"
+    },
+    "ordnance": {
+      "c": "var(--c-ord)",
+      "label": "Ordnance · projectile entity"
+    },
+    "broadside": {
+      "c": "var(--c-broad)",
+      "label": "Broadside · battery"
+    },
+    "displacement": {
+      "c": "var(--c-disp)",
+      "label": "Displacement · reposition"
+    },
+    "control": {
+      "c": "var(--c-ctrl)",
+      "label": "Control · status / deploy"
+    },
+    "movement": {
+      "c": "var(--c-move)",
+      "label": "Movement · maneuver"
+    },
+    "defensive": {
+      "c": "var(--c-def)",
+      "label": "Defensive · sustain"
+    }
+  },
+  "bays": {
+    "gunnery": {
+      "c": "var(--b-gun)",
+      "label": "Gunnery · offensive"
+    },
+    "helm": {
+      "c": "var(--b-helm)",
+      "label": "Helm · movement"
+    },
+    "engineering": {
+      "c": "var(--b-eng)",
+      "label": "Engineering · defensive"
+    },
+    "tactical": {
+      "c": "var(--b-tac)",
+      "label": "Tactical · chain synergy"
+    },
+    "general": {
+      "c": "var(--b-gen)",
+      "label": "General · any bay"
+    },
+    "astrogation": {
+      "c": "var(--b-astro)",
+      "label": "Astrogation · salvage-gated"
+    }
+  },
+  "actions": [
+    {
+      "id": "pulse_laser",
+      "name": "Pulse Laser",
+      "archetype": "beam",
+      "heat": 1,
+      "cd": 0,
+      "band": "close",
+      "pattern": "BEAM",
+      "arc": "forward",
+      "freeplay": false,
+      "effects": [
+        "DAMAGE"
+      ],
+      "desc": "The baseline shot — first target in the forward arc, near-zero heat and cooldown. Strong up close, falls off at range. The unit of comparison for every weapon."
+    },
+    {
+      "id": "beam_cannon",
+      "name": "Beam Cannon",
+      "archetype": "beam",
+      "heat": 2,
+      "cd": 3,
+      "band": "mid",
+      "pattern": "BEAM",
+      "arc": "forward",
+      "freeplay": false,
+      "effects": [
+        "DAMAGE"
+      ],
+      "desc": "Sustained mid-range energy beam. Higher damage, moderate heat. The reliable main gun of a bow-on build."
+    },
+    {
+      "id": "particle_lance",
+      "name": "Particle Lance",
+      "archetype": "beam",
+      "heat": 3,
+      "cd": 5,
+      "band": "long",
+      "pattern": "SPINAL_LINE",
+      "arc": "forward",
+      "freeplay": false,
+      "effects": [
+        "DAMAGE"
+      ],
+      "desc": "Piercing spinal beam that strikes everything in the forward line at long range. High heat — an alpha weapon, not a sustained one."
+    },
+    {
+      "id": "scatter_laser",
+      "name": "Scatter Laser",
+      "archetype": "beam",
+      "heat": 2,
+      "cd": 4,
+      "band": "pointBlank",
+      "pattern": "BLAST",
+      "arc": "turret",
+      "freeplay": false,
+      "effects": [
+        "DAMAGE"
+      ],
+      "desc": "Wide spread hitting a cell and its neighbours. Devastating point-blank, useless at range — the close-band specialist."
+    },
+    {
+      "id": "point_defense",
+      "name": "Point-Defense Laser",
+      "archetype": "beam",
+      "heat": 1,
+      "cd": 2,
+      "band": "close",
+      "pattern": "BEAM",
+      "arc": "turret",
+      "freeplay": false,
+      "effects": [
+        "DAMAGE"
+      ],
+      "desc": "Rapid turret that can also shoot down incoming ordnance entities before they reach you. Low heat, defensive staple."
+    },
+    {
+      "id": "torpedo",
+      "name": "Torpedo",
+      "archetype": "ordnance",
+      "heat": 3,
+      "cd": 5,
+      "band": "mid",
+      "pattern": "ORDNANCE",
+      "arc": "forward",
+      "freeplay": false,
+      "effects": [
+        "SPAWN_ORDNANCE"
+      ],
+      "desc": "Launches a slow projectile entity that advances one cell per turn toward its target. It does no damage on launch — the enemy must dodge it, shoot it down, or eat it. The core of the ranged positional game."
+    },
+    {
+      "id": "missile_salvo",
+      "name": "Missile Salvo",
+      "archetype": "ordnance",
+      "heat": 3,
+      "cd": 6,
+      "band": "long",
+      "pattern": "ORDNANCE",
+      "arc": "turret",
+      "freeplay": false,
+      "effects": [
+        "SPAWN_ORDNANCE"
+      ],
+      "desc": "Fires multiple fast projectile entities at the first target ahead. Many small impacts — an excellent chain and target-lock trigger."
+    },
+    {
+      "id": "heavy_torpedo",
+      "name": "Heavy Torpedo",
+      "archetype": "ordnance",
+      "heat": 5,
+      "cd": 7,
+      "band": "mid",
+      "pattern": "ORDNANCE",
+      "arc": "forward",
+      "freeplay": false,
+      "effects": [
+        "SPAWN_ORDNANCE",
+        "APPLY_STATUS"
+      ],
+      "desc": "A slow, high-payload entity that detonates with a systems-offline pulse. Heavy heat; a capital-ship opener."
+    },
+    {
+      "id": "mine_layer",
+      "name": "Mine Layer",
+      "archetype": "ordnance",
+      "heat": 2,
+      "cd": 4,
+      "band": "close",
+      "pattern": "DEPLOYED_CELL",
+      "arc": "forward",
+      "freeplay": false,
+      "effects": [
+        "DEPLOY"
+      ],
+      "desc": "Drops a mine hazard on the cell ahead; it detonates when any ship enters. Persists and stacks — denies a lane segment."
+    },
+    {
+      "id": "broadside_battery",
+      "name": "Broadside Battery",
+      "archetype": "broadside",
+      "heat": 3,
+      "cd": 4,
+      "band": "close",
+      "pattern": "BROADSIDE",
+      "arc": "broadsideArc",
+      "freeplay": false,
+      "effects": [
+        "DAMAGE"
+      ],
+      "desc": "The signature weapon. Fires to BOTH lane ends at once — but only when the hull is in broadside stance. Trades your strong-bow defense for two-way firepower."
+    },
+    {
+      "id": "railgun_broadside",
+      "name": "Railgun Broadside",
+      "archetype": "broadside",
+      "heat": 4,
+      "cd": 6,
+      "band": "long",
+      "pattern": "BROADSIDE",
+      "arc": "broadsideArc",
+      "freeplay": false,
+      "effects": [
+        "DAMAGE"
+      ],
+      "desc": "Long-range broadside battery. Strong at distance, can't bear up close. Best on a broadside ship holding the center against threats at both ends."
+    },
+    {
+      "id": "flak_battery",
+      "name": "Flak Battery",
+      "archetype": "broadside",
+      "heat": 3,
+      "cd": 5,
+      "band": "close",
+      "pattern": "BROADSIDE",
+      "arc": "broadsideArc",
+      "freeplay": false,
+      "effects": [
+        "DAMAGE"
+      ],
+      "desc": "Broadside flak that splashes into adjacent cells on each side. Anti-swarm; pairs with the Flak Burst mod for chain potential."
+    },
+    {
+      "id": "tractor_beam",
+      "name": "Tractor Beam",
+      "archetype": "displacement",
+      "heat": 1,
+      "cd": 4,
+      "band": "mid",
+      "pattern": "BEAM",
+      "arc": "forward",
+      "freeplay": false,
+      "effects": [
+        "DISPLACE_TARGET",
+        "DAMAGE"
+      ],
+      "desc": "Pulls the first target ahead toward you. Picks an enemy out of a group, or drags one into your strong-bow arc and forward weapons."
+    },
+    {
+      "id": "repulsor",
+      "name": "Repulsor",
+      "archetype": "displacement",
+      "heat": 1,
+      "cd": 5,
+      "band": "close",
+      "pattern": "BEAM",
+      "arc": "forward",
+      "freeplay": false,
+      "effects": [
+        "DISPLACE_TARGET"
+      ],
+      "desc": "Shoves the first target as far back as possible; a ship that collides in the path takes collision damage. A ranged control tool, no base damage."
+    },
+    {
+      "id": "grav_snare",
+      "name": "Grav Snare",
+      "archetype": "displacement",
+      "heat": 2,
+      "cd": 6,
+      "band": "mid",
+      "pattern": "BEAM",
+      "arc": "turret",
+      "freeplay": false,
+      "effects": [
+        "DISPLACE_TARGET",
+        "APPLY_STATUS"
+      ],
+      "desc": "Swaps the target toward a held position and applies systems-offline briefly. Repositions a threat off your weak stern."
+    },
+    {
+      "id": "tractor_toss",
+      "name": "Tractor Toss",
+      "archetype": "displacement",
+      "heat": 2,
+      "cd": 7,
+      "band": "close",
+      "pattern": "BROADSIDE",
+      "arc": "broadsideArc",
+      "freeplay": true,
+      "effects": [
+        "DISPLACE_TARGET"
+      ],
+      "desc": "Free-fire: swaps the contents of the cells directly fore and aft — repositions two other ships at once without moving yourself."
+    },
+    {
+      "id": "mine",
+      "name": "Drift Mine",
+      "archetype": "control",
+      "heat": 2,
+      "cd": 4,
+      "band": "close",
+      "pattern": "DEPLOYED_CELL",
+      "arc": "forward",
+      "freeplay": false,
+      "effects": [
+        "DEPLOY"
+      ],
+      "desc": "Places a mine hazard ahead that triggers on contact. A board feature, not an attack — strong against Pursuit and Burn-Hard ships."
+    },
+    {
+      "id": "emp_burst",
+      "name": "EMP Burst",
+      "archetype": "control",
+      "heat": 3,
+      "cd": 6,
+      "band": "close",
+      "pattern": "BLAST",
+      "arc": "turret",
+      "freeplay": false,
+      "effects": [
+        "APPLY_STATUS"
+      ],
+      "desc": "Knocks out systems on a cell and its neighbours — systems-offline, skipping their next turn. Board control, sets up burst."
+    },
+    {
+      "id": "targeting_marker",
+      "name": "Targeting Marker",
+      "archetype": "control",
+      "heat": 1,
+      "cd": 7,
+      "band": "long",
+      "pattern": "BEAM",
+      "arc": "turret",
+      "freeplay": true,
+      "effects": [
+        "APPLY_STATUS"
+      ],
+      "desc": "Free-fire: target-locks the first ship ahead — its next incoming hit deals double damage. The standard capital-ship burst setup. Doubling applies after additive bonuses."
+    },
+    {
+      "id": "sensor_scramble",
+      "name": "Sensor Scramble",
+      "archetype": "control",
+      "heat": 2,
+      "cd": 5,
+      "band": "mid",
+      "pattern": "BEAM",
+      "arc": "turret",
+      "freeplay": false,
+      "effects": [
+        "REORIENT"
+      ],
+      "desc": "Spins the target's gyros — flips its orientation so its weapons point the wrong way for a turn. A defensive disruptor."
+    },
+    {
+      "id": "thrusters",
+      "name": "Thrusters",
+      "archetype": "movement",
+      "heat": 0,
+      "cd": 0,
+      "band": "pointBlank",
+      "pattern": "SELF",
+      "arc": null,
+      "freeplay": false,
+      "effects": [
+        "DISPLACE_SELF"
+      ],
+      "desc": "THRUST one cell, or BURN forward to the first obstacle. The baseline maneuver — no heat, no cooldown."
+    },
+    {
+      "id": "afterburner",
+      "name": "Afterburner",
+      "archetype": "movement",
+      "heat": 1,
+      "cd": 4,
+      "band": "pointBlank",
+      "pattern": "SELF",
+      "arc": null,
+      "freeplay": true,
+      "effects": [
+        "DISPLACE_SELF"
+      ],
+      "desc": "Free-fire BURN as far as possible without spending the turn. Pure repositioning that costs no tempo, a little heat."
+    },
+    {
+      "id": "blink_drive",
+      "name": "Blink Drive",
+      "archetype": "movement",
+      "heat": 2,
+      "cd": 6,
+      "band": "pointBlank",
+      "pattern": "SELF",
+      "arc": null,
+      "freeplay": true,
+      "effects": [
+        "DISPLACE_SELF"
+      ],
+      "desc": "Free-fire JUMP: short-range teleport ignoring the path. A reliable escape that costs no turn."
+    },
+    {
+      "id": "evasive_roll",
+      "name": "Evasive Roll",
+      "archetype": "movement",
+      "heat": 1,
+      "cd": 5,
+      "band": "pointBlank",
+      "pattern": "SELF",
+      "arc": null,
+      "freeplay": true,
+      "effects": [
+        "REORIENT",
+        "DISPLACE_SELF"
+      ],
+      "desc": "Free-fire: reorient (toggle stance or flip) and shift one cell in one action. The fastest way to swing your shields to a new threat."
+    },
+    {
+      "id": "reverse_thrust",
+      "name": "Reverse Thrust",
+      "archetype": "movement",
+      "heat": 0,
+      "cd": 3,
+      "band": "pointBlank",
+      "pattern": "SELF",
+      "arc": null,
+      "freeplay": false,
+      "effects": [
+        "DISPLACE_SELF"
+      ],
+      "desc": "BURN backward (toward the stern) to open distance from a point-blank threat. A retreat tool."
+    },
+    {
+      "id": "brace",
+      "name": "Brace",
+      "archetype": "defensive",
+      "heat": 1,
+      "cd": 5,
+      "band": "pointBlank",
+      "pattern": "SELF",
+      "arc": null,
+      "freeplay": false,
+      "effects": [
+        "APPLY_STATUS"
+      ],
+      "desc": "Raise a shield charge that absorbs the next hit. Directional — applies to the currently-threatened face."
+    },
+    {
+      "id": "vent",
+      "name": "Vent",
+      "archetype": "defensive",
+      "heat": 0,
+      "cd": 0,
+      "band": "pointBlank",
+      "pattern": "SELF",
+      "arc": null,
+      "freeplay": false,
+      "effects": [
+        "VENT_HEAT"
+      ],
+      "desc": "The WAIT analog. Dumps heat and recharges cooldowns by an extra step. The pressure-release valve — overheating forces it."
+    },
+    {
+      "id": "reroute_power",
+      "name": "Reroute Power",
+      "archetype": "defensive",
+      "heat": 0,
+      "cd": 6,
+      "band": "pointBlank",
+      "pattern": "SELF",
+      "arc": null,
+      "freeplay": false,
+      "effects": [
+        "VENT_HEAT"
+      ],
+      "desc": "Recharges all weapon cooldowns at once and dumps moderate heat. Resets your whole battery mid-fight."
+    },
+    {
+      "id": "decoy",
+      "name": "Decoy Drone",
+      "archetype": "defensive",
+      "heat": 2,
+      "cd": 6,
+      "band": "close",
+      "pattern": "DEPLOYED_CELL",
+      "arc": "turret",
+      "freeplay": false,
+      "effects": [
+        "DEPLOY"
+      ],
+      "desc": "Deploys a drone hazard that draws enemy fire and ordnance for a few turns. Buys a window to reorient or vent."
+    }
+  ],
+  "mods": [
+    {
+      "id": "flak_burst",
+      "name": "Flak Burst",
+      "cd": 1,
+      "desc": "On hit, if other ships are in adjacent cells, a burst deals 1 damage to each. The shockwave analog."
+    },
+    {
+      "id": "precision_core",
+      "name": "Precision Core",
+      "cd": 1,
+      "desc": "If the hit exactly destroys the target, the weapon's cooldown recharges fully. Rewards clean kills."
+    },
+    {
+      "id": "incendiary",
+      "name": "Incendiary",
+      "cd": 2,
+      "desc": "Applies hull-breach — 1 damage at end of turn for 3 turns. The poison analog."
+    },
+    {
+      "id": "emp_charge",
+      "name": "EMP Charge",
+      "cd": 2,
+      "desc": "Applies systems-offline for 3 turns, skipping the target's turns. The ice/freeze analog."
+    },
+    {
+      "id": "twin_linked",
+      "name": "Twin-Linked",
+      "cd": 4,
+      "desc": "Performs the attack twice. The double-strike analog — huge with high-damage single shots."
+    },
+    {
+      "id": "targeting_laser",
+      "name": "Targeting Laser",
+      "cd": 2,
+      "desc": "Applies target-lock on hit — the next incoming hit on that ship is doubled. The curse analog."
+    },
+    {
+      "id": "autoloader",
+      "name": "Autoloader",
+      "cd": 3,
+      "desc": "Loading this action does not advance the turn. The free-play analog — the only mod that can sit alongside another."
+    }
+  ],
+  "subsystems": [
+    {
+      "id": "marksman",
+      "name": "Marksman",
+      "bay": "gunnery",
+      "hook": "passive",
+      "cost": 15,
+      "unlock": null,
+      "maxLevel": 3,
+      "desc": "+1 damage when firing at long or extreme band. Always-on for back-line builds. (Sniper)"
+    },
+    {
+      "id": "point_blank_doctrine",
+      "name": "Point-Blank Doctrine",
+      "bay": "gunnery",
+      "hook": "passive",
+      "cost": 20,
+      "unlock": 3,
+      "maxLevel": 3,
+      "desc": "+1 damage at point-blank or close band — voided if the action moved you that turn. (Close Combat)"
+    },
+    {
+      "id": "rear_gunner",
+      "name": "Rear Gunner",
+      "bay": "gunnery",
+      "hook": "passive",
+      "cost": 15,
+      "unlock": null,
+      "maxLevel": 3,
+      "desc": "+1 damage when striking a ship through your stern arc. Rewards builds that fight reversed. (Back Stabber)"
+    },
+    {
+      "id": "overcharge",
+      "name": "Overcharge",
+      "bay": "gunnery",
+      "hook": "passive",
+      "cost": 20,
+      "unlock": 15,
+      "maxLevel": 1,
+      "desc": "+1 damage when the queue holds only one action. Non-stacking. (Monomancer)"
+    },
+    {
+      "id": "crossfire",
+      "name": "Crossfire",
+      "bay": "gunnery",
+      "hook": "passive",
+      "cost": 10,
+      "unlock": null,
+      "maxLevel": 3,
+      "desc": "Enemies deal +1 damage when firing on each other — pairs with displacement that forces friendly fire. (Unfriendly Fire)"
+    },
+    {
+      "id": "heat_sink_rounds",
+      "name": "Heat-Sink Rounds",
+      "bay": "gunnery",
+      "hook": "onVent",
+      "cost": 20,
+      "unlock": null,
+      "maxLevel": 3,
+      "desc": "A Vent action recharges one extra cooldown across weapons and the signature system. (Mindfulness)"
+    },
+    {
+      "id": "center_mass",
+      "name": "Center Mass",
+      "bay": "gunnery",
+      "hook": "passive",
+      "cost": 10,
+      "unlock": 30,
+      "maxLevel": 3,
+      "desc": "+1 damage when firing from the center cell of the lane. (Central Dominion)"
+    },
+    {
+      "id": "chain_bounty",
+      "name": "Chain Bounty",
+      "bay": "tactical",
+      "hook": "onChainKill",
+      "cost": 15,
+      "unlock": null,
+      "maxLevel": 3,
+      "desc": "Chain-killed ships drop an extra credit — counts capital-ship chains too. (Combo Coin)"
+    },
+    {
+      "id": "chain_recharge",
+      "name": "Chain Recharge",
+      "bay": "tactical",
+      "hook": "onChainKill",
+      "cost": 20,
+      "unlock": null,
+      "maxLevel": 2,
+      "desc": "A chain kill refunds that weapon's cooldown by 4 (8 at level 2). Lets a heavy gun fire far more often. (Combo Recharge)"
+    },
+    {
+      "id": "chain_repair",
+      "name": "Chain Repair",
+      "bay": "tactical",
+      "hook": "onChainKill",
+      "cost": 20,
+      "unlock": null,
+      "maxLevel": 3,
+      "desc": "Repair 1 hull on a triple chain kill. Counts as healing — triggers Overflow Capacitor. (Triple-Combo Heal)"
+    },
+    {
+      "id": "chain_lock",
+      "name": "Chain Lock",
+      "bay": "tactical",
+      "hook": "onChainKill",
+      "cost": 15,
+      "unlock": null,
+      "maxLevel": 3,
+      "desc": "A chain kill target-locks a random enemy — free burst setup. (Combo Curse)"
+    },
+    {
+      "id": "cryo_chain",
+      "name": "Cryo Chain",
+      "bay": "tactical",
+      "hook": "onChainKill",
+      "cost": 20,
+      "unlock": 6,
+      "maxLevel": 3,
+      "desc": "A chain kill applies systems-offline to a random enemy, in the same action — can pre-empt a hit. (Chilling Combo)"
+    },
+    {
+      "id": "munitions_cache",
+      "name": "Munitions Cache",
+      "bay": "tactical",
+      "hook": "onChainKill",
+      "cost": 15,
+      "unlock": 30,
+      "maxLevel": 3,
+      "desc": "A chain kill has a 1-in-5 chance to drop a Card field-kit item. (Combo Boon)"
+    },
+    {
+      "id": "reinforced_hull",
+      "name": "Reinforced Hull",
+      "bay": "engineering",
+      "hook": "passive",
+      "cost": 15,
+      "unlock": null,
+      "maxLevel": 3,
+      "desc": "+2 max hull per level. Simple, reliable survivability. (Healthy)"
+    },
+    {
+      "id": "ablative_plating",
+      "name": "Ablative Plating",
+      "bay": "engineering",
+      "hook": "passive",
+      "cost": 20,
+      "unlock": null,
+      "maxLevel": 3,
+      "desc": "Begin each fight with a shield charge; -2 max hull. (Fortress)"
+    },
+    {
+      "id": "reactive_armor",
+      "name": "Reactive Armor",
+      "bay": "engineering",
+      "hook": "onDamageTaken",
+      "cost": 20,
+      "unlock": null,
+      "maxLevel": 3,
+      "desc": "Taking damage auto-grants a shield — but not while you already hold one. (Reactive Shield)"
+    },
+    {
+      "id": "shield_capacitor",
+      "name": "Shield Capacitor",
+      "bay": "engineering",
+      "hook": "passive",
+      "cost": 15,
+      "unlock": null,
+      "maxLevel": 3,
+      "desc": "Shield charges persist across fights, including shields bought in a bay. (Shield Retention)"
+    },
+    {
+      "id": "damage_control",
+      "name": "Damage Control",
+      "bay": "engineering",
+      "hook": "onDamageTaken",
+      "cost": 20,
+      "unlock": 10,
+      "maxLevel": 3,
+      "desc": "Reduce all incoming damage by 1 (never to 0); -3 max hull. (Iron Skin)"
+    },
+    {
+      "id": "overflow_capacitor",
+      "name": "Overflow Capacitor",
+      "bay": "engineering",
+      "hook": "onHeal",
+      "cost": 15,
+      "unlock": 25,
+      "maxLevel": 3,
+      "desc": "Repair beyond max hull converts to a shield instead of wasting. Pairs with Chain Repair. (Overflow Guard)"
+    },
+    {
+      "id": "coolant_overflow",
+      "name": "Coolant Bloom",
+      "bay": "engineering",
+      "hook": "onHeatThreshold",
+      "cost": 15,
+      "unlock": 30,
+      "maxLevel": 3,
+      "desc": "When heat crosses the overheat line, freeze all enemies once — turns a crisis into control. (Chilling Blood)"
+    },
+    {
+      "id": "inertial_dampers",
+      "name": "Inertial Dampers",
+      "bay": "helm",
+      "hook": "passive",
+      "cost": 15,
+      "unlock": null,
+      "maxLevel": 1,
+      "desc": "-1 cooldown on the signature system (floored at 1). Non-stacking. (Quick Recovery)"
+    },
+    {
+      "id": "strafing_run",
+      "name": "Strafing Run",
+      "bay": "helm",
+      "hook": "passive",
+      "cost": 15,
+      "unlock": null,
+      "maxLevel": 3,
+      "desc": "+1 damage to shots if you moved with an action the same turn. (Dynamic Boost)"
+    },
+    {
+      "id": "two_vector",
+      "name": "Two-Vector Thrust",
+      "bay": "helm",
+      "hook": "passive",
+      "cost": 15,
+      "unlock": null,
+      "maxLevel": 1,
+      "desc": "The signature system can fire in either direction. Non-stacking. (Two-Way Move)"
+    },
+    {
+      "id": "gyro_master",
+      "name": "Gyro Master",
+      "bay": "helm",
+      "hook": "onReorient",
+      "cost": 20,
+      "unlock": 30,
+      "maxLevel": 1,
+      "desc": "Reorienting is a free action — but reorienting twice in a row target-locks you. Non-stacking. (Two-Faced Dancer)"
+    },
+    {
+      "id": "cargo_expansion",
+      "name": "Cargo Expansion",
+      "bay": "general",
+      "hook": "passive",
+      "cost": 10,
+      "unlock": null,
+      "maxLevel": 3,
+      "desc": "+1 field-kit slot (max 6). Stocked by every bay. (Big Pockets)"
+    },
+    {
+      "id": "black_market",
+      "name": "Black Market",
+      "bay": "general",
+      "hook": "passive",
+      "cost": 10,
+      "unlock": 30,
+      "maxLevel": 3,
+      "desc": "Sell field-kit items anywhere, not just in bays, and for +1 credit each. (Rogue Retail)"
+    },
+    {
+      "id": "phoenix_protocol",
+      "name": "Phoenix Protocol",
+      "bay": "astrogation",
+      "hook": "onLethal",
+      "cost": 20,
+      "unlock": 99,
+      "maxLevel": 1,
+      "desc": "Revive with half your current max hull (rounded up) on a lethal hit. Once per life. (Fenghuangs Feather)"
+    },
+    {
+      "id": "navigators_boon",
+      "name": "Navigators Boon",
+      "bay": "astrogation",
+      "hook": "passive",
+      "cost": 20,
+      "unlock": 99,
+      "maxLevel": 1,
+      "desc": "The first reroll of every reward is free. A standing modifier on reroll pricing. (Seiryus Scale)"
+    }
+  ],
+  "statuses": [
+    {
+      "id": "hull_breach",
+      "name": "Hull Breach",
+      "effect": "1 damage at end of turn for 3 turns. Stacks duration, not amount.",
+      "origin": "Poison"
+    },
+    {
+      "id": "systems_offline",
+      "name": "Systems Offline",
+      "effect": "Skips the ship's next turn(s). Capitals may be immune.",
+      "origin": "Frozen / Ice"
+    },
+    {
+      "id": "target_lock",
+      "name": "Target Lock",
+      "effect": "Next incoming hit deals double damage; consumed on hit. Applied after additive bonuses.",
+      "origin": "Curse"
+    },
+    {
+      "id": "shields_up",
+      "name": "Shields",
+      "effect": "A directional charge that absorbs the next hit on the threatened face.",
+      "origin": "Shield"
+    }
+  ],
+  "enemies": [
+    {
+      "id": "skiff",
+      "name": "Skiff",
+      "hull": 3,
+      "hull5": 4,
+      "traits": [],
+      "sector": "Drift Belt",
+      "weapons": [
+        "Pulse Laser"
+      ]
+    },
+    {
+      "id": "lancer",
+      "name": "Lancer",
+      "hull": 1,
+      "hull5": 2,
+      "traits": [
+        "Burn-Hard"
+      ],
+      "sector": "Drift Belt",
+      "weapons": [
+        "Afterburner",
+        "Pulse Laser"
+      ]
+    },
+    {
+      "id": "gunboat",
+      "name": "Gunboat",
+      "hull": 4,
+      "hull5": 5,
+      "traits": [],
+      "sector": "Ion Reefs",
+      "weapons": [
+        "Beam Cannon"
+      ]
+    },
+    {
+      "id": "picket",
+      "name": "Picket",
+      "hull": 3,
+      "hull5": 4,
+      "traits": [],
+      "sector": "Ashen Expanse",
+      "weapons": [
+        "Missile Salvo"
+      ]
+    },
+    {
+      "id": "monitor",
+      "name": "Monitor",
+      "hull": 5,
+      "hull5": 7,
+      "traits": [
+        "Pursuit"
+      ],
+      "sector": "Spindle Port",
+      "weapons": [
+        "Pulse Laser"
+      ]
+    },
+    {
+      "id": "skirmisher",
+      "name": "Skirmisher",
+      "hull": 2,
+      "hull5": 3,
+      "traits": [],
+      "sector": "Spindle Port",
+      "weapons": [
+        "Missile Salvo"
+      ]
+    },
+    {
+      "id": "grappler",
+      "name": "Grappler",
+      "hull": 5,
+      "hull5": 6,
+      "traits": [],
+      "sector": "Spirit Gate",
+      "weapons": [
+        "Tractor Beam",
+        "Pulse Laser"
+      ]
+    },
+    {
+      "id": "shade",
+      "name": "Shade",
+      "hull": 4,
+      "hull5": 5,
+      "traits": [
+        "Agile"
+      ],
+      "sector": "Spirit Gate",
+      "weapons": [
+        "Pulse Laser",
+        "Blink Drive"
+      ]
+    },
+    {
+      "id": "bulwark",
+      "name": "Bulwark",
+      "hull": 4,
+      "hull5": 5,
+      "traits": [],
+      "sector": "Hot Verge",
+      "weapons": [
+        "Brace",
+        "Decoy Drone"
+      ]
+    },
+    {
+      "id": "tender",
+      "name": "Tender",
+      "hull": 1,
+      "hull5": 2,
+      "traits": [
+        "Reactor Breach"
+      ],
+      "sector": "Forsaken Drift",
+      "weapons": [
+        "Mine Layer",
+        "Targeting Marker"
+      ]
+    },
+    {
+      "id": "strider",
+      "name": "Strider",
+      "hull": 4,
+      "hull5": 5,
+      "traits": [
+        "Burn-Hard"
+      ],
+      "sector": "Forsaken Drift",
+      "weapons": [
+        "Pulse Laser"
+      ]
+    },
+    {
+      "id": "mimic",
+      "name": "Mimic",
+      "hull": 5,
+      "hull5": 6,
+      "traits": [],
+      "sector": "Mirror Theatre",
+      "weapons": [
+        "Sensor Scramble"
+      ]
+    },
+    {
+      "id": "voidrunner",
+      "name": "Voidrunner",
+      "hull": 5,
+      "hull5": 7,
+      "traits": [
+        "Agile"
+      ],
+      "sector": "Inner Keeps",
+      "weapons": [
+        "Afterburner",
+        "Beam Cannon"
+      ]
+    }
+  ],
+  "capitals": [
+    {
+      "id": "dasher",
+      "name": "The Dasher",
+      "sector": "Drift Belt",
+      "corrupt": true,
+      "sP1": 2,
+      "sP7": 7
+    },
+    {
+      "id": "impaler",
+      "name": "The Impaler",
+      "sector": "Ion Reefs",
+      "corrupt": true,
+      "sP1": 3,
+      "sP7": 8
+    },
+    {
+      "id": "barricader",
+      "name": "The Barricader",
+      "sector": "Ashen Expanse",
+      "corrupt": true,
+      "sP1": 3,
+      "sP7": 8
+    },
+    {
+      "id": "twins",
+      "name": "The Twins",
+      "sector": "Spindle Port",
+      "corrupt": true,
+      "sP1": 4,
+      "sP7": 8
+    },
+    {
+      "id": "statue",
+      "name": "The Sentinel",
+      "sector": "Spirit Gate",
+      "corrupt": true,
+      "sP1": 4,
+      "sP7": 10
+    },
+    {
+      "id": "coward",
+      "name": "The Coward",
+      "sector": "Hot Verge",
+      "corrupt": true,
+      "sP1": 4,
+      "sP7": 10
+    },
+    {
+      "id": "fallen",
+      "name": "The Fallen",
+      "sector": "Forsaken Drift",
+      "corrupt": true,
+      "sP1": 4,
+      "sP7": 10
+    },
+    {
+      "id": "stagemaster",
+      "name": "The Stagemaster",
+      "sector": "Mirror Theatre",
+      "corrupt": true,
+      "sP1": 4,
+      "sP7": 10
+    },
+    {
+      "id": "warlord",
+      "name": "The Warlord",
+      "sector": "Inner Keeps",
+      "corrupt": true,
+      "sP1": 5,
+      "sP7": 11
+    },
+    {
+      "id": "shogun",
+      "name": "The Flagship",
+      "sector": "Citadel",
+      "corrupt": false,
+      "sP1": 5,
+      "sP7": 11
+    },
+    {
+      "id": "secret",
+      "name": "Void Sovereign",
+      "sector": "Crimson Anomaly",
+      "corrupt": false,
+      "sP1": null,
+      "sP7": 11
+    }
+  ],
+  "classes": [
+    {
+      "id": "wanderer",
+      "name": "Frigate \"Drifter\"",
+      "unlock": "Unlocked by default",
+      "affinity": "flexible",
+      "set1": [
+        "Broadside Battery",
+        "Pulse Laser"
+      ],
+      "set2": [
+        "Railgun Broadside",
+        "Grav Snare"
+      ],
+      "signature": "Slip — move forward to trade places with the ship directly ahead.",
+      "passive": null,
+      "desc": "The starting hull; a balanced beam + broadside opener with no strong stance bias."
+    },
+    {
+      "id": "ronin",
+      "name": "Destroyer \"Ronin\"",
+      "unlock": "Defeat The Twins",
+      "affinity": "bow-on",
+      "set1": [
+        "Particle Lance",
+        "Blink Drive"
+      ],
+      "set2": [
+        "Railgun Broadside",
+        "Tractor Toss"
+      ],
+      "signature": "Ram — move forward to shove the ship ahead, dealing collision damage on impact.",
+      "passive": null,
+      "desc": "Bow-on bruiser built around its strong front and collision damage; Chikara-style collision perks shine."
+    },
+    {
+      "id": "shadow",
+      "name": "Phantom \"Shade\"",
+      "unlock": "Defeat The Warlord",
+      "affinity": "broadside",
+      "set1": [
+        "Broadside Battery",
+        "Tractor Beam"
+      ],
+      "set2": [
+        "Particle Lance",
+        "Blink Drive"
+      ],
+      "signature": "Phase — move forward to pass through the ship directly ahead.",
+      "passive": "When moving, the Phantom advances as far as possible in the chosen direction.",
+      "desc": "The only class with a passive layered on the signature; a broadside skirmisher that slips between threats."
+    },
+    {
+      "id": "jujitsuka",
+      "name": "Monitor \"Anvil\"",
+      "unlock": "Defeat the Flagship on Patrol 2",
+      "affinity": "bow-on",
+      "set1": [
+        "Repulsor",
+        "Scatter Laser"
+      ],
+      "set2": [
+        "Beam Cannon",
+        "Grav Snare"
+      ],
+      "signature": "Throw — move backward to hurl the ship behind you, dealing collision damage.",
+      "passive": null,
+      "desc": "A reversed-stance brawler that fights over its stern, turning displacement into kills."
+    },
+    {
+      "id": "chainmaster",
+      "name": "Carrier \"Tessen\"",
+      "unlock": "Defeat the Flagship on Patrol 3",
+      "affinity": "broadside",
+      "set1": [
+        "Heavy Torpedo",
+        "Afterburner"
+      ],
+      "set2": [
+        "Flak Battery",
+        "Missile Salvo"
+      ],
+      "signature": "Swap Toss — move into a ship to swap the cells directly fore and aft.",
+      "passive": null,
+      "desc": "Ordnance-heavy broadside hull; multi-target launches reliably trigger chain subsystems."
+    }
+  ],
+  "fieldkit": [
+    {
+      "id": "repair_nanites",
+      "name": "Repair Nanites",
+      "kind": "Stim",
+      "effect": "Restore up to 3 hull.",
+      "sell": 5
+    },
+    {
+      "id": "shield_booster",
+      "name": "Shield Booster",
+      "kind": "Stim",
+      "effect": "Grant a shield charge.",
+      "sell": 2
+    },
+    {
+      "id": "coolant_flush",
+      "name": "Coolant Flush",
+      "kind": "Stim",
+      "effect": "Dump all heat and recharge all cooldowns.",
+      "sell": 2
+    },
+    {
+      "id": "mass_lock",
+      "name": "Mass Lock",
+      "kind": "Card",
+      "effect": "Target-lock every enemy — next hit on each is doubled.",
+      "sell": 2
+    },
+    {
+      "id": "mass_breach",
+      "name": "Mass Breach",
+      "kind": "Card",
+      "effect": "Hull-breach every enemy for 3 turns.",
+      "sell": 2
+    },
+    {
+      "id": "mass_emp",
+      "name": "Mass EMP",
+      "kind": "Card",
+      "effect": "Systems-offline every enemy for 3 turns.",
+      "sell": 2
+    },
+    {
+      "id": "sensor_pulse",
+      "name": "Sensor Pulse",
+      "kind": "Card",
+      "effect": "Flip the orientation of every enemy and capital.",
+      "sell": 2
+    },
+    {
+      "id": "recon_die",
+      "name": "Recon Die",
+      "kind": "Tool",
+      "effect": "In combat: reroll enemy intentions. Out of combat: reroll a reward or bay.",
+      "sell": 2
+    }
+  ],
+  "sectors": [
+    {
+      "name": "Staging",
+      "node": "0",
+      "lane": 5,
+      "intro": [],
+      "capital": "—"
+    },
+    {
+      "name": "Drift Belt",
+      "node": "1",
+      "lane": 5,
+      "intro": [
+        "Skiff",
+        "Lancer"
+      ],
+      "capital": "The Dasher"
+    },
+    {
+      "name": "Ion Reefs",
+      "node": "2.1",
+      "lane": 7,
+      "intro": [
+        "Gunboat"
+      ],
+      "capital": "The Impaler"
+    },
+    {
+      "name": "Ashen Expanse",
+      "node": "2.2",
+      "lane": 7,
+      "intro": [
+        "Picket"
+      ],
+      "capital": "The Barricader"
+    },
+    {
+      "name": "Spindle Port",
+      "node": "3",
+      "lane": 7,
+      "intro": [
+        "Monitor",
+        "Skirmisher"
+      ],
+      "capital": "The Twins"
+    },
+    {
+      "name": "Spirit Gate",
+      "node": "4.1",
+      "lane": 7,
+      "intro": [
+        "Grappler",
+        "Shade"
+      ],
+      "capital": "The Sentinel"
+    },
+    {
+      "name": "Hot Verge",
+      "node": "5.1",
+      "lane": 9,
+      "intro": [
+        "Bulwark"
+      ],
+      "capital": "The Coward"
+    },
+    {
+      "name": "Forsaken Drift",
+      "node": "4.2",
+      "lane": 9,
+      "intro": [
+        "Tender",
+        "Strider"
+      ],
+      "capital": "The Fallen"
+    },
+    {
+      "name": "Mirror Theatre",
+      "node": "5.2",
+      "lane": 9,
+      "intro": [
+        "Mimic"
+      ],
+      "capital": "The Stagemaster"
+    },
+    {
+      "name": "Inner Keeps",
+      "node": "6",
+      "lane": 9,
+      "intro": [
+        "Voidrunner"
+      ],
+      "capital": "The Warlord"
+    },
+    {
+      "name": "Citadel",
+      "node": "7",
+      "lane": 9,
+      "intro": [],
+      "capital": "The Flagship"
+    },
+    {
+      "name": "Crimson Anomaly",
+      "node": "8",
+      "lane": 7,
+      "intro": [],
+      "capital": "Void Sovereign"
+    }
+  ],
+  "patrols": [
+    {
+      "n": 1,
+      "mod": "Base game — no modifiers."
+    },
+    {
+      "n": 2,
+      "mod": "Elite enemy ships may spawn."
+    },
+    {
+      "n": 3,
+      "mod": "Lower chance for stim and field-kit drops."
+    },
+    {
+      "n": 4,
+      "mod": "Capital ships may be corrupted."
+    },
+    {
+      "n": 5,
+      "mod": "Enemies have more hull (the Patrol-5+ value)."
+    },
+    {
+      "n": 6,
+      "mod": "Player starting hull reduced: 10 to 5."
+    },
+    {
+      "n": 7,
+      "mod": "Corruption spreads — voidtouched enemies, all capitals corrupted, a new final boss."
+    }
+  ],
+  "commendations": [
+    {
+      "name": "First Blood",
+      "tier": "base",
+      "goal": "Defeat The Dasher."
+    },
+    {
+      "name": "Twin Takedown",
+      "tier": "base",
+      "goal": "Defeat The Twins. Unlocks the Ronin."
+    },
+    {
+      "name": "Warlord Bane",
+      "tier": "base",
+      "goal": "Defeat The Warlord. Unlocks the Phantom."
+    },
+    {
+      "name": "Flagship Slayer",
+      "tier": "hidden",
+      "goal": "Defeat the Flagship. Unlocks commendations, patrols, and sectors."
+    },
+    {
+      "name": "Flame Run",
+      "tier": "hidden",
+      "goal": "Defeat the Flagship on Patrol 2. Unlocks the Monitor."
+    },
+    {
+      "name": "Tidal Run",
+      "tier": "hidden",
+      "goal": "Defeat the Flagship on Patrol 3. Unlocks the Carrier."
+    },
+    {
+      "name": "Triple Threat",
+      "tier": "base",
+      "goal": "Destroy 3 ships in a single turn."
+    },
+    {
+      "name": "Farsighted",
+      "tier": "base",
+      "goal": "Destroy a ship from 8 cells away."
+    },
+    {
+      "name": "Colossal Salvo",
+      "tier": "base",
+      "goal": "Deal 25 damage in a single attack."
+    },
+    {
+      "name": "Puppeteer",
+      "tier": "base",
+      "goal": "Have 40 enemies destroy each other across one run."
+    },
+    {
+      "name": "Cold Engine",
+      "tier": "hidden",
+      "goal": "Defeat the Flagship without ever overheating."
+    },
+    {
+      "name": "Iron Helm",
+      "tier": "hidden",
+      "goal": "Defeat the Flagship without ever reorienting in any battle."
+    },
+    {
+      "name": "Blitz",
+      "tier": "hidden",
+      "goal": "Defeat the Flagship with a battery of only 0-1 cooldown weapons."
+    },
+    {
+      "name": "Juggernaut",
+      "tier": "hidden",
+      "goal": "Defeat the Flagship with a battery of only 7-8 cooldown weapons."
+    }
+  ]
+}
