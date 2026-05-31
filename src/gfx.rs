@@ -391,9 +391,18 @@ struct ViewUniform {
     px_to_ndc: vec2<f32>,
     _pad: vec2<f32>,
 };
+// NOTE: the pad must be three scalar f32s, NOT a vec3<f32>. In WGSL uniform
+// layout a vec3<f32> has 16-byte alignment, which would push it to offset 16
+// and make this struct 32 bytes — but the matching Rust `BlendUniform`
+// (#[repr(C)] { f32, [f32; 3] }) and its uniform buffer are only 16 bytes.
+// The mismatch trips wgpu's late-min-binding-size check at draw time
+// (bound_size 16 < shader_expect_size 32), invalidating the encoder. Three
+// scalars keep the WGSL struct at 16 bytes to match.
 struct BlendUniform {
     blend_t: f32,
-    _pad: vec3<f32>,
+    _pad0: f32,
+    _pad1: f32,
+    _pad2: f32,
 };
 @group(0) @binding(0) var<uniform> view: ViewUniform;
 @group(1) @binding(0) var<uniform> ship: BlendUniform;
