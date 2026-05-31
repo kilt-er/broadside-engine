@@ -794,7 +794,7 @@ pub struct Catalog {
     #[serde(default)]
     pub capitals: Vec<serde_json::Value>,
     #[serde(default)]
-    pub classes: Vec<serde_json::Value>,
+    pub classes: Vec<ClassDef>,
     #[serde(default)]
     pub fieldkit: Vec<serde_json::Value>,
     #[serde(default)]
@@ -851,6 +851,57 @@ pub struct EnemyDef {
     pub traits: Vec<String>,
     pub sector: String,
     pub weapons: Vec<String>,
+}
+
+/// The stance / orientation a class leans into. Mirrors the canonical doc's
+/// `affinity` field at `broadside-analysis.html:1144-1163` (the `CLASSES`
+/// table). `Flexible` is the no-stance-bias starter class; `BowOn` and
+/// `Broadside` correspond to the two `Orientation::*` stances the hull can
+/// take. Note this is **not** a [`WeaponArchetype`] — the canonical doc
+/// uses stance affinity, not weapon-type affinity, for class identity.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ClassAffinity {
+    Flexible,
+    BowOn,
+    Broadside,
+}
+
+/// Definition of a player ship class as it appears in the catalog. Matches
+/// the canonical schema in `broadside-analysis.html:1144-1163`: each class
+/// names two action sets the player can pick between at run-start, a
+/// free-fire Signature action (the "hero special move" — dispatch keyed off
+/// [`Ship::klass`]), an optional Passive description, and the unlock /
+/// flavour copy shown in the class-select UI.
+///
+/// The TS `Catalog.classes` is typed as `unknown[]` (placeholder); this
+/// Rust port locks the shape in ahead of the canonical typings. When the
+/// TS engine grows a real `ClassDef`, the wire shape should already match.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClassDef {
+    /// Internal id used for `Ship::klass` lookups (e.g. `"wanderer"`).
+    pub id: String,
+    /// Display name (e.g. `"Frigate \"Drifter\""`).
+    pub name: String,
+    /// Stance bias. See [`ClassAffinity`].
+    pub affinity: ClassAffinity,
+    /// Unlock criterion copy. `None` is treated as "available from the
+    /// start" so the field can be omitted from the catalog JSON; a canonical
+    /// `"Unlocked by default"` string is also valid.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unlock: Option<String>,
+    /// Action ids in the class's primary loadout set.
+    pub set1: Vec<String>,
+    /// Action ids in the secondary loadout set.
+    pub set2: Vec<String>,
+    /// The Signature action id (free-fire; dispatched on the ship's `klass`).
+    pub signature: String,
+    /// Optional Passive — prose for now; structured effect bodies arrive
+    /// when the content slice promotes this to a real [`Effect`] chain.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub passive: Option<String>,
+    /// Class-select UI flavour copy.
+    pub desc: String,
 }
 
 /* =========================================================================
@@ -1152,4 +1203,51 @@ mod tests {
     // Tester's task #22 verifies the invariant (callback's view of the bus
     // is a placeholder); #25 verifies that direct resolver-function calls
     // from inside a callback DO emit through the live bus after return.
+
+    #[test]
+    fn class_affinity_serializes_camel_case() {
+        // Matches the canonical doc's string literals ("flexible" / "bowOn"
+        // / "broadside"). `BowOn` is the one that needs camelCase, the
+        // others are single lowercase tokens.
+        assert_eq!(serde_json::to_string(&ClassAffinity::Flexible).unwrap(), r#""flexible""#);
+        assert_eq!(serde_json::to_string(&ClassAffinity::BowOn).unwrap(),    r#""bowOn""#);
+        assert_eq!(serde_json::to_string(&ClassAffinity::Broadside).unwrap(),r#""broadside""#);
+
+        let parsed: ClassAffinity = serde_json::from_str(r#""bowOn""#).unwrap();
+        assert_eq!(parsed, ClassAffinity::BowOn);
+    }
+
+    #[test]
+    fn class_def_roundtrips_canonical_shape() {
+        // Mirrors the `wanderer` entry from `broadside-analysis.html:1144`.
+        // Includes every field — unlock + passive populated — so the
+        // round-trip exercises the full shape (not just the
+        // `skip_serializing_if = "Option::is_none"` shortcut paths).
+        let wanderer = ClassDef {
+            id: "wanderer".into(),
+            name: r#"Frigate "Drifter""#.into(),
+            affinity: ClassAffinity::Flexible,
+            unlock: Some("Unlocked by default".into()),
+            set1: vec!["Broadside Battery".into(), "Pulse Laser".into()],
+            set2: vec!["Railgun Broadside".into(), "Grav Snare".into()],
+            signature: "Slip — move forward to trade places with the ship directly ahead.".into(),
+            passive: None,
+            desc: "The starting hull; a balanced beam + broadside opener with no strong stance bias.".into(),
+        };
+        let json = serde_json::to_string(&wanderer).unwrap();
+        let back: ClassDef = serde_json::from_str(&json).unwrap();
+        assert_eq!(wanderer, back);
+        // `passive: None` must omit (no JSON `null`): the canonical doc emits
+        // `passive:null` in TS, but JSON serializers vary; we choose absent
+        // for consistency with the rest of the Rust port's `?:`-style
+        // optional fields. A future strict-canonical pass can flip this.
+        assert!(!json.contains("\"passive\""), "passive should be omitted when None, got {json}");
+
+        // And the placeholder `Catalog.classes` path: an empty array still
+        // parses, and a populated one preserves order through the catalog
+        // boundary.
+        let json_catalog_classes_empty = r#"[]"#;
+        let parsed: Vec<ClassDef> = serde_json::from_str(json_catalog_classes_empty).unwrap();
+        assert!(parsed.is_empty());
+    }
 }
