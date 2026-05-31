@@ -47,6 +47,11 @@
 //!   `.json` (`docs/broadside-loft-editor.html`'s `collectDesign()`).
 //!   Data only — the asset format the 3D loft/render path consumes;
 //!   no rendering here.
+//! - [`loft`] — pure-math hull lofting: a [`ship_design::ShipDesign`]'s 2D
+//!   profiles swept into a 3D triangle-soup [`loft::HullMesh`]. No GPU, no
+//!   feature gate (CI-testable headless); the renderer's `loft_gpu` uploads
+//!   the mesh and runs the depth + posterize passes. Stage 1 of the ship
+//!   render pipeline (`docs/RENDER_PIPELINE.md`).
 //!
 //! Content effect bodies and AI live in sibling modules added by other
 //! teammates.
@@ -58,6 +63,7 @@ pub mod catalog_canonical;
 pub mod classes;
 pub mod geometry;
 pub mod input;
+pub mod loft;
 pub mod meta;
 pub mod perspective;
 pub mod resolve;
