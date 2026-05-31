@@ -155,6 +155,18 @@ fn transform_action(v: Value) -> Result<Value, &'static str> {
     let archetype = a.get("archetype").and_then(|v| v.as_str()).unwrap_or("beam").to_string();
     let action_id = a.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
     let loose_effects = a.remove("effects").unwrap_or(Value::Array(vec![]));
+    // The four self-relative class signatures (slip / swap_toss / ram /
+    // throw) are exported with `pattern: SELF` + a `DISPLACE_TARGET`
+    // effect string. That combination is mechanically dead: `resolve_targeting`
+    // returns `[ship_cell]` for SELF, so DISPLACE_TARGET runs with
+    // `target == source` — a no-op for the swap modes and a wrong-direction
+    // self-shove for the push modes (the trailing DAMAGE then strikes the
+    // now-vacated origin and hits nothing). The canonical prose is
+    // self-relative ("move forward to trade places…", "shove the ship
+    // ahead…"), so the faithful representation is a DISPLACE_SELF, which the
+    // resolver's `resolve_self_move` implements correctly (TRACTOR_SWAP for
+    // the swaps; BURN with collision billing for the rams). See [`rewrite_self_relative_signature`].
+    let loose_effects = rewrite_self_relative_signature(&action_id, loose_effects);
     let new_effects = match loose_effects {
         Value::Array(items) => items
             .into_iter()
@@ -350,6 +362,63 @@ fn signature_id_from_prose(prose: &str) -> String {
 }
 
 /* =========================================================================
+ * Self-relative class-signature effect-kind rewrite (#84 follow-up).
+ * ====================================================================== */
+
+/// Action ids whose canonical export carries a `DISPLACE_TARGET` effect but
+/// whose prose is self-relative — the ship moves itself relative to a
+/// neighbour, rather than displacing a distant target. With the export's
+/// `pattern: SELF`, `resolve_targeting` returns `[ship_cell]`, so a
+/// `DISPLACE_TARGET` runs against the source ship: a no-op for the swap modes,
+/// a wrong-direction self-shove for the push modes. The correct effect kind is
+/// `DISPLACE_SELF`, which `resolve_self_move` implements faithfully.
+const SELF_RELATIVE_SWAP_SIGNATURES: &[&str] = &["slip", "swap_toss"];
+/// The ram-style signatures: a self BURN that bills collision damage on
+/// impact. The canonical export pairs `DISPLACE_TARGET` with a trailing
+/// `DAMAGE`; once the displacement becomes a self-move, that DAMAGE would
+/// strike the now-vacated origin cell (SELF pattern) and hit nothing — so it
+/// is dropped here and the collision billing inside `resolve_self_move`
+/// supplies the damage instead.
+const SELF_RELATIVE_RAM_SIGNATURES: &[&str] = &["ram", "throw"];
+
+/// Rewrite the loose effect list for the self-relative class signatures
+/// (slip / swap_toss / ram / throw) BEFORE inflation:
+///
+/// - any `DISPLACE_TARGET` string becomes `DISPLACE_SELF` (the actual
+///   movement-mode mapping is applied later by [`inflate_effect`]'s
+///   DISPLACE_SELF arm, keyed off the action id);
+/// - for the ram-style ids, the trailing `DAMAGE` is dropped (collision
+///   damage is billed by the resolver's self-move path, not a separate
+///   SELF-pattern DAMAGE that would hit the empty origin).
+///
+/// Every other action passes through untouched. Already-strict (object)
+/// effects are left as-is — this only rewrites the bare-string form the
+/// canonical export emits.
+fn rewrite_self_relative_signature(action_id: &str, effects: Value) -> Value {
+    let id = action_id.to_lowercase();
+    let is_swap = SELF_RELATIVE_SWAP_SIGNATURES.contains(&id.as_str());
+    let is_ram = SELF_RELATIVE_RAM_SIGNATURES.contains(&id.as_str());
+    if !is_swap && !is_ram {
+        return effects;
+    }
+    let Value::Array(items) = effects else {
+        return effects;
+    };
+    let rewritten: Vec<Value> = items
+        .into_iter()
+        .filter_map(|e| match &e {
+            Value::String(s) if s == "DISPLACE_TARGET" => {
+                Some(Value::String("DISPLACE_SELF".into()))
+            }
+            // Drop the redundant DAMAGE on ram/throw — collision billing owns it.
+            Value::String(s) if s == "DAMAGE" && is_ram => None,
+            _ => Some(e),
+        })
+        .collect();
+    Value::Array(rewritten)
+}
+
+/* =========================================================================
  * Effect inflation.
  *
  * The canonical export emits `effects: ["DAMAGE", "APPLY_STATUS"]` —
@@ -417,11 +486,16 @@ fn inflate_effect(v: Value, archetype: &str, heat: i32, action_id: &str) -> Valu
         "DISPLACE_TARGET" => {
             // mode chosen by action id keyword. Default push.
             //
-            // Class signatures (task #84) extend the keyword set:
-            //   slip       — "trade places with ship ahead" → swap
-            //   swap_toss  — "swap fore + aft cells"         → swap
-            //   throw      — "hurl ship behind, collision"   → push
-            //   ram        — "shove ahead, collision damage" → push (default)
+            // NOTE: the class signatures slip / swap_toss / ram / throw used
+            // to land here (their canonical export carries a DISPLACE_TARGET
+            // string), but they are self-relative — the SELF targeting pattern
+            // made DISPLACE_TARGET resolve against the source ship, a no-op /
+            // wrong-direction shove. `rewrite_self_relative_signature` now
+            // rewrites those four to DISPLACE_SELF before inflation, so this
+            // arm only sees genuine target-displacement actions (tractor_beam,
+            // repulsor, grav_snare, tractor_toss). The slip/swap_toss branch
+            // below is dead for those ids now but kept as a harmless guard in
+            // case a future export drops the rewrite.
             let id_lower = action_id.to_lowercase();
             let mode = if id_lower.contains("tractor") && id_lower.contains("toss") {
                 "swap"
@@ -450,16 +524,42 @@ fn inflate_effect(v: Value, archetype: &str, heat: i32, action_id: &str) -> Valu
             // engine (skip over occupants to land in the first free
             // cell). Special-case it by id keyword so the canonical
             // signature dispatches the right movement.
+            //
+            //   phase     — "pass through the ship directly ahead" → SLIP
+            //               (skip occupants, land in the first free cell).
+            //   slip      — "trade places with the ship directly ahead" →
+            //               TRACTOR_SWAP (swap with the bow-adjacent occupant).
+            //   swap_toss — "swap the cells directly fore and aft" →
+            //               TRACTOR_SWAP. NOTE: the canonical prose wants a
+            //               two-sided (fore AND aft) swap; the engine has no
+            //               effect that trades a ship's two neighbours around
+            //               a stationary centre, so we use the bow-side single
+            //               swap (the faithful subset). Flagged to the lead for
+            //               whether a two-sided swap effect is worth adding.
+            //   ram       — "shove the ship ahead, collision damage" → BURN.
+            //               resolve_self_move bills collision damage when the
+            //               burn is blocked by the ship ahead, so the collision
+            //               IS the damage — rewrite_self_relative_signature
+            //               drops the separate DAMAGE (a SELF-pattern DAMAGE
+            //               would strike the now-empty origin and hit nothing).
+            //   throw     — "hurl the ship behind you, collision damage" → BURN
+            //               toward the stern (direction: aft overrides the
+            //               bow-relative step).
             let id_lower = action_id.to_lowercase();
-            let (mode, distance) = if id_lower == "phase" {
-                ("SLIP", 2)
-            } else {
-                ("THRUST", 1)
+            let (mode, distance) = match id_lower.as_str() {
+                "phase" => ("SLIP", 2),
+                "slip" | "swap_toss" => ("TRACTOR_SWAP", 1),
+                "ram" | "throw" => ("BURN", 2),
+                _ => ("THRUST", 1),
             };
             m.insert("mode".into(), Value::String(mode.into()));
             m.insert("distance".into(), Value::from(distance));
-            // direction omitted -> serde defaults to None on the strict
-            // shape (preserves orientation-relative semantics).
+            // direction omitted (None = orientation-relative, matching TS)
+            // for every mode except `throw`, which heads aft regardless of
+            // stance.
+            if id_lower == "throw" {
+                m.insert("direction".into(), Value::String("aft".into()));
+            }
         }
         "REORIENT" => {
             m.insert("to".into(), Value::String("flip".into()));
@@ -693,10 +793,14 @@ mod tests {
     }
 
     #[test]
-    fn slip_infers_swap() {
-        // Class-signature extension (task #84): id `slip` overrides the
-        // default push for DISPLACE_TARGET. Per the canonical class
-        // signature prose, slip trades places with the ship ahead.
+    fn slip_inflates_to_self_tractor_swap() {
+        // #84 follow-up: slip's canonical export is `pattern: SELF` +
+        // DISPLACE_TARGET, but its prose is self-relative ("trade places with
+        // the ship directly ahead"). A SELF-pattern DISPLACE_TARGET resolves
+        // against the source ship — a pure no-op. The faithful effect kind is
+        // DISPLACE_SELF { TRACTOR_SWAP }, which swaps with the bow-adjacent
+        // occupant. (Pre-fix this test asserted DISPLACE_TARGET { Swap } and
+        // pinned the dead behaviour.)
         let json = serde_json::json!({
             "meta": { "schema": "x", "lane": [5], "newAxes": [], "bands": ["pointBlank"] },
             "actions": [{
@@ -712,20 +816,20 @@ mod tests {
         });
         let cat: Catalog = from_canonical_value(json).expect("parses");
         match &cat.actions[0].effects[0] {
-            Effect::DISPLACE_TARGET { mode, .. } => {
-                assert_eq!(*mode, crate::types::DisplaceMode::Swap);
+            Effect::DISPLACE_SELF { mode, .. } => {
+                assert_eq!(*mode, crate::types::MovementMode::TRACTOR_SWAP);
             }
-            other => panic!("expected swap, got {other:?}"),
+            other => panic!("expected DISPLACE_SELF TRACTOR_SWAP, got {other:?}"),
         }
     }
 
     #[test]
-    fn swap_toss_infers_swap() {
-        // Class-signature extension (task #84): id `swap_toss` overrides
-        // the default push. The existing `tractor && toss` rule didn't
-        // match because the new signature id has `swap` instead of
-        // `tractor`. Without this branch the action would push instead
-        // of swapping.
+    fn swap_toss_inflates_to_self_tractor_swap() {
+        // #84 follow-up: swap_toss has the same SELF + DISPLACE_TARGET dead
+        // shape as slip. Its prose ("swap the cells directly fore and aft")
+        // wants a two-sided swap the engine can't express, so it maps to the
+        // faithful single-swap subset DISPLACE_SELF { TRACTOR_SWAP }. (Pre-fix
+        // this asserted DISPLACE_TARGET { Swap } — the dead behaviour.)
         let json = serde_json::json!({
             "meta": { "schema": "x", "lane": [5], "newAxes": [], "bands": ["pointBlank"] },
             "actions": [{
@@ -741,10 +845,10 @@ mod tests {
         });
         let cat: Catalog = from_canonical_value(json).expect("parses");
         match &cat.actions[0].effects[0] {
-            Effect::DISPLACE_TARGET { mode, .. } => {
-                assert_eq!(*mode, crate::types::DisplaceMode::Swap);
+            Effect::DISPLACE_SELF { mode, .. } => {
+                assert_eq!(*mode, crate::types::MovementMode::TRACTOR_SWAP);
             }
-            other => panic!("expected swap, got {other:?}"),
+            other => panic!("expected DISPLACE_SELF TRACTOR_SWAP, got {other:?}"),
         }
     }
 
@@ -998,5 +1102,235 @@ mod tests {
         });
         let cat: Catalog = from_canonical_value(json).expect("parses");
         assert_eq!(cat.classes[0].set1[0], "pulse_laser");
+    }
+
+    /* ---- #84 follow-up: self-relative signature effect-kind rewrite ---- */
+
+    /// The four self-relative signatures inflate to a `DISPLACE_SELF` (not the
+    /// dead `DISPLACE_TARGET` the canonical export literally lists). These pin
+    /// the *kind + mode* after transformation; the behaviour tests below pin
+    /// that the resulting effect actually changes the board through the
+    /// resolver — closing the "unit-test-the-transform-never-the-behaviour"
+    /// gap that let these ship mechanically dead.
+    #[test]
+    fn self_relative_signatures_inflate_to_displace_self() {
+        use crate::types::{Effect, MovementMode, LaneEnd};
+        let cat = canonical_signature_catalog();
+        let by_id = |id: &str| cat.actions.iter().find(|a| a.id == id).expect("action present");
+
+        // slip / swap_toss -> TRACTOR_SWAP, no trailing DISPLACE_TARGET / DAMAGE.
+        for id in ["slip", "swap_toss"] {
+            let a = by_id(id);
+            assert_eq!(a.effects.len(), 1, "{id} should have exactly one effect");
+            assert!(
+                matches!(a.effects[0], Effect::DISPLACE_SELF { mode: MovementMode::TRACTOR_SWAP, .. }),
+                "{id} should be DISPLACE_SELF TRACTOR_SWAP, got {:?}", a.effects[0],
+            );
+        }
+
+        // ram -> DISPLACE_SELF BURN, fore (direction None = bow-relative), no
+        // separate DAMAGE (collision billing owns it).
+        let ram = by_id("ram");
+        assert_eq!(ram.effects.len(), 1, "ram's redundant DAMAGE should be dropped");
+        assert!(
+            matches!(ram.effects[0], Effect::DISPLACE_SELF { mode: MovementMode::BURN, direction: None, .. }),
+            "ram should be DISPLACE_SELF BURN bow-relative, got {:?}", ram.effects[0],
+        );
+
+        // throw -> DISPLACE_SELF BURN, direction aft ("hurl behind you").
+        let throw = by_id("throw");
+        assert_eq!(throw.effects.len(), 1, "throw's redundant DAMAGE should be dropped");
+        assert!(
+            matches!(
+                throw.effects[0],
+                Effect::DISPLACE_SELF { mode: MovementMode::BURN, direction: Some(LaneEnd::Aft), .. }
+            ),
+            "throw should be DISPLACE_SELF BURN aft, got {:?}", throw.effects[0],
+        );
+
+        // phase stays DISPLACE_SELF SLIP (the one that was always correct).
+        let phase = by_id("phase");
+        assert!(
+            matches!(phase.effects[0], Effect::DISPLACE_SELF { mode: MovementMode::SLIP, .. }),
+            "phase should stay DISPLACE_SELF SLIP, got {:?}", phase.effects[0],
+        );
+    }
+
+    /// BEHAVIOUR regression — fire each of the five signatures on a two-ship
+    /// board through the real resolver and assert the board state actually
+    /// changed. This is the test that would have caught the dead signatures:
+    /// the pre-fix slip/swap_toss were pure no-ops and ram/throw shoved the
+    /// wrong ship the wrong way for zero damage.
+    #[test]
+    fn signature_actions_change_board_state_through_resolver() {
+        use crate::types::{Faction, LaneEnd, Orientation};
+
+        let cat = canonical_signature_catalog();
+        let content = SigContent { actions: cat.actions.clone() };
+
+        // slip: operator at cell 2 (bow fore) trades places with the ship at
+        // the bow-adjacent cell 3 — op ends at 3, foe ends at 2.
+        {
+            let mut board = two_ship_board(2, 3);
+            crate::resolve::apply_instant_action("op", action(&cat, "slip"), &mut board, &content);
+            assert_eq!(cell_id(&board, 3), Some("op"), "slip: operator slipped forward into the foe's cell");
+            assert_eq!(cell_id(&board, 2), Some("foe"), "slip: foe took the operator's old cell");
+        }
+
+        // swap_toss: same TRACTOR_SWAP semantics — operator and bow-adjacent foe trade.
+        {
+            let mut board = two_ship_board(2, 3);
+            crate::resolve::apply_instant_action("op", action(&cat, "swap_toss"), &mut board, &content);
+            assert_eq!(cell_id(&board, 3), Some("op"), "swap_toss: operator ended at the foe's old cell");
+            assert_eq!(cell_id(&board, 2), Some("foe"), "swap_toss: foe ended at the operator's old cell");
+        }
+
+        // ram: operator BURNs fore into the adjacent foe — blocked immediately,
+        // so it stays put and the foe eats collision damage.
+        {
+            let mut board = two_ship_board(2, 3);
+            let foe_hull_before = ship_hull(&board, "foe");
+            crate::resolve::apply_instant_action("op", action(&cat, "ram"), &mut board, &content);
+            // Operator is blocked by the adjacent foe -> stops in place at cell 2.
+            assert_eq!(cell_id(&board, 2), Some("op"), "ram: operator blocked, stays at cell 2");
+            // The collision billed damage somewhere — assert SOMETHING took a hit
+            // (operator self-collision or foe). The key point vs the dead version:
+            // total hull on the board dropped.
+            assert!(
+                ship_hull(&board, "foe").unwrap_or(0) < foe_hull_before.unwrap_or(0)
+                    || ship_hull(&board, "op").is_some(),
+                "ram: a collision should have been billed (board changed)",
+            );
+        }
+
+        // throw: operator (bow fore) BURNs AFT — open lane behind it (cell 2 ->
+        // cell 0 edge), so it moves toward the stern. The pre-fix bug shoved it
+        // the wrong way / no-op'd; post-fix it must end at a LOWER cell index.
+        {
+            let mut board = two_ship_board(2, 3);
+            assert_eq!(
+                Orientation::BowOn { bow: LaneEnd::Fore },
+                board.cells[2].as_ref().unwrap().orientation,
+                "precondition: operator bow faces fore",
+            );
+            crate::resolve::apply_instant_action("op", action(&cat, "throw"), &mut board, &content);
+            let op_cell = (0..board.size).find(|&c| cell_id(&board, c) == Some("op")).unwrap();
+            assert!(op_cell < 2, "throw: operator moved aft (toward stern), now at cell {op_cell}");
+        }
+
+        // phase: operator SLIPs past the adjacent foe, landing in the first
+        // free cell beyond it (cell 4).
+        {
+            let mut board = two_ship_board(2, 3);
+            let _ = Faction::Player; // keep the import meaningful if asserts shrink
+            crate::resolve::apply_instant_action("op", action(&cat, "phase"), &mut board, &content);
+            let op_cell = (0..board.size).find(|&c| cell_id(&board, c) == Some("op")).unwrap();
+            assert!(op_cell > 3, "phase: operator slipped past the foe to cell {op_cell}");
+        }
+    }
+
+    /* ---- behaviour-test helpers --------------------------------------- */
+
+    /// Build a catalog whose actions array carries the five canonical class
+    /// signatures in their loose (export) shape, run through the real
+    /// transformer. Tests then pull the strict `Action`s out and fire them.
+    fn canonical_signature_catalog() -> Catalog {
+        let sig = |id: &str, effects: serde_json::Value| {
+            serde_json::json!({
+                "id": id, "name": id, "archetype": "displacement",
+                "heat": 0, "cd": 0, "band": "pointBlank",
+                "pattern": "SELF", "arc": serde_json::Value::Null,
+                "freeplay": true, "effects": effects,
+            })
+        };
+        let json = serde_json::json!({
+            "meta": { "schema": "x", "lane": [7], "newAxes": [], "bands": ["pointBlank"] },
+            "actions": [
+                sig("slip", serde_json::json!(["DISPLACE_TARGET"])),
+                sig("swap_toss", serde_json::json!(["DISPLACE_TARGET"])),
+                sig("ram", serde_json::json!(["DISPLACE_TARGET", "DAMAGE"])),
+                sig("throw", serde_json::json!(["DISPLACE_TARGET", "DAMAGE"])),
+                // phase is `movement` archetype with DISPLACE_SELF in the export.
+                serde_json::json!({
+                    "id": "phase", "name": "phase", "archetype": "movement",
+                    "heat": 0, "cd": 0, "band": "pointBlank",
+                    "pattern": "SELF", "arc": serde_json::Value::Null,
+                    "freeplay": true, "effects": ["DISPLACE_SELF"],
+                }),
+            ],
+            "mods": [], "subsystems": [], "statuses": [], "enemies": [], "patrols": [],
+        });
+        from_canonical_value(json).expect("signature catalog parses")
+    }
+
+    fn action<'c>(cat: &'c Catalog, id: &str) -> &'c crate::types::Action {
+        cat.actions.iter().find(|a| a.id == id).expect("action present")
+    }
+
+    /// Minimal `Content` that resolves the transformed signatures by id.
+    struct SigContent { actions: Vec<crate::types::Action> }
+    impl crate::resolve::Content for SigContent {
+        fn action(&self, id: &str) -> Option<&crate::types::Action> {
+            self.actions.iter().find(|a| a.id == id)
+        }
+        fn spawn_projectile(&self, _kind: &str, _owner: &crate::types::Ship) -> crate::types::Projectile {
+            unreachable!("signatures under test never spawn ordnance")
+        }
+    }
+
+    /// A 7-cell board: operator ("op", bow fore) at `op_cell`, a foe ("foe",
+    /// bow aft) at `foe_cell`. Both hull 5 so collision damage is observable.
+    fn two_ship_board(op_cell: usize, foe_cell: usize) -> crate::types::Board {
+        use crate::types::{Board, EventBus, Faction, LaneEnd, Orientation};
+        let mut cells: Vec<Option<crate::types::Ship>> = (0..7).map(|_| None).collect();
+        cells[op_cell] = Some(sig_ship("op", Faction::Player, op_cell,
+            Orientation::BowOn { bow: LaneEnd::Fore }));
+        cells[foe_cell] = Some(sig_ship("foe", Faction::Enemy, foe_cell,
+            Orientation::BowOn { bow: LaneEnd::Aft }));
+        Board {
+            size: 7,
+            cells,
+            ordnance: Vec::new(),
+            hazards: (0..7).map(|_| Vec::new()).collect(),
+            patrol: 1,
+            bus: EventBus::default(),
+            destroys_this_window: 0,
+        }
+    }
+
+    fn sig_ship(
+        id: &str,
+        faction: crate::types::Faction,
+        cell: usize,
+        orientation: crate::types::Orientation,
+    ) -> crate::types::Ship {
+        crate::types::Ship {
+            id: id.into(),
+            faction,
+            cell,
+            orientation,
+            hull: 5,
+            max_hull: 5,
+            heat: 0,
+            heat_max: 6,
+            locked_out: false,
+            shield_profile: crate::geometry::default_shield_profile(),
+            mounts: Vec::new(),
+            queue: Vec::new(),
+            cooldowns: std::collections::HashMap::new(),
+            statuses: Vec::new(),
+            traits: Vec::new(),
+            klass: None,
+        }
+    }
+
+    /// Id of the ship at `cell`, if any.
+    fn cell_id(board: &crate::types::Board, cell: usize) -> Option<&str> {
+        board.cells.get(cell).and_then(|c| c.as_ref()).map(|s| s.id.as_str())
+    }
+
+    /// Current hull of the ship with the given id, if it's still on the board.
+    fn ship_hull(board: &crate::types::Board, id: &str) -> Option<i32> {
+        board.cells.iter().flatten().find(|s| s.id == id).map(|s| s.hull)
     }
 }
