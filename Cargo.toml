@@ -73,6 +73,17 @@ name = "render_refs"
 path = "src/bin/render_refs.rs"
 required-features = ["render", "runtime"]
 
+# Standalone spike: the loft render pipeline (3D-lofted capital-ship hull →
+# ortho ¾ depth pass → 160×100 nearest offscreen → posterize → upscale).
+# Self-contained — imports NO broadside_engine module. Needs `render,runtime`
+# (not `render` alone) only because the crate LIBRARY it links against pulls
+# `log`/`sprites` behind `runtime`; the bin itself uses `eprintln!` and touches
+# no engine module. Run: `cargo run --bin loft_poc --features render,runtime`.
+[[bin]]
+name = "loft_poc"
+path = "src/bin/loft_poc.rs"
+required-features = ["render", "runtime"]
+
 [dev-dependencies]
 # Property-based testing for the band_falloff overflow / clamp invariant
 # and the absorb_shield (dmg, armour, charge) state machine. Avoid using
