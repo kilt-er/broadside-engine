@@ -118,6 +118,35 @@ pub fn load_sprite_pair(
     )
 }
 
+/// Return a horizontally-mirrored copy of `src`. Row-major RGBA8, so we
+/// reverse each row's pixel order while keeping rows themselves in place.
+/// Used by the loader to derive a `bowOnAft` sprite from a `bowOnFore`
+/// when the artist hasn't painted the aft variant separately —
+/// bow-on ships are visually symmetric across the fore/aft flip, so the
+/// mirror is a faithful render.
+///
+/// Explicit `bowOnAft_<view>.png` files take precedence; the loader only
+/// invokes this when the explicit file is missing.
+pub fn mirror_horizontal(src: &SpriteImage) -> SpriteImage {
+    let w = src.width as usize;
+    let h = src.height as usize;
+    let mut rgba = Vec::with_capacity(src.rgba.len());
+    for row in 0..h {
+        let row_start = row * w * 4;
+        // Walk pixels in reverse: rightmost pixel of the source becomes
+        // leftmost of the mirror, etc. Each pixel is 4 bytes (RGBA).
+        for col in (0..w).rev() {
+            let p = row_start + col * 4;
+            rgba.extend_from_slice(&src.rgba[p..p + 4]);
+        }
+    }
+    SpriteImage {
+        width: src.width,
+        height: src.height,
+        rgba,
+    }
+}
+
 /// Read-only lookup of which ship sprites are currently uploaded.
 /// `hud::compose_scene` queries this to decide whether to emit a textured
 /// or procedural silhouette per ship. `Gfx` implements it over its own
@@ -182,6 +211,60 @@ mod tests {
             SpriteView::Side,
         );
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn mirror_horizontal_flips_pixel_order_within_each_row() {
+        // 2-pixel-wide × 1-pixel-tall image, RGBA. Left pixel red, right
+        // pixel blue. Mirror should swap them: left blue, right red.
+        let src = SpriteImage {
+            width: 2,
+            height: 1,
+            rgba: vec![
+                255, 0, 0, 255,   // red
+                0, 0, 255, 255,   // blue
+            ],
+        };
+        let m = mirror_horizontal(&src);
+        assert_eq!(m.width, 2);
+        assert_eq!(m.height, 1);
+        assert_eq!(m.rgba, vec![
+            0, 0, 255, 255,   // blue (was right, now left)
+            255, 0, 0, 255,   // red (was left, now right)
+        ]);
+    }
+
+    #[test]
+    fn mirror_horizontal_preserves_rows() {
+        // 2x2: row 0 = [A B], row 1 = [C D]. Mirror should yield
+        // row 0 = [B A], row 1 = [D C] — row order unchanged.
+        let src = SpriteImage {
+            width: 2,
+            height: 2,
+            rgba: vec![
+                1, 1, 1, 1,    2, 2, 2, 2,   // row 0
+                3, 3, 3, 3,    4, 4, 4, 4,   // row 1
+            ],
+        };
+        let m = mirror_horizontal(&src);
+        assert_eq!(m.rgba, vec![
+            2, 2, 2, 2,    1, 1, 1, 1,   // row 0 reversed
+            4, 4, 4, 4,    3, 3, 3, 3,   // row 1 reversed
+        ]);
+    }
+
+    #[test]
+    fn mirror_horizontal_double_flip_is_identity() {
+        // Property: mirror(mirror(x)) == x for any sprite.
+        let src = SpriteImage {
+            width: 3,
+            height: 2,
+            rgba: (0..24).collect(),
+        };
+        let twice = mirror_horizontal(&mirror_horizontal(&src));
+        assert_eq!(twice.rgba, src.rgba);
+        assert_eq!(twice.width, src.width);
+        assert_eq!(twice.height, src.height);
     }
 
     #[test]

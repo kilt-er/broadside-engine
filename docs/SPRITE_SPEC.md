@@ -83,6 +83,24 @@ The PNGs should have a transparent background; the bow direction (for
 BowOn variants) is encoded in the sprite asymmetry — paint the bow at the
 fore end of `bowOnFore_*.png`, at the aft end of `bowOnAft_*.png`.
 
+### BowOnAft fallback: paint half the files
+
+You only need to paint `bowOnFore_*.png`. If `bowOnAft_<view>.png` is
+missing, the renderer auto-generates it by horizontally mirroring the
+matching `bowOnFore` file at load time. Two cases:
+
+- **Drop only `bowOnFore_side.png` + `bowOnFore_top.png`** for a class
+  → the loader fills in `bowOnAft_side` + `bowOnAft_top` from
+  horizontal mirrors of the fore files. This is the common case;
+  bow-on ships are symmetric across the fore/aft flip.
+- **Drop both `bowOnFore_*` AND `bowOnAft_*`** if a class has
+  directional asymmetry (e.g. an aft-mounted nacelle that shouldn't
+  appear at the bow when mirrored). Explicit `bowOnAft` PNGs take
+  precedence over the auto-mirror.
+
+`broadside_*.png` is unaffected — that stance is its own sprite and is
+not derived from the bow-on files.
+
 ## Reference renders
 
 `docs/sprite-refs/` contains procedural-silhouette PNGs at 0° / 45° / 90°

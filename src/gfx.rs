@@ -729,32 +729,61 @@ impl Gfx {
     /// procedural silhouette renders as the fallback). Each successfully
     /// loaded sprite is keyed by the same slug the SPRITE_SPEC defines.
     ///
-    /// Returns the count of sprites loaded so the caller can log it. The
-    /// textured-ship render path (follow-up commit) looks up handles via
-    /// [`Gfx::has_ship_sprite`].
+    /// **BowOnAft fallback:** when a `<class>_bowOnAft_<view>.png` file is
+    /// missing AND a `<class>_bowOnFore_<view>.png` file exists, the
+    /// loader generates the aft sprite by horizontally mirroring the
+    /// fore sprite and uploads that as the aft texture. Bow-on ships
+    /// are symmetric across the fore/aft flip, so the mirror reads as
+    /// authentic art. Explicit `bowOnAft` PNGs take precedence over
+    /// the auto-mirror — bruce can override per-class if a ship has
+    /// directional asymmetry (e.g. an aft-mounted nacelle).
+    ///
+    /// `Broadside` is unaffected — that stance is its own sprite.
+    ///
+    /// Returns the count of sprites loaded so the caller can log it.
     pub fn try_load_ship_sprites(&mut self, asset_dir: &std::path::Path) -> usize {
+        use crate::sprites::{load_sprite, mirror_horizontal, SpriteStance, SpriteView};
         // Invalidate cached bind groups — the underlying texture views
         // may have been replaced.
         self.ship_bg_cache.clear();
         let classes = ["frigate", "scout", "gunboat"];
-        let stances = [
-            crate::sprites::SpriteStance::BowOnFore,
-            crate::sprites::SpriteStance::BowOnAft,
-            crate::sprites::SpriteStance::Broadside,
-        ];
-        let views = [
-            crate::sprites::SpriteView::Side,
-            crate::sprites::SpriteView::Top,
-        ];
+        let views = [SpriteView::Side, SpriteView::Top];
         let mut loaded = 0;
         for class in &classes {
-            for &stance in &stances {
-                for &view in &views {
-                    if let Some(img) = crate::sprites::load_sprite(asset_dir, class, stance, view) {
-                        let slug = format!("{}_{}_{}", class, stance.slug(), view.slug());
+            for &view in &views {
+                // Always try the directly-painted file for each of the
+                // three stances. Remember the bowOnFore image in case
+                // we need it to derive a fallback bowOnAft.
+                let fore = load_sprite(asset_dir, class, SpriteStance::BowOnFore, view);
+                if let Some(img) = fore.as_ref() {
+                    let slug = format!("{}_{}_{}", class, SpriteStance::BowOnFore.slug(), view.slug());
+                    self.upload_ship_sprite(&slug, img);
+                    loaded += 1;
+                }
+                let aft_explicit = load_sprite(asset_dir, class, SpriteStance::BowOnAft, view);
+                match (aft_explicit, fore.as_ref()) {
+                    (Some(img), _) => {
+                        let slug = format!("{}_{}_{}", class, SpriteStance::BowOnAft.slug(), view.slug());
                         self.upload_ship_sprite(&slug, &img);
                         loaded += 1;
                     }
+                    (None, Some(fore_img)) => {
+                        // Derive aft from horizontally-mirrored fore.
+                        let mirrored = mirror_horizontal(fore_img);
+                        let slug = format!("{}_{}_{}", class, SpriteStance::BowOnAft.slug(), view.slug());
+                        log::debug!("sprite: deriving {} from horizontally-mirrored bowOnFore", slug);
+                        self.upload_ship_sprite(&slug, &mirrored);
+                        loaded += 1;
+                    }
+                    (None, None) => {
+                        // Neither fore nor aft painted — leave both
+                        // slots empty; the procedural silhouette covers.
+                    }
+                }
+                if let Some(img) = load_sprite(asset_dir, class, SpriteStance::Broadside, view) {
+                    let slug = format!("{}_{}_{}", class, SpriteStance::Broadside.slug(), view.slug());
+                    self.upload_ship_sprite(&slug, &img);
+                    loaded += 1;
                 }
             }
         }
