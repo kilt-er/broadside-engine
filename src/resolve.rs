@@ -93,6 +93,49 @@ pub trait Content {
     ///
     /// Task #61 (Phase 2). Same pre-approval scope as `damage_modifier`.
     fn on_turn_end(&self, _board: &mut Board) {}
+
+    /// Dispatch a `BOARD` effect by its `note` string. Used by field-kit
+    /// Cards (mass_lock, mass_breach, sensor_pulse) which encode their
+    /// behavior as `Effect::BOARD { note: "mass_lock" }` and let the
+    /// content layer decide what each note string actually does.
+    ///
+    /// `source_cell` is the cell of the ship that played the card.
+    /// Default impl is a no-op so the BOARD arm of `apply_effect` stays
+    /// safe for Content impls that don't carry cards.
+    ///
+    /// Task #63 (Phase 2). Same pre-approval scope as `damage_modifier`.
+    fn apply_board_effect(&self, _note: &str, _source_cell: usize, _board: &mut Board) {}
+
+    /// Look up the card id at slot `idx` (0-indexed) in the named ship's
+    /// field-kit inventory. Returns `None` if the ship has no kit, the
+    /// slot is past the end, or the entry has zero charges remaining.
+    ///
+    /// The "zero charges => slot is empty" rule keeps the key binding
+    /// honest: a spent card is still in inventory (for tracking), but
+    /// pressing the key shouldn't queue a play that can't pay its cost.
+    ///
+    /// Default impl returns `None` (no cards). [`crate::input::DemoContent`]
+    /// overrides to read its [`crate::cards::FieldKitRegistry`].
+    ///
+    /// Task #63.
+    fn card_at(&self, _ship_id: &str, _idx: usize) -> Option<String> { None }
+
+    /// Validate and consume one play of `card_id` from `ship_id`'s
+    /// field-kit. Returns [`crate::cards::PlayResult`] so the caller can
+    /// distinguish "succeed → push synthetic action" from the various
+    /// "no-op silently" failure modes.
+    ///
+    /// Mutates the content's per-ship card inventory; charges decrement
+    /// on success. The actual board-wide effect is applied LATER, when
+    /// the synthetic `__card_<id>` action runs through `execute_queue`
+    /// and reaches the BOARD arm of `apply_effect`.
+    ///
+    /// Default impl returns `UnknownCard` (no cards). DemoContent overrides.
+    ///
+    /// Task #63.
+    fn try_play_card(&mut self, _ship_id: &str, _card_id: &str) -> crate::cards::PlayResult {
+        crate::cards::PlayResult::UnknownCard
+    }
 }
 
 /* =============================================================================
@@ -690,23 +733,17 @@ pub fn apply_effect(
             }
         }
 
-        Effect::BOARD { .. } => {
-            // Intentional no-op. There is no concrete catalog Action that
-            // emits a BOARD effect today.
+        Effect::BOARD { note } => {
+            // Field-kit Cards encode their board-wide behavior as
+            // `Effect::BOARD { note: "mass_lock" }` etc. and the Content
+            // layer dispatches by note string. See `Content::apply_board_effect`
+            // and the `cards` module for the placeholder card set.
             //
-            // The mass-* board-wide effects (mass_lock, mass_breach,
-            // mass_emp, sensor_pulse) are **field-kit Cards** in the
-            // analysis doc, not Actions — they live under
-            // `Catalog::fieldkit`, not `Catalog::actions`, and field-kit
-            // items are resolved by the (future) field-kit handler, not
-            // through `applyEffect`. See the analysis HTML's "Ordnance &
-            // Field Kit" section.
-            //
-            // When a real Action carrying a BOARD effect lands (e.g. a
-            // class signature or capital-ship ability), this arm gets
-            // wired then. The TS body at `resolve.ts:226-227` is also
-            // empty, so leaving this stubbed matches the canonical
-            // reference exactly.
+            // Card plays reach this arm through the synthetic action
+            // produced by `intent_to_action_id(Intent::PlayCard(id))` —
+            // the resolver doesn't special-case cards, they flow through
+            // `execute_queue` exactly like any other action.
+            content.apply_board_effect(note, source_cell, board);
         }
     }
 }

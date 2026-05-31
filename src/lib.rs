@@ -37,6 +37,7 @@
 //! teammates.
 
 pub mod types;
+pub mod cards;
 pub mod catalog;
 pub mod geometry;
 pub mod input;

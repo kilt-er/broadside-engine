@@ -60,6 +60,12 @@ pub enum Key {
     R,
     Space,
     Enter,
+    /// Digit 5 — play first field-kit Card (task #63).
+    D5,
+    /// Digit 6 — play second field-kit Card.
+    D6,
+    /// Digit 7 — play third field-kit Card.
+    D7,
 }
 
 /* =========================================================================
@@ -85,6 +91,12 @@ pub enum Intent {
     ReorientFlip,
     /// Push the synthetic `__vent` action — VENT_HEAT 3, recharge cooldowns.
     Vent,
+    /// Play a field-kit Card by id (task #63). Caller validates +
+    /// decrements charges via `Content::try_play_card`, then pushes the
+    /// synthetic `__card_<id>` action onto the queue. The action's only
+    /// effect is `Effect::BOARD { note: <card_id> }` which dispatches
+    /// through `Content::apply_board_effect`.
+    PlayCard(String),
     /// Resolve the current round (call `resolve_round`).
     CommitTurn,
     /// Restart the scene (rebuild Board from scratch).
@@ -95,7 +107,7 @@ pub enum Intent {
  * The mapping.
  * ====================================================================== */
 
-/// Canonical key bindings for the Phase 1 demo (task #43).
+/// Canonical key bindings for the Phase 1+2 demo (tasks #43, #63).
 ///
 /// | Key            | Intent                                       |
 /// |----------------|----------------------------------------------|
@@ -104,15 +116,15 @@ pub enum Intent {
 /// | `Tab`          | [`Intent::ReorientFlip`]                     |
 /// | `V`            | [`Intent::Vent`]                             |
 /// | `D1` / `D2` / `D3` | [`Intent::QueueAction`] of `ship.mounts[N].weapon`, **only if** `N < mounts.len()`. `None` otherwise. |
+/// | `D5` / `D6` / `D7` | [`Intent::PlayCard`] of the Nth card id in the ship's [`crate::cards::FieldKit`], **only if** that slot exists in `content`. `None` otherwise. |
 /// | `R`, `Space`   | [`Intent::CommitTurn`]                       |
 /// | `Enter`        | [`Intent::Restart`]                          |
 ///
 /// Returns `None` for an unbound key OR for a digit key past the ship's
-/// mount count. `content` is accepted in the signature so a future binding
-/// can resolve content-dependent intents (e.g. a "queue a class signature"
-/// key that looks up the ship's class); today it is unused, kept in the
-/// signature for forward compatibility per renderer's proposal.
-pub fn key_to_intent(key: Key, ship: &Ship, _content: &dyn Content) -> Option<Intent> {
+/// mount / card count. `content` is queried for the ship's card inventory
+/// (the runtime FieldKit lives on Content until architect lands
+/// `Ship::field_kit`); ship is still consulted for mounts.
+pub fn key_to_intent(key: Key, ship: &Ship, content: &dyn Content) -> Option<Intent> {
     match key {
         Key::Left => Some(Intent::MoveLeft),
         Key::Right => Some(Intent::MoveRight),
@@ -121,6 +133,9 @@ pub fn key_to_intent(key: Key, ship: &Ship, _content: &dyn Content) -> Option<In
         Key::D1 => mount_action(ship, 0).map(Intent::QueueAction),
         Key::D2 => mount_action(ship, 1).map(Intent::QueueAction),
         Key::D3 => mount_action(ship, 2).map(Intent::QueueAction),
+        Key::D5 => content.card_at(&ship.id, 0).map(Intent::PlayCard),
+        Key::D6 => content.card_at(&ship.id, 1).map(Intent::PlayCard),
+        Key::D7 => content.card_at(&ship.id, 2).map(Intent::PlayCard),
         Key::R | Key::Space => Some(Intent::CommitTurn),
         Key::Enter => Some(Intent::Restart),
     }
@@ -136,7 +151,10 @@ fn mount_action(ship: &Ship, idx: usize) -> Option<String> {
 ///
 /// Returns `None` for control-flow intents ([`Intent::CommitTurn`],
 /// [`Intent::Restart`]) — those are not queued; the caller handles them
-/// directly.
+/// directly. Also returns `None` for [`Intent::PlayCard`] because card
+/// plays need a separate validation + charge-decrement step the caller
+/// performs via [`Content::try_play_card`]; on success the caller then
+/// pushes [`synthetic_card_action_id`] manually.
 pub fn intent_to_action_id(intent: &Intent) -> Option<&str> {
     match intent {
         Intent::QueueAction(id) => Some(id.as_str()),
@@ -144,8 +162,23 @@ pub fn intent_to_action_id(intent: &Intent) -> Option<&str> {
         Intent::MoveRight => Some(SYNTHETIC_MOVE_RIGHT),
         Intent::ReorientFlip => Some(SYNTHETIC_REORIENT_FLIP),
         Intent::Vent => Some(SYNTHETIC_VENT),
-        Intent::CommitTurn | Intent::Restart => None,
+        // PlayCard: caller validates + decrements via Content::try_play_card
+        // first, then pushes synthetic_card_action_id(card_id) manually.
+        Intent::PlayCard(_) | Intent::CommitTurn | Intent::Restart => None,
     }
+}
+
+/// The synthetic-action id assigned to a card play. Conventionally
+/// `"__card_<card_id>"` — the `__` prefix prevents collision with real
+/// catalog actions, and the card id keeps the id readable in logs.
+///
+/// Callers: after [`Content::try_play_card`] returns
+/// [`crate::cards::PlayResult::Played`], push the result of this function
+/// onto the ship's queue. `execute_queue` will then look up the registered
+/// `Action { id: __card_<id>, effects: [BOARD { note: <id> }] }` and the
+/// BOARD arm dispatches via `Content::apply_board_effect`.
+pub fn synthetic_card_action_id(card_id: &str) -> String {
+    format!("__card_{card_id}")
 }
 
 /* =========================================================================
@@ -286,9 +319,15 @@ pub fn synthetic_vent() -> Action {
 /// installed on demo ships drive `Content::damage_modifier` /
 /// `Content::on_turn_end`. See the `subsystems` module docstring for
 /// why the registry lives here rather than on `Board`.
+///
+/// Also carries a [`crate::cards::FieldKitRegistry`] + [`crate::cards::CardCatalog`]
+/// so per-ship card inventories live with the content layer until
+/// architect lands `Ship::field_kit` (task #63 follow-up).
 pub struct DemoContent {
     pub actions: HashMap<String, Action>,
     pub installations: crate::subsystems::Installations,
+    pub card_catalog: crate::cards::CardCatalog,
+    pub field_kits: crate::cards::FieldKitRegistry,
 }
 
 impl DemoContent {
@@ -297,6 +336,8 @@ impl DemoContent {
         Self {
             actions: HashMap::new(),
             installations: crate::subsystems::Installations::new(),
+            card_catalog: crate::cards::CardCatalog::new(),
+            field_kits: crate::cards::FieldKitRegistry::new(),
         }
     }
 
@@ -313,6 +354,17 @@ impl DemoContent {
         self.insert(synthetic_vent());
     }
 
+    /// Register the synthetic action shells that field-kit Cards
+    /// dispatch through. One synthetic action per card id:
+    /// `__card_<id>` whose only effect is `Effect::BOARD { note: <id> }`.
+    /// `execute_queue` looks them up by id like any other action; the
+    /// BOARD arm then routes through `Content::apply_board_effect`.
+    pub fn register_card_synthetics(&mut self) {
+        for id in crate::cards::PLACEHOLDER_CARD_IDS {
+            self.insert(card_synthetic_action(id));
+        }
+    }
+
     /// Install a subsystem on a ship by id. Phase 2 convenience for the
     /// demo board's startup; the catalog flow will replace this once
     /// `SubsystemDef` is wired through.
@@ -323,15 +375,51 @@ impl DemoContent {
     ) {
         self.installations.install(ship_id, subsystem_id);
     }
+
+    /// Grant a card to a ship's field-kit. Phase 2 convenience; same
+    /// migration path as subsystems.
+    pub fn grant_card(
+        &mut self,
+        ship_id: impl Into<String>,
+        card_id: impl Into<String>,
+        charges: u32,
+    ) {
+        self.field_kits.grant(ship_id, card_id, charges);
+    }
+
+    /// Grant 1 charge of every placeholder card to `ship_id`.
+    pub fn grant_placeholder_kit(&mut self, ship_id: &str) {
+        crate::cards::grant_placeholder_kit(&mut self.field_kits, ship_id);
+    }
+}
+
+/// Build the synthetic `Action` shell that delivers a card's BOARD
+/// effect through `execute_queue`. The action has zero cost (cards are
+/// tempo-free), SELF targeting (no arc / band gate), and a single
+/// `Effect::BOARD { note: <card_id> }` payload.
+fn card_synthetic_action(card_id: &str) -> Action {
+    Action {
+        id: synthetic_card_action_id(card_id),
+        name: format!("Play {card_id}"),
+        archetype: WeaponArchetype::Defensive,
+        cost: zero_cost(),
+        targeting: self_targeting(),
+        effects: vec![Effect::BOARD { note: card_id.into() }],
+        r#mod: None,
+        icon: None,
+    }
 }
 
 impl Default for DemoContent {
-    /// Pre-loaded with the four synthetics plus the demo board's two mount
-    /// weapons (`pulse_laser`, `torpedo`). Matches the player setup in
-    /// `bin/broadside.rs::render_example_board`.
+    /// Pre-loaded with the four synthetics, the three card synthetics
+    /// (task #63), the placeholder card catalog, plus the demo board's
+    /// two mount weapons (`pulse_laser`, `torpedo`). Matches the player
+    /// setup in `bin/broadside.rs::render_example_board`.
     fn default() -> Self {
         let mut c = Self::empty();
         c.register_synthetics();
+        c.register_card_synthetics();
+        c.card_catalog = crate::cards::placeholder_catalog();
 
         // pulse_laser — close-range forward beam.
         c.insert(Action {
@@ -394,6 +482,23 @@ impl Content for DemoContent {
         crate::subsystems::on_turn_end_for(&self.installations, board);
     }
 
+    fn apply_board_effect(&self, note: &str, source_cell: usize, board: &mut crate::types::Board) {
+        crate::cards::apply_card_effect(note, source_cell, board);
+    }
+
+    fn card_at(&self, ship_id: &str, idx: usize) -> Option<String> {
+        let kit = self.field_kits.for_ship(ship_id)?;
+        let entry = kit.cards.get(idx)?;
+        if entry.charges == 0 {
+            return None;
+        }
+        Some(entry.card_id.clone())
+    }
+
+    fn try_play_card(&mut self, ship_id: &str, card_id: &str) -> crate::cards::PlayResult {
+        crate::cards::try_play_card(&mut self.field_kits, &self.card_catalog, ship_id, card_id)
+    }
+
     fn spawn_projectile(&self, kind: &str, owner: &Ship) -> Projectile {
         // Minimal hardcoded table: matches the analysis-doc descriptions
         // for `torpedo` (slow, high payload) and `missile_salvo` (fast,
@@ -453,6 +558,7 @@ impl Content for DemoContent {
 pub fn tutorial_lines() -> &'static [&'static str] {
     &[
         "[1/2/3] queue mount",
+        "[5/6/7] play card",
         "[</>] move left/right",
         "[Tab] flip",
         "[V] vent",
@@ -640,6 +746,7 @@ mod tests {
         // wired by the bin itself before key_to_intent gets a chance).
         let lines = tutorial_lines();
         assert!(lines.iter().any(|l| l.contains("1/2/3")));
+        assert!(lines.iter().any(|l| l.contains("5/6/7")), "card binding must be advertised");
         assert!(lines.iter().any(|l| l.contains("Tab")));
         assert!(lines.iter().any(|l| l.contains("V")));
         assert!(lines.iter().any(|l| l.contains("R/Space")));
@@ -764,5 +871,118 @@ mod tests {
         // Base -1 (passive) + HeatSink -1 = -2 total. 5 -> 3.
         assert_eq!(board.cells[0].as_ref().unwrap().heat, 3,
             "HeatSink stacks with passive dissipation");
+    }
+
+    /* ---- Phase 2 field-kit Card integration --------------------------- */
+
+    /// End-to-end: try_play_card decrements charges, push the synthetic
+    /// id, run execute_queue, see the board-wide effect land.
+    #[test]
+    fn mass_lock_card_play_through_execute_queue() {
+        use crate::cards::{CARD_MASS_LOCK, PlayResult};
+        use crate::resolve::execute_queue;
+        use crate::types::{Board, EventBus, Faction, StatusKind};
+
+        let player = player_with_mounts(0);
+        // Two enemies; mass_lock applies TargetLock to both.
+        let mut enemy_a = player_with_mounts(0);
+        enemy_a.id = "ea".into();
+        enemy_a.faction = Faction::Enemy;
+        enemy_a.cell = 1;
+        let mut enemy_b = player_with_mounts(0);
+        enemy_b.id = "eb".into();
+        enemy_b.faction = Faction::Enemy;
+        enemy_b.cell = 3;
+
+        let mut board = Board {
+            size: 5,
+            cells: vec![Some(player), Some(enemy_a), None, Some(enemy_b), None],
+            ordnance: vec![],
+            hazards: (0..5).map(|_| vec![]).collect(),
+            patrol: 1,
+            bus: EventBus::default(),
+            destroys_this_window: 0,
+        };
+
+        let mut content = DemoContent::default();
+        content.grant_placeholder_kit("p");
+
+        // Step 1: validate + decrement charges.
+        assert_eq!(content.try_play_card("p", CARD_MASS_LOCK), PlayResult::Played);
+        assert_eq!(
+            content.field_kits.for_ship("p").unwrap().find(CARD_MASS_LOCK).unwrap().charges,
+            0,
+            "charge decremented from 1 to 0",
+        );
+
+        // Step 2: queue the synthetic and run execute_queue.
+        let synth_id = synthetic_card_action_id(CARD_MASS_LOCK);
+        if let Some(p) = board.cells[0].as_mut() {
+            p.queue.push(synth_id);
+        }
+        execute_queue("p", &mut board, &content);
+
+        // Step 3: both enemies should be target-locked, player should not.
+        for cell in [1, 3] {
+            let s = board.cells[cell].as_ref().unwrap();
+            assert!(
+                s.statuses.iter().any(|st| st.kind == StatusKind::TargetLock),
+                "enemy at cell {cell} should be target-locked",
+            );
+        }
+        let p = board.cells[0].as_ref().unwrap();
+        assert!(p.statuses.iter().all(|st| st.kind != StatusKind::TargetLock));
+    }
+
+    /// Replaying a depleted card returns InsufficientCharges; the
+    /// synthetic should NOT be queued in that case. (This test
+    /// documents the caller contract; the bin enforces it.)
+    #[test]
+    fn second_play_of_one_charge_card_rejected() {
+        use crate::cards::{CARD_MASS_BREACH, PlayResult};
+        let mut content = DemoContent::default();
+        content.grant_placeholder_kit("p");
+        assert_eq!(content.try_play_card("p", CARD_MASS_BREACH), PlayResult::Played);
+        assert_eq!(
+            content.try_play_card("p", CARD_MASS_BREACH),
+            PlayResult::InsufficientCharges,
+        );
+    }
+
+    /// key_to_intent's D5 returns the first card id from the ship's kit.
+    #[test]
+    fn key_d5_returns_first_card_intent() {
+        use crate::cards::CARD_MASS_LOCK;
+        let p = player_with_mounts(0);
+        let mut content = DemoContent::default();
+        content.grant_placeholder_kit("p");
+        let intent = key_to_intent(Key::D5, &p, &content);
+        // Placeholder kit grants cards in order: mass_lock, mass_breach,
+        // sensor_pulse. D5 -> slot 0 -> mass_lock.
+        assert_eq!(intent, Some(Intent::PlayCard(CARD_MASS_LOCK.into())));
+    }
+
+    /// key_to_intent's D5 returns None when the ship has no kit at all.
+    #[test]
+    fn key_d5_returns_none_without_kit() {
+        let p = player_with_mounts(0);
+        let content = DemoContent::default(); // no kit granted
+        assert_eq!(key_to_intent(Key::D5, &p, &content), None);
+    }
+
+    /// PlayCard intent does NOT route through intent_to_action_id
+    /// (which returns None) — callers must invoke try_play_card +
+    /// synthetic_card_action_id separately.
+    #[test]
+    fn intent_to_action_id_returns_none_for_play_card() {
+        let i = Intent::PlayCard("mass_lock".into());
+        assert_eq!(intent_to_action_id(&i), None);
+    }
+
+    /// synthetic_card_action_id uses the `__card_` prefix.
+    #[test]
+    fn synthetic_card_action_id_format() {
+        assert_eq!(synthetic_card_action_id("mass_lock"), "__card_mass_lock");
+        assert!(synthetic_card_action_id("anything").starts_with("__"));
     }
 }
