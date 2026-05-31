@@ -869,27 +869,36 @@ fn bearing_direction(ship: &Ship, ship_cell: usize, board: &Board, a: &Action) -
     }
     let arc = a.targeting.requires_arc;
     for &end in &[LaneEnd::Fore, LaneEnd::Aft] {
-        // TS probes `ship.cell ± 1`; we do the same, signed to avoid
-        // underflow at cell 0.
-        let probe = match end {
+        // TS probes `ship.cell ± 1` then calls `bears(ship, arc, probe)`, and
+        // the ONLY thing `bears` does with `probe` is feed it to
+        // `directionTo(ship.cell, probe)` — a pure sign test
+        // (`b >= a ? fore : aft`). So the probe's magnitude never matters
+        // here; only whether it sits at/above or below `ship.cell` does.
+        //
+        // At `ship_cell == 0` the aft probe is `-1` in TS, and
+        // `directionTo(0, -1)` is `"aft"`. Our `bears`/`direction_to` take a
+        // `usize`, so we cannot pass `-1`. Instead we compute the lane
+        // direction from the SIGNED probe directly (mirroring `direction_to`'s
+        // rule) and hand it to `arc_bears`. This drops the old `probe < 0`
+        // special-case AND its non-canonical arc allowlist — TS has neither.
+        // A Rear-arc (or Turret) weapon on a bow=fore ship at cell 0 now
+        // correctly bears aft and fires, exactly as the TS engine does.
+        let probe: i32 = match end {
             LaneEnd::Fore => ship_cell as i32 + 1,
             LaneEnd::Aft => ship_cell as i32 - 1,
         };
-        if probe < 0 {
-            // Probe would be off-lane in the aft direction; still ask `bears`
-            // — the arc gate cares about ORIENTATION, not lane bounds, and
-            // matching TS means passing through. Treat as cell 0 (which TS
-            // does implicitly via `-1` becoming a negative number that
-            // `bears`->`direction_to` interprets as aft).
-            if bears(ship, arc, 0) && matches!(arc, Some(Arc::Rear) | Some(Arc::Turret) | Some(Arc::BroadsideArc)) {
-                // Only return aft for arcs that meaningfully fire aft.
-                if matches!(end, LaneEnd::Aft) {
-                    return Some(end);
-                }
-            }
-            continue;
-        }
-        if bears(ship, arc, probe as usize) {
+        // Mirror `direction_to(ship_cell, probe)`: `probe >= ship_cell` -> fore,
+        // else aft.
+        let probe_dir = if probe >= ship_cell as i32 {
+            LaneEnd::Fore
+        } else {
+            LaneEnd::Aft
+        };
+        let bears_here = match arc {
+            None => true, // arc-less is handled above; kept for parity with `bears`.
+            Some(a) => crate::geometry::arc_bears(ship.orientation, a, probe_dir),
+        };
+        if bears_here {
             return Some(end);
         }
     }
@@ -3134,5 +3143,67 @@ mod tests {
         assert!(board.cells[2].is_none(), "scout was killed");
         assert!(board.cells[4].is_none(), "gunboat was killed");
         assert_eq!(count.get(), 1, "OnChainKill fires once for the window");
+    }
+
+    /// Regression (task #96): `bearing_direction` at the aft lane edge.
+    ///
+    /// A ship at cell 0 with bow=fore firing a Rear-arc weapon must bear AFT
+    /// — the rear gun points astern, which is the opposite end from the bow.
+    /// TS probes `ship.cell - 1 = -1` and `directionTo(0, -1) = "aft"`, so the
+    /// rear arc legally bears and the action fires. The pre-fix Rust port hit
+    /// a `probe < 0` special-case that called `bears(ship, arc, 0)` ->
+    /// `direction_to(0, 0)` -> Fore, asking the aft branch "does this bear
+    /// FORE" (it doesn't), then gated on a non-canonical arc allowlist — so
+    /// `bearing_direction` returned `None` and the action silently no-opped.
+    ///
+    /// A Turret-arc weapon at cell 0 must also resolve a direction (turrets
+    /// always bear); the fix returns Fore for it (the first end probed that
+    /// bears), which is fine — the point is it is not `None`.
+    #[test]
+    fn bearing_direction_rear_arc_at_cell_zero_bears_aft() {
+        // bow=fore ship sitting at the aft lane edge.
+        let ship = make_ship("frigate", Faction::Player, 0, 10, LaneEnd::Fore);
+
+        let rear_gun = |arc: Arc| Action {
+            id: "rear_gun".into(),
+            name: "Rear Gun".into(),
+            archetype: WeaponArchetype::Beam,
+            cost: ActionCost { heat: 1, cooldown_max: 0, advances_turn: true },
+            targeting: Targeting {
+                pattern: TargetingPattern::BEAM,
+                band: vec![
+                    RangeBand::PointBlank, RangeBand::Close, RangeBand::Mid,
+                    RangeBand::Long, RangeBand::Extreme,
+                ],
+                optimal_band: RangeBand::Mid,
+                requires_arc: Some(arc),
+                facing_relative: true,
+                hits_all: false,
+            },
+            effects: vec![Effect::DAMAGE { amount: 4, band_falloff: None }],
+            r#mod: None,
+            icon: None,
+        };
+
+        // Rear arc on a bow=fore ship at cell 0 -> must bear AFT (was None
+        // pre-fix).
+        let rear = rear_gun(Arc::Rear);
+        let board = make_board(7, vec![
+            Some(ship.clone()), None, None, None, None, None, None,
+        ]);
+        assert_eq!(
+            bearing_direction(&ship, 0, &board, &rear),
+            Some(LaneEnd::Aft),
+            "rear arc at the aft edge must bear aft, matching TS directionTo(0,-1)=aft",
+        );
+
+        // Turret always bears; at cell 0 the fore probe is checked first and
+        // bears, so the direction resolves (the regression is `None`, not a
+        // specific end).
+        let turret = rear_gun(Arc::Turret);
+        assert!(
+            bearing_direction(&ship, 0, &board, &turret).is_some(),
+            "turret arc at cell 0 must resolve a bearing direction, not None",
+        );
     }
 }
