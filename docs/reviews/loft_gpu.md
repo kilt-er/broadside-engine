@@ -36,3 +36,17 @@ No uniform is missing a size assert. This is the gate the lead called out and it
 ## Minor (non-blocking, not flagged for fix)
 
 `ShipPose::advance` (loft_gpu.rs:124) has a redundant `let _ = (from, to);` inside the tween branch — dead no-op binding, harmless. Not worth a commit on its own; fold into any future touch.
+
+---
+
+## Addendum: emissive + unlit glow (6ee5945) — APPROVE
+
+Follow-up wiring MeshMaterial.emissive/unlit (already carried by mesh_import)
+through the hull shader. Self-contained: loft_gpu.rs + one gfx.rs demo-call arg.
+6 loft_gpu tests green. No findings.
+
+- **Vertex 48→64**: added `emissive: [f32;4]` (xyz linear emissive, w = unlit flag). Layout = pos+pad / normal+pad / color+pad / emissive(vec4) = 4×16 = 64. Assert updated to 64 with the arithmetic comment. New vertex attribute is `location 3, offset 48, Float32x4` — offset 48 is exactly past the 48 bytes of pos/normal/color, format matches [f32;4]; prior attrs (0/16/32) unchanged. Assert matches struct, offsets correct.
+- **Shader**: unlit (`emissive.w > 0.5`) → `clamp(color + emissive.rgb, 0, 1)`, no Lambert. Lit → Lambert THEN `clamp(lit + emissive.rgb, 0, 1)` (emissive added AFTER lighting so glow stays bright at any facing). Both clamp to [0,1] before fragment output → posterize bands cleanly, no white blowout. The `> 0.5` threshold (not `== 1.0`) is robust. Correct.
+- **Public-API stability (the key boundary)**: `upload_imported(device, ship)` signature UNCHANGED — emissive added only to the internal `upload_hull`. Architect's #26 per-class spawn wiring (calls upload_imported) is unaffected. `imported_vertex_colors`→`imported_vertex_attrs` is an internal rename. Verified.
+- **Demo no-glow**: `upload_hull` defaults emissive to [0,0,0,0] for short/empty slices (w=0 → lit, no glow); the gfx demo call passes `&[]`. Procedural loft hulls don't glow; CAD ships carry emissive via upload_imported. Correct.
+- Test now covers all three cases: lit-no-emissive (w=0), unlit+glow (w=1), ungrouped→grey-no-emissive.
