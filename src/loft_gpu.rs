@@ -47,30 +47,33 @@ const DEFAULT_HULL_ALBEDO: [f32; 3] = [0.706, 0.776, 0.878];
 const LOW_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
-/// Fixed camera azimuth (degrees). **Zero** — the camera does NOT orbit and is
-/// NOT yawed off-axis: it looks straight down the lane-perpendicular at the
-/// ship, raised by [`CAMERA_PITCH_DEG`] for the ¾ look-down. The entire ¾ comes
-/// from PITCH alone; azimuth 0 keeps the lane axis (world X) exactly horizontal
-/// on screen, so a bow-on ship reads as a clean horizontal silhouette with no
-/// tilt. (The POC's orbit was eval-only; carrying its 28° framing azimuth into
-/// the engine tilted every rest pose — bruce: "we don't need the camera
-/// rotation anymore" + "the camera rotation was not at 0". This is that fix:
-/// stance is the ship's MODEL rotation, the camera is square to the lane.)
+/// Fixed camera azimuth (degrees). The camera is STATIC (no time-advancing
+/// orbit) and square to the lane at azimuth 0; the ¾ read comes from pitch +
+/// the per-ship MODEL rotation below. Keeping the camera at 0 means stance is
+/// defined in ONE place (the model yaw) — no two-place camera/model split to
+/// get the sign wrong.
 const CAMERA_AZIMUTH_DEG: f32 = 0.0;
-/// Fixed ¾ look-down pitch (degrees) — the only source of the ¾ angle.
+/// Fixed ¾ look-down pitch (degrees) — matches the POC `DEFAULT_PITCH_DEG`.
 pub const CAMERA_PITCH_DEG: f32 = 26.0;
 
-/// The canonical stance MODEL yaws (degrees), keyed by [`Orientation`] — how
-/// far the hull is rotated about its vertical axis to present that stance under
-/// the square (azimuth-0) camera. The hull lofts with its length along local x:
-///   Fore = 0   (length along +x = horizontal across screen, bow toward +x),
-///   Aft  = 180 (length along −x, bow toward −x — the mirror of Fore),
-///   Broadside = 90 (length swung into z, receding from camera; the broad
-///                   flank bears toward the lane — clean broadside, not skewed).
-/// At rest each is exactly the canonical stance with no leftover camera offset.
-const MODEL_YAW_FORE: f32 = 0.0;
-const MODEL_YAW_AFT: f32 = 180.0;
-const MODEL_YAW_BROADSIDE: f32 = 90.0;
+/// The canonical stance MODEL yaws (degrees), keyed by [`Orientation`] — how far
+/// the hull rotates about its vertical axis to present that stance.
+///
+/// Reproduces the POC's per-stance view exactly. The POC orbits its camera to
+/// yaw `P` (right 28 / left 152 / broadside 118) over a fixed hull; with our
+/// camera fixed at azimuth 0, rotating the MODEL by `−P` gives the identical
+/// image (orbiting the camera +P about Y == rotating the world −P): so
+///   Fore = −28,  Aft = −152,  Broadside = −118.
+/// The broadside's 118° is the key fix — at azimuth 0 / model ±90 (#36) the
+/// hull was pure side-on (only the ~4u beam showing → "too thin"); −118° swings
+/// its 12u length to the ¾ so it reads as a real ship, matching the POC.
+///
+/// NOTE: the sign assumes `rotation_y` shares the camera-orbit sense; if bruce's
+/// re-run shows a stance mirrored, it's a single sign flip here (P instead of
+/// −P) — the magnitudes (28/152/118) are the POC reference and correct.
+const MODEL_YAW_FORE: f32 = -28.0;
+const MODEL_YAW_AFT: f32 = -152.0;
+const MODEL_YAW_BROADSIDE: f32 = -118.0;
 
 /// Base model yaw (degrees) a ship at `orientation` rests at. The reorient
 /// tween interpolates between two of these; the idle roll is added on top.
@@ -960,9 +963,12 @@ mod tests {
         assert!((broad - MODEL_YAW_BROADSIDE).abs() < 1e-6);
         assert_ne!(fore, aft);
         assert_ne!(fore, broad);
-        // Fore presents the clean canonical bow-on: model yaw 0 (no leftover
-        // camera offset — the rest-pose-skew fix).
-        assert_eq!(fore, 0.0);
+        // Stance model yaws reproduce the POC's per-stance camera yaws (28/152/
+        // 118) as model rotations (−P) under the azimuth-0 camera. Broadside's
+        // −118 is the #37 fix — swings the hull's length to the ¾ (not side-on).
+        assert_eq!(fore, -28.0);
+        assert_eq!(aft, -152.0);
+        assert_eq!(broad, -118.0);
     }
 
     #[test]

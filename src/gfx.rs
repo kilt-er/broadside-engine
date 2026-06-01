@@ -2398,16 +2398,19 @@ impl LoftShipBlit {
             mapped_at_creation: false,
         });
 
-        // Linear sampler: the loft output is a non-integer-scaled blit into the
-        // lane, so linear avoids the uneven-texel shimmer nearest would give
-        // (matches the window blit's reasoning).
+        // NEAREST sampler — matches the POC's post_sampler (loft_poc.rs). The
+        // loft output is already posterized pixel art; sampling it Linear blends
+        // the bands into fuzz and kills the pixel-art read (the #37 fuzziness
+        // bug). Nearest keeps every posterized texel crisp into the lane. The
+        // non-integer-scale shimmer Nearest can give is the lesser evil — the
+        // POC reaches the screen via Nearest and that's the approved look.
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("loft-ship linear sampler"),
+            label: Some("loft-ship nearest sampler"),
             address_mode_u: wgpu::AddressMode::ClampToEdge,
             address_mode_v: wgpu::AddressMode::ClampToEdge,
             address_mode_w: wgpu::AddressMode::ClampToEdge,
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
+            mag_filter: wgpu::FilterMode::Nearest,
+            min_filter: wgpu::FilterMode::Nearest,
             mipmap_filter: wgpu::FilterMode::Nearest,
             ..Default::default()
         });
@@ -2429,7 +2432,9 @@ impl LoftShipBlit {
                     binding: 1,
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        // Non-filterable: the loft output is sampled Nearest
+                        // (pixel-art crisp), matching the loft post pass.
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
                         view_dimension: wgpu::TextureViewDimension::D2,
                         multisampled: false,
                     },
@@ -2438,7 +2443,7 @@ impl LoftShipBlit {
                 wgpu::BindGroupLayoutEntry {
                     binding: 2,
                     visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering),
                     count: None,
                 },
             ],
