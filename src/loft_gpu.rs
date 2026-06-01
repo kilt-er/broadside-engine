@@ -121,7 +121,6 @@ impl ShipPose {
                 self.tween = None;
             } else {
                 self.tween = Some((from, to, elapsed, dur));
-                let _ = (from, to);
             }
         }
     }

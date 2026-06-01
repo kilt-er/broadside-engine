@@ -66,7 +66,12 @@ const CLEAR: wgpu::Color = wgpu::Color {
     b: 0.006995,
     a: 1.0,
 };
-const LETTERBOX: wgpu::Color = wgpu::Color { r: 0.0, g: 0.0, b: 0.0, a: 1.0 };
+const LETTERBOX: wgpu::Color = wgpu::Color {
+    r: 0.0,
+    g: 0.0,
+    b: 0.0,
+    a: 1.0,
+};
 
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
@@ -76,11 +81,11 @@ struct QuadVertex {
 
 const QUAD_VERTS: [QuadVertex; 6] = [
     QuadVertex { pos: [-1.0, -1.0] },
-    QuadVertex { pos: [ 1.0, -1.0] },
-    QuadVertex { pos: [ 1.0,  1.0] },
+    QuadVertex { pos: [1.0, -1.0] },
+    QuadVertex { pos: [1.0, 1.0] },
     QuadVertex { pos: [-1.0, -1.0] },
-    QuadVertex { pos: [ 1.0,  1.0] },
-    QuadVertex { pos: [-1.0,  1.0] },
+    QuadVertex { pos: [1.0, 1.0] },
+    QuadVertex { pos: [-1.0, 1.0] },
 ];
 
 /// One drawable rectangle in virtual-pixel space. Position is the rectangle's
@@ -157,7 +162,11 @@ impl PolygonInstance {
     /// SOLID_WHITE atlas cell so the `color` field is the visible tint.
     /// Caller supplies the SOLID_WHITE uv rect to keep this module
     /// decoupled from `crate::atlas`.
-    pub fn flat(corners: [[f32; 2]; 4], color: [f32; 4], solid_white_uv: ([f32; 2], [f32; 2])) -> Self {
+    pub fn flat(
+        corners: [[f32; 2]; 4],
+        color: [f32; 4],
+        solid_white_uv: ([f32; 2], [f32; 2]),
+    ) -> Self {
         Self {
             p0: corners[0],
             p1: corners[1],
@@ -186,7 +195,10 @@ impl SpriteSlug {
         let n = src.len().min(32);
         let mut bytes = [0u8; 32];
         bytes[..n].copy_from_slice(&src[..n]);
-        Self { bytes, len: n as u8 }
+        Self {
+            bytes,
+            len: n as u8,
+        }
     }
     pub fn as_str(&self) -> &str {
         std::str::from_utf8(&self.bytes[..self.len as usize]).unwrap_or("")
@@ -221,18 +233,48 @@ pub enum DrawCommand {
     Sprite(SpriteInstance),
     Polygon(PolygonInstance),
     TexturedShip(TexturedShipInstance),
+    /// Blit the live loft-rendered ship texture onto a lane quad (four
+    /// virtual-pixel corners: top-left, top-right, bot-right, bot-left).
+    /// Emitted by `hud::push_ship` for a ship that has a 3D asset, in place of
+    /// its 2D silhouette. `gfx` renders the ship's pose into the loft target
+    /// (pre-pass) and samples it here. The dest-rect is computed in hud (one
+    /// source of the lane geometry); the pose/mesh live in `gfx`.
+    LoftShip(LoftShipInstance),
+}
+
+/// Lane destination quad for a loft-rendered ship. Corners in virtual-pixel
+/// space, same y-down convention as [`PolygonInstance`].
+#[repr(C)]
+#[derive(Copy, Clone, Debug)]
+pub struct LoftShipInstance {
+    pub p0: [f32; 2],
+    pub p1: [f32; 2],
+    pub p2: [f32; 2],
+    pub p3: [f32; 2],
 }
 
 impl From<SpriteInstance> for DrawCommand {
-    fn from(s: SpriteInstance) -> Self { DrawCommand::Sprite(s) }
+    fn from(s: SpriteInstance) -> Self {
+        DrawCommand::Sprite(s)
+    }
 }
 
 impl From<PolygonInstance> for DrawCommand {
-    fn from(p: PolygonInstance) -> Self { DrawCommand::Polygon(p) }
+    fn from(p: PolygonInstance) -> Self {
+        DrawCommand::Polygon(p)
+    }
 }
 
 impl From<TexturedShipInstance> for DrawCommand {
-    fn from(t: TexturedShipInstance) -> Self { DrawCommand::TexturedShip(t) }
+    fn from(t: TexturedShipInstance) -> Self {
+        DrawCommand::TexturedShip(t)
+    }
+}
+
+impl From<LoftShipInstance> for DrawCommand {
+    fn from(l: LoftShipInstance) -> Self {
+        DrawCommand::LoftShip(l)
+    }
 }
 
 #[repr(C)]
@@ -544,6 +586,29 @@ pub struct Gfx {
     /// AND the texture pair. Cleared on `try_load_ship_sprites` since
     /// loaded textures may have changed.
     ship_bg_cache: std::collections::HashMap<(u32, SpriteSlug, SpriteSlug), wgpu::BindGroup>,
+
+    /// 3D loft render pipeline (depth + ortho-¾ + posterize). Renders a hull
+    /// into its own 320×200 offscreen target; `gfx` then blits that texture
+    /// into the lane via [`LoftShipBlit`]. The only depth-using pipeline in
+    /// the engine — its depth texture lives inside `LoftGpu`.
+    loft: crate::loft_gpu::LoftGpu,
+    /// Blits `loft.output_view()` onto a lane-positioned quad in the offscreen
+    /// scene. Samples an arbitrary texture view (the loft output), unlike the
+    /// `TexturedShip` path which samples the procedural atlas.
+    loft_blit: LoftShipBlit,
+    /// Demo loft ship: the default dagger, uploaded once, animated by a
+    /// [`crate::loft_gpu::ShipPose`]. A minimal milestone hookup so ONE 3D ship
+    /// renders in the lane — architect's ShipDesign/glb-driven per-class spawn
+    /// supersedes this. `None` until [`Gfx::install_demo_loft_ship`] runs.
+    demo_loft: Option<DemoLoftShip>,
+}
+
+/// State for the one demo lofted ship (milestone). Owns its uploaded mesh
+/// vertex buffer + the animated pose.
+struct DemoLoftShip {
+    vbuf: wgpu::Buffer,
+    vcount: u32,
+    pose: crate::loft_gpu::ShipPose,
 }
 
 /// One uploaded ship sprite. `dimensions` is the source PNG size in
@@ -601,6 +666,89 @@ struct BlitPipeline {
     bind_group: wgpu::BindGroup,
 }
 
+/// Blits the loft pipeline's posterized output texture onto a lane-positioned
+/// quad in the offscreen scene. Distinct from [`TexturedShipPipeline`]: that
+/// samples the procedural atlas (two cells + blend); this samples ONE
+/// arbitrary external texture view (the live loft output), alpha-blended over
+/// the scene so the posterize pass's transparent cut-out composites cleanly.
+///
+/// The destination quad is four explicit virtual-pixel corners (same y-down
+/// convention as [`PolygonInstance`]), written to a per-frame uniform; the
+/// source UV spans the full output texture. One ship per draw (each has its own
+/// freshly-rendered loft output), so this is not instanced.
+struct LoftShipBlit {
+    pipeline: wgpu::RenderPipeline,
+    /// Per-draw quad-corner uniform (4 × vec2 + the view px→ndc scale).
+    quad_ubo: wgpu::Buffer,
+    bgl: wgpu::BindGroupLayout,
+    sampler: wgpu::Sampler,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+struct LoftQuadUniform {
+    /// Four virtual-pixel corners: top-left, top-right, bot-right, bot-left.
+    p0: [f32; 2],
+    p1: [f32; 2],
+    p2: [f32; 2],
+    p3: [f32; 2],
+    /// 2/VIRTUAL_W, 2/VIRTUAL_H — same px→NDC map as the sprite/polygon view.
+    px_to_ndc: [f32; 2],
+    _pad: [f32; 2],
+}
+
+// 4 × vec2 (32) + vec2 (8) + vec2 pad (8) = 48 bytes. Size-pinned so a layout
+// drift can't silently mismatch the WGSL struct (the late-min-binding-size
+// invalid-encoder trap, made a compile error).
+const _: () = assert!(std::mem::size_of::<LoftQuadUniform>() == 48);
+
+// Loft-ship blit shader. Expands a per-draw 4-corner quad (vertex_index → the
+// two triangles 0-1-2 / 0-2-3) into virtual-pixel space → NDC, samples the
+// loft output texture across the quad, and returns it straight (already
+// posterized + cut-out). Y-flip on both clip and UV matches the sprite path.
+const LOFT_SHIP_SHADER: &str = r#"
+struct Quad {
+    p0: vec2<f32>,
+    p1: vec2<f32>,
+    p2: vec2<f32>,
+    p3: vec2<f32>,
+    px_to_ndc: vec2<f32>,
+    _pad: vec2<f32>,
+};
+@group(0) @binding(0) var<uniform> quad: Quad;
+@group(0) @binding(1) var ship_tex: texture_2d<f32>;
+@group(0) @binding(2) var ship_samp: sampler;
+
+struct VsOut {
+    @builtin(position) clip: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+};
+
+@vertex
+fn vs_loft(@builtin(vertex_index) v_idx: u32) -> VsOut {
+    var corner_idx = array<u32, 6>(0u, 1u, 2u, 0u, 2u, 3u);
+    let c = corner_idx[v_idx];
+    var pixel: vec2<f32>;
+    var uv: vec2<f32>;
+    // p0 top-left (0,0), p1 top-right (1,0), p2 bot-right (1,1), p3 bot-left (0,1).
+    if (c == 0u) { pixel = quad.p0; uv = vec2<f32>(0.0, 0.0); }
+    else if (c == 1u) { pixel = quad.p1; uv = vec2<f32>(1.0, 0.0); }
+    else if (c == 2u) { pixel = quad.p2; uv = vec2<f32>(1.0, 1.0); }
+    else { pixel = quad.p3; uv = vec2<f32>(0.0, 1.0); }
+    let ndc_x = pixel.x * quad.px_to_ndc.x - 1.0;
+    let ndc_y = 1.0 - pixel.y * quad.px_to_ndc.y;
+    var o: VsOut;
+    o.clip = vec4<f32>(ndc_x, ndc_y, 0.0, 1.0);
+    o.uv = uv;
+    return o;
+}
+
+@fragment
+fn fs_loft(in: VsOut) -> @location(0) vec4<f32> {
+    return textureSample(ship_tex, ship_samp, in.uv);
+}
+"#;
+
 impl crate::sprites::SpriteRegistry for Gfx {
     fn has(
         &self,
@@ -609,6 +757,10 @@ impl crate::sprites::SpriteRegistry for Gfx {
         view: crate::sprites::SpriteView,
     ) -> bool {
         Gfx::has_ship_sprite(self, class, stance, view)
+    }
+
+    fn loft_player(&self) -> bool {
+        self.has_demo_loft()
     }
 }
 
@@ -726,9 +878,12 @@ impl Gfx {
         });
 
         let sprites = SpritePipeline::new(&device, &atlas_view, &atlas_sampler);
-        let polygons = PolygonPipeline::new(&device, &sprites.view_ubo, &atlas_view, &atlas_sampler);
+        let polygons =
+            PolygonPipeline::new(&device, &sprites.view_ubo, &atlas_view, &atlas_sampler);
         let textured_ships = TexturedShipPipeline::new(&device, &sprites.view_ubo);
         let blit = BlitPipeline::new(&device, format, &offscreen_view);
+        let loft = crate::loft_gpu::LoftGpu::new(&device);
+        let loft_blit = LoftShipBlit::new(&device);
 
         let g = Self {
             surface,
@@ -742,16 +897,90 @@ impl Gfx {
             blit,
             ship_sprites: std::collections::HashMap::new(),
             ship_bg_cache: std::collections::HashMap::new(),
+            loft,
+            loft_blit,
+            demo_loft: None,
         };
 
         let view = ViewUniform {
             px_to_ndc: [2.0 / VIRTUAL_W as f32, 2.0 / VIRTUAL_H as f32],
             _pad: [0.0, 0.0],
         };
-        g.queue.write_buffer(&g.sprites.view_ubo, 0, bytemuck::bytes_of(&view));
+        g.queue
+            .write_buffer(&g.sprites.view_ubo, 0, bytemuck::bytes_of(&view));
 
         g.update_blit_uniform();
         g
+    }
+
+    /// Install the milestone demo loft ship: loft the default dagger profiles
+    /// and upload it (grey hull — no per-vertex colors yet; lights up when a
+    /// ShipDesign/glb feeds the colors slice). Resting at `orientation`. A
+    /// minimal hookup so ONE 3D ship renders in the lane — architect's
+    /// ShipDesign/glb-driven per-class spawn supersedes it. Idempotent: a
+    /// second call replaces the demo ship.
+    pub fn install_demo_loft_ship(&mut self, orientation: crate::types::Orientation) {
+        use crate::ship_design::Point2;
+        // The dagger profiles (loft editor defaults / POC `DAGGER_PLAN` etc.).
+        let plan = [
+            Point2([0.00, 0.95]),
+            Point2([0.10, 0.98]),
+            Point2([0.45, 0.72]),
+            Point2([0.75, 0.42]),
+            Point2([0.92, 0.18]),
+            Point2([1.00, 0.02]),
+        ];
+        let section = [
+            Point2([0.00, 0.55]),
+            Point2([0.55, 0.40]),
+            Point2([1.00, 0.05]),
+            Point2([0.60, -0.45]),
+            Point2([0.00, -0.55]),
+        ];
+        let mesh = crate::loft::loft_from_profiles(
+            &plan,
+            &section,
+            None,
+            crate::loft::LoftParams::default(),
+        );
+        // No per-vertex colors → loft_gpu falls back to the default hull grey.
+        let (vbuf, vcount) = self.loft.upload_hull(&self.device, &mesh, &[]);
+        self.demo_loft = Some(DemoLoftShip {
+            vbuf,
+            vcount,
+            pose: crate::loft_gpu::ShipPose::new(orientation),
+        });
+    }
+
+    /// Whether a demo loft ship is installed (so the caller / hud emits a
+    /// `LoftShip` command for the player instead of its 2D silhouette).
+    pub fn has_demo_loft(&self) -> bool {
+        self.demo_loft.is_some()
+    }
+
+    /// Advance the demo loft ship's pose by `dt` seconds (idle + any reorient
+    /// tween). Returns `true` whenever a demo loft ship is installed, so the
+    /// caller keeps the redraw loop alive — the idle bob/roll is continuous, so
+    /// a resting 3D ship needs steady frames to "breathe" (the cost is one
+    /// 320×200 render/frame while a 3D ship is on screen; acceptable for the
+    /// demo, revisited when the per-class spawn system lands). No-op / `false`
+    /// when no demo ship.
+    pub fn advance_demo_loft(&mut self, dt: f32) -> bool {
+        match self.demo_loft.as_mut() {
+            Some(d) => {
+                d.pose.advance(dt);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Begin a smooth reorient of the demo loft ship to `orientation` (called
+    /// when the player ship flips bow-on↔broadside). No-op if no demo ship.
+    pub fn reorient_demo_loft(&mut self, orientation: crate::types::Orientation) {
+        if let Some(d) = self.demo_loft.as_mut() {
+            d.pose.reorient_to(orientation);
+        }
     }
 
     pub fn resize(&mut self, size: PhysicalSize<u32>) {
@@ -795,7 +1024,9 @@ impl Gfx {
     ///
     /// Returns the count of sprites loaded so the caller can log it.
     pub fn try_load_ship_sprites(&mut self, asset_dir: &std::path::Path) -> usize {
-        use crate::sprites::{load_sprite, mirror_horizontal, rotate_90_cw, SpriteStance, SpriteView};
+        use crate::sprites::{
+            load_sprite, mirror_horizontal, rotate_90_cw, SpriteStance, SpriteView,
+        };
         // Invalidate cached bind groups — the underlying texture views
         // may have been replaced.
         self.ship_bg_cache.clear();
@@ -817,7 +1048,12 @@ impl Gfx {
                 // from it.
                 let fore = load_sprite(asset_dir, class, SpriteStance::BowOnFore, view);
                 if let Some(img) = fore.as_ref() {
-                    let slug = format!("{}_{}_{}", class, SpriteStance::BowOnFore.slug(), view.slug());
+                    let slug = format!(
+                        "{}_{}_{}",
+                        class,
+                        SpriteStance::BowOnFore.slug(),
+                        view.slug()
+                    );
                     self.upload_ship_sprite(&slug, img);
                     loaded += 1;
                 }
@@ -825,14 +1061,27 @@ impl Gfx {
                 let aft_explicit = load_sprite(asset_dir, class, SpriteStance::BowOnAft, view);
                 match (aft_explicit, fore.as_ref()) {
                     (Some(img), _) => {
-                        let slug = format!("{}_{}_{}", class, SpriteStance::BowOnAft.slug(), view.slug());
+                        let slug = format!(
+                            "{}_{}_{}",
+                            class,
+                            SpriteStance::BowOnAft.slug(),
+                            view.slug()
+                        );
                         self.upload_ship_sprite(&slug, &img);
                         loaded += 1;
                     }
                     (None, Some(fore_img)) => {
                         let mirrored = mirror_horizontal(fore_img);
-                        let slug = format!("{}_{}_{}", class, SpriteStance::BowOnAft.slug(), view.slug());
-                        log::debug!("sprite: deriving {} from horizontally-mirrored bowOnFore", slug);
+                        let slug = format!(
+                            "{}_{}_{}",
+                            class,
+                            SpriteStance::BowOnAft.slug(),
+                            view.slug()
+                        );
+                        log::debug!(
+                            "sprite: deriving {} from horizontally-mirrored bowOnFore",
+                            slug
+                        );
                         self.upload_ship_sprite(&slug, &mirrored);
                         loaded += 1;
                     }
@@ -845,13 +1094,23 @@ impl Gfx {
                 let bs_explicit = load_sprite(asset_dir, class, SpriteStance::Broadside, view);
                 match (bs_explicit, view, fore.as_ref()) {
                     (Some(img), _, _) => {
-                        let slug = format!("{}_{}_{}", class, SpriteStance::Broadside.slug(), view.slug());
+                        let slug = format!(
+                            "{}_{}_{}",
+                            class,
+                            SpriteStance::Broadside.slug(),
+                            view.slug()
+                        );
                         self.upload_ship_sprite(&slug, &img);
                         loaded += 1;
                     }
                     (None, SpriteView::Top, Some(fore_top)) => {
                         let rotated = rotate_90_cw(fore_top);
-                        let slug = format!("{}_{}_{}", class, SpriteStance::Broadside.slug(), view.slug());
+                        let slug = format!(
+                            "{}_{}_{}",
+                            class,
+                            SpriteStance::Broadside.slug(),
+                            view.slug()
+                        );
                         log::debug!("sprite: deriving {} from rotate90(bowOnFore_top)", slug);
                         self.upload_ship_sprite(&slug, &rotated);
                         loaded += 1;
@@ -905,7 +1164,10 @@ impl Gfx {
         let texture_view = tex.create_view(&wgpu::TextureViewDescriptor::default());
         self.ship_sprites.insert(
             slug.to_string(),
-            ShipSpriteEntry { texture_view, dimensions: (img.width, img.height) },
+            ShipSpriteEntry {
+                texture_view,
+                dimensions: (img.width, img.height),
+            },
         );
     }
 
@@ -932,7 +1194,7 @@ impl Gfx {
             return;
         }
         let side_entry = self.ship_sprites.get(side.as_str());
-        let top_entry  = self.ship_sprites.get(top.as_str());
+        let top_entry = self.ship_sprites.get(top.as_str());
         let (side_view, top_view) = match (side_entry, top_entry) {
             (Some(s), Some(t)) => (&s.texture_view, &t.texture_view),
             _ => {
@@ -1005,7 +1267,8 @@ impl Gfx {
             ndc_min: [ndc_x_min, ndc_y_min],
             ndc_max: [ndc_x_max, ndc_y_max],
         };
-        self.queue.write_buffer(&self.blit.ubo, 0, bytemuck::bytes_of(&blit));
+        self.queue
+            .write_buffer(&self.blit.ubo, 0, bytemuck::bytes_of(&blit));
     }
 
     /// Render one frame. `commands` is the full draw command list in
@@ -1022,12 +1285,19 @@ impl Gfx {
         // Textured-ship instances are stored as the 4 corner positions only
         // (the slugs + blend_t are CPU-side per-batch metadata).
         let mut ship_corner_buf: Vec<[f32; 8]> = Vec::with_capacity(MAX_TEXTURED_SHIPS);
-        let mut ship_meta: Vec<(SpriteSlug, SpriteSlug, f32)> = Vec::with_capacity(MAX_TEXTURED_SHIPS);
+        let mut ship_meta: Vec<(SpriteSlug, SpriteSlug, f32)> =
+            Vec::with_capacity(MAX_TEXTURED_SHIPS);
+        // Loft-ship blit destination quads (one per LoftShip command). For the
+        // milestone there is one (the demo player); the design generalizes to
+        // ≤ lane-count.
+        let mut loft_quads: Vec<LoftShipInstance> = Vec::new();
         enum BatchKind {
             Sprite,
             Polygon,
             // index into ship_corner_buf / ship_meta
             TexturedShip(u32),
+            // index into loft_quads
+            LoftShip(u32),
         }
         struct Batch {
             kind: BatchKind,
@@ -1045,7 +1315,11 @@ impl Gfx {
                     sprite_buf.push(*s);
                     match batches.last_mut() {
                         Some(b) if matches!(b.kind, BatchKind::Sprite) => b.count += 1,
-                        _ => batches.push(Batch { kind: BatchKind::Sprite, start, count: 1 }),
+                        _ => batches.push(Batch {
+                            kind: BatchKind::Sprite,
+                            start,
+                            count: 1,
+                        }),
                     }
                 }
                 DrawCommand::Polygon(p) => {
@@ -1056,7 +1330,11 @@ impl Gfx {
                     polygon_buf.push(*p);
                     match batches.last_mut() {
                         Some(b) if matches!(b.kind, BatchKind::Polygon) => b.count += 1,
-                        _ => batches.push(Batch { kind: BatchKind::Polygon, start, count: 1 }),
+                        _ => batches.push(Batch {
+                            kind: BatchKind::Polygon,
+                            start,
+                            count: 1,
+                        }),
                     }
                 }
                 DrawCommand::TexturedShip(t) => {
@@ -1065,13 +1343,26 @@ impl Gfx {
                     }
                     let idx = ship_corner_buf.len() as u32;
                     ship_corner_buf.push([
-                        t.p0[0], t.p0[1], t.p1[0], t.p1[1],
-                        t.p2[0], t.p2[1], t.p3[0], t.p3[1],
+                        t.p0[0], t.p0[1], t.p1[0], t.p1[1], t.p2[0], t.p2[1], t.p3[0], t.p3[1],
                     ]);
                     ship_meta.push((t.side, t.top, t.blend_t));
                     // Each textured-ship draw is its own batch (different
                     // bind group per ship).
-                    batches.push(Batch { kind: BatchKind::TexturedShip(idx), start: idx, count: 1 });
+                    batches.push(Batch {
+                        kind: BatchKind::TexturedShip(idx),
+                        start: idx,
+                        count: 1,
+                    });
+                }
+                DrawCommand::LoftShip(l) => {
+                    let idx = loft_quads.len() as u32;
+                    loft_quads.push(*l);
+                    // Its own batch (own bind group + the live loft texture).
+                    batches.push(Batch {
+                        kind: BatchKind::LoftShip(idx),
+                        start: idx,
+                        count: 1,
+                    });
                 }
             }
         }
@@ -1104,7 +1395,10 @@ impl Gfx {
             );
             // Write per-ship blend uniforms and ensure bind groups exist.
             for (i, (side, top, blend)) in ship_meta.iter().enumerate() {
-                let blend_u = BlendUniform { blend_t: *blend, _pad: [0.0; 3] };
+                let blend_u = BlendUniform {
+                    blend_t: *blend,
+                    _pad: [0.0; 3],
+                };
                 self.queue.write_buffer(
                     &self.textured_ships.blend_ubos[i],
                     0,
@@ -1123,6 +1417,54 @@ impl Gfx {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("frame encoder"),
             });
+
+        // Loft PRE-PASS: if any LoftShip is to be drawn and a demo loft ship is
+        // installed, advance its pose and render it into the loft pipeline's
+        // own 320×200 offscreen+depth target FIRST (depth stays entirely inside
+        // LoftGpu). The blit below then samples that posterized output. For the
+        // milestone there's one loft ship; serial render-then-blit reusing the
+        // single loft target generalizes to ≤ lane-count.
+        //
+        // The per-quad blit bind groups are built up front (each borrows the
+        // loft output view + the shared quad ubo) so the render pass can hold
+        // them by reference.
+        let loft_bg: Option<wgpu::BindGroup> = if !loft_quads.is_empty() {
+            if let Some(demo) = self.demo_loft.as_ref() {
+                let yaw = demo.pose.yaw_deg();
+                // Pitch: the loft editor's ¾ default. (The live camera-angle
+                // scrubber feeds this in a follow-up; fixed for the milestone.)
+                let pitch = 26.0;
+                self.loft.render_ship(
+                    &self.queue,
+                    &mut encoder,
+                    &demo.vbuf,
+                    demo.vcount,
+                    yaw,
+                    pitch,
+                );
+                // Write the first quad's corners into the blit uniform and make
+                // its bind group. (One loft ship this milestone.)
+                let q = loft_quads[0];
+                let qu = LoftQuadUniform {
+                    p0: q.p0,
+                    p1: q.p1,
+                    p2: q.p2,
+                    p3: q.p3,
+                    px_to_ndc: [2.0 / VIRTUAL_W as f32, 2.0 / VIRTUAL_H as f32],
+                    _pad: [0.0, 0.0],
+                };
+                self.queue
+                    .write_buffer(&self.loft_blit.quad_ubo, 0, bytemuck::bytes_of(&qu));
+                Some(
+                    self.loft_blit
+                        .bind_group(&self.device, self.loft.output_view()),
+                )
+            } else {
+                None
+            }
+        } else {
+            None
+        };
 
         // Pass 1: walk batches in order; switch pipelines as the variant
         // changes. One render pass, clear once.
@@ -1173,8 +1515,21 @@ impl Gfx {
                         pass.set_bind_group(1, bg, &[]);
                         // Offset the vbuf to this slot's 32 bytes.
                         let off = (slot_idx as u64) * 32;
-                        pass.set_vertex_buffer(0, self.textured_ships.instance_vbuf.slice(off..off + 32));
+                        pass.set_vertex_buffer(
+                            0,
+                            self.textured_ships.instance_vbuf.slice(off..off + 32),
+                        );
                         // Draw 6 verts (two triangles) of one instance.
+                        pass.draw(0..6, 0..1);
+                    }
+                    BatchKind::LoftShip(_idx) => {
+                        // Blit the pre-rendered loft ship onto its lane quad.
+                        // For the milestone only the first quad's bind group is
+                        // built (one demo ship); skip if absent (no demo ship
+                        // installed / pre-pass didn't run).
+                        let Some(bg) = loft_bg.as_ref() else { continue };
+                        pass.set_pipeline(&self.loft_blit.pipeline);
+                        pass.set_bind_group(0, bg, &[]);
                         pass.draw(0..6, 0..1);
                     }
                 }
@@ -1305,12 +1660,36 @@ impl SpritePipeline {
                         array_stride: std::mem::size_of::<SpriteInstance>() as u64,
                         step_mode: wgpu::VertexStepMode::Instance,
                         attributes: &[
-                            wgpu::VertexAttribute { shader_location: 1, offset: 0,  format: wgpu::VertexFormat::Float32x2 },
-                            wgpu::VertexAttribute { shader_location: 2, offset: 8,  format: wgpu::VertexFormat::Float32x2 },
-                            wgpu::VertexAttribute { shader_location: 3, offset: 16, format: wgpu::VertexFormat::Float32x4 },
-                            wgpu::VertexAttribute { shader_location: 4, offset: 32, format: wgpu::VertexFormat::Float32x2 },
-                            wgpu::VertexAttribute { shader_location: 5, offset: 40, format: wgpu::VertexFormat::Float32x2 },
-                            wgpu::VertexAttribute { shader_location: 6, offset: 48, format: wgpu::VertexFormat::Float32   },
+                            wgpu::VertexAttribute {
+                                shader_location: 1,
+                                offset: 0,
+                                format: wgpu::VertexFormat::Float32x2,
+                            },
+                            wgpu::VertexAttribute {
+                                shader_location: 2,
+                                offset: 8,
+                                format: wgpu::VertexFormat::Float32x2,
+                            },
+                            wgpu::VertexAttribute {
+                                shader_location: 3,
+                                offset: 16,
+                                format: wgpu::VertexFormat::Float32x4,
+                            },
+                            wgpu::VertexAttribute {
+                                shader_location: 4,
+                                offset: 32,
+                                format: wgpu::VertexFormat::Float32x2,
+                            },
+                            wgpu::VertexAttribute {
+                                shader_location: 5,
+                                offset: 40,
+                                format: wgpu::VertexFormat::Float32x2,
+                            },
+                            wgpu::VertexAttribute {
+                                shader_location: 6,
+                                offset: 48,
+                                format: wgpu::VertexFormat::Float32,
+                            },
                         ],
                     },
                 ],
@@ -1353,7 +1732,13 @@ impl SpritePipeline {
             mapped_at_creation: false,
         });
 
-        Self { pipeline, quad_vbuf, instance_vbuf, view_ubo, bind_group }
+        Self {
+            pipeline,
+            quad_vbuf,
+            instance_vbuf,
+            view_ubo,
+            bind_group,
+        }
     }
 }
 
@@ -1410,9 +1795,18 @@ impl PolygonPipeline {
             label: Some("polygon bg"),
             layout: &bgl,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: view_ubo.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(atlas_view) },
-                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(atlas_sampler) },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: view_ubo.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(atlas_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(atlas_sampler),
+                },
             ],
         });
 
@@ -1433,13 +1827,41 @@ impl PolygonPipeline {
                     array_stride: std::mem::size_of::<PolygonInstance>() as u64,
                     step_mode: wgpu::VertexStepMode::Instance,
                     attributes: &[
-                        wgpu::VertexAttribute { shader_location: 0, offset: 0,  format: wgpu::VertexFormat::Float32x2 }, // p0
-                        wgpu::VertexAttribute { shader_location: 1, offset: 8,  format: wgpu::VertexFormat::Float32x2 }, // p1
-                        wgpu::VertexAttribute { shader_location: 2, offset: 16, format: wgpu::VertexFormat::Float32x2 }, // p2
-                        wgpu::VertexAttribute { shader_location: 3, offset: 24, format: wgpu::VertexFormat::Float32x2 }, // p3
-                        wgpu::VertexAttribute { shader_location: 4, offset: 32, format: wgpu::VertexFormat::Float32x4 }, // color
-                        wgpu::VertexAttribute { shader_location: 5, offset: 48, format: wgpu::VertexFormat::Float32x2 }, // uv_min
-                        wgpu::VertexAttribute { shader_location: 6, offset: 56, format: wgpu::VertexFormat::Float32x2 }, // uv_max
+                        wgpu::VertexAttribute {
+                            shader_location: 0,
+                            offset: 0,
+                            format: wgpu::VertexFormat::Float32x2,
+                        }, // p0
+                        wgpu::VertexAttribute {
+                            shader_location: 1,
+                            offset: 8,
+                            format: wgpu::VertexFormat::Float32x2,
+                        }, // p1
+                        wgpu::VertexAttribute {
+                            shader_location: 2,
+                            offset: 16,
+                            format: wgpu::VertexFormat::Float32x2,
+                        }, // p2
+                        wgpu::VertexAttribute {
+                            shader_location: 3,
+                            offset: 24,
+                            format: wgpu::VertexFormat::Float32x2,
+                        }, // p3
+                        wgpu::VertexAttribute {
+                            shader_location: 4,
+                            offset: 32,
+                            format: wgpu::VertexFormat::Float32x4,
+                        }, // color
+                        wgpu::VertexAttribute {
+                            shader_location: 5,
+                            offset: 48,
+                            format: wgpu::VertexFormat::Float32x2,
+                        }, // uv_min
+                        wgpu::VertexAttribute {
+                            shader_location: 6,
+                            offset: 56,
+                            format: wgpu::VertexFormat::Float32x2,
+                        }, // uv_max
                     ],
                 }],
             },
@@ -1475,7 +1897,11 @@ impl PolygonPipeline {
             mapped_at_creation: false,
         });
 
-        Self { pipeline, instance_vbuf, bind_group }
+        Self {
+            pipeline,
+            instance_vbuf,
+            bind_group,
+        }
     }
 }
 
@@ -1580,10 +2006,26 @@ impl TexturedShipPipeline {
                     array_stride: 32, // 4 × Float32x2
                     step_mode: wgpu::VertexStepMode::Instance,
                     attributes: &[
-                        wgpu::VertexAttribute { shader_location: 0, offset: 0,  format: wgpu::VertexFormat::Float32x2 },
-                        wgpu::VertexAttribute { shader_location: 1, offset: 8,  format: wgpu::VertexFormat::Float32x2 },
-                        wgpu::VertexAttribute { shader_location: 2, offset: 16, format: wgpu::VertexFormat::Float32x2 },
-                        wgpu::VertexAttribute { shader_location: 3, offset: 24, format: wgpu::VertexFormat::Float32x2 },
+                        wgpu::VertexAttribute {
+                            shader_location: 0,
+                            offset: 0,
+                            format: wgpu::VertexFormat::Float32x2,
+                        },
+                        wgpu::VertexAttribute {
+                            shader_location: 1,
+                            offset: 8,
+                            format: wgpu::VertexFormat::Float32x2,
+                        },
+                        wgpu::VertexAttribute {
+                            shader_location: 2,
+                            offset: 16,
+                            format: wgpu::VertexFormat::Float32x2,
+                        },
+                        wgpu::VertexAttribute {
+                            shader_location: 3,
+                            offset: 24,
+                            format: wgpu::VertexFormat::Float32x2,
+                        },
                     ],
                 }],
             },
@@ -1634,7 +2076,14 @@ impl TexturedShipPipeline {
             }));
         }
 
-        Self { pipeline, instance_vbuf, view_bg, ship_bgl, sampler, blend_ubos }
+        Self {
+            pipeline,
+            instance_vbuf,
+            view_bg,
+            ship_bgl,
+            sampler,
+            blend_ubos,
+        }
     }
 }
 
@@ -1713,9 +2162,18 @@ impl BlitPipeline {
             label: Some("blit bg"),
             layout: &bgl,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: ubo.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(src_view) },
-                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&sampler) },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: ubo.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(src_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(&sampler),
+                },
             ],
         });
 
@@ -1759,6 +2217,143 @@ impl BlitPipeline {
             cache: None,
         });
 
-        Self { pipeline, ubo, bind_group }
+        Self {
+            pipeline,
+            ubo,
+            bind_group,
+        }
+    }
+}
+
+impl LoftShipBlit {
+    fn new(device: &wgpu::Device) -> Self {
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("loft-ship blit shader"),
+            source: wgpu::ShaderSource::Wgsl(LOFT_SHIP_SHADER.into()),
+        });
+
+        let quad_ubo = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("loft-ship quad ubo"),
+            size: std::mem::size_of::<LoftQuadUniform>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        // Linear sampler: the loft output is a non-integer-scaled blit into the
+        // lane, so linear avoids the uneven-texel shimmer nearest would give
+        // (matches the window blit's reasoning).
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("loft-ship linear sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::FilterMode::Nearest,
+            ..Default::default()
+        });
+
+        let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("loft-ship bgl"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        });
+
+        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("loft-ship layout"),
+            bind_group_layouts: &[&bgl],
+            push_constant_ranges: &[],
+        });
+
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("loft-ship pipeline"),
+            layout: Some(&layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_loft"),
+                compilation_options: Default::default(),
+                buffers: &[],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_loft"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: OFFSCREEN_FORMAT,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: None,
+                unclipped_depth: false,
+                polygon_mode: wgpu::PolygonMode::Fill,
+                conservative: false,
+            },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+            cache: None,
+        });
+
+        Self {
+            pipeline,
+            quad_ubo,
+            bgl,
+            sampler,
+        }
+    }
+
+    /// Build the per-draw bind group for one loft-ship blit: the quad uniform +
+    /// the loft output texture view + the linear sampler. Cheap (one bind group
+    /// per ship per frame); fine at ≤9 ships.
+    fn bind_group(&self, device: &wgpu::Device, ship_view: &wgpu::TextureView) -> wgpu::BindGroup {
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("loft-ship bg"),
+            layout: &self.bgl,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: self.quad_ubo.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(ship_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(&self.sampler),
+                },
+            ],
+        })
     }
 }

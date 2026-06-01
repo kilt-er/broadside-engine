@@ -693,6 +693,21 @@ impl ApplicationHandler for App {
         if loaded > 0 {
             log::info!("loaded {} ship sprite PNG(s) from assets/sprites/", loaded);
         }
+        // MILESTONE: wire the default dagger loft to the player ship so the new
+        // 3D render path actually draws a ship in the lane (architect's
+        // ShipDesign/glb per-class spawn supersedes this minimal hookup). The
+        // player resting orientation seeds the pose; hud emits a LoftShip for
+        // the player (skipping its 2D silhouette) while this is installed.
+        let player_orient = self
+            .board
+            .cells
+            .iter()
+            .flatten()
+            .find(|s| s.faction == Faction::Player)
+            .map(|s| s.orientation)
+            .unwrap_or(Orientation::BowOn { bow: LaneEnd::Fore });
+        gfx.install_demo_loft_ship(player_orient);
+        log::info!("loft: demo 3D ship installed (player, {player_orient:?})");
         self.window = Some(window);
         self.gfx = Some(gfx);
     }
@@ -829,7 +844,22 @@ impl ApplicationHandler for App {
                 let demo_state = self.demo_state;
                 let sector_idx = self.run.current_sector_idx;
                 let salvage = self.run.salvage;
+                // Sync the demo loft ship's pose to the player's current
+                // orientation (reorient_demo_loft no-ops when already there, so
+                // this auto-detects bow-on↔broadside flips and tweens them) and
+                // advance its idle + tween by a fixed ~60 Hz dt.
+                let player_orient = self
+                    .board
+                    .cells
+                    .iter()
+                    .flatten()
+                    .find(|s| s.faction == Faction::Player)
+                    .map(|s| s.orientation);
                 let Some(gfx) = self.gfx.as_mut() else { return };
+                if let Some(o) = player_orient {
+                    gfx.reorient_demo_loft(o);
+                }
+                let loft_animating = gfx.advance_demo_loft(1.0 / 60.0);
                 let mut instances = hud::compose_scene_tweened(&self.board, &self.lane, angle, gfx, &tween);
                 // In-game salvage counter (top-right) — only shown
                 // during Playing state. The modal overlays surface
@@ -869,10 +899,11 @@ impl ApplicationHandler for App {
                     }
                     Err(e) => log::warn!("surface error: {e:?}"),
                 }
-                // Keep redrawing only while a tween is in flight. Once
-                // every anchor expires the scene is static and we let
-                // the event loop sleep until the next input.
-                if active_tween {
+                // Keep redrawing while a turn tween is in flight OR the loft
+                // ship is animating (idle breathing + reorient tweens), so the
+                // 3D ship stays live. Otherwise let the event loop sleep until
+                // the next input.
+                if active_tween || loft_animating {
                     if let Some(w) = self.window.as_ref() {
                         w.request_redraw();
                     }

@@ -25,7 +25,9 @@
 
 use crate::atlas;
 use crate::geometry::range_band;
-use crate::gfx::{DrawCommand, PolygonInstance, SpriteInstance, SpriteSlug, TexturedShipInstance};
+use crate::gfx::{
+    DrawCommand, LoftShipInstance, PolygonInstance, SpriteInstance, SpriteSlug, TexturedShipInstance,
+};
 use crate::perspective::{
     cell_to_screen, fractional_cell_to_screen, LaneGeometry, Point2, Stance, FRIGATE_DIMS,
 };
@@ -544,6 +546,24 @@ fn push_ship(
     let half_h = total_h / 2.0;
     let top_y = p.y - half_h;
     let base_y = p.y + half_h;
+
+    // Loft path: if the player ship has a live 3D asset (the milestone demo
+    // dagger), emit a LoftShip blit quad at the silhouette bbox and skip the
+    // 2D draw — "loft if the ship has a 3D asset, else 2D", player first. The
+    // bbox is the same one the 2D silhouette would occupy, so the 3D ship sits
+    // exactly where the 2D one did. HUD overlays (heat/pips/glyphs) still draw
+    // on top below via the caller.
+    if ship.faction == Faction::Player && sprites.loft_player() {
+        let left = cx - width / 2.0;
+        let right = cx + width / 2.0;
+        out.push(DrawCommand::LoftShip(LoftShipInstance {
+            p0: [left, top_y],
+            p1: [right, top_y],
+            p2: [right, base_y],
+            p3: [left, base_y],
+        }));
+        return;
+    }
 
     // If the artist has painted both side + top PNGs for this ship's
     // class/stance, draw the textured quad instead of the procedural
@@ -1686,6 +1706,13 @@ mod tests {
                             }
                         }
                         assert!(t.blend_t.is_finite(), "non-finite blend_t at angle {}° idx {}: {:?}", d, i, t);
+                    }
+                    DrawCommand::LoftShip(l) => {
+                        for v in [l.p0, l.p1, l.p2, l.p3] {
+                            for c in v {
+                                assert!(c.is_finite(), "non-finite loft-ship coord at angle {}° idx {}: {:?}", d, i, l);
+                            }
+                        }
                     }
                 }
             }

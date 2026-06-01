@@ -96,12 +96,9 @@ pub fn sprite_path(
     stance: SpriteStance,
     view: SpriteView,
 ) -> PathBuf {
-    asset_dir.join("sprites").join(format!(
-        "{}_{}_{}.png",
-        class,
-        stance.slug(),
-        view.slug(),
-    ))
+    asset_dir
+        .join("sprites")
+        .join(format!("{}_{}_{}.png", class, stance.slug(), view.slug(),))
 }
 
 /// Load both views (side + top) for a ship sprite. Either or both may
@@ -201,6 +198,15 @@ pub trait SpriteRegistry {
     fn has_pair(&self, class: &str, stance: SpriteStance) -> bool {
         self.has(class, stance, SpriteView::Side) && self.has(class, stance, SpriteView::Top)
     }
+
+    /// True when the player ship has a live 3D loft asset to render (the
+    /// milestone demo dagger). When set, `hud::push_ship` emits a `LoftShip`
+    /// quad for the player and skips its 2D silhouette — the "loft if the ship
+    /// has a 3D asset, else 2D" dispatch, with the player as the first such
+    /// ship. Default `false` (the no-GPU / test registries don't loft).
+    fn loft_player(&self) -> bool {
+        false
+    }
 }
 
 /// No-op registry — every lookup returns false. Useful for tests and for
@@ -264,17 +270,20 @@ mod tests {
             width: 2,
             height: 1,
             rgba: vec![
-                255, 0, 0, 255,   // red
-                0, 0, 255, 255,   // blue
+                255, 0, 0, 255, // red
+                0, 0, 255, 255, // blue
             ],
         };
         let m = mirror_horizontal(&src);
         assert_eq!(m.width, 2);
         assert_eq!(m.height, 1);
-        assert_eq!(m.rgba, vec![
-            0, 0, 255, 255,   // blue (was right, now left)
-            255, 0, 0, 255,   // red (was left, now right)
-        ]);
+        assert_eq!(
+            m.rgba,
+            vec![
+                0, 0, 255, 255, // blue (was right, now left)
+                255, 0, 0, 255, // red (was left, now right)
+            ]
+        );
     }
 
     #[test]
@@ -285,15 +294,18 @@ mod tests {
             width: 2,
             height: 2,
             rgba: vec![
-                1, 1, 1, 1,    2, 2, 2, 2,   // row 0
-                3, 3, 3, 3,    4, 4, 4, 4,   // row 1
+                1, 1, 1, 1, 2, 2, 2, 2, // row 0
+                3, 3, 3, 3, 4, 4, 4, 4, // row 1
             ],
         };
         let m = mirror_horizontal(&src);
-        assert_eq!(m.rgba, vec![
-            2, 2, 2, 2,    1, 1, 1, 1,   // row 0 reversed
-            4, 4, 4, 4,    3, 3, 3, 3,   // row 1 reversed
-        ]);
+        assert_eq!(
+            m.rgba,
+            vec![
+                2, 2, 2, 2, 1, 1, 1, 1, // row 0 reversed
+                4, 4, 4, 4, 3, 3, 3, 3, // row 1 reversed
+            ]
+        );
     }
 
     #[test]
@@ -321,17 +333,20 @@ mod tests {
             width: 2,
             height: 2,
             rgba: vec![
-                10, 10, 10, 10,   20, 20, 20, 20,   // row 0: A B
-                30, 30, 30, 30,   40, 40, 40, 40,   // row 1: C D
+                10, 10, 10, 10, 20, 20, 20, 20, // row 0: A B
+                30, 30, 30, 30, 40, 40, 40, 40, // row 1: C D
             ],
         };
         let r = rotate_90_cw(&src);
         assert_eq!(r.width, 2);
         assert_eq!(r.height, 2);
-        assert_eq!(r.rgba, vec![
-            30, 30, 30, 30,   10, 10, 10, 10,   // row 0: C A
-            40, 40, 40, 40,   20, 20, 20, 20,   // row 1: D B
-        ]);
+        assert_eq!(
+            r.rgba,
+            vec![
+                30, 30, 30, 30, 10, 10, 10, 10, // row 0: C A
+                40, 40, 40, 40, 20, 20, 20, 20, // row 1: D B
+            ]
+        );
     }
 
     #[test]
