@@ -610,6 +610,22 @@ impl LoftGpu {
         (buf, verts.len() as u32)
     }
 
+    /// Upload an [`ImportedShip`] (the architect's mesh_import / CAD-glb output,
+    /// and the shape the loft path also targets): expands the per-group
+    /// material colours onto per-vertex albedos and delegates to
+    /// [`Self::upload_hull`]. Both geometry sources thus reach the GPU through
+    /// one path. (Material `emissive` / `unlit` glow is not yet honoured — the
+    /// shader takes base colour only; glow is a tracked follow-up that needs an
+    /// extra per-vertex attribute + a shader branch.)
+    pub fn upload_imported(
+        &self,
+        device: &wgpu::Device,
+        ship: &crate::mesh_import::ImportedShip,
+    ) -> (wgpu::Buffer, u32) {
+        let colors = imported_vertex_colors(ship);
+        self.upload_hull(device, &ship.mesh, &colors)
+    }
+
     /// Render one ship pose into the offscreen target and posterize it into
     /// [`Self::output_view`]. `yaw_deg`/`pitch_deg` come from the caller
     /// ([`ShipPose::yaw_deg`] + the camera scrubber). Records into `encoder`;
@@ -823,6 +839,24 @@ fn mul4(a: [f32; 16], b: [f32; 16]) -> [f32; 16] {
     out
 }
 
+/// Expand an [`ImportedShip`]'s per-group materials into one linear-RGB albedo
+/// per vertex (parallel to `ship.mesh.positions`). Vertices outside every
+/// group, or in a group whose material index is out of range, fall back to the
+/// default hull grey. Pure — unit-tested headless; `upload_imported` is the
+/// thin GPU wrapper.
+fn imported_vertex_colors(ship: &crate::mesh_import::ImportedShip) -> Vec<[f32; 3]> {
+    let mut colors = vec![DEFAULT_HULL_ALBEDO; ship.mesh.positions.len()];
+    for g in &ship.group_ranges {
+        let mat = ship.materials.get(g.material).copied().unwrap_or_default();
+        let rgb = [mat.color[0], mat.color[1], mat.color[2]];
+        let end = (g.start + g.len).min(colors.len());
+        for c in colors.iter_mut().take(end).skip(g.start) {
+            *c = rgb;
+        }
+    }
+    colors
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -886,5 +920,51 @@ mod tests {
     fn camera_view_proj_is_finite() {
         let m = camera_view_proj(28f32.to_radians(), 26f32.to_radians(), 1.6);
         assert!(m.iter().all(|v| v.is_finite()));
+    }
+
+    #[test]
+    fn imported_colors_expand_groups_and_fall_back_to_grey() {
+        use crate::loft::HullMesh;
+        use crate::mesh_import::{GroupRange, ImportLight, ImportedShip, MeshMaterial};
+        // 9 vertices (3 tris). Group 0 (verts 0..3) = red, group 1 (3..6) =
+        // green; verts 6..9 are in no group → default grey.
+        let mesh = HullMesh {
+            positions: vec![[0.0; 3]; 9],
+            normals: vec![[0.0, 1.0, 0.0]; 9],
+        };
+        let ship = ImportedShip {
+            mesh,
+            materials: vec![
+                MeshMaterial {
+                    color: [1.0, 0.0, 0.0, 1.0],
+                    ..Default::default()
+                },
+                MeshMaterial {
+                    color: [0.0, 1.0, 0.0, 1.0],
+                    ..Default::default()
+                },
+            ],
+            group_ranges: vec![
+                GroupRange {
+                    start: 0,
+                    len: 3,
+                    material: 0,
+                },
+                GroupRange {
+                    start: 3,
+                    len: 3,
+                    material: 1,
+                },
+            ],
+            light: ImportLight::default(),
+        };
+        let colors = imported_vertex_colors(&ship);
+        assert_eq!(colors.len(), 9);
+        assert_eq!(colors[0], [1.0, 0.0, 0.0]);
+        assert_eq!(colors[2], [1.0, 0.0, 0.0]);
+        assert_eq!(colors[3], [0.0, 1.0, 0.0]);
+        assert_eq!(colors[5], [0.0, 1.0, 0.0]);
+        assert_eq!(colors[6], DEFAULT_HULL_ALBEDO, "ungrouped vert → grey");
+        assert_eq!(colors[8], DEFAULT_HULL_ALBEDO);
     }
 }
