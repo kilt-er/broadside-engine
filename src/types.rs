@@ -690,8 +690,15 @@ impl<'b> HookContext<'b> {
 /// across threads without revisiting that bound — see the module-level
 /// note on `Send + Sync`.
 pub struct EventBus {
-    subscribers: [Vec<Option<Box<dyn FnMut(&mut HookContext)>>>; HOOK_COUNT],
+    subscribers: [Vec<HookSlot>; HOOK_COUNT],
 }
+
+/// One registered hook callback slot. The `Option` lets [`EventBus::emit`]
+/// move a callback out for the duration of its call (leaving `None`) and
+/// restore it afterward — see [`EventBus`]'s re-entrancy contract. Aliased so
+/// the [`EventBus::subscribers`] array type stays readable (and clippy's
+/// `type_complexity` lint stays quiet).
+type HookSlot = Option<Box<dyn FnMut(&mut HookContext)>>;
 
 /// Count of [`Hook`] variants. The compile-time guard is the exhaustive match
 /// in [`EventBus::slot`]: adding a `Hook` variant without extending `slot`
