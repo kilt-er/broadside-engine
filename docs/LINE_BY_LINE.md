@@ -37,6 +37,7 @@ glance what is documented vs. what is pending.*
 - [`src/loft.rs`](#srcloftrs) — pure-math hull lofting: `ShipDesign` → `HullMesh` triangle soup (Stage 1 of the render pipeline)
 - [`src/mesh_import.rs`](#srcmesh_importrs) — glTF `.glb` → `HullMesh` import (the CAD-tool geometry producer; one renderer, two producers)
 - [`src/gfx.rs`](#srcgfxrs) — wgpu state, four pipelines, virtual-res offscreen + integer-scale blit
+- [`src/loft_gpu.rs`](#srcloft_gpurs) — in-engine loft render pipeline: depth-tested 3D hull → posterize → cut-out texture (Stages 2-4)
 - [`src/atlas.rs`](#srcatlasrs) — procedural 256×256 sprite atlas
 - [`src/hud.rs`](#srchudrs) — scene compositor (DrawCommand list)
 - [`src/subsystems.rs`](#srcsubsystemsrs) — runtime subsystem behavior: install registry, attacker-side damage modifier, end-of-turn heat
@@ -2166,6 +2167,87 @@ intentional ports, not bugs:
   still draw).
 
 No open architectural items.
+
+---
+
+## `src/loft_gpu.rs`
+
+*The GPU side of the render pivot — in-engine lift of the validated `loft_poc` spike.
+Takes a [`HullMesh`](#srcloftrs) (from EITHER producer — [`loft.rs`](#srcloftrs) or
+[`mesh_import.rs`](#srcmesh_importrs)) and renders it as crisp ¾-view posterized pixel art
+in two passes (depth-tested 3D hull → posterize), producing a transparent cut-out RGBA
+texture the [`gfx.rs`](#srcgfxrs) compositor blits via its `TexturedShip` path. Realizes
+Stages 2-4 of [`RENDER_PIPELINE.md`](RENDER_PIPELINE.md). Full companion at
+[`docs/MODULES/loft_gpu.md`](MODULES/loft_gpu.md).*
+
+**Mirrors:** no TS analog. **House style locked engine-wide:** `LOW_W`×`LOW_H` (320×200)
+internal, `BANDS` (8). **The only depth-using pipeline in the engine** — the 2D compositor
+stays `depth_stencil: None`; the depth texture lives entirely here.
+
+**Continuous-motion realized:** in-game yaw comes from the ship's `Orientation`, not the
+POC's auto-orbit (the [`RENDER_PIPELINE.md`](RENDER_PIPELINE.md) decision in code) — only a
+low-amplitude idle + a smooth reorient tween animate.
+
+### Constants + stance yaws (src/loft_gpu.rs:38–86)
+
+`LOW_W`/`LOW_H`/`BANDS` (locked house style). Camera **static** at azimuth 0 (stance defined
+in ONE place — the model yaw — so no camera/model sign split); `CAMERA_PITCH_DEG` 26° owns
+the ¾. The `MODEL_YAW_*` consts (fore −28 / aft −152 / broadside −118) reproduce the POC's
+per-stance *camera* yaws as *model* rotations (camera +P ≡ world −P); broadside −118° is the
+#37 fix swinging the hull's length to the ¾ (vs side-on "too thin" at ±90). `orientation_yaw_deg`
+maps `Orientation` → base yaw.
+
+### `struct ShipPose` (src/loft_gpu.rs:92)
+
+**Intent:** Per-ship animated pose (resting orientation + optional reorient tween + idle
+phase) — **pure math, no GPU, headless-testable.** `reorient_to` tweens from the current
+displayed yaw (no mid-flip snap) over `REORIENT_SECS`; `advance` ticks idle + tween;
+`yaw_deg` = smoothstep-eased tween + low-amplitude idle roll; `idle_bob` the vertical nudge;
+`is_animating` gates redraws. **Worked examples:** `orientation_yaws_are_distinct_per_stance`
+(src/loft_gpu.rs:956), `reorient_tweens_then_settles` (src/loft_gpu.rs:983),
+`idle_advances_and_stays_bounded` (src/loft_gpu.rs:1009).
+
+### GPU layout + uniform-size guards (src/loft_gpu.rs:201–247)
+
+`Vertex` = pos + flat normal + albedo + emissive (vec3s padded to 16B); **`emissive.w` is
+the unlit flag** (no extra attribute). `PostUniform` pads `bands` with **scalar f32s, not a
+`vec3`** — a vec3 would make it 32B vs 16B and trip wgpu's late-min-binding-size check (the
+"Encoder is invalid" trap). The `const _: () = assert!(size_of == N)` guards make any
+Rust/WGSL size mismatch a **hard compile error**, killing that bug class before the GPU.
+
+### Shaders (src/loft_gpu.rs:249–337)
+
+`HULL_SHADER`: fragment branches on `emissive.w > 0.5` (unlit → flat color+emissive) else
+flat Lambert (key + cool fill + ambient), **adding emissive after Lambert** so glow stays
+bright at any facing (clamped so posterize bands it, no white blowout). `POST_SHADER`:
+full-screen triangle, **discards `a < 0.5`** (preserves the cut-out), quantizes
+`floor(c·bands+0.5)/bands`.
+
+### `struct LoftGpu` (src/loft_gpu.rs:342)
+
+**Intent:** Owns the two pipelines + offscreen targets (scene colour, depth, posterized
+output) + uniforms; produces the posterized view per render. `new` builds it all (hull
+pipeline depth-test `Less`, **no cull** so closed meshes can't show holes). `upload_hull`
+packs a `HullMesh` + per-vertex albedo/emissive into a vertex buffer (**separate from render**
+so the caller uploads once per design, re-renders per frame as the pose animates).
+`upload_imported` is the CAD path — expands an [`ImportedShip`](#srcmesh_importrs)'s per-group
+materials onto per-vertex attrs (via `imported_vertex_attrs`) then delegates — **both
+producers reach the GPU through one path.** `render_ship` is the two-pass render: camera
+fixed, stance from the model `yaw_deg` (from `ShipPose`), pass 1 hull→low-res (transparent
+clear = cut-out), pass 2 posterize→output; records into the caller's encoder.
+
+**Cross-references:** consumes [`HullMesh`](#srcloftrs) + [`ImportedShip`](#srcmesh_importrs);
+output blit by [`gfx.rs`](#srcgfxrs); `ShipPose` driven by [`Orientation`](#srctypesrs).
+
+### Camera math + `imported_vertex_attrs` (src/loft_gpu.rs:804–950)
+
+`camera_view_proj` — orthographic ¾ (port of the editor's `setCam`), framed by a **single
+fixed `HALF_EXTENT`** across all ships so TRUE relative scale is preserved (the CAD ship
+renders ~65% of the dagger, as authored — no per-ship fudge; bruce dials scale at the asset
+source). `rotation_y`/`look_at`/`ortho`/`mul4`/`normalize3` are the column-major RH helpers.
+`imported_vertex_attrs` (src/loft_gpu.rs:928) — pure expansion of per-group materials → per-
+vertex albedo + emissive (`unlit`→w=1), ungrouped/out-of-range → grey+lit;
+`imported_colors_expand_groups_and_fall_back_to_grey` (src/loft_gpu.rs:1026) pins it.
 
 ---
 
