@@ -346,11 +346,10 @@ fn signature_id_from_prose(prose: &str) -> String {
         if ch.is_ascii_alphanumeric() {
             out.push(ch.to_ascii_lowercase());
             prev_underscore = false;
-        } else if ch.is_whitespace() || ch == '-' || ch == '_' {
-            if !prev_underscore {
-                out.push('_');
-                prev_underscore = true;
-            }
+        } else if (ch.is_whitespace() || ch == '-' || ch == '_') && !prev_underscore {
+            // collapse a run of separators to a single underscore
+            out.push('_');
+            prev_underscore = true;
         }
         // other punctuation dropped silently
     }
@@ -496,21 +495,19 @@ fn inflate_effect(v: Value, archetype: &str, heat: i32, action_id: &str) -> Valu
             // repulsor, grav_snare, tractor_toss). The slip/swap_toss branch
             // below is dead for those ids now but kept as a harmless guard in
             // case a future export drops the rewrite.
+            // Mode by id keyword, default push:
+            //   swap — "tractor toss" (swaps fore/aft) and the self-relative
+            //          slip / swap_toss guards (dead post-rewrite, kept defensive).
+            //   pull — any other tractor / explicit pull.
+            //   push — everything else (repulsor, snare, throw, ram, bare toss,
+            //          and the fallthrough). Folded into the default rather than
+            //          enumerated, so the push keywords don't need listing.
             let id_lower = action_id.to_lowercase();
-            let mode = if id_lower.contains("tractor") && id_lower.contains("toss") {
-                "swap"
-            } else if id_lower == "slip" || id_lower == "swap_toss" {
+            let is_tractor_toss = id_lower.contains("tractor") && id_lower.contains("toss");
+            let mode = if is_tractor_toss || id_lower == "slip" || id_lower == "swap_toss" {
                 "swap"
             } else if id_lower.contains("tractor") || id_lower.contains("pull") {
                 "pull"
-            } else if id_lower.contains("repulsor")
-                || id_lower.contains("push")
-                || id_lower.contains("toss")
-                || id_lower.contains("snare")
-                || id_lower == "throw"
-                || id_lower == "ram"
-            {
-                "push"
             } else {
                 "push"
             };
