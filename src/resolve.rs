@@ -2334,6 +2334,49 @@ mod tests {
         assert!(s.statuses.iter().all(|st| st.kind != StatusKind::HullBreach));
     }
 
+    /// Parity lock (task #131): a lethal hullBreach tick routes through
+    /// `destroy()`, not just a silent hull subtraction.
+    ///
+    /// TS `tickStatuses` (resolve.ts:319-328) does `ship.hull -= 1; if
+    /// (ship.hull <= 0) destroy(ship, board)` — so a breach that takes the
+    /// last hull point must clear the cell AND fire the full destroy path
+    /// (`onLethal`, and ReactorBreach splash if traited). The existing
+    /// damage-tick test only covers the non-lethal case; this locks the
+    /// lethal routing. (Note: `add_status` coalesces same-kind statuses by
+    /// `max` duration, so at most one hullBreach is ever present — the Rust
+    /// batched breach count is always 0 or 1, matching TS's per-status loop
+    /// for every reachable state.)
+    #[test]
+    fn lethal_hull_breach_tick_routes_through_destroy() {
+        use std::cell::Cell;
+        use std::rc::Rc;
+
+        // Hull 1 + a hullBreach: the tick deals 1, hull -> 0, destroy fires.
+        let mut scout = make_ship("scout", Faction::Enemy, 1, 1, LaneEnd::Fore);
+        scout.statuses.push(Status { kind: StatusKind::HullBreach, duration: 3, face: None });
+        let mut board = make_board(7, vec![
+            None, Some(scout), None, None, None, None, None,
+        ]);
+
+        let lethal = Rc::new(Cell::new(0u32));
+        let l2 = lethal.clone();
+        board.bus.on(Hook::OnLethal, move |_ctx| {
+            l2.set(l2.get() + 1);
+        });
+
+        end_of_turn(&mut board, &NoContent);
+
+        assert!(
+            board.cells[1].is_none(),
+            "a lethal hullBreach tick must clear the cell via destroy()",
+        );
+        assert_eq!(
+            lethal.get(),
+            1,
+            "destroy() fires onLethal exactly once for the breach kill",
+        );
+    }
+
     /// Targeting: SPINAL_LINE with hits_all=false picks the first occupant only.
     #[test]
     fn resolve_targeting_spinal_line_first_only_picks_first_target() {
