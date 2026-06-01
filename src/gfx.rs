@@ -1493,7 +1493,6 @@ impl Gfx {
         // what earlier segments drew), keeping the single-pass z-order intact
         // across the splits.
         let mut cleared = false;
-        let pitch = 26.0; // loft editor ¾ default (live scrubber feeds this in a follow-up)
 
         // Draw a contiguous run of non-loft batches into the offscreen target.
         // Returns the index past the run. `cleared` selects clear-vs-load.
@@ -1606,14 +1605,10 @@ impl Gfx {
                             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                                 label: Some("loft ship render"),
                             });
-                    self.loft.render_ship(
-                        &self.queue,
-                        &mut enc,
-                        &mesh.vbuf,
-                        mesh.vcount,
-                        yaw,
-                        pitch,
-                    );
+                    // Camera is fixed inside LoftGpu; only the ship's model yaw
+                    // varies per ship.
+                    self.loft
+                        .render_ship(&self.queue, &mut enc, &mesh.vbuf, mesh.vcount, yaw);
                     self.queue.submit(std::iter::once(enc.finish()));
 
                     // 2) Blit the posterized output onto this ship's lane quad.

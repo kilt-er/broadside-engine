@@ -678,9 +678,10 @@ impl LoftGpu {
     }
 
     /// Render one ship pose into the offscreen target and posterize it into
-    /// [`Self::output_view`]. `yaw_deg`/`pitch_deg` come from the caller
-    /// ([`ShipPose::yaw_deg`] + the camera scrubber). Records into `encoder`;
-    /// the caller submits.
+    /// [`Self::output_view`]. `yaw_deg` is the ship's MODEL yaw (from
+    /// [`ShipPose::yaw_deg`]); the camera is fixed ([`CAMERA_AZIMUTH_DEG`] /
+    /// [`CAMERA_PITCH_DEG`]) and owns the ¾ angle, so no camera args. Records
+    /// into `encoder`; the caller submits.
     pub fn render_ship(
         &self,
         queue: &wgpu::Queue,
@@ -688,7 +689,6 @@ impl LoftGpu {
         vbuf: &wgpu::Buffer,
         vcount: u32,
         yaw_deg: f32,
-        _pitch_deg: f32,
     ) {
         let aspect = LOW_W as f32 / LOW_H as f32;
         // Camera is FIXED at the ¾ azimuth/pitch (no orbit). The ship's stance
