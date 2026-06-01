@@ -47,19 +47,38 @@ const DEFAULT_HULL_ALBEDO: [f32; 3] = [0.706, 0.776, 0.878];
 const LOW_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
-/// The four canonical stance yaws (degrees), keyed by [`Orientation`]. Matches
-/// the loft editor's right / left / fore / aft snaps and the POC.
-const YAW_RIGHT: f32 = 28.0; // bow-on, bow toward +x (Fore)
-const YAW_LEFT: f32 = 152.0; // bow-on, bow toward −x (Aft)
-const YAW_BROADSIDE: f32 = 118.0; // hull yawed 90°, both flanks bear
+/// Fixed camera azimuth (degrees). **Zero** — the camera does NOT orbit and is
+/// NOT yawed off-axis: it looks straight down the lane-perpendicular at the
+/// ship, raised by [`CAMERA_PITCH_DEG`] for the ¾ look-down. The entire ¾ comes
+/// from PITCH alone; azimuth 0 keeps the lane axis (world X) exactly horizontal
+/// on screen, so a bow-on ship reads as a clean horizontal silhouette with no
+/// tilt. (The POC's orbit was eval-only; carrying its 28° framing azimuth into
+/// the engine tilted every rest pose — bruce: "we don't need the camera
+/// rotation anymore" + "the camera rotation was not at 0". This is that fix:
+/// stance is the ship's MODEL rotation, the camera is square to the lane.)
+const CAMERA_AZIMUTH_DEG: f32 = 0.0;
+/// Fixed ¾ look-down pitch (degrees) — the only source of the ¾ angle.
+pub const CAMERA_PITCH_DEG: f32 = 26.0;
 
-/// Base yaw (degrees) a ship at `orientation` rests at. The reorient tween
-/// interpolates between two of these; the idle offset is added on top.
+/// The canonical stance MODEL yaws (degrees), keyed by [`Orientation`] — how
+/// far the hull is rotated about its vertical axis to present that stance under
+/// the square (azimuth-0) camera. The hull lofts with its length along local x:
+///   Fore = 0   (length along +x = horizontal across screen, bow toward +x),
+///   Aft  = 180 (length along −x, bow toward −x — the mirror of Fore),
+///   Broadside = 90 (length swung into z, receding from camera; the broad
+///                   flank bears toward the lane — clean broadside, not skewed).
+/// At rest each is exactly the canonical stance with no leftover camera offset.
+const MODEL_YAW_FORE: f32 = 0.0;
+const MODEL_YAW_AFT: f32 = 180.0;
+const MODEL_YAW_BROADSIDE: f32 = 90.0;
+
+/// Base model yaw (degrees) a ship at `orientation` rests at. The reorient
+/// tween interpolates between two of these; the idle roll is added on top.
 pub fn orientation_yaw_deg(orientation: Orientation) -> f32 {
     match orientation {
-        Orientation::BowOn { bow: LaneEnd::Fore } => YAW_RIGHT,
-        Orientation::BowOn { bow: LaneEnd::Aft } => YAW_LEFT,
-        Orientation::Broadside => YAW_BROADSIDE,
+        Orientation::BowOn { bow: LaneEnd::Fore } => MODEL_YAW_FORE,
+        Orientation::BowOn { bow: LaneEnd::Aft } => MODEL_YAW_AFT,
+        Orientation::Broadside => MODEL_YAW_BROADSIDE,
     }
 }
 
@@ -669,10 +688,17 @@ impl LoftGpu {
         vbuf: &wgpu::Buffer,
         vcount: u32,
         yaw_deg: f32,
-        pitch_deg: f32,
+        _pitch_deg: f32,
     ) {
         let aspect = LOW_W as f32 / LOW_H as f32;
-        let view_proj = camera_view_proj(yaw_deg.to_radians(), pitch_deg.to_radians(), aspect);
+        // Camera is FIXED at the ¾ azimuth/pitch (no orbit). The ship's stance
+        // comes from rotating its MODEL about the vertical axis by `yaw_deg`.
+        let view_proj = camera_view_proj(
+            CAMERA_AZIMUTH_DEG.to_radians(),
+            CAMERA_PITCH_DEG.to_radians(),
+            aspect,
+        );
+        let model = rotation_y(yaw_deg.to_radians());
 
         // Lights ported from the loft editor's setLight (laz -50, lel 60) /
         // fixed cool fill (4,2,-3). Dir-toward-light = +position (three.js
@@ -685,7 +711,7 @@ impl LoftGpu {
 
         let scene = SceneUniform {
             view_proj,
-            model: identity4(),
+            model,
             key_dir: [key_dir[0], key_dir[1], key_dir[2], 1.6],
             fill_dir: [fill_dir[0], fill_dir[1], fill_dir[2], 0.45],
             ambient: [amb[0], amb[1], amb[2], 1.0],
@@ -780,10 +806,20 @@ fn camera_view_proj(yaw_rad: f32, pitch_rad: f32, aspect: f32) -> [f32; 16] {
         r * pitch_rad.cos() * yaw_rad.cos(),
     ];
     let view = look_at(eye, [0.0, 0.0, 0.0], [0.0, 1.0, 0.0]);
-    let half = 9.0;
+    // Ortho half-height in world units. Tight enough that the largest ship (the
+    // dagger, ~12u long at the default 2.0 stretch) fills most of the 320×200
+    // offscreen — otherwise the ship is a small island in a mostly-transparent
+    // texture and reads tiny once blit into the lane. ONE fixed value across all
+    // ships preserves their TRUE relative scale (the 7.75u CAD ship renders
+    // ~65% of the dagger, as authored — no per-ship fudge). bruce dials true
+    // ship scale at the asset source.
+    let half = HALF_EXTENT;
     let proj = ortho(-half * aspect, half * aspect, -half, half, 0.1, 100.0);
     mul4(proj, view)
 }
+
+/// Ortho half-height (world units) — the framing zoom. See [`camera_view_proj`].
+const HALF_EXTENT: f32 = 5.0;
 
 fn normalize3(v: [f32; 3]) -> [f32; 3] {
     let m = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
@@ -794,9 +830,17 @@ fn normalize3(v: [f32; 3]) -> [f32; 3] {
     }
 }
 
-fn identity4() -> [f32; 16] {
+/// Column-major rotation about the world Y (vertical) axis by `rad`. Rotates a
+/// ship's hull in place to present its stance under the fixed camera (the hull
+/// lofts with its length along local x; a +90° Y rotation swings that length
+/// into z so the broad flank bears).
+fn rotation_y(rad: f32) -> [f32; 16] {
+    let (s, c) = rad.sin_cos();
     [
-        1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+        c, 0.0, -s, 0.0, // col 0
+        0.0, 1.0, 0.0, 0.0, // col 1
+        s, 0.0, c, 0.0, // col 2
+        0.0, 0.0, 0.0, 1.0, // col 3
     ]
 }
 
@@ -911,11 +955,14 @@ mod tests {
         let fore = orientation_yaw_deg(Orientation::BowOn { bow: LaneEnd::Fore });
         let aft = orientation_yaw_deg(Orientation::BowOn { bow: LaneEnd::Aft });
         let broad = orientation_yaw_deg(Orientation::Broadside);
-        assert!((fore - YAW_RIGHT).abs() < 1e-6);
-        assert!((aft - YAW_LEFT).abs() < 1e-6);
-        assert!((broad - YAW_BROADSIDE).abs() < 1e-6);
+        assert!((fore - MODEL_YAW_FORE).abs() < 1e-6);
+        assert!((aft - MODEL_YAW_AFT).abs() < 1e-6);
+        assert!((broad - MODEL_YAW_BROADSIDE).abs() < 1e-6);
         assert_ne!(fore, aft);
         assert_ne!(fore, broad);
+        // Fore presents the clean canonical bow-on: model yaw 0 (no leftover
+        // camera offset — the rest-pose-skew fix).
+        assert_eq!(fore, 0.0);
     }
 
     #[test]
@@ -938,7 +985,10 @@ mod tests {
         // Halfway: yaw is between the two stance yaws.
         pose.advance(REORIENT_SECS * 0.5);
         let mid = pose.yaw_deg();
-        let (lo, hi) = (YAW_RIGHT.min(YAW_BROADSIDE), YAW_RIGHT.max(YAW_BROADSIDE));
+        let (lo, hi) = (
+            MODEL_YAW_FORE.min(MODEL_YAW_BROADSIDE),
+            MODEL_YAW_FORE.max(MODEL_YAW_BROADSIDE),
+        );
         assert!(
             mid > lo - IDLE_ROLL_DEG && mid < hi + IDLE_ROLL_DEG,
             "mid yaw {mid} between stances"
