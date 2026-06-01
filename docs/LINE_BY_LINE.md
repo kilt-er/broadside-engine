@@ -35,6 +35,7 @@ glance what is documented vs. what is pending.*
 - [`src/save.rs`](#srcsavers) — per-run save/load (atomic JSON write), `SaveError`
 - [`src/ship_design.rs`](#srcship_designrs) — loft-editor `.json` asset format (the data half of the render-pipeline pivot)
 - [`src/loft.rs`](#srcloftrs) — pure-math hull lofting: `ShipDesign` → `HullMesh` triangle soup (Stage 1 of the render pipeline)
+- [`src/mesh_import.rs`](#srcmesh_importrs) — glTF `.glb` → `HullMesh` import (the CAD-tool geometry producer; one renderer, two producers)
 - [`src/gfx.rs`](#srcgfxrs) — wgpu state, four pipelines, virtual-res offscreen + integer-scale blit
 - [`src/atlas.rs`](#srcatlasrs) — procedural 256×256 sprite atlas
 - [`src/hud.rs`](#srchudrs) — scene compositor (DrawCommand list)
@@ -4488,6 +4489,62 @@ section, `t→[0,n−1]`), `lerp`, `face_normal` (`(b−a)×(c−a)` normalized,
 zero-area tris). `all_normals_are_unit_length` (src/loft.rs:309) + `loft_is_deterministic`
 (src/loft.rs:322) pin the unit-normal + bit-stable-determinism invariants (the mesh feeds the
 structural-determinism harness).
+
+---
+
+## `src/mesh_import.rs`
+
+*The **second** geometry producer: import a CAD-authored ship (the parametric editor's
+baked **glTF `.glb`** export) into the same [`HullMesh`](#srcloftrs) the loft path emits, plus
+per-group material colours. Both producers — `loft_hull(&ShipDesign)` and `load_glb(bytes)` —
+meet at the `HullMesh` boundary and feed the one geometry-source-agnostic render path. One
+renderer, two producers. No `wgpu`, no feature gate — pure parsing, headless-testable. Full
+companion at [`docs/MODULES/mesh_import.md`](MODULES/mesh_import.md).*
+
+**Mirrors:** no TS analog — a new asset-import path for the render pivot.
+
+**Locked decisions:** glTF binary via the `gltf` crate; **tri-soup not indexed** (expand so
+output is byte-identical to loft's shape); **house-style posterize wins** (engine ignores
+per-ship `bands`/`res`) but **per-ship light `laz`/`lel` is honoured** (read from scene
+`extras`).
+
+### The types (src/mesh_import.rs:54–129)
+
+`DEFAULT_LAZ_DEG`/`DEFAULT_LEL_DEG` (house light, matching the POC). `MeshMaterial`
+(`color`/`emissive`/`unlit`; glow parts carry emissive, `unlit` skips Lambert). `ImportLight`
+(`{ laz_deg, lel_deg }` — **no bands/res field**, enforcing "house style overrides those" by
+the type). `GroupRange` (a `[start,start+len)` vertex run, multiples of 3, sharing a material).
+`ImportedShip` (`mesh` + deduplicated `materials` + `group_ranges` + `light`).
+
+### `fn ImportedShip::vertex_colors() -> Vec<[f32;4]>` (src/mesh_import.rs:146)
+
+**Intent:** Flatten `group_ranges × materials[].color` into one colour per vertex — the
+**side channel** the render path consumes so `HullMesh` stays geometry-only and uniform
+across both producers (`loft_gpu.upload(mesh, colors)`: CAD path passes this, loft path passes
+uniform grey). Always exactly `positions.len()` long. **Worked example:**
+`vertex_colors_flatten_groups_to_per_vertex_slice` (src/mesh_import.rs:611).
+
+### `enum ImportError` + `fn load_glb(bytes) -> Result<ImportedShip, ImportError>` (src/mesh_import.rs:167, 216)
+
+`ImportError`: `Gltf` / `NoGeometry` / `UnsupportedTopology` (non-triangle → surfaced as a
+producer bug, not silently mis-rendered). `load_glb` (also accepts text `.gltf` with embedded
+buffer): for each triangle primitive, reject non-`Triangles`, read POSITION (mandatory),
+NORMAL (optional — synthesize flat face normals if absent), **expand indices → tri-soup**
+(line 256-269, identical shape to loft), tag a `GroupRange` with its deduplicated material;
+empty → `NoGeometry`; read scene light. **Cross-references:** produces an `ImportedShip` whose
+`mesh` feeds [`loft_gpu`](#srcloft_gpurs) (same boundary as [`loft_hull`](#srcloftrs)).
+**Worked examples:** `loads_a_single_material_quad` (src/mesh_import.rs:557),
+`expands_indexed_geometry_to_tri_soup` (src/mesh_import.rs:573),
+`two_primitives_yield_two_groups_and_materials` (src/mesh_import.rs:587).
+
+### Helpers (src/mesh_import.rs:299–377)
+
+`dedup_material` (shared glTF material → one `MeshMaterial`;
+`shared_material_is_deduplicated` src/mesh_import.rs:662), `material_of` (glTF→`MeshMaterial`),
+`read_scene_light` (`{laz,lel}` from scene `extras`, house default on absence; bands/res
+ignored — `honors_scene_light_extras` src/mesh_import.rs:639), `face_normal` (mirrors loft's,
+so synthesized normals match). The test module hand-rolls a minimal glTF writer (`build_glb`,
+src/mesh_import.rs:396) so `load_glb` is testable without the CAD export.
 
 ---
 
