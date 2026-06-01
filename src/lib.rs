@@ -52,6 +52,11 @@
 //!   feature gate (CI-testable headless); the renderer's `loft_gpu` uploads
 //!   the mesh and runs the depth + posterize passes. Stage 1 of the ship
 //!   render pipeline (`docs/RENDER_PIPELINE.md`).
+//! - [`mesh_import`] — import a CAD-authored baked ship mesh (glTF `.glb`,
+//!   from the son's Broadside CAD editor) into the same [`loft::HullMesh`]
+//!   the loft path emits, plus per-group material colours. Data only (the
+//!   `gltf` crate, no GPU); the second geometry producer alongside [`loft`],
+//!   both meeting the render path at the `HullMesh` boundary.
 //!
 //! Content effect bodies and AI live in sibling modules added by other
 //! teammates.
@@ -64,6 +69,7 @@ pub mod classes;
 pub mod geometry;
 pub mod input;
 pub mod loft;
+pub mod mesh_import;
 pub mod meta;
 pub mod perspective;
 pub mod resolve;
@@ -78,6 +84,8 @@ pub mod atlas;
 pub mod gfx;
 #[cfg(feature = "render")]
 pub mod hud;
+#[cfg(feature = "render")]
+pub mod loft_gpu;
 #[cfg(all(feature = "render", feature = "runtime"))]
 pub mod sprites;
 #[cfg(feature = "audio")]
