@@ -36,6 +36,7 @@ glance what is documented vs. what is pending.*
 - [`src/ship_design.rs`](#srcship_designrs) — loft-editor `.json` asset format (the data half of the render-pipeline pivot)
 - [`src/loft.rs`](#srcloftrs) — pure-math hull lofting: `ShipDesign` → `HullMesh` triangle soup (Stage 1 of the render pipeline)
 - [`src/mesh_import.rs`](#srcmesh_importrs) — glTF `.glb` → `HullMesh` import (the CAD-tool geometry producer; one renderer, two producers)
+- [`src/ship_asset.rs`](#srcship_assetrs) — ship-geometry selector/loader: one loader over the two producers (loft `.json` / CAD `.glb`)
 - [`src/gfx.rs`](#srcgfxrs) — wgpu state, four pipelines, virtual-res offscreen + integer-scale blit
 - [`src/loft_gpu.rs`](#srcloft_gpurs) — in-engine loft render pipeline: depth-tested 3D hull → posterize → cut-out texture (Stages 2-4)
 - [`src/atlas.rs`](#srcatlasrs) — procedural 256×256 sprite atlas
@@ -4627,6 +4628,47 @@ empty → `NoGeometry`; read scene light. **Cross-references:** produces an `Imp
 ignored — `honors_scene_light_extras` src/mesh_import.rs:639), `face_normal` (mirrors loft's,
 so synthesized normals match). The test module hand-rolls a minimal glTF writer (`build_glb`,
 src/mesh_import.rs:396) so `load_glb` is testable without the CAD export.
+
+---
+
+## `src/ship_asset.rs`
+
+*The "one loader over two producers" join: a caller asks for a ship asset's renderable
+geometry without caring whether it came from the loft editor (`.json` → [`loft`](#srcloftrs))
+or the CAD tool (`.glb` → [`mesh_import`](#srcmesh_importrs)). **Pure data plumbing** — no
+rendering, no GPU, no bin wiring — it dispatches to the two producers and normalizes both to
+the same `(HullMesh, Vec<[f32;4]>)` the render path consumes. Full companion at
+[`docs/MODULES/ship_asset.md`](MODULES/ship_asset.md).*
+
+**Mirrors:** no TS analog — the asset-selection layer of the render pivot
+([`RENDER_PIPELINE.md`](RENDER_PIPELINE.md)).
+
+### Types (src/ship_asset.rs:44–105)
+
+`DEFAULT_HULL_COLOR` (house grey for procedural hulls with no authored colour; a
+compile-time `assert!(alpha == 1.0)` at src/ship_asset.rs:176 prevents a translucent default
+silently vanishing in the posterize `a < 0.5` discard). `ShipAssetKind` (`LoftDesign` /
+`CadMesh`). `AssetError` (`Design` / `Mesh` / `UnknownExtension`, wrapping the producer that
+ran). `ShipGeometry { mesh, colors }` (one colour per tri-soup vertex, 1:1) with
+`into_parts()` → the `(mesh, colors)` tuple `loft_gpu.upload` wants.
+
+### The loaders (src/ship_asset.rs:114–171)
+
+`load_bytes(kind, bytes)` (src/ship_asset.rs:114) dispatches on an explicit kind: loft →
+parse `ShipDesign` + `from_loft_design` (uniform grey); CAD → `load_glb` + flatten via
+`vertex_colors`. `load_path(path)` (src/ship_asset.rs:132) **infers** the kind from the
+extension (`kind_from_extension`, `.json`→loft, `.glb`/`.gltf`→CAD, case-insensitive),
+unknown → `UnknownExtension`. `from_loft_design(design)` (src/ship_asset.rs:156) lofts a
+parsed design + house-grey slice (skips the bytes round-trip for catalog callers). Both
+producers ride the **identical colour channel** to the GPU — that's the whole point.
+
+**Cross-references:** dispatches to [`loft::loft_hull`](#srcloftrs) +
+[`ship_design`](#srcship_designrs) (loft) and [`mesh_import::load_glb`](#srcmesh_importrs)
+(CAD); its `ShipGeometry` feeds [`loft_gpu`](#srcloft_gpurs) `upload`. **Worked examples:**
+`loft_branch_lofts_and_uniform_greys` (src/ship_asset.rs:204),
+`cad_branch_imports_glb_and_flattens_colors` (src/ship_asset.rs:222),
+`extension_dispatch_is_case_insensitive` (src/ship_asset.rs:237),
+`unknown_extension_is_an_error` (src/ship_asset.rs:248).
 
 ---
 
