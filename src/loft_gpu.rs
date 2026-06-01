@@ -171,9 +171,11 @@ fn smoothstep(t: f32) -> f32 {
 // GPU vertex / uniform layout
 // ---------------------------------------------------------------------------
 
-/// One hull vertex: position + flat normal + per-vertex albedo, 16-byte
-/// aligned (pos/normal/color each padded to a vec4 slot so the std-ish layout
-/// is unambiguous and bytemuck-`Pod`-safe).
+/// One hull vertex: position + flat normal + per-vertex albedo + emissive,
+/// 16-byte aligned (each `vec3` padded to a vec4 slot so the std-ish layout is
+/// unambiguous and bytemuck-`Pod`-safe). `emissive.w` doubles as the unlit
+/// flag (1.0 = unlit / flat color, 0.0 = Lambert-shaded) so no extra attribute
+/// is needed.
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 struct Vertex {
@@ -183,6 +185,9 @@ struct Vertex {
     _pad1: f32,
     color: [f32; 3],
     _pad2: f32,
+    /// xyz = linear emissive RGB (added post-Lambert so glow stays bright at
+    /// any facing); w = unlit flag (1.0 → skip shading, draw flat `color`).
+    emissive: [f32; 4],
 }
 
 #[repr(C)]
@@ -213,7 +218,8 @@ struct PostUniform {
 // with a generic "Encoder is invalid". Making the sizes a hard compile error
 // kills that whole bug class before it can reach the GPU. (Standing rule for
 // this pipeline — see the gfx.rs BlendUniform / loft_poc PostUniform history.)
-const _: () = assert!(std::mem::size_of::<Vertex>() == 48);
+// pos+pad, normal+pad, color+pad, emissive(vec4) = 4 × 16 = 64.
+const _: () = assert!(std::mem::size_of::<Vertex>() == 64);
 // 2 mat4 (128) + 3 vec4 (48) = 176.
 const _: () = assert!(std::mem::size_of::<SceneUniform>() == 176);
 const _: () = assert!(std::mem::size_of::<PostUniform>() == 16);
@@ -232,26 +238,44 @@ struct VsOut {
     @builtin(position) clip: vec4<f32>,
     @location(0) world_n: vec3<f32>,
     @location(1) color: vec3<f32>,
+    @location(2) emissive: vec4<f32>,
 };
 
 @vertex
-fn vs_main(@location(0) pos: vec3<f32>, @location(1) nrm: vec3<f32>, @location(2) col: vec3<f32>) -> VsOut {
+fn vs_main(
+    @location(0) pos: vec3<f32>,
+    @location(1) nrm: vec3<f32>,
+    @location(2) col: vec3<f32>,
+    @location(3) emis: vec4<f32>,
+) -> VsOut {
     let world = scene.model * vec4<f32>(pos, 1.0);
     let wn = (scene.model * vec4<f32>(nrm, 0.0)).xyz;
     var o: VsOut;
     o.clip = scene.view_proj * world;
     o.world_n = wn;
     o.color = col;
+    o.emissive = emis;
     return o;
 }
 
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
+    // emissive.w == 1.0 → unlit: draw the flat material colour, no Lambert
+    // (the CAD tool's MeshBasicMaterial engine-glow / glTF KHR_materials_unlit).
+    if (in.emissive.w > 0.5) {
+        // Still clamp so the posterize pass downstream bands it cleanly rather
+        // than blowing to white.
+        return vec4<f32>(clamp(in.color + in.emissive.rgb, vec3<f32>(0.0), vec3<f32>(1.0)), 1.0);
+    }
     let n = normalize(in.world_n);
     let key = max(dot(n, normalize(scene.key_dir.xyz)), 0.0) * scene.key_dir.w;
     let fill = max(dot(n, normalize(scene.fill_dir.xyz)), 0.0) * scene.fill_dir.w;
     let lit = in.color * (scene.ambient.rgb + vec3<f32>(key) + vec3<f32>(0.53, 0.67, 1.0) * fill);
-    return vec4<f32>(lit, 1.0);
+    // Add emissive AFTER Lambert so glow surfaces (canopy / gun / battery /
+    // engine) stay bright regardless of facing, then clamp into [0,1] so the
+    // posterize stays inside its budget (banded glow, not a white blowout).
+    let out = clamp(lit + in.emissive.rgb, vec3<f32>(0.0), vec3<f32>(1.0));
+    return vec4<f32>(out, 1.0);
 }
 "#;
 
@@ -380,6 +404,11 @@ impl LoftGpu {
                             shader_location: 2,
                             offset: 32,
                             format: wgpu::VertexFormat::Float32x3,
+                        },
+                        wgpu::VertexAttribute {
+                            shader_location: 3,
+                            offset: 48,
+                            format: wgpu::VertexFormat::Float32x4,
                         },
                     ],
                 }],
@@ -579,8 +608,11 @@ impl LoftGpu {
 
     /// Upload a hull's geometry to a fresh vertex buffer. `colors`, if present,
     /// is parallel to `mesh.positions` (one linear-RGB albedo per vertex);
-    /// empty falls back to the default hull grey. Returns the buffer + vertex
-    /// count for [`Self::render_ship`].
+    /// empty falls back to the default hull grey. `emissive` is likewise
+    /// parallel — `xyz` linear emissive RGB, `w` the unlit flag (1.0 → flat,
+    /// no Lambert); empty / short means no emissive + lit (the loft path, whose
+    /// procedural hulls don't glow). Returns the buffer + vertex count for
+    /// [`Self::render_ship`].
     ///
     /// Kept separate from `render_ship` so the caller can upload once per ship
     /// design and re-render every frame as the pose animates.
@@ -589,6 +621,7 @@ impl LoftGpu {
         device: &wgpu::Device,
         mesh: &HullMesh,
         colors: &[[f32; 3]],
+        emissive: &[[f32; 4]],
     ) -> (wgpu::Buffer, u32) {
         use wgpu::util::DeviceExt;
         let verts: Vec<Vertex> = (0..mesh.positions.len())
@@ -599,6 +632,7 @@ impl LoftGpu {
                 _pad1: 0.0,
                 color: colors.get(i).copied().unwrap_or(DEFAULT_HULL_ALBEDO),
                 _pad2: 0.0,
+                emissive: emissive.get(i).copied().unwrap_or([0.0, 0.0, 0.0, 0.0]),
             })
             .collect();
         let buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -611,18 +645,17 @@ impl LoftGpu {
 
     /// Upload an [`ImportedShip`] (the architect's mesh_import / CAD-glb output,
     /// and the shape the loft path also targets): expands the per-group
-    /// material colours onto per-vertex albedos and delegates to
-    /// [`Self::upload_hull`]. Both geometry sources thus reach the GPU through
-    /// one path. (Material `emissive` / `unlit` glow is not yet honoured — the
-    /// shader takes base colour only; glow is a tracked follow-up that needs an
-    /// extra per-vertex attribute + a shader branch.)
+    /// materials onto per-vertex albedo + emissive (with the unlit flag) and
+    /// delegates to [`Self::upload_hull`]. Both geometry sources reach the GPU
+    /// through one path; glow surfaces (canopy / gun / battery / engine) render
+    /// emissive, and unlit materials skip Lambert.
     pub fn upload_imported(
         &self,
         device: &wgpu::Device,
         ship: &crate::mesh_import::ImportedShip,
     ) -> (wgpu::Buffer, u32) {
-        let colors = imported_vertex_colors(ship);
-        self.upload_hull(device, &ship.mesh, &colors)
+        let (colors, emissive) = imported_vertex_attrs(ship);
+        self.upload_hull(device, &ship.mesh, &colors, &emissive)
     }
 
     /// Render one ship pose into the offscreen target and posterize it into
@@ -838,22 +871,35 @@ fn mul4(a: [f32; 16], b: [f32; 16]) -> [f32; 16] {
     out
 }
 
-/// Expand an [`ImportedShip`]'s per-group materials into one linear-RGB albedo
-/// per vertex (parallel to `ship.mesh.positions`). Vertices outside every
-/// group, or in a group whose material index is out of range, fall back to the
-/// default hull grey. Pure — unit-tested headless; `upload_imported` is the
-/// thin GPU wrapper.
-fn imported_vertex_colors(ship: &crate::mesh_import::ImportedShip) -> Vec<[f32; 3]> {
-    let mut colors = vec![DEFAULT_HULL_ALBEDO; ship.mesh.positions.len()];
+/// Expand an [`ImportedShip`]'s per-group materials into per-vertex albedo +
+/// emissive (both parallel to `ship.mesh.positions`). `colors[i]` is the
+/// material base RGB; `emissive[i]` is `[er, eg, eb, unlit]` (xyz linear
+/// emissive, w = 1.0 when the material is unlit). Vertices outside every
+/// group, or with an out-of-range material index, fall back to the default
+/// hull grey + no emissive + lit. Pure — unit-tested headless; `upload_imported`
+/// is the thin GPU wrapper.
+fn imported_vertex_attrs(
+    ship: &crate::mesh_import::ImportedShip,
+) -> (Vec<[f32; 3]>, Vec<[f32; 4]>) {
+    let n = ship.mesh.positions.len();
+    let mut colors = vec![DEFAULT_HULL_ALBEDO; n];
+    let mut emissive = vec![[0.0f32, 0.0, 0.0, 0.0]; n];
     for g in &ship.group_ranges {
         let mat = ship.materials.get(g.material).copied().unwrap_or_default();
         let rgb = [mat.color[0], mat.color[1], mat.color[2]];
-        let end = (g.start + g.len).min(colors.len());
-        for c in colors.iter_mut().take(end).skip(g.start) {
-            *c = rgb;
+        let emis = [
+            mat.emissive[0],
+            mat.emissive[1],
+            mat.emissive[2],
+            if mat.unlit { 1.0 } else { 0.0 },
+        ];
+        let end = (g.start + g.len).min(n);
+        for i in g.start..end {
+            colors[i] = rgb;
+            emissive[i] = emis;
         }
     }
-    colors
+    (colors, emissive)
 }
 
 #[cfg(test)]
@@ -934,13 +980,16 @@ mod tests {
         let ship = ImportedShip {
             mesh,
             materials: vec![
+                // Group 0: plain red, lit, no emissive.
                 MeshMaterial {
                     color: [1.0, 0.0, 0.0, 1.0],
                     ..Default::default()
                 },
+                // Group 1: green base + a green glow, marked unlit.
                 MeshMaterial {
                     color: [0.0, 1.0, 0.0, 1.0],
-                    ..Default::default()
+                    emissive: [0.0, 0.8, 0.0, 1.0],
+                    unlit: true,
                 },
             ],
             group_ranges: vec![
@@ -957,13 +1006,20 @@ mod tests {
             ],
             light: ImportLight::default(),
         };
-        let colors = imported_vertex_colors(&ship);
+        let (colors, emissive) = imported_vertex_attrs(&ship);
         assert_eq!(colors.len(), 9);
+        assert_eq!(emissive.len(), 9);
+        // Group 0: red, no emissive, lit (w == 0).
         assert_eq!(colors[0], [1.0, 0.0, 0.0]);
         assert_eq!(colors[2], [1.0, 0.0, 0.0]);
+        assert_eq!(emissive[0], [0.0, 0.0, 0.0, 0.0]);
+        // Group 1: green + green glow, unlit (w == 1).
         assert_eq!(colors[3], [0.0, 1.0, 0.0]);
         assert_eq!(colors[5], [0.0, 1.0, 0.0]);
+        assert_eq!(emissive[3], [0.0, 0.8, 0.0, 1.0]);
+        // Ungrouped verts: default grey, no emissive, lit.
         assert_eq!(colors[6], DEFAULT_HULL_ALBEDO, "ungrouped vert → grey");
         assert_eq!(colors[8], DEFAULT_HULL_ALBEDO);
+        assert_eq!(emissive[6], [0.0, 0.0, 0.0, 0.0]);
     }
 }

@@ -943,8 +943,9 @@ impl Gfx {
             None,
             crate::loft::LoftParams::default(),
         );
-        // No per-vertex colors → loft_gpu falls back to the default hull grey.
-        let (vbuf, vcount) = self.loft.upload_hull(&self.device, &mesh, &[]);
+        // No per-vertex colors (grey hull) and no emissive — the procedural
+        // dagger doesn't glow; CAD-imported ships carry both via upload_imported.
+        let (vbuf, vcount) = self.loft.upload_hull(&self.device, &mesh, &[], &[]);
         self.demo_loft = Some(DemoLoftShip {
             vbuf,
             vcount,
