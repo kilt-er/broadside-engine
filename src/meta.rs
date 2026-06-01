@@ -566,10 +566,11 @@ mod tests {
         let path = std::env::temp_dir().join("broadside_test_meta_roundtrip.json");
         let _ = std::fs::remove_file(&path);
 
-        let mut meta = MetaProgression::default();
-        meta.total_salvage_earned = 42;
-        meta.unlocked_subsystems.push("rear_gunner".into());
-        meta.unlocked_subsystems.push("chain_bounty".into());
+        let meta = MetaProgression {
+            total_salvage_earned: 42,
+            unlocked_subsystems: vec!["rear_gunner".into(), "chain_bounty".into()],
+            ..Default::default()
+        };
 
         meta.save_to_disk(&path).expect("save ok");
         let loaded = MetaProgression::load_from_disk(&path).expect("load ok");
