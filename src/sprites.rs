@@ -59,10 +59,12 @@ impl SpriteStance {
 /// four enemy placeholders share the one vendored CAD hull).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum LoftMeshKind {
-    /// The procedural grey "dagger" loft (the player demo ship).
-    PlayerDagger,
-    /// The vendored CAD ship import (`assets/ships/broadside-ship.glb`) — the
-    /// orange-accented hull used for the enemy placeholders.
+    /// The vendored CAD ship import (`assets/ships/broadside-ship.glb`), tinted
+    /// a distinct cool/friendly hue for the PLAYER so it reads apart from the
+    /// enemy fleet while sharing the same hull geometry.
+    PlayerCad,
+    /// The vendored CAD ship import (`assets/ships/broadside-ship.glb`) — its
+    /// authored colours (orange accent) — used for the enemy placeholders.
     EnemyCad,
 }
 

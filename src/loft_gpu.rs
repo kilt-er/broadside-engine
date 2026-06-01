@@ -672,11 +672,30 @@ impl LoftGpu {
         self.upload_hull(device, &ship.mesh, &colors, &emissive)
     }
 
+    /// Like [`Self::upload_imported`] but multiplies every vertex's albedo by
+    /// `tint` (per-channel) — used to recolour the shared CAD hull a distinct
+    /// hue for the player so it reads apart from the enemy fleet. Emissive is
+    /// left untouched so any glow accent keeps its authored colour.
+    pub fn upload_imported_tinted(
+        &self,
+        device: &wgpu::Device,
+        ship: &crate::mesh_import::ImportedShip,
+        tint: [f32; 3],
+    ) -> (wgpu::Buffer, u32) {
+        let (mut colors, emissive) = imported_vertex_attrs(ship);
+        for c in &mut colors {
+            c[0] *= tint[0];
+            c[1] *= tint[1];
+            c[2] *= tint[2];
+        }
+        self.upload_hull(device, &ship.mesh, &colors, &emissive)
+    }
+
     /// Render one ship pose into the offscreen target and posterize it into
-    /// [`Self::output_view`]. `yaw_deg` is the ship's MODEL yaw (from
-    /// [`ShipPose::yaw_deg`]); the camera is fixed ([`CAMERA_AZIMUTH_DEG`] /
-    /// [`CAMERA_PITCH_DEG`]) and owns the ¾ angle, so no camera args. Records
-    /// into `encoder`; the caller submits.
+    /// [`Self::output_view`]. `yaw_deg` is the ship's stance yaw (from
+    /// [`ShipPose::yaw_deg`]) — fed to [`camera_view_proj`] as the CAMERA yaw,
+    /// exactly as the POC does, with the model left at identity; pitch is fixed
+    /// at [`CAMERA_PITCH_DEG`]. Records into `encoder`; the caller submits.
     pub fn render_ship(
         &self,
         queue: &wgpu::Queue,

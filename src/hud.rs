@@ -1774,7 +1774,7 @@ mod tests {
             is_player: bool,
         ) -> Option<crate::sprites::LoftMeshKind> {
             Some(if is_player {
-                crate::sprites::LoftMeshKind::PlayerDagger
+                crate::sprites::LoftMeshKind::PlayerCad
             } else {
                 crate::sprites::LoftMeshKind::EnemyCad
             })
@@ -1811,7 +1811,7 @@ mod tests {
             .iter()
             .find(|l| l.ship_id.as_str() == "ship-0")
             .unwrap();
-        assert_eq!(player.kind, LoftMeshKind::PlayerDagger);
+        assert_eq!(player.kind, LoftMeshKind::PlayerCad);
         let enemy = lofts
             .iter()
             .find(|l| l.ship_id.as_str() == "ship-2")

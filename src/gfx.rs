@@ -772,10 +772,10 @@ impl crate::sprites::SpriteRegistry for Gfx {
 
     fn loft_kind(&self, _ship_id: &str, is_player: bool) -> Option<crate::sprites::LoftMeshKind> {
         use crate::sprites::LoftMeshKind;
-        // Player → grey dagger; enemies → vendored CAD hull. Only if that
-        // mesh is actually uploaded (else fall back to the 2D silhouette).
+        // Player → tinted CAD hull; enemies → authored-colour CAD hull. Only if
+        // that mesh is actually uploaded (else fall back to the 2D silhouette).
         let kind = if is_player {
-            LoftMeshKind::PlayerDagger
+            LoftMeshKind::PlayerCad
         } else {
             LoftMeshKind::EnemyCad
         };
@@ -933,40 +933,33 @@ impl Gfx {
         g
     }
 
-    /// Install the player demo loft ship mesh: loft the default dagger profiles
-    /// and upload it as the [`LoftMeshKind::PlayerDagger`] shared mesh (grey
-    /// hull — no per-vertex colors / emissive; the procedural dagger doesn't
-    /// glow). Idempotent: a second call replaces the dagger mesh. Per-ship pose
-    /// is created lazily by [`Self::sync_loft_pose`].
-    pub fn install_player_dagger(&mut self) {
-        use crate::ship_design::Point2;
-        // The dagger profiles (loft editor defaults / POC `DAGGER_PLAN` etc.).
-        let plan = [
-            Point2([0.00, 0.95]),
-            Point2([0.10, 0.98]),
-            Point2([0.45, 0.72]),
-            Point2([0.75, 0.42]),
-            Point2([0.92, 0.18]),
-            Point2([1.00, 0.02]),
-        ];
-        let section = [
-            Point2([0.00, 0.55]),
-            Point2([0.55, 0.40]),
-            Point2([1.00, 0.05]),
-            Point2([0.60, -0.45]),
-            Point2([0.00, -0.55]),
-        ];
-        let mesh = crate::loft::loft_from_profiles(
-            &plan,
-            &section,
-            None,
-            crate::loft::LoftParams::default(),
-        );
-        let (vbuf, vcount) = self.loft.upload_hull(&self.device, &mesh, &[], &[]);
+    /// Distinct cool/friendly tint multiplier applied to the player's copy of
+    /// the shared CAD hull so it reads apart from the orange-accented enemy
+    /// fleet (boosts blue, pulls red/green down a touch). See
+    /// [`Self::install_player_cad`].
+    const PLAYER_TINT: [f32; 3] = [0.62, 0.82, 1.15];
+
+    /// Install the PLAYER loft ship: the same vendored CAD hull the enemies use
+    /// (`assets/ships/broadside-ship.glb`), recoloured a distinct cool hue via
+    /// [`Self::PLAYER_TINT`] so the player reads apart from the enemy fleet
+    /// while sharing the faceted geometry. (Replaces the bare loft dagger, which
+    /// — being a near-flat 0.77u-tall hull with no superstructure — read as a
+    /// tilted plank bow-on.) Uploaded as [`LoftMeshKind::PlayerCad`]. Idempotent;
+    /// per-ship pose is created lazily by [`Self::sync_loft_pose`]. Returns the
+    /// import error if the bytes don't parse (caller logs + falls back to 2D).
+    pub fn install_player_cad(
+        &mut self,
+        glb_bytes: &[u8],
+    ) -> Result<(), crate::mesh_import::ImportError> {
+        let ship = crate::mesh_import::load_glb(glb_bytes)?;
+        let (vbuf, vcount) =
+            self.loft
+                .upload_imported_tinted(&self.device, &ship, Self::PLAYER_TINT);
         self.loft_meshes.insert(
-            crate::sprites::LoftMeshKind::PlayerDagger,
+            crate::sprites::LoftMeshKind::PlayerCad,
             LoftMesh { vbuf, vcount },
         );
+        Ok(())
     }
 
     /// Install the enemy CAD loft mesh from glTF binary (`.glb`) bytes (the

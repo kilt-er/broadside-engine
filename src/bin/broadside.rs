@@ -693,24 +693,27 @@ impl ApplicationHandler for App {
         if loaded > 0 {
             log::info!("loaded {} ship sprite PNG(s) from assets/sprites/", loaded);
         }
-        // Install the loft meshes the 3D render path draws: the grey procedural
-        // dagger for the player, and the vendored CAD hull
-        // (assets/ships/broadside-ship.glb, the orange-accented import) shared
-        // across the four enemy placeholders. Meshes are uploaded once here;
+        // Install the loft meshes the 3D render path draws: the vendored CAD
+        // hull (assets/ships/broadside-ship.glb) shared by every ship — the
+        // player gets a distinctly cool-tinted copy, the four enemies the
+        // authored (orange-accented) colours. Meshes are uploaded once here;
         // per-ship poses are synced from board orientation each frame. hud emits
         // a LoftShip for any ship whose mesh is installed (skipping its 2D
         // silhouette). The glb is embedded via include_bytes! so it loads
         // regardless of the binary's run directory.
-        gfx.install_player_dagger();
-        const ENEMY_GLB: &[u8] = include_bytes!("../../assets/ships/broadside-ship.glb");
-        match gfx.install_enemy_cad(ENEMY_GLB) {
-            Ok(()) => log::info!(
-                "loft: meshes installed (player dagger + enemy CAD, {} bytes)",
-                ENEMY_GLB.len()
-            ),
-            Err(e) => log::warn!(
-                "loft: enemy CAD import failed ({e}); enemies fall back to 2D silhouettes"
-            ),
+        const SHIP_GLB: &[u8] = include_bytes!("../../assets/ships/broadside-ship.glb");
+        let player_ok = gfx.install_player_cad(SHIP_GLB).is_ok();
+        let enemy_ok = gfx.install_enemy_cad(SHIP_GLB).is_ok();
+        if player_ok && enemy_ok {
+            log::info!(
+                "loft: CAD hull installed for player (tinted) + enemies ({} bytes)",
+                SHIP_GLB.len()
+            );
+        } else {
+            log::warn!(
+                "loft: CAD import failed (player_ok={player_ok}, enemy_ok={enemy_ok}); \
+                 affected ships fall back to 2D silhouettes"
+            );
         }
         self.window = Some(window);
         self.gfx = Some(gfx);
