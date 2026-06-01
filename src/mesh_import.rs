@@ -238,10 +238,17 @@ pub fn load_glb(bytes: &[u8]) -> Result<ImportedShip, ImportError> {
                 continue;
             }
 
-            // NORMAL is optional in glTF; the CAD exporter always writes it
-            // (Three.js computeVertexNormals). If absent we synthesize flat
-            // face normals so downstream shading still works.
-            let prim_normals: Option<Vec<[f32; 3]>> = reader.read_normals().map(|n| n.collect());
+            // The glb's NORMAL attribute is DELIBERATELY IGNORED. The CAD
+            // exporter (Three.js) writes smooth/averaged vertex normals — the
+            // vendored broadside-ship.glb has 112 of 172 faces smooth-shaded —
+            // which through the posterize pass reads as a lumpy "iceberg" with
+            // contour banding instead of crisp facets. We always recompute
+            // FLAT per-face normals from the positions so a CAD import yields
+            // the exact same flat-shaded tri-soup the loft path emits. This
+            // enforces the faceted house look on ANY import regardless of how
+            // the source tool shaded it — the same "house style wins over the
+            // producer" stance we take on bands/res. (At ~172 tris flat
+            // shading is crisp, not blobby.)
 
             // Expand to tri-soup using indices when present, else assume the
             // positions are already a triangle list.
@@ -259,13 +266,10 @@ pub fn load_glb(bytes: &[u8]) -> Result<ImportedShip, ImportError> {
                 let b = prim_positions[ib];
                 let c = prim_positions[ic];
                 positions.extend_from_slice(&[a, b, c]);
-                match &prim_normals {
-                    Some(ns) => normals.extend_from_slice(&[ns[ia], ns[ib], ns[ic]]),
-                    None => {
-                        let fn_ = face_normal(a, b, c);
-                        normals.extend_from_slice(&[fn_, fn_, fn_]);
-                    }
-                }
+                // One flat normal per face, shared by its three verts — the
+                // glb's stored (often smooth) normals are discarded.
+                let fn_ = face_normal(a, b, c);
+                normals.extend_from_slice(&[fn_, fn_, fn_]);
             }
 
             let group_len = positions.len() - group_start;
@@ -409,13 +413,18 @@ mod tests {
         let align4 = |b: &mut Vec<u8>| while !b.len().is_multiple_of(4) { b.push(0) };
 
         for (pi, (positions, indices, color, emissive)) in prims.iter().enumerate() {
-            // flat per-vertex normals computed here so the fixture carries NORMAL
-            let mut normals = vec![[0.0f32; 3]; positions.len()];
+            // The fixture writes DELIBERATELY BOGUS normals (constant +Y on
+            // every vertex) to prove load_glb discards the glb's NORMAL and
+            // recomputes flat per-face normals from positions. A real CAD glb
+            // carries smooth/averaged normals; bogus-but-present is the same
+            // "don't trust the stored normal" condition, sharper for testing.
+            let bogus = [0.0f32, 1.0, 0.0];
+            let mut normals = vec![bogus; positions.len()];
             for tri in indices.chunks_exact(3) {
                 let (a, b, c) = (positions[tri[0] as usize], positions[tri[1] as usize], positions[tri[2] as usize]);
-                let n = face_normal(a, b, c);
+                let _ = (a, b, c); // positions are read for the loader's recompute, not here
                 for &vi in tri {
-                    normals[vi as usize] = n;
+                    normals[vi as usize] = bogus;
                 }
             }
 
@@ -581,6 +590,39 @@ mod tests {
         for n in &ship.mesh.normals {
             let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
             assert!((len - 1.0).abs() < 1e-4, "normal {n:?} not unit");
+        }
+    }
+
+    #[test]
+    fn discards_glb_normals_and_recomputes_flat() {
+        // #43: the iceberg-banding fix. The fixture writes BOGUS +Y normals on
+        // every vertex (build_glb above). A TILTED triangle has a true face
+        // normal that is NOT +Y, so if load_glb kept the glb's NORMAL the
+        // loaded normal would read [0,1,0]; because we recompute flat per-face
+        // normals from positions, it must read the true geometric normal.
+        let positions: &[[f32; 3]] = &[
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 1.0], // lifts + tilts the tri out of the XZ plane
+        ];
+        let indices: &[u32] = &[0, 1, 2];
+        let glb = build_glb(&[(positions, indices, [0.5, 0.5, 0.5, 1.0], [0.0, 0.0, 0.0])], None);
+        let ship = load_glb(&glb).unwrap();
+
+        let expected = face_normal(positions[0], positions[1], positions[2]);
+        // The true normal is NOT the bogus +Y the fixture stored — proves the
+        // glb normal was discarded, not passed through.
+        assert!(
+            (expected[1] - 1.0).abs() > 1e-3 || expected[0].abs() > 1e-3 || expected[2].abs() > 1e-3,
+            "test setup: tilted tri normal should differ from bogus +Y, got {expected:?}",
+        );
+        for n in &ship.mesh.normals {
+            assert!(
+                (n[0] - expected[0]).abs() < 1e-4
+                    && (n[1] - expected[1]).abs() < 1e-4
+                    && (n[2] - expected[2]).abs() < 1e-4,
+                "expected recomputed flat normal {expected:?}, got {n:?} (glb normal not discarded?)",
+            );
         }
     }
 
