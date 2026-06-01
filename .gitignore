@@ -1,1 +1,6 @@
 /target
+
+# scratch logs
+*.log
+# base64 decode scratch
+assets/sprites/.staging/

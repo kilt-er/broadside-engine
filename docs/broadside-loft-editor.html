@@ -1,0 +1,805 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Broadside — Capital Ship Loft Editor</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;500;700&family=Major+Mono+Display&display=swap');
+  :root{--bg:#070b14;--panel:#0d1524;--line:#1d2c44;--ink:#cfe0f5;--dim:#5d7397;--hot:#ff8a48;--cool:#5fd8ff;--grid:#13233e;}
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:radial-gradient(circle at 25% 12%,#10203c 0,transparent 55%),radial-gradient(circle at 85% 88%,#1a1230 0,transparent 50%),var(--bg);
+    color:var(--ink);font-family:'Chakra Petch',sans-serif;min-height:100vh;padding:20px 16px 60px;-webkit-font-smoothing:antialiased}
+  .wrap{max-width:1180px;margin:0 auto}
+  h1{font-family:'Major Mono Display',monospace;font-size:22px;font-weight:400;letter-spacing:1px}
+  h1 .b{color:var(--hot)}
+  .sub{color:var(--dim);font-size:12.5px;margin:6px 0 18px;line-height:1.5;max-width:760px}
+  .layout{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+  @media(max-width:900px){.layout{grid-template-columns:1fr}}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:11px;padding:14px;position:relative}
+  .card h2{font-size:11px;letter-spacing:1.3px;text-transform:uppercase;color:var(--dim);margin-bottom:4px}
+  .card .hint{font-size:10.5px;color:#46597a;margin-bottom:10px}
+  canvas{display:block;width:100%;border-radius:7px;background:#060a12;touch-action:none}
+  #preview{image-rendering:pixelated;image-rendering:crisp-edges;cursor:grab;background:transparent !important}
+  #preview:active{cursor:grabbing}
+  .editor-canvas{cursor:crosshair}
+  .full{grid-column:1/-1}
+  .toolbar{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:10px;align-items:center}
+  .toolbar .grp{display:flex;border:1px solid var(--line);border-radius:6px;overflow:hidden}
+  .toolbar button{background:transparent;color:var(--dim);border:none;padding:6px 11px;font-family:'Chakra Petch';font-size:12px;cursor:pointer;transition:.12s}
+  .toolbar button:hover{color:var(--ink)}
+  .toolbar button.on{background:var(--hot);color:#0a0a0a;font-weight:700}
+  .toolbar .spacer{flex:1}
+  .controls{display:flex;flex-wrap:wrap;gap:16px;margin-top:12px}
+  .ctl{display:flex;flex-direction:column;gap:5px;min-width:130px}
+  .ctl label{font-size:10px;letter-spacing:1px;text-transform:uppercase;color:var(--dim)}
+  .ctl .row{display:flex;align-items:center;gap:9px}
+  input[type=range]{width:120px;accent-color:var(--hot)}
+  .v{font-family:'Major Mono Display';font-size:11.5px;color:var(--hot);min-width:48px}
+  .seg{display:flex;border:1px solid var(--line);border-radius:6px;overflow:hidden}
+  .seg button{background:transparent;color:var(--dim);border:none;padding:5px 9px;font-family:'Chakra Petch';font-size:11.5px;cursor:pointer}
+  .seg button.on{background:var(--cool);color:#06121a;font-weight:700}
+  .snaprow{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}
+  .snaprow button{background:var(--panel);border:1px solid var(--line);color:var(--dim);font-family:'Chakra Petch';font-size:11px;padding:5px 10px;border-radius:6px;cursor:pointer}
+  .snaprow button:hover{color:var(--ink);border-color:var(--hot)}
+  .snaprow button.on{background:var(--hot);color:#0a0a0a;font-weight:700;border-color:var(--hot)}
+  .hud{position:absolute;top:12px;left:14px;font-family:'Major Mono Display';font-size:10.5px;color:var(--dim);line-height:1.6;pointer-events:none}
+  .hud b{color:var(--cool)}
+  .note{margin-top:16px;font-size:12px;color:#9fb4d0;line-height:1.6;background:#0a1120;border-left:3px solid var(--hot);border-radius:6px;padding:11px 15px}
+  .note b{color:var(--ink)} code{font-family:'Major Mono Display';color:var(--cool)}
+  .tabs{display:flex;gap:4px;margin-bottom:18px;border-bottom:1px solid var(--line)}
+  .tab{background:transparent;border:none;border-bottom:2px solid transparent;color:var(--dim);
+    font-family:'Chakra Petch';font-size:14px;letter-spacing:.5px;padding:9px 18px;cursor:pointer;transition:.15s;margin-bottom:-1px}
+  .tab:hover{color:var(--ink)}
+  .tab.on{color:var(--hot);border-bottom-color:var(--hot);font-weight:700}
+  .doc{background:var(--panel);border:1px solid var(--line);border-radius:11px;padding:26px 30px;line-height:1.65;font-size:14px;color:#bacadf;max-width:820px}
+  .doc h2{font-family:'Major Mono Display';font-size:18px;font-weight:400;color:var(--ink);margin-bottom:10px;letter-spacing:.5px}
+  .doc h3{font-size:14px;letter-spacing:.8px;text-transform:uppercase;color:var(--cool);margin:24px 0 8px}
+  .doc .lede{color:var(--dim);font-size:13.5px;margin-bottom:6px}
+  .doc p{margin:8px 0}
+  .doc ul{margin:8px 0 8px 4px;list-style:none}
+  .doc li{padding:3px 0 3px 18px;position:relative}
+  .doc li::before{content:'▸';position:absolute;left:0;color:var(--hot);font-size:11px;top:5px}
+  .doc b{color:var(--ink)} .doc i{color:#9fb4d0;font-style:normal;border-bottom:1px dotted #46597a}
+  .doc .warn{background:#1a1208;border-left:3px solid var(--hot);border-radius:6px;padding:11px 15px;font-size:13px;color:#d8c4a8}
+  .doc .mono{font-family:'Major Mono Display';font-size:12.5px;color:var(--cool);background:#060a12;border:1px solid var(--line);border-radius:5px;padding:8px 12px;display:inline-block;margin:4px 0}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>BROAD<span class="b">SIDE</span> · capital ship loft editor</h1>
+  <p class="sub">Shape a capital hull by editing two profiles. The <b>plan view</b> sets the hull outline down its length; the <b>section view</b> sets the cross-section shape. They loft into a 3D hull rendered live as ¾ pixel art. Default is a Star Destroyer dagger — drag points to reshape, double-click an edge to add a point, right-click a point to delete.</p>
+
+  <div class="tabs">
+    <button class="tab on" data-tab="editor">Editor</button>
+    <button class="tab" data-tab="docs">Docs</button>
+  </div>
+
+  <div id="tab-editor" class="tabpanel">
+  <div class="layout">
+    <!-- PLAN EDITOR -->
+    <div class="card">
+      <h2>plan view · hull outline (top-down)</h2>
+      <div class="hint">X = length (prow right). Y = half-width. Drag points · dbl-click edge adds · right-click removes.</div>
+      <div class="toolbar">
+        <div class="grp" id="planTool">
+          <button data-t="drag" class="on">drag</button>
+          <button data-t="add">add</button>
+        </div>
+        <div class="spacer"></div>
+        <button id="importBtn">⤒ import side view</button>
+        <button id="clearImg" style="display:none">clear image</button>
+        <button id="planReset">reset dagger</button>
+      </div>
+      <input id="fileInput" type="file" accept="image/png,image/jpeg,image/webp" style="display:none">
+      <canvas id="plan" class="editor-canvas" width="520" height="240"></canvas>
+    </div>
+
+    <!-- SECTION EDITOR -->
+    <div class="card">
+      <h2>section view · cross-section ring</h2>
+      <div class="hint">Half cross-section (mirrored). Y = up. Z = half-width. Sets the chine/belly/dorsal shape.</div>
+      <div class="toolbar">
+        <div class="grp" id="secTool">
+          <button data-t="drag" class="on">drag</button>
+          <button data-t="add">add</button>
+        </div>
+        <div class="spacer"></div>
+        <button id="secReset">reset</button>
+      </div>
+      <canvas id="section" class="editor-canvas" width="520" height="240"></canvas>
+    </div>
+  </div>
+
+  <!-- PREVIEW -->
+  <div class="card full" style="margin-top:16px">
+    <h2>live ¾ preview</h2>
+    <div class="hint">Drag to orbit · wheel to zoom. Superstructure, fins and engines layer onto the lofted hull.</div>
+    <div id="stage" style="display:flex;align-items:center;justify-content:center;background:#060a12;border-radius:8px;min-height:300px;position:relative">
+      <canvas id="preview"></canvas>
+      <div class="hud">yaw <b id="hYaw">28°</b><br>pitch <b id="hPit">26°</b><br>res <b id="hRes">160×100</b></div>
+    </div>
+    <div class="snaprow">
+      <button class="snap on" data-yaw="28">▸ right</button>
+      <button class="snap" data-yaw="152">◂ left</button>
+      <button class="snap" data-yaw="118">▴ fore</button>
+      <button class="snap" data-yaw="298">▾ aft</button>
+    </div>
+    <div class="controls">
+      <div class="ctl"><label>¾ pitch</label><div class="row"><input id="pitch" type="range" min="8" max="70" value="26"><span class="v" id="pv">26°</span></div></div>
+      <div class="ctl"><label>length stretch</label><div class="row"><input id="stretch" type="range" min="100" max="320" value="200"><span class="v" id="stv">2.0×</span></div></div>
+      <div class="ctl"><label>height scale</label><div class="row"><input id="hscale" type="range" min="30" max="160" value="70"><span class="v" id="hsv">0.7×</span></div></div>
+      <div class="ctl"><label>superstructure</label><div class="seg" id="sup"><button data-s="1" class="on">on</button><button data-s="0">off</button></div></div>
+      <div class="ctl"><label>greeble density</label><div class="row"><input id="greeb" type="range" min="0" max="100" value="60"><span class="v" id="gv">60%</span></div></div>
+      <div class="ctl"><label>palette bands</label><div class="seg" id="bands"><button data-b="2">2</button><button data-b="3">3</button><button data-b="4" class="on">4</button><button data-b="5">5</button><button data-b="16">full</button></div></div>
+      <div class="ctl"><label>light azimuth</label><div class="row"><input id="laz" type="range" min="-180" max="180" value="-50"><span class="v" id="lazv">-50°</span></div></div>
+      <div class="ctl"><label>light elevation</label><div class="row"><input id="lel" type="range" min="5" max="90" value="60"><span class="v" id="lelv">60°</span></div></div>
+      <div class="ctl"><label>background</label>
+        <div class="row">
+          <input id="bgpick" type="color" value="#060a12" style="width:34px;height:24px;border:1px solid var(--line);border-radius:5px;background:none;cursor:pointer;padding:0">
+          <div class="seg" id="bgpre">
+            <button data-c="#ffffff">white</button>
+            <button data-c="#8895a8">grey</button>
+            <button data-c="#060a12" class="on">dark</button>
+            <button data-c="#0a1c3a">blue</button>
+          </div>
+        </div>
+      </div>
+      <div class="ctl"><label>render res</label><div class="seg" id="res"><button data-w="120" data-h="75">120</button><button data-w="160" data-h="100" class="on">160</button><button data-w="220" data-h="138">220</button><button data-w="320" data-h="200">320</button><button data-w="480" data-h="300">480</button></div></div>
+      <div class="ctl"><label>hue shift</label><div class="row"><input id="ghue" type="range" min="-180" max="180" value="0"><span class="v" id="ghuev">0°</span></div></div>
+      <div class="ctl"><label>saturation</label><div class="row"><input id="gsat" type="range" min="0" max="200" value="100"><span class="v" id="gsatv">1.00</span></div></div>
+      <div class="ctl"><label>brightness</label><div class="row"><input id="gbri" type="range" min="20" max="200" value="100"><span class="v" id="gbriv">1.00</span></div></div>
+      <div class="ctl"><label>contrast</label><div class="row"><input id="gcon" type="range" min="20" max="250" value="100"><span class="v" id="gconv">1.00</span></div></div>
+      <div class="ctl"><label>gamma</label><div class="row"><input id="ggam" type="range" min="30" max="300" value="100"><span class="v" id="ggamv">1.00</span></div></div>
+      <div class="ctl"><label>&nbsp;</label><button id="gradeReset" style="background:var(--panel);border:1px solid var(--line);color:var(--dim);font-family:'Chakra Petch';font-size:12px;padding:6px 12px;border-radius:6px;cursor:pointer">reset grade</button></div>
+    </div>
+    <div class="controls" style="margin-top:14px;padding-top:14px;border-top:1px solid var(--line)">
+      <div class="ctl"><label>export scale</label><div class="seg" id="exScale"><button data-x="1" class="on">1×</button><button data-x="2">2×</button><button data-x="4">4×</button><button data-x="8">8×</button></div></div>
+      <div class="ctl"><label>export current view</label><button id="exOne" style="background:var(--hot);border:none;color:#0a0a0a;font-weight:700;font-family:'Chakra Petch';font-size:12px;padding:7px 14px;border-radius:6px;cursor:pointer">⤓ PNG (this angle)</button></div>
+      <div class="ctl"><label>export all four</label><button id="exAll" style="background:var(--cool);border:none;color:#06121a;font-weight:700;font-family:'Chakra Petch';font-size:12px;padding:7px 14px;border-radius:6px;cursor:pointer">⤓ right · left · fore · aft</button></div>
+    </div>
+    <div class="controls" style="margin-top:14px;padding-top:14px;border-top:1px solid var(--line)">
+      <div class="ctl"><label>save design</label><button id="saveDesign" style="background:var(--panel);border:1px solid var(--cool);color:var(--cool);font-weight:700;font-family:'Chakra Petch';font-size:12px;padding:7px 14px;border-radius:6px;cursor:pointer">⤓ save .json</button></div>
+      <div class="ctl"><label>load design</label><button id="loadDesign" style="background:var(--panel);border:1px solid var(--hot);color:var(--hot);font-weight:700;font-family:'Chakra Petch';font-size:12px;padding:7px 14px;border-radius:6px;cursor:pointer">⤒ load .json</button></div>
+      <input id="designInput" type="file" accept="application/json,.json" style="display:none">
+    </div>
+  </div>
+
+  <div class="note"><b>How the loft works.</b> Each plan point gives a station along the length with a half-width; the section profile is scaled to that width at every station and swept into a ring. Long + shallow + a broad stern = the dagger. Capital-ship read comes from <b>greeble density</b> (hull-scaled panel/window detail) plus the <b>superstructure</b> tower. Free-form vertex editing comes in a later pass — for now you're driving the two profiles. <code>dbl-click = add point · right-click = delete</code></div>
+  </div><!-- /tab-editor -->
+
+  <div id="tab-docs" class="tabpanel" style="display:none">
+    <div class="doc">
+      <h2>Broadside Ship Loft Editor — Documentation</h2>
+      <p class="lede">A browser tool for designing capital-ship sprites. You shape a low-poly hull by editing two 2D profiles; it lofts them into 3D and renders the result as crisp ¾-view pixel art you can export as PNGs for the game.</p>
+
+      <h3>Quick start</h3>
+      <ul>
+        <li><b>1.</b> Drag the points in the <b>plan view</b> (hull outline) and <b>section view</b> (cross-section) to shape the hull. The preview updates live.</li>
+        <li><b>2.</b> Push <b>length stretch</b> up and <b>height scale</b> down for a capital-ship wedge; raise <b>greeble density</b> for scale detail.</li>
+        <li><b>3.</b> Orbit the preview to a stance (or use a <b>snap</b> button), set <b>palette bands</b> and color grade.</li>
+        <li><b>4.</b> <b>Save .json</b> to keep the design; <b>export PNG</b> for sprites.</li>
+      </ul>
+
+      <h3>1 · The core idea — lofting</h3>
+      <p>The hull is built by <b>lofting</b>: a cross-section shape is swept along a length, scaled at each point by a width outline. Two editors drive this:</p>
+      <ul>
+        <li><b>Plan view</b> — the top-down hull outline. Each point sets the hull's <i>half-width</i> at a position along its length (prow at right, stern at left).</li>
+        <li><b>Section view</b> — the cross-section ring shape (dorsal deck on top, chine at the widest, belly below). This profile is reused at every station, scaled to the plan width.</li>
+      </ul>
+      <p>Together they define the whole hull. Superstructure, engines, guns and greebles are layered on top automatically.</p>
+
+      <h3>2 · Editing the profiles</h3>
+      <ul>
+        <li><b>Drag</b> a point to move it. The 3D preview updates live.</li>
+        <li><b>Add</b> a point: switch to the <i>add</i> tool and click, or <b>double-click</b> an edge.</li>
+        <li><b>Delete</b> a point: <b>right-click</b> it (a minimum of 3 points is kept).</li>
+        <li><b>Reset dagger / reset</b> restores the default Star Destroyer profiles.</li>
+      </ul>
+
+      <h3>3 · Importing a side view</h3>
+      <p>The <b>⤒ import side view</b> button (plan editor toolbar) loads a PNG/JPG/WebP and does two things:</p>
+      <ul>
+        <li><b>Auto-trace → height profile.</b> The image's silhouette is scanned column by column; the vertical extent at each column becomes the hull's height along its length. A tall midsection bulges the hull there; a shallow nose makes the prow thin.</li>
+        <li><b>Faded underlay.</b> The image sits at ~32% opacity behind the plan grid so you can trace the <i>width</i> outline over it by hand.</li>
+      </ul>
+      <p class="warn"><b>Important limits.</b> A single side view only contains height + length information — it cannot tell the tool how <i>wide</i> the ship is or what its cross-section looks like. So import sets the height profile and gives you a tracing guide, but you still supply width (plan points) and shape (section editor) yourself. For best tracing: <b>prow pointing right</b>, on a clean transparent or solid-contrast background (the tracer reads the background color from the top-left corner). Use <b>clear image</b> to remove the underlay and traced profile.</p>
+
+      <h3>4 · Shaping a capital ship</h3>
+      <p>What makes a hull read as a <i>capital</i> ship rather than a fighter:</p>
+      <ul>
+        <li><b>Length stretch</b> high (≈2.5–3×) and <b>height scale</b> low (≈0.5×) for the long, shallow wedge.</li>
+        <li><b>Greeble density</b> up — this scatters hull-scaled panel/window detail and increases the broadside battery count. Small detail against a big hull is the single strongest scale cue.</li>
+        <li><b>Superstructure</b> on — adds the stepped command tower, bridge and sensor domes near the stern.</li>
+      </ul>
+
+      <h3>5 · View & lighting</h3>
+      <ul>
+        <li><b>Drag</b> the preview to orbit; <b>scroll</b> to zoom.</li>
+        <li><b>Snap buttons</b> jump to the four canonical stances: <i>right / left</i> (bow-on) and <i>fore / aft</i> (broadside).</li>
+        <li><b>¾ pitch</b> sets the look-down angle. <b>Light azimuth / elevation</b> steer the key light to bring out hull facets.</li>
+      </ul>
+
+      <h3>6 · Color & palette</h3>
+      <ul>
+        <li><b>Palette bands</b> posterizes the render into 2–5 flat tones (or full) for a limited-palette pixel look.</li>
+        <li><b>Hue / saturation / brightness / contrast / gamma</b> grade the color <i>before</i> banding. <b>Reset grade</b> returns to neutral.</li>
+        <li><b>Background</b> picker + presets (white / grey / dark / blue) change the stage behind the ship. The exported sprite keeps a transparent background regardless.</li>
+      </ul>
+
+      <h3>7 · Exporting PNGs</h3>
+      <ul>
+        <li><b>Export scale</b> 1× gives native sprite resolution; 2–8× nearest-neighbor upscales (stays crisp).</li>
+        <li><b>⤓ PNG (this angle)</b> saves the current view with pitch, palette and grade baked in, transparent background.</li>
+        <li><b>⤓ right · left · fore · aft</b> rotates through all four stances and saves each. Your browser may ask to allow multiple downloads the first time.</li>
+        <li><b>Render res</b> (120–480) sets the sprite's native pixel size.</li>
+      </ul>
+
+      <h3>8 · Saving & loading designs</h3>
+      <ul>
+        <li><b>⤓ save .json</b> writes a small file containing both profiles, the traced height profile, all view/lighting/palette settings and the color grade. This is your ship design — keep it, version it, or pass it to someone else.</li>
+        <li><b>⤒ load .json</b> restores a saved design and syncs every control back to its stored value.</li>
+        <li>Designs are portable: you and your son can email or drop these <span class="mono">.json</span> files to each other to share ships, even though the tool itself doesn't sync live.</li>
+        <li><b>Note:</b> an imported side-view <i>image</i> isn't stored in the design (only the height profile traced from it). After loading, re-import the image if you want the tracing underlay back.</li>
+      </ul>
+
+      <h3>9 · Shaping a capital ship — tips</h3>
+      <ul>
+        <li>Capital ships read as <i>big</i> through small detail on a large hull — keep greeble up.</li>
+        <li>Long + shallow is the dagger; short + tall drifts back toward a fighter.</li>
+        <li>A broad flat stern with the engine cluster sells the "front-heavy wedge" Star Destroyer look.</li>
+      </ul>
+
+      <h3>10 · Roadmap / not yet built</h3>
+      <ul>
+        <li>Free-form vertex editing (move individual 3D points, beyond the two profiles).</li>
+        <li>Import orientation toggle (prow-left vs prow-right) and inverted-silhouette handling.</li>
+        <li>Sprite-sheet export (all four views packed into one PNG).</li>
+        <li>Live two-person collaboration (would require a backend server).</li>
+      </ul>
+
+      <h3>11 · Hosting it for two people</h3>
+      <p>This is a single self-contained HTML file (it only pulls Three.js from a CDN), so it runs by just opening the file — but to share it on your home network so you and your son can both reach it from any device, run a tiny local web server on one machine:</p>
+      <p class="mono">cd folder-with-the-file<br>python3 -m http.server 8000</p>
+      <p>Then on that machine open <span class="mono">http://localhost:8000/broadside-loft-editor.html</span>, and from any other device on the same Wi-Fi open <span class="mono">http://&lt;that-machine's-LAN-IP&gt;:8000/broadside-loft-editor.html</span> (find the IP with <span class="mono">ipconfig</span> on Windows or <span class="mono">ifconfig</span>/<span class="mono">ip addr</span> on Mac/Linux — it usually looks like 192.168.x.x). For an always-on home host, run that same command on a Raspberry Pi or spare machine; for access from outside the house, a private network tool like Tailscale is safer than opening ports.</p>
+    </div>
+  </div><!-- /tab-docs -->
+</div><!-- /wrap -->
+
+<script type="importmap">
+{ "imports": { "three": "https://cdnjs.cloudflare.com/ajax/libs/three.js/0.160.0/three.module.min.js" } }
+</script>
+<script type="module">
+import * as THREE from 'three';
+
+// ============ STATE ============
+const ST={
+  pitch:26, yaw:28, zoom:1, stretch:2.0, hscale:0.7, sup:true,
+  greeb:0.6, bands:4, laz:-50, lel:60, res:{w:160,h:100}
+};
+// plan: array of [x(0..1 along length), halfWidth(0..1)] from stern(0) to prow(1)
+let PLAN=daggerPlan();
+// section: half cross-section points [z(0..1 half-width), y(-1..1 height)], top->belly
+let SECTION=daggerSection();
+// height profile sampled from imported side view: array of [x(0..1), heightMult(0..~1.5)]
+// empty = flat 1.0 everywhere (no image imported yet)
+let HEIGHTPROF=null;
+let UNDERLAY=null; // {img, aspect} faded backdrop for plan editor
+
+function sampleHeightProf(x){
+  if(!HEIGHTPROF||HEIGHTPROF.length<2) return 1.0;
+  const n=HEIGHTPROF.length;
+  // x is 0..1 stern->prow in plan space; profile stored same orientation
+  let i=0; while(i<n-2 && HEIGHTPROF[i+1][0]<x) i++;
+  const a=HEIGHTPROF[i], b=HEIGHTPROF[Math.min(n-1,i+1)];
+  const t=(b[0]-a[0])?(x-a[0])/(b[0]-a[0]):0;
+  return Math.max(0.05, lerp(a[1],b[1],Math.max(0,Math.min(1,t))));
+}
+
+function daggerPlan(){
+  return [ [0.00,0.95],[0.10,0.98],[0.45,0.72],[0.75,0.42],[0.92,0.18],[1.00,0.02] ];
+}
+function daggerSection(){
+  // top dorsal center -> shoulder -> chine(widest) -> belly center
+  return [ [0.00,0.55],[0.55,0.40],[1.00,0.05],[0.60,-0.45],[0.00,-0.55] ];
+}
+
+// ============ EDITORS ============
+function makeEditor(canvasId, getPts, setPts, opts){
+  const cv=document.getElementById(canvasId), ctx=cv.getContext('2d');
+  let tool='drag', dragIdx=-1;
+  const PAD=opts.pad||28;
+  function toScreen(px,py){
+    const w=cv.width-PAD*2, h=cv.height-PAD*2;
+    return [PAD + opts.sx(px)*w, PAD + opts.sy(py)*h];
+  }
+  function toModel(sx,sy){
+    const w=cv.width-PAD*2, h=cv.height-PAD*2;
+    return [opts.mx((sx-PAD)/w), opts.my((sy-PAD)/h)];
+  }
+  function draw(){
+    ctx.clearRect(0,0,cv.width,cv.height);
+    // faded underlay (plan editor only)
+    if(opts.underlay && UNDERLAY){
+      ctx.globalAlpha=0.32;
+      const w=cv.width-PAD*2, h=cv.height-PAD*2;
+      ctx.drawImage(UNDERLAY.img, PAD, PAD, w, h);
+      ctx.globalAlpha=1.0;
+    }
+    // grid
+    ctx.strokeStyle='#13233e'; ctx.lineWidth=1;
+    for(let i=0;i<=8;i++){const x=PAD+(cv.width-PAD*2)*i/8;ctx.beginPath();ctx.moveTo(x,PAD);ctx.lineTo(x,cv.height-PAD);ctx.stroke();}
+    for(let i=0;i<=6;i++){const y=PAD+(cv.height-PAD*2)*i/6;ctx.beginPath();ctx.moveTo(PAD,y);ctx.lineTo(cv.width-PAD,y);ctx.stroke();}
+    opts.guides&&opts.guides(ctx,toScreen,cv,PAD);
+    const pts=getPts();
+    // outline (mirrored for plan, mirror for section too)
+    ctx.strokeStyle=opts.color||'#5fd8ff'; ctx.lineWidth=2; ctx.beginPath();
+    pts.forEach((p,i)=>{const[sx,sy]=toScreen(p[0],p[1]); i?ctx.lineTo(sx,sy):ctx.moveTo(sx,sy);});
+    ctx.stroke();
+    // mirror line
+    if(opts.mirror){
+      ctx.strokeStyle=(opts.color||'#5fd8ff')+'66'; ctx.beginPath();
+      pts.forEach((p,i)=>{const[sx,sy]=toScreen(...opts.mirror(p)); i?ctx.lineTo(sx,sy):ctx.moveTo(sx,sy);});
+      ctx.stroke();
+    }
+    // points
+    pts.forEach((p,i)=>{const[sx,sy]=toScreen(p[0],p[1]);
+      ctx.fillStyle=i===dragIdx?'#ff8a48':'#cfe0f5';
+      ctx.beginPath();ctx.arc(sx,sy,5,0,7);ctx.fill();
+      ctx.strokeStyle='#060a12';ctx.lineWidth=1.5;ctx.stroke();
+    });
+  }
+  function hit(sx,sy){
+    const pts=getPts();
+    for(let i=0;i<pts.length;i++){const[px,py]=toScreen(pts[i][0],pts[i][1]);
+      if((px-sx)**2+(py-sy)**2<100)return i;}
+    return -1;
+  }
+  function evtPos(e){const r=cv.getBoundingClientRect();return [(e.clientX-r.left)*cv.width/r.width,(e.clientY-r.top)*cv.height/r.height];}
+  cv.addEventListener('pointerdown',e=>{
+    const[sx,sy]=evtPos(e); const i=hit(sx,sy);
+    if(e.button===2)return;
+    if(tool==='drag'){ dragIdx=i; }
+    else if(tool==='add'){
+      // insert near closest segment
+      const pts=getPts(); const[mx,my]=toModel(sx,sy);
+      let best=1,bd=1e9;
+      for(let k=0;k<pts.length-1;k++){const d=segDist(mx,my,pts[k],pts[k+1]);if(d<bd){bd=d;best=k+1;}}
+      pts.splice(best,0,[clamp01(mx),clampND(my)]); setPts(pts); dragIdx=best;
+    }
+    draw();
+  });
+  cv.addEventListener('pointermove',e=>{
+    if(dragIdx<0)return; const[sx,sy]=evtPos(e); let[mx,my]=toModel(sx,sy);
+    const pts=getPts(); pts[dragIdx]=[opts.clampX?opts.clampX(mx,dragIdx,pts):clamp01(mx), opts.clampY?opts.clampY(my):clampND(my)];
+    setPts(pts); draw(); rebuild();
+  });
+  window.addEventListener('pointerup',()=>{if(dragIdx>=0){dragIdx=-1;draw();rebuild();}});
+  cv.addEventListener('dblclick',e=>{
+    const[sx,sy]=evtPos(e); const pts=getPts(); const[mx,my]=toModel(sx,sy);
+    let best=1,bd=1e9; for(let k=0;k<pts.length-1;k++){const d=segDist(mx,my,pts[k],pts[k+1]);if(d<bd){bd=d;best=k+1;}}
+    pts.splice(best,0,[clamp01(mx),clampND(my)]); setPts(pts); draw(); rebuild();
+  });
+  cv.addEventListener('contextmenu',e=>{
+    e.preventDefault(); const[sx,sy]=evtPos(e); const i=hit(sx,sy); const pts=getPts();
+    if(i>=0&&pts.length>3){pts.splice(i,1);setPts(pts);draw();rebuild();}
+  });
+  return {
+    draw, setTool:t=>{tool=t;},
+  };
+  function segDist(px,py,a,b){const dx=b[0]-a[0],dy=b[1]-a[1];const t=Math.max(0,Math.min(1,((px-a[0])*dx+(py-a[1])*dy)/(dx*dx+dy*dy||1)));return Math.hypot(px-(a[0]+t*dx),py-(a[1]+t*dy));}
+}
+function clamp01(v){return Math.max(0,Math.min(1,v));}
+function clampND(v){return Math.max(-1,Math.min(1,v));}
+
+// plan editor: x 0..1 -> screen left..right ; halfwidth 0..1 -> centered vertically
+const planEd=makeEditor('plan',()=>PLAN,p=>{PLAN=p;},{
+  color:'#5fd8ff', underlay:true,
+  sx:px=>px, sy:py=>0.5-py*0.5, mx:sx=>sx, my:sy=>(0.5-sy)*2,
+  clampY:v=>Math.max(0,Math.min(1,v)),
+  clampX:(v,i,pts)=>Math.max(0,Math.min(1,v)),
+  mirror:p=>[p[0],-p[1]],
+  guides:(ctx,toS,cv,PAD)=>{ctx.strokeStyle='#1d2c44';ctx.setLineDash([4,4]);const y=PAD+(cv.height-PAD*2)*0.5;ctx.beginPath();ctx.moveTo(PAD,y);ctx.lineTo(cv.width-PAD,y);ctx.stroke();ctx.setLineDash([]);}
+});
+// section editor: z 0..1 -> center..right ; y -1..1 -> bottom..top
+const secEd=makeEditor('section',()=>SECTION,p=>{SECTION=p;},{
+  color:'#ffd86b',
+  sx:pz=>0.5+pz*0.5, sy:py=>0.5-py*0.5, mx:sx=>(sx-0.5)*2, my:sy=>(0.5-sy)*2,
+  clampX:v=>Math.max(0,Math.min(1,v)),
+  mirror:p=>[-p[0],p[1]],
+  guides:(ctx,toS,cv,PAD)=>{ctx.strokeStyle='#1d2c44';ctx.setLineDash([4,4]);const x=PAD+(cv.width-PAD*2)*0.5;ctx.beginPath();ctx.moveTo(x,PAD);ctx.lineTo(x,cv.height-PAD);ctx.stroke();ctx.setLineDash([]);}
+});
+
+// ============ THREE PREVIEW ============
+const cvs=document.getElementById('preview');
+const renderer=new THREE.WebGLRenderer({canvas:cvs,antialias:false,alpha:true,premultipliedAlpha:false,preserveDrawingBuffer:true});
+renderer.setPixelRatio(1);
+renderer.setClearColor(0x000000,0);
+const scene=new THREE.Scene();
+const cam=new THREE.OrthographicCamera(-1,1,1,-1,0.1,200);
+const key=new THREE.DirectionalLight(0xffffff,1.6); 
+const fill=new THREE.DirectionalLight(0x88aaff,0.45); fill.position.set(4,2,-3);
+const amb=new THREE.AmbientLight(0x3a4560,0.9);
+scene.add(key,fill,amb);
+
+const matHull=new THREE.MeshLambertMaterial({color:0xb4c6e0,flatShading:true});
+const matHullD=new THREE.MeshLambertMaterial({color:0x6f88ad,flatShading:true});
+const matTower=new THREE.MeshLambertMaterial({color:0xc8d8ee,flatShading:true});
+const matDark=new THREE.MeshLambertMaterial({color:0x3c4a64,flatShading:true});
+const matCanopy=new THREE.MeshLambertMaterial({color:0x5fd8ff,emissive:0x0a2230,flatShading:true});
+const matGun=new THREE.MeshLambertMaterial({color:0xff8a48,emissive:0x331100,flatShading:true});
+const matBatt=new THREE.MeshLambertMaterial({color:0xffd86b,emissive:0x221800,flatShading:true});
+const matEngine=new THREE.MeshBasicMaterial({color:0x6fe0ff});
+
+let ship=new THREE.Group(); scene.add(ship);
+
+function lerp(a,b,t){return a+(b-a)*t;}
+function sampleSection(t){ // t 0..1 across section list -> [zFactor, y]
+  const n=SECTION.length; const f=t*(n-1); const i=Math.min(n-2,Math.floor(f)); const u=f-i;
+  return [ lerp(SECTION[i][0],SECTION[i+1][0],u), lerp(SECTION[i][1],SECTION[i+1][1],u) ];
+}
+
+function buildHull(){
+  const L=6*ST.stretch/2, H=ST.hscale;
+  // stations from plan; each gets a height multiplier sampled from the traced
+  // side-view profile (HEIGHTPROF), defaulting to flat 1.0 when no image imported.
+  const stations=PLAN.map(p=>({x:(p[0]-0.5)*2*L, w:p[1], hm:sampleHeightProf(p[0])}));
+  const SECN=10; // ring resolution from section (full loop = top..belly..top mirrored)
+  const verts=[], idx=[];
+  const ringsCount=stations.length;
+  const perRing=(SECN-1)*2; // mirrored
+  function ringPts(st){
+    const pts=[];
+    const hh=H*st.hm;
+    // right side top->belly
+    for(let s=0;s<SECN;s++){ const [zf,y]=sampleSection(s/(SECN-1)); pts.push([st.x, y*hh, zf*st.w]); }
+    // left side belly->top (mirror, skip duplicate ends)
+    for(let s=SECN-2;s>=1;s--){ const [zf,y]=sampleSection(s/(SECN-1)); pts.push([st.x, y*hh, -zf*st.w]); }
+    return pts;
+  }
+  const rings=stations.map(ringPts);
+  const N=rings[0].length;
+  rings.forEach(r=>r.forEach(v=>verts.push(...v)));
+  for(let s=0;s<ringsCount-1;s++){ const a=s*N,b=(s+1)*N;
+    for(let i=0;i<N;i++){const j=(i+1)%N; idx.push(a+i,a+j,b+i); idx.push(a+j,b+j,b+i);} }
+  const g=new THREE.BufferGeometry();
+  g.setAttribute('position',new THREE.Float32BufferAttribute(verts,3));
+  g.setIndex(idx); g.computeVertexNormals();
+  return {geo:g, L, H, stations};
+}
+
+function rebuild(){
+  scene.remove(ship); ship.traverse(o=>{if(o.geometry)o.geometry.dispose();}); ship=new THREE.Group();
+  const {geo,L,H,stations}=buildHull();
+  ship.add(new THREE.Mesh(geo,matHull));
+
+  // SUPERSTRUCTURE: long stepped dorsal tower toward the stern (Star Destroyer command)
+  if(ST.sup){
+    const towerX=-L*0.6;
+    const t1=new THREE.Mesh(new THREE.BoxGeometry(L*0.5,H*0.6,stations[0].w*1.0),matTower); t1.position.set(towerX,H*0.7,0); ship.add(t1);
+    const t2=new THREE.Mesh(new THREE.BoxGeometry(L*0.3,H*0.5,stations[0].w*0.6),matTower); t2.position.set(towerX,H*1.15,0); ship.add(t2);
+    // bridge tower + two "domes"
+    const br=new THREE.Mesh(new THREE.BoxGeometry(L*0.12,H*0.5,stations[0].w*0.36),matTower); br.position.set(towerX-L*0.05,H*1.6,0); ship.add(br);
+    for(const z of [-0.18,0.18]){ const d=new THREE.Mesh(new THREE.SphereGeometry(H*0.18,8,6),matDark); d.position.set(towerX-L*0.05,H*1.9,z*stations[0].w); ship.add(d); }
+    const cano=new THREE.Mesh(new THREE.BoxGeometry(L*0.1,H*0.2,stations[0].w*0.3),matCanopy); cano.position.set(towerX+L*0.04,H*1.85,0); ship.add(cano);
+  }
+
+  // ENGINES: cluster of glowing bells in the broad stern face
+  const sternW=stations[0].w;
+  const ne=4;
+  for(let i=0;i<ne;i++){ const z=(i/(ne-1)-0.5)*sternW*1.4;
+    const bell=new THREE.Mesh(new THREE.CylinderGeometry(H*0.28,H*0.34,H*0.3,8),matDark); bell.rotation.z=Math.PI/2; bell.position.set(-L*0.98,H*0.0,z); ship.add(bell);
+    const gl=new THREE.Mesh(new THREE.CylinderGeometry(H*0.2,H*0.2,H*0.08,8),matEngine); gl.rotation.z=Math.PI/2; gl.position.set(-L*1.05,H*0.0,z); ship.add(gl);
+  }
+
+  // PROW spinal gun
+  const barrel=new THREE.Mesh(new THREE.CylinderGeometry(H*0.06,H*0.08,L*0.25,6),matGun); barrel.rotation.z=Math.PI/2; barrel.position.set(L*1.02,0,0); ship.add(barrel);
+
+  // BROADSIDE batteries along the chine edges, scaled count by greeble density
+  const count=Math.round(lerp(3,14,ST.greeb));
+  for(const sgn of [-1,1]){
+    for(let i=0;i<count;i++){
+      const t=i/(count-1); // along length, skip extreme prow
+      const sx=lerp(-L*0.85, L*0.6, t);
+      const wAt=widthAt(t*0.0+ (sx/(2*L)+0.5)); // approx width at this x
+      const bx=new THREE.Mesh(new THREE.BoxGeometry(L*0.05,H*0.08,H*0.08),matBatt);
+      bx.position.set(sx, H*0.12, sgn*wAt*0.98); ship.add(bx);
+    }
+  }
+  // GREEBLE: tiny window/panel blocks across the dorsal hull to imply scale
+  if(ST.greeb>0.05){
+    const rows=Math.round(lerp(2,6,ST.greeb)), cols=Math.round(lerp(6,26,ST.greeb));
+    for(let r=0;r<rows;r++)for(let c=0;c<cols;c++){
+      const t=c/(cols-1); const sx=lerp(-L*0.9,L*0.7,t); const wAt=widthAt(sx/(2*L)+0.5);
+      const zz=(r/(rows-1)-0.5)*wAt*1.2;
+      if(Math.random()>0.5) continue;
+      const g2=new THREE.Mesh(new THREE.BoxGeometry(L*0.012,H*0.03,H*0.03), Math.random()>0.5?matDark:matCanopy);
+      g2.position.set(sx, H*0.34, zz); ship.add(g2);
+    }
+  }
+
+  scene.add(ship);
+  function widthAt(u){ // u 0..1 stern->prow, interpolate plan halfwidth
+    const n=PLAN.length; const f=u*(n-1); const i=Math.min(n-2,Math.max(0,Math.floor(f))); const uu=f-i;
+    return lerp(PLAN[i][1],PLAN[i+1][1],uu);
+  }
+}
+
+let rt=new THREE.WebGLRenderTarget(ST.res.w,ST.res.h,{minFilter:THREE.NearestFilter,magFilter:THREE.NearestFilter});
+const postScene=new THREE.Scene(); const postCam=new THREE.OrthographicCamera(-1,1,1,-1,0,1);
+const postMat=new THREE.ShaderMaterial({
+  uniforms:{tex:{value:rt.texture},bands:{value:ST.bands},
+    uHue:{value:0.0},uSat:{value:1.0},uBri:{value:1.0},uCon:{value:1.0},uGam:{value:1.0}},
+  vertexShader:`varying vec2 vUv;void main(){vUv=uv;gl_Position=vec4(position,1.0);}`,
+  fragmentShader:`varying vec2 vUv;uniform sampler2D tex;
+    uniform float bands,uHue,uSat,uBri,uCon,uGam;
+    vec3 rgb2hsv(vec3 c){vec4 K=vec4(0.,-1./3.,2./3.,-1.);
+      vec4 p=mix(vec4(c.bg,K.wz),vec4(c.gb,K.xy),step(c.b,c.g));
+      vec4 q=mix(vec4(p.xyw,c.r),vec4(c.r,p.yzx),step(p.x,c.r));
+      float d=q.x-min(q.w,q.y);float e=1.0e-10;
+      return vec3(abs(q.z+(q.w-q.y)/(6.*d+e)),d/(q.x+e),q.x);}
+    vec3 hsv2rgb(vec3 c){vec4 K=vec4(1.,2./3.,1./3.,3.);
+      vec3 p=abs(fract(c.xxx+K.xyz)*6.-K.www);
+      return c.z*mix(K.xxx,clamp(p-K.xxx,0.,1.),c.y);}
+    void main(){vec4 c=texture2D(tex,vUv);if(c.a<0.5){discard;}
+      vec3 col=c.rgb;
+      // hue/sat in HSV
+      vec3 h=rgb2hsv(col); h.x=fract(h.x+uHue); h.y=clamp(h.y*uSat,0.,1.); col=hsv2rgb(h);
+      // brightness
+      col*=uBri;
+      // contrast around 0.5
+      col=(col-0.5)*uCon+0.5;
+      // gamma
+      col=pow(max(col,0.0),vec3(1.0/uGam));
+      col=clamp(col,0.0,1.0);
+      // posterize
+      vec3 q=floor(col*bands+0.5)/bands;
+      gl_FragColor=vec4(q,1.0);}`,
+  transparent:true
+});
+postScene.add(new THREE.Mesh(new THREE.PlaneGeometry(2,2),postMat));
+
+function setCam(){
+  const y=THREE.MathUtils.degToRad(ST.yaw), p=THREE.MathUtils.degToRad(ST.pitch); const r=30;
+  cam.position.set(r*Math.cos(p)*Math.sin(y), r*Math.sin(p), r*Math.cos(p)*Math.cos(y));
+  cam.lookAt(0,0,0);
+  const aspect=ST.res.w/ST.res.h, view=9/ST.zoom;
+  cam.left=-view*aspect;cam.right=view*aspect;cam.top=view;cam.bottom=-view;cam.updateProjectionMatrix();
+}
+function setLight(){const az=THREE.MathUtils.degToRad(ST.laz),el=THREE.MathUtils.degToRad(ST.lel);
+  key.position.set(Math.cos(el)*Math.sin(az)*10,Math.sin(el)*10,Math.cos(el)*Math.cos(az)*10);}
+function setRes(){rt.dispose();rt=new THREE.WebGLRenderTarget(ST.res.w,ST.res.h,{minFilter:THREE.NearestFilter,magFilter:THREE.NearestFilter});postMat.uniforms.tex.value=rt.texture;
+  renderer.setSize(ST.res.w,ST.res.h,false);const disp=Math.min(1100,window.innerWidth-80);
+  // integer upscale when it fits; otherwise fractional downscale to fit width
+  let f=Math.floor(disp/ST.res.w); if(f<1){f=disp/ST.res.w;} else {f=Math.max(1,Math.min(f,6));}
+  cvs.style.width=(ST.res.w*f)+'px';cvs.style.height=(ST.res.h*f)+'px';document.getElementById('hRes').textContent=`${ST.res.w}×${ST.res.h}`;}
+
+rebuild(); setRes(); setCam(); setLight();
+function loop(){requestAnimationFrame(loop);setCam();
+  renderer.setRenderTarget(rt);renderer.clear();renderer.render(scene,cam);
+  renderer.setRenderTarget(null);renderer.clear();renderer.render(postScene,postCam);}
+loop();
+
+// ============ PREVIEW INTERACTION ============
+let pdrag=false,plx=0,ply=0;
+cvs.addEventListener('pointerdown',e=>{pdrag=true;plx=e.clientX;ply=e.clientY;});
+window.addEventListener('pointerup',()=>pdrag=false);
+window.addEventListener('pointermove',e=>{if(!pdrag)return;
+  ST.yaw=(ST.yaw+(e.clientX-plx)*0.5+360)%360; ST.pitch=Math.max(5,Math.min(80,ST.pitch+(e.clientY-ply)*0.35));
+  plx=e.clientX;ply=e.clientY;document.getElementById('hYaw').textContent=Math.round(ST.yaw)+'°';
+  document.getElementById('hPit').textContent=Math.round(ST.pitch)+'°';
+  document.getElementById('pitch').value=Math.round(ST.pitch);document.getElementById('pv').textContent=Math.round(ST.pitch)+'°';
+  document.querySelectorAll('.snap').forEach(x=>x.classList.remove('on'));
+});
+cvs.addEventListener('wheel',e=>{e.preventDefault();ST.zoom=Math.max(0.5,Math.min(3,ST.zoom*(e.deltaY>0?0.92:1.08)));},{passive:false});
+
+// ============ CONTROLS WIRING ============
+const $=id=>document.getElementById(id);
+document.querySelectorAll('#planTool button').forEach(b=>b.onclick=()=>{document.querySelectorAll('#planTool button').forEach(x=>x.classList.remove('on'));b.classList.add('on');planEd.setTool(b.dataset.t);});
+document.querySelectorAll('#secTool button').forEach(b=>b.onclick=()=>{document.querySelectorAll('#secTool button').forEach(x=>x.classList.remove('on'));b.classList.add('on');secEd.setTool(b.dataset.t);});
+$('planReset').onclick=()=>{PLAN=daggerPlan();planEd.draw();rebuild();};
+$('secReset').onclick=()=>{SECTION=daggerSection();secEd.draw();rebuild();};
+
+// ---- IMPORT side view: underlay + auto-trace height profile ----
+$('importBtn').onclick=()=>$('fileInput').click();
+$('fileInput').onchange=e=>{
+  const file=e.target.files[0]; if(!file) return;
+  const img=new Image();
+  img.onload=()=>{
+    UNDERLAY={img, aspect:img.width/img.height};
+    HEIGHTPROF=traceHeightProfile(img);
+    $('clearImg').style.display='';
+    planEd.draw(); rebuild();
+  };
+  img.src=URL.createObjectURL(file);
+};
+$('clearImg').onclick=()=>{
+  UNDERLAY=null; HEIGHTPROF=null; $('clearImg').style.display='none';
+  planEd.draw(); rebuild();
+};
+
+function traceHeightProfile(img){
+  // draw to offscreen, detect background from corner, scan columns for silhouette extent
+  const TW=200, TH=Math.max(20,Math.round(200/(img.width/img.height)));
+  const oc=document.createElement('canvas'); oc.width=TW; oc.height=TH;
+  const octx=oc.getContext('2d'); octx.drawImage(img,0,0,TW,TH);
+  let data; try{ data=octx.getImageData(0,0,TW,TH).data; }catch(err){ return null; }
+  // background = top-left pixel; treat transparent OR near-bg as empty
+  const bg=[data[0],data[1],data[2],data[3]];
+  const isShip=(i)=>{
+    const a=data[i+3]; if(a<24) return false; // transparent => empty
+    const dr=data[i]-bg[0],dg=data[i+1]-bg[1],db=data[i+2]-bg[2];
+    return (dr*dr+dg*dg+db*db)>1600 || bg[3]<24; // differs from bg, or bg was transparent
+  };
+  const prof=[]; let maxExtent=0;
+  const cols=24;
+  for(let c=0;c<cols;c++){
+    const px=Math.round(c/(cols-1)*(TW-1));
+    let top=-1,bot=-1;
+    for(let y=0;y<TH;y++){ const i=(y*TW+px)*4; if(isShip(i)){ if(top<0)top=y; bot=y; } }
+    const extent=(top<0)?0:(bot-top+1)/TH;
+    prof.push(extent); if(extent>maxExtent)maxExtent=extent;
+  }
+  if(maxExtent<=0) return null;
+  // normalize to peak=1.0, map columns to x 0..1 (image left -> x0 = stern by default)
+  return prof.map((e,c)=>[c/(cols-1), e/maxExtent]);
+}
+document.querySelectorAll('.snap').forEach(b=>b.onclick=()=>{document.querySelectorAll('.snap').forEach(x=>x.classList.remove('on'));b.classList.add('on');ST.yaw=+b.dataset.yaw;$('hYaw').textContent=ST.yaw+'°';});
+$('pitch').oninput=e=>{ST.pitch=+e.target.value;$('pv').textContent=ST.pitch+'°';$('hPit').textContent=ST.pitch+'°';};
+$('stretch').oninput=e=>{ST.stretch=+e.target.value/100;$('stv').textContent=ST.stretch.toFixed(1)+'×';rebuild();};
+$('hscale').oninput=e=>{ST.hscale=+e.target.value/100;$('hsv').textContent=ST.hscale.toFixed(1)+'×';rebuild();};
+document.querySelectorAll('#sup button').forEach(b=>b.onclick=()=>{document.querySelectorAll('#sup button').forEach(x=>x.classList.remove('on'));b.classList.add('on');ST.sup=b.dataset.s==='1';rebuild();});
+$('greeb').oninput=e=>{ST.greeb=+e.target.value/100;$('gv').textContent=e.target.value+'%';rebuild();};
+document.querySelectorAll('#bands button').forEach(b=>b.onclick=()=>{document.querySelectorAll('#bands button').forEach(x=>x.classList.remove('on'));b.classList.add('on');ST.bands=+b.dataset.b;postMat.uniforms.bands.value=ST.bands;});
+$('laz').oninput=e=>{ST.laz=+e.target.value;$('lazv').textContent=ST.laz+'°';setLight();};
+$('lel').oninput=e=>{ST.lel=+e.target.value;$('lelv').textContent=ST.lel+'°';setLight();};
+document.querySelectorAll('#res button').forEach(b=>b.onclick=()=>{document.querySelectorAll('#res button').forEach(x=>x.classList.remove('on'));b.classList.add('on');ST.res={w:+b.dataset.w,h:+b.dataset.h};setRes();});
+
+const stageEl=$('stage');
+function setBg(c){stageEl.style.background=c;$('bgpick').value=c;
+  document.querySelectorAll('#bgpre button').forEach(x=>x.classList.toggle('on',x.dataset.c.toLowerCase()===c.toLowerCase()));}
+$('bgpick').oninput=e=>setBg(e.target.value);
+document.querySelectorAll('#bgpre button').forEach(b=>b.onclick=()=>setBg(b.dataset.c));
+
+// color grading
+const U=postMat.uniforms;
+$('ghue').oninput=e=>{U.uHue.value=(+e.target.value)/360;$('ghuev').textContent=e.target.value+'°';};
+$('gsat').oninput=e=>{U.uSat.value=(+e.target.value)/100;$('gsatv').textContent=(+e.target.value/100).toFixed(2);};
+$('gbri').oninput=e=>{U.uBri.value=(+e.target.value)/100;$('gbriv').textContent=(+e.target.value/100).toFixed(2);};
+$('gcon').oninput=e=>{U.uCon.value=(+e.target.value)/100;$('gconv').textContent=(+e.target.value/100).toFixed(2);};
+$('ggam').oninput=e=>{U.uGam.value=(+e.target.value)/100;$('ggamv').textContent=(+e.target.value/100).toFixed(2);};
+$('gradeReset').onclick=()=>{
+  U.uHue.value=0;U.uSat.value=1;U.uBri.value=1;U.uCon.value=1;U.uGam.value=1;
+  const set=(id,v,t)=>{$(id).value=v;$(id+'v').textContent=t;};
+  set('ghue',0,'0°');set('gsat',100,'1.00');set('gbri',100,'1.00');set('gcon',100,'1.00');set('ggam',100,'1.00');
+};
+
+// ---- PNG EXPORT ----
+let EXSCALE=1;
+document.querySelectorAll('#exScale button').forEach(b=>b.onclick=()=>{document.querySelectorAll('#exScale button').forEach(x=>x.classList.remove('on'));b.classList.add('on');EXSCALE=+b.dataset.x;});
+
+function renderFrameNow(){
+  // force a fresh render of current ST into the preview canvas
+  setCam();
+  renderer.setRenderTarget(rt);renderer.clear();renderer.render(scene,cam);
+  renderer.setRenderTarget(null);renderer.clear();renderer.render(postScene,postCam);
+}
+function exportPNG(filename){
+  renderFrameNow();
+  const w=ST.res.w, h=ST.res.h;
+  // copy the gl canvas (native res) to a 2D canvas, optionally upscaled crisp
+  const src=document.createElement('canvas'); src.width=w; src.height=h;
+  const sctx=src.getContext('2d'); sctx.drawImage(cvs,0,0,w,h);
+  let out=src;
+  if(EXSCALE>1){
+    out=document.createElement('canvas'); out.width=w*EXSCALE; out.height=h*EXSCALE;
+    const octx=out.getContext('2d'); octx.imageSmoothingEnabled=false;
+    octx.drawImage(src,0,0,w*EXSCALE,h*EXSCALE);
+  }
+  out.toBlob(blob=>{
+    const a=document.createElement('a'); a.href=URL.createObjectURL(blob);
+    a.download=filename; a.click(); setTimeout(()=>URL.revokeObjectURL(a.href),2000);
+  },'image/png');
+}
+$('exOne').onclick=()=>{ exportPNG(`drifter_y${Math.round(ST.yaw)}_p${Math.round(ST.pitch)}_${ST.res.w}px@${EXSCALE}x.png`); };
+$('exAll').onclick=async ()=>{
+  const saved=ST.yaw;
+  const views=[['right',28],['left',152],['fore',118],['aft',298]];
+  for(const [name,yaw] of views){
+    ST.yaw=yaw;
+    exportPNG(`drifter_${name}_${ST.res.w}px@${EXSCALE}x.png`);
+    await new Promise(r=>setTimeout(r,350)); // stagger so browser allows multiple downloads
+  }
+  ST.yaw=saved; $('hYaw').textContent=Math.round(ST.yaw)+'°';
+};
+
+// ---- SAVE / LOAD DESIGN (JSON) ----
+const DESIGN_VERSION=1;
+function collectDesign(){
+  return {
+    format:'broadside-ship', version:DESIGN_VERSION,
+    plan:PLAN, section:SECTION, heightProfile:HEIGHTPROF,
+    settings:{
+      pitch:ST.pitch, yaw:ST.yaw, zoom:ST.zoom, stretch:ST.stretch, hscale:ST.hscale,
+      sup:ST.sup, greeb:ST.greeb, bands:ST.bands, laz:ST.laz, lel:ST.lel, res:ST.res
+    },
+    grade:{ hue:U.uHue.value, sat:U.uSat.value, bri:U.uBri.value, con:U.uCon.value, gam:U.uGam.value }
+  };
+}
+$('saveDesign').onclick=()=>{
+  const blob=new Blob([JSON.stringify(collectDesign(),null,2)],{type:'application/json'});
+  const a=document.createElement('a'); a.href=URL.createObjectURL(blob);
+  a.download='broadside-ship-design.json'; a.click(); setTimeout(()=>URL.revokeObjectURL(a.href),2000);
+};
+$('loadDesign').onclick=()=>$('designInput').click();
+$('designInput').onchange=e=>{
+  const file=e.target.files[0]; if(!file) return;
+  const r=new FileReader();
+  r.onload=()=>{
+    let d; try{ d=JSON.parse(r.result); }catch(err){ alert('Could not read that file — not valid JSON.'); return; }
+    if(d.format!=='broadside-ship'){ if(!confirm('This file isn\u2019t a Broadside ship design. Try loading anyway?')) return; }
+    applyDesign(d);
+  };
+  r.readAsText(file);
+  e.target.value=''; // allow re-loading same file
+};
+function applyDesign(d){
+  if(Array.isArray(d.plan)) PLAN=d.plan.map(p=>[+p[0],+p[1]]);
+  if(Array.isArray(d.section)) SECTION=d.section.map(p=>[+p[0],+p[1]]);
+  HEIGHTPROF = Array.isArray(d.heightProfile) ? d.heightProfile.map(p=>[+p[0],+p[1]]) : null;
+  const s=d.settings||{};
+  const num=(v,def)=>typeof v==='number'?v:def;
+  ST.pitch=num(s.pitch,ST.pitch); ST.yaw=num(s.yaw,ST.yaw); ST.zoom=num(s.zoom,ST.zoom);
+  ST.stretch=num(s.stretch,ST.stretch); ST.hscale=num(s.hscale,ST.hscale);
+  ST.sup = (typeof s.sup==='boolean')?s.sup:ST.sup;
+  ST.greeb=num(s.greeb,ST.greeb); ST.bands=num(s.bands,ST.bands);
+  ST.laz=num(s.laz,ST.laz); ST.lel=num(s.lel,ST.lel);
+  if(s.res&&s.res.w&&s.res.h) ST.res={w:s.res.w,h:s.res.h};
+  const g=d.grade||{};
+  U.uHue.value=num(g.hue,0); U.uSat.value=num(g.sat,1); U.uBri.value=num(g.bri,1);
+  U.uCon.value=num(g.con,1); U.uGam.value=num(g.gam,1);
+  postMat.uniforms.bands.value=ST.bands;
+  // the underlay image itself isn't stored in the design (only its traced profile),
+  // so drop any stale underlay and reflect the clear button state.
+  UNDERLAY=null;
+  $('clearImg').style.display = HEIGHTPROF ? '' : 'none';
+  syncAllControls();
+  planEd.draw(); secEd.draw(); rebuild(); setRes(); setCam(); setLight();
+}
+// reflect current ST + grade into every UI control
+function syncAllControls(){
+  const setV=(id,val,txt)=>{const el=$(id); if(el){el.value=val; const lab=$(id+'v'); if(lab&&txt!=null)lab.textContent=txt;}};
+  setV('pitch',ST.pitch,ST.pitch+'°'); $('hPit')&&($('hPit').textContent=Math.round(ST.pitch)+'°');
+  setV('stretch',Math.round(ST.stretch*100),ST.stretch.toFixed(1)+'×');
+  setV('hscale',Math.round(ST.hscale*100),ST.hscale.toFixed(1)+'×');
+  setV('greeb',Math.round(ST.greeb*100),Math.round(ST.greeb*100)+'%');
+  setV('laz',ST.laz,ST.laz+'°'); setV('lel',ST.lel,ST.lel+'°');
+  setV('ghue',Math.round(U.uHue.value*360),Math.round(U.uHue.value*360)+'°');
+  setV('gsat',Math.round(U.uSat.value*100),U.uSat.value.toFixed(2));
+  setV('gbri',Math.round(U.uBri.value*100),U.uBri.value.toFixed(2));
+  setV('gcon',Math.round(U.uCon.value*100),U.uCon.value.toFixed(2));
+  setV('ggam',Math.round(U.uGam.value*100),U.uGam.value.toFixed(2));
+  $('hYaw')&&($('hYaw').textContent=Math.round(ST.yaw)+'°');
+  // segmented controls
+  const seg=(sel,match)=>document.querySelectorAll(sel).forEach(b=>b.classList.toggle('on',match(b)));
+  seg('#sup button',b=>(b.dataset.s==='1')===ST.sup);
+  seg('#bands button',b=>+b.dataset.b===ST.bands);
+  seg('#res button',b=>+b.dataset.w===ST.res.w);
+  document.querySelectorAll('.snap').forEach(x=>x.classList.remove('on'));
+}
+window.addEventListener('resize',setRes);
+
+planEd.draw(); secEd.draw();
+
+// ---- TAB SWITCHING ----
+document.querySelectorAll('.tab').forEach(t=>t.onclick=()=>{
+  document.querySelectorAll('.tab').forEach(x=>x.classList.remove('on'));
+  t.classList.add('on');
+  const which=t.dataset.tab;
+  document.getElementById('tab-editor').style.display = which==='editor'?'':'none';
+  document.getElementById('tab-docs').style.display = which==='docs'?'':'none';
+  if(which==='editor'){ setRes(); } // re-fit canvas when returning to editor
+});
+</script>
+</body>
+</html>
