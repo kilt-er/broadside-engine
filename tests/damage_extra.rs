@@ -18,8 +18,13 @@
 //! - **C2** — the chain-kill window is reset to 0 on entry to a fresh
 //!   `apply_instant_action` pass (a stale count from a prior window can't leak
 //!   a phantom chain).
+//! - **E4 (HeatSink floor)** — content flagged uncertainty on the exact
+//!   low-heat arithmetic. `subsystems.rs` covers heat 4→2 / 5→2-stacked /
+//!   lockout-clear (all well above 0), but NOT the floor: HeatSink must not
+//!   pull heat negative. This pins `(heat - extra).max(0)` at heat 0 and 1.
 
 use broadside_engine::resolve::{apply_instant_action, destroy, Content};
+use broadside_engine::subsystems::{on_turn_end_for, Installations, HEAT_SINK};
 use broadside_engine::types::{
     Action, ActionCost, Arc, Board, Effect, EventBus, Faction, Hook, HookContext, LaneEnd, Mount,
     Orientation, Projectile, RangeBand, ShieldFace, ShieldProfile, Ship, Targeting,
@@ -205,5 +210,53 @@ fn c2_chain_window_resets_on_instant_action_entry() {
         b.destroys_this_window, 0,
         "apply_instant_action zeroes the chain-window counter on entry, so a stale \
          count from a prior pass can't manufacture a phantom chain",
+    );
+}
+
+/* =========================================================================
+ * E4 — HeatSink dissipation floors at 0 (never goes negative).
+ *
+ * subsystems.rs covers the above-zero arithmetic (heat 4->2, 5->2 stacked,
+ * lockout-clear). This pins the floor that content flagged uncertainty on:
+ * on_turn_end_for applies `(heat - extra).max(0)`, so HeatSink on a ship
+ * already at/near 0 heat clamps rather than underflowing.
+ * ====================================================================== */
+
+#[test]
+fn e4_heat_sink_floors_dissipation_at_zero() {
+    // Ship at heat 0 with one HeatSink: extra dissipation 1, floored => 0.
+    let mut s = ship_with_armour("p", 0, 10, 0, 0, vec![]);
+    s.faction = Faction::Player;
+    s.heat = 0;
+    let mut b = board(3, vec![Some(s), None, None]);
+    let mut installs = Installations::new();
+    installs.install("p", HEAT_SINK);
+
+    on_turn_end_for(&installs, &mut b);
+
+    assert_eq!(
+        b.cells[0].as_ref().expect("ship alive").heat,
+        0,
+        "HeatSink on a 0-heat ship floors at 0, never negative",
+    );
+}
+
+#[test]
+fn e4_two_heat_sinks_on_one_heat_ship_floor_at_zero_not_minus_one() {
+    // heat 1, two HeatSinks => extra 2; (1 - 2).max(0) == 0, not -1.
+    let mut s = ship_with_armour("p", 0, 10, 0, 0, vec![]);
+    s.faction = Faction::Player;
+    s.heat = 1;
+    let mut b = board(3, vec![Some(s), None, None]);
+    let mut installs = Installations::new();
+    installs.install("p", HEAT_SINK);
+    installs.install("p", HEAT_SINK);
+
+    on_turn_end_for(&installs, &mut b);
+
+    assert_eq!(
+        b.cells[0].as_ref().expect("ship alive").heat,
+        0,
+        "stacked HeatSinks overshooting available heat clamp to 0, not negative",
     );
 }
