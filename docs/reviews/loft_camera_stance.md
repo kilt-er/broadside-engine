@@ -64,3 +64,15 @@ later (git diff now clean, 7d12234 itself is loft_gpu.rs-only and builds). This 
 the WIP-sweep-in collision the atomic-pathspec protocol guards against; flagging so
 the team knows the tree was momentarily uncompilable. My APPROVE is of the
 committed 7d12234, verified against a clean tree.
+
+---
+
+## Addendum: drop the dead pitch arg (9f4e71a) — APPROVE; explains the transient break
+
+Cleanup follow-up. The full #36 fix is **7d12234 + 9f4e71a** (gfx.rs + loft_gpu.rs).
+
+- `render_ship` signature DID change here (7d12234 had left `_pitch_deg` as an ignored param; 9f4e71a drops it → 6 params). The sole call site (gfx.rs:1611) is updated to the 6-arg form, and the stale `let pitch = 26.0` local + "live scrubber" comment are removed from gfx.rs. `grep render_ship(` = one caller, matched; `grep pitch src/gfx.rs` = nothing left. No stray caller.
+- **No behavioral change**: pitch was already fixed at 26° internally via CAMERA_PITCH_DEG; this removes the ignored param + dead local only. Output identical. Docstring updated (camera owns the ¾ angle; stance is the only per-ship variable).
+- **This resolves the transient shared-tree break I flagged**: the uncompilable window was exactly between 7d12234 (param dropped in loft_gpu) and 9f4e71a (caller updated in gfx). With both landed the tree is consistent and builds clean. So the earlier process flag was a real-but-transient two-commit split, now closed — not a lingering defect.
+
+Full #36 verdict: APPROVE (7d12234 + 9f4e71a). Camera fixed, stance via det-+1 model rotation (shading correct), idle 0 at rest, single-const framing, API cleaned. 310 tests green.
