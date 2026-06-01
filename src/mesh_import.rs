@@ -388,10 +388,12 @@ mod tests {
     /// This is a deterministic glTF 2.0 writer scoped to the test module — it
     /// emits exactly the shape the CAD `GLTFExporter` will (indexed TRIANGLES,
     /// POSITION + NORMAL, per-primitive PBR material).
-    fn build_glb(
-        prims: &[(&[[f32; 3]], &[u32], [f32; 4], [f32; 3])],
-        scene_extras: Option<&str>,
-    ) -> Vec<u8> {
+    /// One primitive for [`build_glb`]: `(positions, indices, base_color,
+    /// emissive)`. Aliased to keep the `build_glb` signature readable and
+    /// clippy's `type_complexity` lint quiet.
+    type PrimSpec<'a> = (&'a [[f32; 3]], &'a [u32], [f32; 4], [f32; 3]);
+
+    fn build_glb(prims: &[PrimSpec], scene_extras: Option<&str>) -> Vec<u8> {
         use std::io::Write;
 
         // ---- pack all binary buffers (positions, normals, indices) ----
@@ -404,7 +406,7 @@ mod tests {
         let mut view_i = 0usize;
         let mut acc_i = 0usize;
 
-        let align4 = |b: &mut Vec<u8>| while b.len() % 4 != 0 { b.push(0) };
+        let align4 = |b: &mut Vec<u8>| while !b.len().is_multiple_of(4) { b.push(0) };
 
         for (pi, (positions, indices, color, emissive)) in prims.iter().enumerate() {
             // flat per-vertex normals computed here so the fixture carries NORMAL
@@ -500,11 +502,11 @@ mod tests {
 
         // ---- assemble the .glb container (12-byte header + 2 chunks) ----
         let mut json_bytes = json.into_bytes();
-        while json_bytes.len() % 4 != 0 {
+        while !json_bytes.len().is_multiple_of(4) {
             json_bytes.push(b' ');
         }
         let mut bin_bytes = bin;
-        while bin_bytes.len() % 4 != 0 {
+        while !bin_bytes.len().is_multiple_of(4) {
             bin_bytes.push(0);
         }
 
