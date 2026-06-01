@@ -128,6 +128,39 @@ pub struct ImportedShip {
     pub light: ImportLight,
 }
 
+impl ImportedShip {
+    /// Flatten `group_ranges` × `materials[].color` into one `[f32; 4]` colour
+    /// per vertex of [`ImportedShip::mesh`], in vertex order.
+    ///
+    /// This is the **side channel** the loft render path consumes:
+    /// [`crate::loft::HullMesh`] stays geometry-only (positions + normals) and
+    /// uniform across both producers (loft + CAD), so per-vertex colour lives
+    /// here with the materials, not on the mesh. The renderer's
+    /// `loft_gpu.upload(mesh, colors)` takes this slice for the CAD path; the
+    /// loft path passes an empty / uniform-grey slice instead.
+    ///
+    /// Vertices not covered by any [`GroupRange`] (should not happen for a
+    /// well-formed import — every primitive emits a group) fall back to the
+    /// [`MeshMaterial::default`] colour so the slice is always exactly
+    /// `mesh.positions.len()` long and the renderer can index it 1:1.
+    pub fn vertex_colors(&self) -> Vec<[f32; 4]> {
+        let vcount = self.mesh.positions.len();
+        let mut colors = vec![MeshMaterial::default().color; vcount];
+        for g in &self.group_ranges {
+            let color = self
+                .materials
+                .get(g.material)
+                .map(|m| m.color)
+                .unwrap_or_else(|| MeshMaterial::default().color);
+            let end = (g.start + g.len).min(vcount);
+            for c in &mut colors[g.start.min(vcount)..end] {
+                *c = color;
+            }
+        }
+        colors
+    }
+}
+
 /// Errors from importing a `.glb`.
 #[derive(Debug)]
 #[non_exhaustive]
@@ -571,6 +604,34 @@ mod tests {
         assert_eq!(ship.group_ranges[1], GroupRange { start: 3, len: 3, material: 1 });
         // Second material carries emissive (a glow part).
         assert_eq!(ship.materials[1].emissive, [0.2, 0.07, 0.0, 1.0]);
+    }
+
+    #[test]
+    fn vertex_colors_flatten_groups_to_per_vertex_slice() {
+        // Two single-tri primitives with distinct colours -> 6 tri-soup verts,
+        // first 3 the first colour, last 3 the second.
+        let positions: &[[f32; 3]] = &[
+            [-1.0, 0.0, -1.0],
+            [1.0, 0.0, -1.0],
+            [1.0, 0.0, 1.0],
+        ];
+        let indices: &[u32] = &[0, 1, 2];
+        let c0 = [0.7, 0.78, 0.88, 1.0];
+        let c1 = [1.0, 0.54, 0.28, 1.0];
+        let glb = build_glb(
+            &[
+                (positions, indices, c0, [0.0, 0.0, 0.0]),
+                (positions, indices, c1, [0.0, 0.0, 0.0]),
+            ],
+            None,
+        );
+        let ship = load_glb(&glb).unwrap();
+        let colors = ship.vertex_colors();
+        // Exactly one colour per mesh vertex, indexable 1:1.
+        assert_eq!(colors.len(), ship.mesh.positions.len());
+        assert_eq!(colors.len(), 6);
+        assert_eq!(&colors[0..3], &[c0, c0, c0]);
+        assert_eq!(&colors[3..6], &[c1, c1, c1]);
     }
 
     #[test]
