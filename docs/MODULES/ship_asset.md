@@ -102,3 +102,11 @@ verts the house grey, identical to dispatching the parsed design),
 routes to `load_glb` — a non-glb is a `Mesh` error, not `Design`),
 `extension_dispatch_is_case_insensitive` (src/ship_asset.rs:237),
 `unknown_extension_is_an_error` (src/ship_asset.rs:248).
+
+**Test-coverage note (reviewer #26, `docs/reviews/ship_asset.md`):** the CAD branch's worked
+example pins only the **routing** (garbage → `Mesh` error, not `Design`), *not* a full
+valid-`.glb` → `ShipGeometry` round-trip — deliberately, to avoid duplicating `mesh_import`'s
+test-only glTF fixture. Acceptable scoping: the CAD branch beyond the already-well-tested
+`load_glb` is just `vertex_colors()` (thoroughly tested in [`mesh_import`](mesh_import.md),
+including the 1:1-length invariant) plus the struct pairing. Reviewer **approved** with no
+findings.
