@@ -243,14 +243,21 @@ pub enum DrawCommand {
 }
 
 /// Lane destination quad for a loft-rendered ship. Corners in virtual-pixel
-/// space, same y-down convention as [`PolygonInstance`].
-#[repr(C)]
+/// space, same y-down convention as [`PolygonInstance`]. Also carries which
+/// ship this is (`ship_id`, so the renderer looks up its animated pose) and
+/// which 3D mesh to render it with (`kind`) — the pre-pass renders the right
+/// mesh at the right pose into the shared loft target before blitting it here.
 #[derive(Copy, Clone, Debug)]
 pub struct LoftShipInstance {
     pub p0: [f32; 2],
     pub p1: [f32; 2],
     pub p2: [f32; 2],
     pub p3: [f32; 2],
+    /// Interned ship id (e.g. `"player"`, `"enemy-2"`) — keys the per-ship
+    /// [`crate::loft_gpu::ShipPose`] the renderer animates.
+    pub ship_id: SpriteSlug,
+    /// Which uploaded loft mesh to render this ship with.
+    pub kind: crate::sprites::LoftMeshKind,
 }
 
 impl From<SpriteInstance> for DrawCommand {
@@ -596,19 +603,23 @@ pub struct Gfx {
     /// scene. Samples an arbitrary texture view (the loft output), unlike the
     /// `TexturedShip` path which samples the procedural atlas.
     loft_blit: LoftShipBlit,
-    /// Demo loft ship: the default dagger, uploaded once, animated by a
-    /// [`crate::loft_gpu::ShipPose`]. A minimal milestone hookup so ONE 3D ship
-    /// renders in the lane — architect's ShipDesign/glb-driven per-class spawn
-    /// supersedes this. `None` until [`Gfx::install_demo_loft_ship`] runs.
-    demo_loft: Option<DemoLoftShip>,
+    /// Uploaded loft meshes, one per [`crate::sprites::LoftMeshKind`]. Every
+    /// ship of a given kind shares the one vertex buffer (e.g. all four enemy
+    /// placeholders share the vendored CAD hull). Uploaded once at startup via
+    /// [`Gfx::install_player_dagger`] / [`Gfx::install_enemy_cad`].
+    loft_meshes: std::collections::HashMap<crate::sprites::LoftMeshKind, LoftMesh>,
+    /// Per-ship animated poses, keyed by `Ship::id`. The bin syncs these each
+    /// frame from board orientation ([`Gfx::sync_loft_pose`]); the pre-pass
+    /// renders each loft ship at its pose. Ships that leave the board are
+    /// pruned by [`Gfx::retain_loft_poses`].
+    loft_poses: std::collections::HashMap<String, crate::loft_gpu::ShipPose>,
 }
 
-/// State for the one demo lofted ship (milestone). Owns its uploaded mesh
-/// vertex buffer + the animated pose.
-struct DemoLoftShip {
+/// One uploaded loft mesh + its vertex count, shared across every ship that
+/// renders with this [`crate::sprites::LoftMeshKind`].
+struct LoftMesh {
     vbuf: wgpu::Buffer,
     vcount: u32,
-    pose: crate::loft_gpu::ShipPose,
 }
 
 /// One uploaded ship sprite. `dimensions` is the source PNG size in
@@ -759,8 +770,16 @@ impl crate::sprites::SpriteRegistry for Gfx {
         Gfx::has_ship_sprite(self, class, stance, view)
     }
 
-    fn loft_player(&self) -> bool {
-        self.has_demo_loft()
+    fn loft_kind(&self, _ship_id: &str, is_player: bool) -> Option<crate::sprites::LoftMeshKind> {
+        use crate::sprites::LoftMeshKind;
+        // Player → grey dagger; enemies → vendored CAD hull. Only if that
+        // mesh is actually uploaded (else fall back to the 2D silhouette).
+        let kind = if is_player {
+            LoftMeshKind::PlayerDagger
+        } else {
+            LoftMeshKind::EnemyCad
+        };
+        self.has_loft_mesh(kind).then_some(kind)
     }
 }
 
@@ -899,7 +918,8 @@ impl Gfx {
             ship_bg_cache: std::collections::HashMap::new(),
             loft,
             loft_blit,
-            demo_loft: None,
+            loft_meshes: std::collections::HashMap::new(),
+            loft_poses: std::collections::HashMap::new(),
         };
 
         let view = ViewUniform {
@@ -913,13 +933,12 @@ impl Gfx {
         g
     }
 
-    /// Install the milestone demo loft ship: loft the default dagger profiles
-    /// and upload it (grey hull — no per-vertex colors yet; lights up when a
-    /// ShipDesign/glb feeds the colors slice). Resting at `orientation`. A
-    /// minimal hookup so ONE 3D ship renders in the lane — architect's
-    /// ShipDesign/glb-driven per-class spawn supersedes it. Idempotent: a
-    /// second call replaces the demo ship.
-    pub fn install_demo_loft_ship(&mut self, orientation: crate::types::Orientation) {
+    /// Install the player demo loft ship mesh: loft the default dagger profiles
+    /// and upload it as the [`LoftMeshKind::PlayerDagger`] shared mesh (grey
+    /// hull — no per-vertex colors / emissive; the procedural dagger doesn't
+    /// glow). Idempotent: a second call replaces the dagger mesh. Per-ship pose
+    /// is created lazily by [`Self::sync_loft_pose`].
+    pub fn install_player_dagger(&mut self) {
         use crate::ship_design::Point2;
         // The dagger profiles (loft editor defaults / POC `DAGGER_PLAN` etc.).
         let plan = [
@@ -943,44 +962,87 @@ impl Gfx {
             None,
             crate::loft::LoftParams::default(),
         );
-        // No per-vertex colors (grey hull) and no emissive — the procedural
-        // dagger doesn't glow; CAD-imported ships carry both via upload_imported.
         let (vbuf, vcount) = self.loft.upload_hull(&self.device, &mesh, &[], &[]);
-        self.demo_loft = Some(DemoLoftShip {
-            vbuf,
-            vcount,
-            pose: crate::loft_gpu::ShipPose::new(orientation),
-        });
+        self.loft_meshes.insert(
+            crate::sprites::LoftMeshKind::PlayerDagger,
+            LoftMesh { vbuf, vcount },
+        );
     }
 
-    /// Whether a demo loft ship is installed (so the caller / hud emits a
-    /// `LoftShip` command for the player instead of its 2D silhouette).
-    pub fn has_demo_loft(&self) -> bool {
-        self.demo_loft.is_some()
+    /// Install the enemy CAD loft mesh from glTF binary (`.glb`) bytes (the
+    /// vendored `assets/ships/broadside-ship.glb`). Imports through
+    /// [`crate::mesh_import::load_glb`] and uploads via
+    /// [`crate::loft_gpu::LoftGpu::upload_imported`] so per-group materials —
+    /// including the emissive orange accent — reach the shader. Every enemy
+    /// placeholder shares this one mesh. Idempotent. Returns the import error if
+    /// the bytes don't parse (the caller logs + falls back to 2D silhouettes).
+    pub fn install_enemy_cad(
+        &mut self,
+        glb_bytes: &[u8],
+    ) -> Result<(), crate::mesh_import::ImportError> {
+        let ship = crate::mesh_import::load_glb(glb_bytes)?;
+        let (vbuf, vcount) = self.loft.upload_imported(&self.device, &ship);
+        self.loft_meshes.insert(
+            crate::sprites::LoftMeshKind::EnemyCad,
+            LoftMesh { vbuf, vcount },
+        );
+        Ok(())
     }
 
-    /// Advance the demo loft ship's pose by `dt` seconds (idle + any reorient
-    /// tween). Returns `true` whenever a demo loft ship is installed, so the
-    /// caller keeps the redraw loop alive — the idle bob/roll is continuous, so
-    /// a resting 3D ship needs steady frames to "breathe" (the cost is one
-    /// 320×200 render/frame while a 3D ship is on screen; acceptable for the
-    /// demo, revisited when the per-class spawn system lands). No-op / `false`
-    /// when no demo ship.
-    pub fn advance_demo_loft(&mut self, dt: f32) -> bool {
-        match self.demo_loft.as_mut() {
-            Some(d) => {
-                d.pose.advance(dt);
-                true
+    /// Whether a loft mesh of the given kind is uploaded (so hud emits a
+    /// `LoftShip` command for ships of that kind instead of their 2D
+    /// silhouette).
+    pub fn has_loft_mesh(&self, kind: crate::sprites::LoftMeshKind) -> bool {
+        self.loft_meshes.contains_key(&kind)
+    }
+
+    /// Ensure a [`crate::loft_gpu::ShipPose`] exists for `ship_id` and matches
+    /// `orientation`: creates one resting at `orientation` if absent, otherwise
+    /// reorients it toward `orientation` (a no-op when already there, so this
+    /// auto-detects bow-on↔broadside flips and tweens them). Called per ship
+    /// per frame by the bin. No GPU work — pure pose state.
+    pub fn sync_loft_pose(&mut self, ship_id: &str, orientation: crate::types::Orientation) {
+        match self.loft_poses.get_mut(ship_id) {
+            Some(pose) => pose.reorient_to(orientation),
+            None => {
+                self.loft_poses.insert(
+                    ship_id.to_string(),
+                    crate::loft_gpu::ShipPose::new(orientation),
+                );
             }
-            None => false,
         }
     }
 
-    /// Begin a smooth reorient of the demo loft ship to `orientation` (called
-    /// when the player ship flips bow-on↔broadside). No-op if no demo ship.
-    pub fn reorient_demo_loft(&mut self, orientation: crate::types::Orientation) {
-        if let Some(d) = self.demo_loft.as_mut() {
-            d.pose.reorient_to(orientation);
+    /// Drop poses for ships no longer on the board (their ids are absent from
+    /// `live_ids`), so a defeated/departed ship's pose doesn't linger. Called
+    /// per frame after [`Self::sync_loft_pose`] over the live ships.
+    pub fn retain_loft_poses(&mut self, live_ids: &[String]) {
+        self.loft_poses
+            .retain(|id, _| live_ids.iter().any(|l| l == id));
+    }
+
+    /// Advance every loft ship's pose by `dt` seconds (idle + any reorient
+    /// tween). Returns `true` if any pose exists, so the caller keeps the
+    /// redraw loop alive — the idle bob/roll is continuous, so resting 3D ships
+    /// need steady frames to "breathe" (cost: one 320×200 render/frame per
+    /// on-screen 3D ship; acceptable for ≤ lane-count ships). `false` when no
+    /// loft ships.
+    pub fn advance_loft_poses(&mut self, dt: f32) -> bool {
+        if self.loft_poses.is_empty() {
+            return false;
+        }
+        for pose in self.loft_poses.values_mut() {
+            pose.advance(dt);
+        }
+        true
+    }
+
+    /// Begin a smooth reorient of one loft ship to `orientation`. No-op if that
+    /// ship has no pose yet (use [`Self::sync_loft_pose`] to create + reorient
+    /// in one call).
+    pub fn reorient_loft_pose(&mut self, ship_id: &str, orientation: crate::types::Orientation) {
+        if let Some(pose) = self.loft_poses.get_mut(ship_id) {
+            pose.reorient_to(orientation);
         }
     }
 
@@ -1413,65 +1475,209 @@ impl Gfx {
         let swap_view = frame
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("frame encoder"),
-            });
 
-        // Loft PRE-PASS: if any LoftShip is to be drawn and a demo loft ship is
-        // installed, advance its pose and render it into the loft pipeline's
-        // own 320×200 offscreen+depth target FIRST (depth stays entirely inside
-        // LoftGpu). The blit below then samples that posterized output. For the
-        // milestone there's one loft ship; serial render-then-blit reusing the
-        // single loft target generalizes to ≤ lane-count.
-        //
-        // The per-quad blit bind groups are built up front (each borrows the
-        // loft output view + the shared quad ubo) so the render pass can hold
-        // them by reference.
-        let loft_bg: Option<wgpu::BindGroup> = if !loft_quads.is_empty() {
-            if let Some(demo) = self.demo_loft.as_ref() {
-                let yaw = demo.pose.yaw_deg();
-                // Pitch: the loft editor's ¾ default. (The live camera-angle
-                // scrubber feeds this in a follow-up; fixed for the milestone.)
-                let pitch = 26.0;
-                self.loft.render_ship(
-                    &self.queue,
-                    &mut encoder,
-                    &demo.vbuf,
-                    demo.vcount,
-                    yaw,
-                    pitch,
-                );
-                // Write the first quad's corners into the blit uniform and make
-                // its bind group. (One loft ship this milestone.)
-                let q = loft_quads[0];
-                let qu = LoftQuadUniform {
-                    p0: q.p0,
-                    p1: q.p1,
-                    p2: q.p2,
-                    p3: q.p3,
-                    px_to_ndc: [2.0 / VIRTUAL_W as f32, 2.0 / VIRTUAL_H as f32],
-                    _pad: [0.0, 0.0],
+        // The scene-to-offscreen composite walks the batches in z-order. Most
+        // batches (sprites / polygons / textured ships) draw directly into the
+        // offscreen target in one render pass. Loft ships are special: each one
+        // first renders its 3D hull at its animated pose into the loft
+        // pipeline's SHARED 320×200 target, then blits that posterized texture
+        // onto its lane quad. Because the loft target (and the loft's scene/quad
+        // uniforms) are shared across all ships, ship N's render+blit MUST be
+        // fully submitted before ship N+1 overwrites them — `queue.write_buffer`
+        // only flushes at submit time, so batching every ship into one encoder
+        // would clobber all but the last ship's yaw + quad. So the composite is
+        // split into segments at each loft-ship boundary: a run of non-loft
+        // batches renders into the offscreen in one pass and is submitted, then
+        // each loft ship renders+blits in its own submitted encoder. The first
+        // segment CLEARS the offscreen; every later segment LOADs it (preserving
+        // what earlier segments drew), keeping the single-pass z-order intact
+        // across the splits.
+        let mut cleared = false;
+        let pitch = 26.0; // loft editor ¾ default (live scrubber feeds this in a follow-up)
+
+        // Draw a contiguous run of non-loft batches into the offscreen target.
+        // Returns the index past the run. `cleared` selects clear-vs-load.
+        let flush_scene_run =
+            |gfx: &Self, batches: &[Batch], start: usize, cleared: bool| -> usize {
+                // Collect the run [start, end) of non-loft batches.
+                let mut end = start;
+                while end < batches.len() && !matches!(batches[end].kind, BatchKind::LoftShip(_)) {
+                    end += 1;
+                }
+                if end == start {
+                    return end;
+                }
+                let load = if cleared {
+                    wgpu::LoadOp::Load
+                } else {
+                    wgpu::LoadOp::Clear(CLEAR)
                 };
-                self.queue
-                    .write_buffer(&self.loft_blit.quad_ubo, 0, bytemuck::bytes_of(&qu));
-                Some(
-                    self.loft_blit
-                        .bind_group(&self.device, self.loft.output_view()),
-                )
-            } else {
-                None
-            }
-        } else {
-            None
-        };
+                let mut encoder =
+                    gfx.device
+                        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                            label: Some("scene to offscreen"),
+                        });
+                {
+                    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: Some("scene to offscreen"),
+                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                            view: &gfx.offscreen_view,
+                            resolve_target: None,
+                            ops: wgpu::Operations {
+                                load,
+                                store: wgpu::StoreOp::Store,
+                            },
+                            depth_slice: None,
+                        })],
+                        depth_stencil_attachment: None,
+                        timestamp_writes: None,
+                        occlusion_query_set: None,
+                    });
+                    for b in &batches[start..end] {
+                        match b.kind {
+                            BatchKind::Sprite => {
+                                pass.set_pipeline(&gfx.sprites.pipeline);
+                                pass.set_bind_group(0, &gfx.sprites.bind_group, &[]);
+                                pass.set_vertex_buffer(0, gfx.sprites.quad_vbuf.slice(..));
+                                pass.set_vertex_buffer(1, gfx.sprites.instance_vbuf.slice(..));
+                                pass.draw(0..6, b.start..(b.start + b.count));
+                            }
+                            BatchKind::Polygon => {
+                                pass.set_pipeline(&gfx.polygons.pipeline);
+                                pass.set_bind_group(0, &gfx.polygons.bind_group, &[]);
+                                pass.set_vertex_buffer(0, gfx.polygons.instance_vbuf.slice(..));
+                                pass.draw(0..6, b.start..(b.start + b.count));
+                            }
+                            BatchKind::TexturedShip(slot_idx) => {
+                                let (side, top, _blend) = ship_meta[slot_idx as usize];
+                                let bg = match gfx.ship_bg_cache.get(&(slot_idx, side, top)) {
+                                    Some(bg) => bg,
+                                    None => {
+                                        // Bind group missing — sprites for this slug
+                                        // pair aren't loaded. Skip the draw; the
+                                        // procedural polygons below stay visible.
+                                        continue;
+                                    }
+                                };
+                                pass.set_pipeline(&gfx.textured_ships.pipeline);
+                                pass.set_bind_group(0, &gfx.textured_ships.view_bg, &[]);
+                                pass.set_bind_group(1, bg, &[]);
+                                // Offset the vbuf to this slot's 32 bytes.
+                                let off = (slot_idx as u64) * 32;
+                                pass.set_vertex_buffer(
+                                    0,
+                                    gfx.textured_ships.instance_vbuf.slice(off..off + 32),
+                                );
+                                // Draw 6 verts (two triangles) of one instance.
+                                pass.draw(0..6, 0..1);
+                            }
+                            BatchKind::LoftShip(_) => unreachable!("run excludes loft batches"),
+                        }
+                    }
+                }
+                gfx.queue.submit(std::iter::once(encoder.finish()));
+                end
+            };
 
-        // Pass 1: walk batches in order; switch pipelines as the variant
-        // changes. One render pass, clear once.
-        {
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("scene to offscreen"),
+        let mut i = 0usize;
+        while i < batches.len() {
+            // Drain the non-loft run preceding the next loft ship.
+            let next = flush_scene_run(self, &batches, i, cleared);
+            if next > i {
+                cleared = true;
+                i = next;
+                continue;
+            }
+            // `i` is a loft-ship batch. Render its 3D hull at its pose into the
+            // shared loft target, then blit it onto its lane quad — each in its
+            // own submitted encoder so the shared loft uniforms aren't clobbered
+            // by the next ship.
+            if let BatchKind::LoftShip(idx) = batches[i].kind {
+                let q = loft_quads[idx as usize];
+                // Look up this ship's uploaded mesh + animated pose. Skip
+                // cleanly if either is absent (mesh not installed / pose not yet
+                // synced) — the lane just shows no ship there rather than crash.
+                let mesh = self.loft_meshes.get(&q.kind);
+                let yaw = self.loft_poses.get(q.ship_id.as_str()).map(|p| p.yaw_deg());
+                if let (Some(mesh), Some(yaw)) = (mesh, yaw) {
+                    // 1) Render the hull into the shared loft target (own passes).
+                    let mut enc =
+                        self.device
+                            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                                label: Some("loft ship render"),
+                            });
+                    self.loft.render_ship(
+                        &self.queue,
+                        &mut enc,
+                        &mesh.vbuf,
+                        mesh.vcount,
+                        yaw,
+                        pitch,
+                    );
+                    self.queue.submit(std::iter::once(enc.finish()));
+
+                    // 2) Blit the posterized output onto this ship's lane quad.
+                    //    Load (don't clear) so earlier scene segments survive.
+                    let qu = LoftQuadUniform {
+                        p0: q.p0,
+                        p1: q.p1,
+                        p2: q.p2,
+                        p3: q.p3,
+                        px_to_ndc: [2.0 / VIRTUAL_W as f32, 2.0 / VIRTUAL_H as f32],
+                        _pad: [0.0, 0.0],
+                    };
+                    self.queue
+                        .write_buffer(&self.loft_blit.quad_ubo, 0, bytemuck::bytes_of(&qu));
+                    let bg = self
+                        .loft_blit
+                        .bind_group(&self.device, self.loft.output_view());
+                    let load = if cleared {
+                        wgpu::LoadOp::Load
+                    } else {
+                        wgpu::LoadOp::Clear(CLEAR)
+                    };
+                    let mut enc =
+                        self.device
+                            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                                label: Some("loft ship blit"),
+                            });
+                    {
+                        let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                            label: Some("loft ship blit"),
+                            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                                view: &self.offscreen_view,
+                                resolve_target: None,
+                                ops: wgpu::Operations {
+                                    load,
+                                    store: wgpu::StoreOp::Store,
+                                },
+                                depth_slice: None,
+                            })],
+                            depth_stencil_attachment: None,
+                            timestamp_writes: None,
+                            occlusion_query_set: None,
+                        });
+                        pass.set_pipeline(&self.loft_blit.pipeline);
+                        pass.set_bind_group(0, &bg, &[]);
+                        pass.draw(0..6, 0..1);
+                    }
+                    self.queue.submit(std::iter::once(enc.finish()));
+                    cleared = true;
+                }
+            }
+            i += 1;
+        }
+
+        // If the whole frame had no batches at all, the offscreen was never
+        // cleared — clear it once so the swap blit reads defined contents.
+        if !cleared {
+            let mut enc = self
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("clear offscreen"),
+                });
+            enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("clear offscreen"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &self.offscreen_view,
                     resolve_target: None,
@@ -1485,59 +1691,16 @@ impl Gfx {
                 timestamp_writes: None,
                 occlusion_query_set: None,
             });
-            for b in &batches {
-                match b.kind {
-                    BatchKind::Sprite => {
-                        pass.set_pipeline(&self.sprites.pipeline);
-                        pass.set_bind_group(0, &self.sprites.bind_group, &[]);
-                        pass.set_vertex_buffer(0, self.sprites.quad_vbuf.slice(..));
-                        pass.set_vertex_buffer(1, self.sprites.instance_vbuf.slice(..));
-                        pass.draw(0..6, b.start..(b.start + b.count));
-                    }
-                    BatchKind::Polygon => {
-                        pass.set_pipeline(&self.polygons.pipeline);
-                        pass.set_bind_group(0, &self.polygons.bind_group, &[]);
-                        pass.set_vertex_buffer(0, self.polygons.instance_vbuf.slice(..));
-                        pass.draw(0..6, b.start..(b.start + b.count));
-                    }
-                    BatchKind::TexturedShip(slot_idx) => {
-                        let (side, top, _blend) = ship_meta[slot_idx as usize];
-                        let bg = match self.ship_bg_cache.get(&(slot_idx, side, top)) {
-                            Some(bg) => bg,
-                            None => {
-                                // Bind group missing — sprites for this slug
-                                // pair aren't loaded. Skip the draw; the
-                                // procedural polygons below stay visible.
-                                continue;
-                            }
-                        };
-                        pass.set_pipeline(&self.textured_ships.pipeline);
-                        pass.set_bind_group(0, &self.textured_ships.view_bg, &[]);
-                        pass.set_bind_group(1, bg, &[]);
-                        // Offset the vbuf to this slot's 32 bytes.
-                        let off = (slot_idx as u64) * 32;
-                        pass.set_vertex_buffer(
-                            0,
-                            self.textured_ships.instance_vbuf.slice(off..off + 32),
-                        );
-                        // Draw 6 verts (two triangles) of one instance.
-                        pass.draw(0..6, 0..1);
-                    }
-                    BatchKind::LoftShip(_idx) => {
-                        // Blit the pre-rendered loft ship onto its lane quad.
-                        // For the milestone only the first quad's bind group is
-                        // built (one demo ship); skip if absent (no demo ship
-                        // installed / pre-pass didn't run).
-                        let Some(bg) = loft_bg.as_ref() else { continue };
-                        pass.set_pipeline(&self.loft_blit.pipeline);
-                        pass.set_bind_group(0, bg, &[]);
-                        pass.draw(0..6, 0..1);
-                    }
-                }
-            }
+            self.queue.submit(std::iter::once(enc.finish()));
         }
 
-        // Pass 2: blit offscreen → swapchain with integer-scale letterboxing.
+        // Final pass: blit offscreen → swapchain with continuous-scale
+        // letterboxing, then present.
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("blit to swap"),
+            });
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("blit offscreen to swap"),

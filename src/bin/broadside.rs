@@ -693,21 +693,25 @@ impl ApplicationHandler for App {
         if loaded > 0 {
             log::info!("loaded {} ship sprite PNG(s) from assets/sprites/", loaded);
         }
-        // MILESTONE: wire the default dagger loft to the player ship so the new
-        // 3D render path actually draws a ship in the lane (architect's
-        // ShipDesign/glb per-class spawn supersedes this minimal hookup). The
-        // player resting orientation seeds the pose; hud emits a LoftShip for
-        // the player (skipping its 2D silhouette) while this is installed.
-        let player_orient = self
-            .board
-            .cells
-            .iter()
-            .flatten()
-            .find(|s| s.faction == Faction::Player)
-            .map(|s| s.orientation)
-            .unwrap_or(Orientation::BowOn { bow: LaneEnd::Fore });
-        gfx.install_demo_loft_ship(player_orient);
-        log::info!("loft: demo 3D ship installed (player, {player_orient:?})");
+        // Install the loft meshes the 3D render path draws: the grey procedural
+        // dagger for the player, and the vendored CAD hull
+        // (assets/ships/broadside-ship.glb, the orange-accented import) shared
+        // across the four enemy placeholders. Meshes are uploaded once here;
+        // per-ship poses are synced from board orientation each frame. hud emits
+        // a LoftShip for any ship whose mesh is installed (skipping its 2D
+        // silhouette). The glb is embedded via include_bytes! so it loads
+        // regardless of the binary's run directory.
+        gfx.install_player_dagger();
+        const ENEMY_GLB: &[u8] = include_bytes!("../../assets/ships/broadside-ship.glb");
+        match gfx.install_enemy_cad(ENEMY_GLB) {
+            Ok(()) => log::info!(
+                "loft: meshes installed (player dagger + enemy CAD, {} bytes)",
+                ENEMY_GLB.len()
+            ),
+            Err(e) => log::warn!(
+                "loft: enemy CAD import failed ({e}); enemies fall back to 2D silhouettes"
+            ),
+        }
         self.window = Some(window);
         self.gfx = Some(gfx);
     }
@@ -844,22 +848,25 @@ impl ApplicationHandler for App {
                 let demo_state = self.demo_state;
                 let sector_idx = self.run.current_sector_idx;
                 let salvage = self.run.salvage;
-                // Sync the demo loft ship's pose to the player's current
-                // orientation (reorient_demo_loft no-ops when already there, so
-                // this auto-detects bow-on↔broadside flips and tweens them) and
-                // advance its idle + tween by a fixed ~60 Hz dt.
-                let player_orient = self
+                // Sync every loft ship's pose to its current board orientation
+                // (sync_loft_pose creates a pose on first sight and reorients on
+                // a bow-on↔broadside flip — a no-op when unchanged, so flips
+                // auto-tween), prune poses for ships that have left the board,
+                // then advance all idle + tweens by a fixed ~60 Hz dt.
+                let loft_ships: Vec<(String, Orientation)> = self
                     .board
                     .cells
                     .iter()
                     .flatten()
-                    .find(|s| s.faction == Faction::Player)
-                    .map(|s| s.orientation);
+                    .map(|s| (s.id.clone(), s.orientation))
+                    .collect();
                 let Some(gfx) = self.gfx.as_mut() else { return };
-                if let Some(o) = player_orient {
-                    gfx.reorient_demo_loft(o);
+                for (id, orient) in &loft_ships {
+                    gfx.sync_loft_pose(id, *orient);
                 }
-                let loft_animating = gfx.advance_demo_loft(1.0 / 60.0);
+                let live_ids: Vec<String> = loft_ships.iter().map(|(id, _)| id.clone()).collect();
+                gfx.retain_loft_poses(&live_ids);
+                let loft_animating = gfx.advance_loft_poses(1.0 / 60.0);
                 let mut instances = hud::compose_scene_tweened(&self.board, &self.lane, angle, gfx, &tween);
                 // In-game salvage counter (top-right) — only shown
                 // during Playing state. The modal overlays surface

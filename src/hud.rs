@@ -583,13 +583,16 @@ fn push_ship(
     let top_y = p.y - half_h;
     let base_y = p.y + half_h;
 
-    // Loft path: if the player ship has a live 3D asset (the milestone demo
-    // dagger), emit a LoftShip blit quad at the silhouette bbox and skip the
-    // 2D draw — "loft if the ship has a 3D asset, else 2D", player first. The
-    // bbox is the same one the 2D silhouette would occupy, so the 3D ship sits
-    // exactly where the 2D one did. HUD overlays (heat/pips/glyphs) still draw
-    // on top below via the caller.
-    if ship.faction == Faction::Player && sprites.loft_player() {
+    // Loft path: if this ship has a live 3D asset (player demo dagger, or the
+    // vendored CAD hull for enemies), emit a LoftShip blit quad at the
+    // silhouette bbox and skip the 2D draw — "loft if the ship has a 3D asset,
+    // else 2D", dispatched per-ship via the registry. The bbox is the same one
+    // the 2D silhouette would occupy, so the 3D ship sits exactly where the 2D
+    // one did. HUD overlays (heat/pips/glyphs) still draw on top below via the
+    // caller. The quad carries the ship id (keys its animated pose in the
+    // renderer) and the mesh kind.
+    let is_player = ship.faction == Faction::Player;
+    if let Some(loft_kind) = sprites.loft_kind(&ship.id, is_player) {
         let left = cx - width / 2.0;
         let right = cx + width / 2.0;
         out.push(DrawCommand::LoftShip(LoftShipInstance {
@@ -597,6 +600,8 @@ fn push_ship(
             p1: [right, top_y],
             p2: [right, base_y],
             p3: [left, base_y],
+            ship_id: SpriteSlug::new(&ship.id),
+            kind: loft_kind,
         }));
         return;
     }
@@ -1713,6 +1718,64 @@ mod tests {
         assert_eq!(textured[0].top.as_str(), "frigate_bowOnFore_top");
         assert_eq!(textured[1].side.as_str(), "frigate_broadside_side");
         assert_eq!(textured[1].top.as_str(), "frigate_broadside_top");
+    }
+
+    /// Stub registry that lofts every ship: the player as the grey dagger,
+    /// enemies as the CAD hull. Mirrors the live `Gfx::loft_kind` dispatch.
+    struct LoftAll;
+    impl SpriteRegistry for LoftAll {
+        fn has(&self, _class: &str, _stance: SpriteStance, _view: SpriteView) -> bool {
+            false
+        }
+        fn loft_kind(
+            &self,
+            _ship_id: &str,
+            is_player: bool,
+        ) -> Option<crate::sprites::LoftMeshKind> {
+            Some(if is_player {
+                crate::sprites::LoftMeshKind::PlayerDagger
+            } else {
+                crate::sprites::LoftMeshKind::EnemyCad
+            })
+        }
+    }
+
+    #[test]
+    fn loft_registry_emits_loftship_per_ship_with_kind_and_id() {
+        use crate::sprites::LoftMeshKind;
+        let mut board = empty_board(7);
+        board.cells[0] = Some(frigate_at(
+            0,
+            Faction::Player,
+            Orientation::BowOn { bow: LaneEnd::Fore },
+        ));
+        board.cells[2] = Some(frigate_at(2, Faction::Enemy, Orientation::Broadside));
+        let scene =
+            compose_scene_with(&board, &DEFAULT_LANE, std::f32::consts::FRAC_PI_4, &LoftAll);
+        let lofts: Vec<_> = scene
+            .iter()
+            .filter_map(|c| match c {
+                DrawCommand::LoftShip(l) => Some(*l),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(lofts.len(), 2, "one LoftShip per ship");
+        // No 2D silhouette / textured draws when every ship lofts.
+        assert!(scene
+            .iter()
+            .all(|c| !matches!(c, DrawCommand::TexturedShip(_))));
+        // Player (cell 0, id "ship-0") → grey dagger; enemy (cell 2, "ship-2")
+        // → CAD hull. The ship id is carried so the renderer keys its pose.
+        let player = lofts
+            .iter()
+            .find(|l| l.ship_id.as_str() == "ship-0")
+            .unwrap();
+        assert_eq!(player.kind, LoftMeshKind::PlayerDagger);
+        let enemy = lofts
+            .iter()
+            .find(|l| l.ship_id.as_str() == "ship-2")
+            .unwrap();
+        assert_eq!(enemy.kind, LoftMeshKind::EnemyCad);
     }
 
     #[test]

@@ -53,6 +53,19 @@ impl SpriteStance {
     }
 }
 
+/// Which 3D loft mesh a ship renders with, when it renders as a live loft
+/// ship rather than a 2D silhouette. The renderer keeps one uploaded vertex
+/// buffer per variant and shares it across every ship of that kind (e.g. all
+/// four enemy placeholders share the one vendored CAD hull).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum LoftMeshKind {
+    /// The procedural grey "dagger" loft (the player demo ship).
+    PlayerDagger,
+    /// The vendored CAD ship import (`assets/ships/broadside-ship.glb`) — the
+    /// orange-accented hull used for the enemy placeholders.
+    EnemyCad,
+}
+
 /// A decoded sprite ready to upload to the GPU.
 #[derive(Clone)]
 pub struct SpriteImage {
@@ -199,13 +212,15 @@ pub trait SpriteRegistry {
         self.has(class, stance, SpriteView::Side) && self.has(class, stance, SpriteView::Top)
     }
 
-    /// True when the player ship has a live 3D loft asset to render (the
-    /// milestone demo dagger). When set, `hud::push_ship` emits a `LoftShip`
-    /// quad for the player and skips its 2D silhouette — the "loft if the ship
-    /// has a 3D asset, else 2D" dispatch, with the player as the first such
-    /// ship. Default `false` (the no-GPU / test registries don't loft).
-    fn loft_player(&self) -> bool {
-        false
+    /// Which 3D loft mesh (if any) the given ship renders with. `Some(kind)`
+    /// makes `hud::push_ship` emit a `LoftShip` quad for that ship and skip its
+    /// 2D silhouette — the "loft if the ship has a 3D asset, else 2D" dispatch,
+    /// generalised per-ship: the player demo renders the grey dagger, the enemy
+    /// placeholders the vendored CAD hull. `is_player` distinguishes the player
+    /// from enemies without this trait depending on `types::Faction`. Default
+    /// `None` (the no-GPU / test registries don't loft).
+    fn loft_kind(&self, _ship_id: &str, _is_player: bool) -> Option<LoftMeshKind> {
+        None
     }
 }
 
