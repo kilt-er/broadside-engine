@@ -38,12 +38,16 @@ jobs:
       - name: Cache cargo registry + build
         uses: Swatinem/rust-cache@v2
 
-      # Clippy on the default feature set, all targets. The non-render bins
-      # are skipped automatically by their required-features. Not yet
-      # `-D warnings`: there's an existing lint backlog in the renderer-owned
-      # files; flip to deny once that's cleared (tracked as a follow-up).
+      # Clippy on the default feature set, all targets, warnings DENIED. The
+      # non-render bins are skipped automatically by their required-features.
+      # The whole-tree lint backlog is cleared (render files #126, resolve.rs
+      # #101, types/meta/runs/mesh_import #100), so `-D warnings` now holds.
+      # `-D warnings` is scoped to clippy (not a global RUSTFLAGS) so the test
+      # steps below don't also fail on warnings. fmt --check is deliberately
+      # NOT enforced yet — deferred to #39 (needs a one-time repo-wide
+      # `cargo fmt` sweep + bruce's OK; the tree currently has wide fmt drift).
       - name: clippy
-        run: cargo clippy --all-targets
+        run: cargo clippy --all-targets -- -D warnings
 
       # The suite: lib unit tests + every tests/*.rs integration file.
       - name: test
