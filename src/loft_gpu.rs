@@ -47,41 +47,33 @@ const DEFAULT_HULL_ALBEDO: [f32; 3] = [0.706, 0.776, 0.878];
 const LOW_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
-/// Fixed camera azimuth (degrees). The camera is STATIC (no time-advancing
-/// orbit) and square to the lane at azimuth 0; the ¾ read comes from pitch +
-/// the per-ship MODEL rotation below. Keeping the camera at 0 means stance is
-/// defined in ONE place (the model yaw) — no two-place camera/model split to
-/// get the sign wrong.
-const CAMERA_AZIMUTH_DEG: f32 = 0.0;
 /// Fixed ¾ look-down pitch (degrees) — matches the POC `DEFAULT_PITCH_DEG`.
+/// This is the ONLY fixed camera angle; the per-stance yaw below is fed to the
+/// SAME camera the POC uses, exactly as the POC does it.
 pub const CAMERA_PITCH_DEG: f32 = 26.0;
 
-/// The canonical stance MODEL yaws (degrees), keyed by [`Orientation`] — how far
-/// the hull rotates about its vertical axis to present that stance.
-///
-/// Reproduces the POC's per-stance view exactly. The POC orbits its camera to
-/// yaw `P` (right 28 / left 152 / broadside 118) over a fixed hull; with our
-/// camera fixed at azimuth 0, rotating the MODEL by `−P` gives the identical
-/// image (orbiting the camera +P about Y == rotating the world −P): so
-///   Fore = −28,  Aft = −152,  Broadside = −118.
-/// The broadside's 118° is the key fix — at azimuth 0 / model ±90 (#36) the
-/// hull was pure side-on (only the ~4u beam showing → "too thin"); −118° swings
-/// its 12u length to the ¾ so it reads as a real ship, matching the POC.
-///
-/// NOTE: the sign assumes `rotation_y` shares the camera-orbit sense; if bruce's
-/// re-run shows a stance mirrored, it's a single sign flip here (P instead of
-/// −P) — the magnitudes (28/152/118) are the POC reference and correct.
-const MODEL_YAW_FORE: f32 = -28.0;
-const MODEL_YAW_AFT: f32 = -152.0;
-const MODEL_YAW_BROADSIDE: f32 = -118.0;
+/// The canonical stance yaws (degrees), keyed by [`Orientation`] — the POC's
+/// four stance snaps (loft_poc.rs `STANCE_YAWS_DEG`): right 28 / left 152 /
+/// broadside 118. These are fed straight to [`camera_view_proj`] as the CAMERA
+/// yaw with the model left at IDENTITY — i.e. the engine does EXACTLY what the
+/// POC does (orbit the camera to the stance over a fixed hull), so each stance
+/// reads bit-for-bit as the approved reference. No model rotation (that was the
+/// #36/#37 divergence: rotating the model about a near-camera axis collapsed
+/// bow-on to a plank and made broadside read wrong). The only thing that varies
+/// per ship is which static yaw its camera uses; idle roll + reorient tween
+/// nudge that yaw, never tipping it off the vertical axis.
+const STANCE_YAW_FORE: f32 = 28.0;
+const STANCE_YAW_AFT: f32 = 152.0;
+const STANCE_YAW_BROADSIDE: f32 = 118.0;
 
-/// Base model yaw (degrees) a ship at `orientation` rests at. The reorient
-/// tween interpolates between two of these; the idle roll is added on top.
+/// Base stance yaw (degrees) a ship at `orientation` rests at — the POC camera
+/// yaw for that stance. The reorient tween interpolates between two of these;
+/// the idle roll is added on top.
 pub fn orientation_yaw_deg(orientation: Orientation) -> f32 {
     match orientation {
-        Orientation::BowOn { bow: LaneEnd::Fore } => MODEL_YAW_FORE,
-        Orientation::BowOn { bow: LaneEnd::Aft } => MODEL_YAW_AFT,
-        Orientation::Broadside => MODEL_YAW_BROADSIDE,
+        Orientation::BowOn { bow: LaneEnd::Fore } => STANCE_YAW_FORE,
+        Orientation::BowOn { bow: LaneEnd::Aft } => STANCE_YAW_AFT,
+        Orientation::Broadside => STANCE_YAW_BROADSIDE,
     }
 }
 
@@ -694,14 +686,17 @@ impl LoftGpu {
         yaw_deg: f32,
     ) {
         let aspect = LOW_W as f32 / LOW_H as f32;
-        // Camera is FIXED at the ¾ azimuth/pitch (no orbit). The ship's stance
-        // comes from rotating its MODEL about the vertical axis by `yaw_deg`.
-        let view_proj = camera_view_proj(
-            CAMERA_AZIMUTH_DEG.to_radians(),
-            CAMERA_PITCH_DEG.to_radians(),
-            aspect,
-        );
-        let model = rotation_y(yaw_deg.to_radians());
+        // EXACTLY the POC: the stance `yaw_deg` is the CAMERA yaw (orbit the
+        // ¾ camera around a fixed hull), model = identity. The camera always
+        // orbits about the vertical (Y) axis with up = +Y, so the ship can
+        // never tip vertical; bow-on / broadside present clean horizontal
+        // profiles like the approved reference. (This replaces the #36/#37
+        // model-rotation experiment that collapsed bow-on to a plank and went
+        // vertical on broadside.) `yaw_deg` is static per ship (its stance);
+        // idle roll + reorient tween only nudge it.
+        let view_proj =
+            camera_view_proj(yaw_deg.to_radians(), CAMERA_PITCH_DEG.to_radians(), aspect);
+        let model = identity4();
 
         // Lights ported from the loft editor's setLight (laz -50, lel 60) /
         // fixed cool fill (4,2,-3). Dir-toward-light = +position (three.js
@@ -833,17 +828,11 @@ fn normalize3(v: [f32; 3]) -> [f32; 3] {
     }
 }
 
-/// Column-major rotation about the world Y (vertical) axis by `rad`. Rotates a
-/// ship's hull in place to present its stance under the fixed camera (the hull
-/// lofts with its length along local x; a +90° Y rotation swings that length
-/// into z so the broad flank bears).
-fn rotation_y(rad: f32) -> [f32; 16] {
-    let (s, c) = rad.sin_cos();
+/// Column-major identity. The hull is rendered un-transformed (model = identity)
+/// — stance comes from the camera yaw, exactly as the POC does it.
+fn identity4() -> [f32; 16] {
     [
-        c, 0.0, -s, 0.0, // col 0
-        0.0, 1.0, 0.0, 0.0, // col 1
-        s, 0.0, c, 0.0, // col 2
-        0.0, 0.0, 0.0, 1.0, // col 3
+        1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
     ]
 }
 
@@ -958,17 +947,17 @@ mod tests {
         let fore = orientation_yaw_deg(Orientation::BowOn { bow: LaneEnd::Fore });
         let aft = orientation_yaw_deg(Orientation::BowOn { bow: LaneEnd::Aft });
         let broad = orientation_yaw_deg(Orientation::Broadside);
-        assert!((fore - MODEL_YAW_FORE).abs() < 1e-6);
-        assert!((aft - MODEL_YAW_AFT).abs() < 1e-6);
-        assert!((broad - MODEL_YAW_BROADSIDE).abs() < 1e-6);
+        assert!((fore - STANCE_YAW_FORE).abs() < 1e-6);
+        assert!((aft - STANCE_YAW_AFT).abs() < 1e-6);
+        assert!((broad - STANCE_YAW_BROADSIDE).abs() < 1e-6);
         assert_ne!(fore, aft);
         assert_ne!(fore, broad);
-        // Stance model yaws reproduce the POC's per-stance camera yaws (28/152/
-        // 118) as model rotations (−P) under the azimuth-0 camera. Broadside's
-        // −118 is the #37 fix — swings the hull's length to the ¾ (not side-on).
-        assert_eq!(fore, -28.0);
-        assert_eq!(aft, -152.0);
-        assert_eq!(broad, -118.0);
+        // The stance yaws ARE the POC's camera-yaw snaps (loft_poc.rs
+        // STANCE_YAWS_DEG): right 28 / left 152 / broadside 118 — fed to the
+        // camera with model=identity, so each stance is bit-for-bit the POC.
+        assert_eq!(fore, 28.0);
+        assert_eq!(aft, 152.0);
+        assert_eq!(broad, 118.0);
     }
 
     #[test]
@@ -992,8 +981,8 @@ mod tests {
         pose.advance(REORIENT_SECS * 0.5);
         let mid = pose.yaw_deg();
         let (lo, hi) = (
-            MODEL_YAW_FORE.min(MODEL_YAW_BROADSIDE),
-            MODEL_YAW_FORE.max(MODEL_YAW_BROADSIDE),
+            STANCE_YAW_FORE.min(STANCE_YAW_BROADSIDE),
+            STANCE_YAW_FORE.max(STANCE_YAW_BROADSIDE),
         );
         assert!(
             mid > lo - IDLE_ROLL_DEG && mid < hi + IDLE_ROLL_DEG,
