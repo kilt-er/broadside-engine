@@ -34,6 +34,14 @@ audio = ["dep:kira"]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
+# glTF (.glb / .gltf) import for CAD-tool ship meshes. The son's Broadside CAD
+# editor exports baked meshes as .glb (Three.js GLTFExporter); `mesh_import`
+# reads them into a `HullMesh` the loft render path consumes. The `import`
+# feature pulls buffer/base64 decoding so a self-contained .glb parses from
+# bytes. Always compiled (not optional, no feature gate): it's pure parsing,
+# no wgpu, so it stays CI-testable headless alongside the loft math.
+gltf = { version = "1", features = ["import", "utils", "extras", "KHR_materials_unlit"] }
+
 # Toolchain-aligned with C:\Users\bruce\GameEngine\mvp. Versions are pinned
 # at the crate level so workspace promotion is mechanical, but each crate is
 # `optional = true` and gated behind a feature so the default build stays
