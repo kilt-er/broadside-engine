@@ -57,6 +57,10 @@
 //!   the loft path emits, plus per-group material colours. Data only (the
 //!   `gltf` crate, no GPU); the second geometry producer alongside [`loft`],
 //!   both meeting the render path at the `HullMesh` boundary.
+//! - [`ship_asset`] — data-only selector over the two geometry producers:
+//!   given a ship asset (`.json` loft design or `.glb` CAD mesh) it returns
+//!   `(HullMesh, per-vertex colours)`, dispatching to [`loft`] (uniform grey)
+//!   or [`mesh_import`] (per-material colours). No GPU, no bin wiring.
 //!
 //! Content effect bodies and AI live in sibling modules added by other
 //! teammates.
@@ -75,6 +79,7 @@ pub mod perspective;
 pub mod resolve;
 pub mod runs;
 pub mod save;
+pub mod ship_asset;
 pub mod ship_design;
 pub mod subsystems;
 
