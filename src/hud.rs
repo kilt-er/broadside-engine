@@ -26,7 +26,8 @@
 use crate::atlas;
 use crate::geometry::range_band;
 use crate::gfx::{
-    DrawCommand, LoftShipInstance, PolygonInstance, SpriteInstance, SpriteSlug, TexturedShipInstance,
+    DrawCommand, LoftShipInstance, PolygonInstance, SpriteInstance, SpriteSlug,
+    TexturedShipInstance,
 };
 use crate::perspective::{
     cell_to_screen, fractional_cell_to_screen, LaneGeometry, Point2, Stance, FRIGATE_DIMS,
@@ -42,29 +43,29 @@ use crate::types::{
  * Analysis HTML CSS tokens, scaled to 0..1.
  * ----------------------------------------------------------------------- */
 
-const PLAYER_HULL_FILL:   [f32; 4] = [0.102, 0.165, 0.243, 1.0];
+const PLAYER_HULL_FILL: [f32; 4] = [0.102, 0.165, 0.243, 1.0];
 const PLAYER_HULL_STROKE: [f32; 4] = [0.329, 0.812, 0.788, 1.0];
 
-const ENEMY_HULL_FILL:    [f32; 4] = [0.227, 0.122, 0.145, 1.0];
-const ENEMY_HULL_STROKE:  [f32; 4] = [0.878, 0.478, 0.235, 1.0];
+const ENEMY_HULL_FILL: [f32; 4] = [0.227, 0.122, 0.145, 1.0];
+const ENEMY_HULL_STROKE: [f32; 4] = [0.878, 0.478, 0.235, 1.0];
 
-const LANE_STROKE:        [f32; 4] = [0.20,  0.28,  0.36,  1.0];
-const LANE_TICK:          [f32; 4] = [0.33,  0.41,  0.51,  1.0];
+const LANE_STROKE: [f32; 4] = [0.20, 0.28, 0.36, 1.0];
+const LANE_TICK: [f32; 4] = [0.33, 0.41, 0.51, 1.0];
 
 const BAND_POINT_BLANK: [f32; 4] = [0.878, 0.400, 0.290, 0.6];
-const BAND_CLOSE:       [f32; 4] = [0.878, 0.635, 0.235, 0.6];
-const BAND_MID:         [f32; 4] = [0.353, 0.624, 0.878, 0.6];
-const BAND_LONG:        [f32; 4] = [0.353, 0.820, 0.796, 0.6];
-const BAND_EXTREME:     [f32; 4] = [0.608, 0.549, 0.859, 0.6];
+const BAND_CLOSE: [f32; 4] = [0.878, 0.635, 0.235, 0.6];
+const BAND_MID: [f32; 4] = [0.353, 0.624, 0.878, 0.6];
+const BAND_LONG: [f32; 4] = [0.353, 0.820, 0.796, 0.6];
+const BAND_EXTREME: [f32; 4] = [0.608, 0.549, 0.859, 0.6];
 
-const HEAT_BG:      [f32; 4] = [0.094, 0.094, 0.110, 0.85];
-const HEAT_FILL:    [f32; 4] = [0.949, 0.475, 0.235, 1.0];
+const HEAT_BG: [f32; 4] = [0.094, 0.094, 0.110, 0.85];
+const HEAT_FILL: [f32; 4] = [0.949, 0.475, 0.235, 1.0];
 const HEAT_LOCKOUT: [f32; 4] = [0.949, 0.235, 0.235, 1.0];
 
 const SHIELD_PIP_CHARGE: [f32; 4] = [0.329, 0.812, 0.788, 1.0];
 
-const WHITE:        [f32; 4] = [1.0, 1.0, 1.0, 1.0];
-const DEFEAT_TINT:  [f32; 4] = [0.85, 0.08, 0.10, 0.55];
+const WHITE: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
+const DEFEAT_TINT: [f32; 4] = [0.85, 0.08, 0.10, 0.55];
 const VICTORY_TINT: [f32; 4] = [1.00, 0.80, 0.20, 0.45];
 
 /// Render-only multiplier on the ship silhouette's on-screen extent. The raw
@@ -281,36 +282,45 @@ fn push_parallax(out: &mut Vec<DrawCommand>, lane: &LaneGeometry, view_angle_rad
             let x = w * (0.18 + (i as f32) * 0.32);
             // Place at ~25% down from the wall's top edge.
             let y = (horizon - back_wall_h) + back_wall_h * 0.25 + (i as f32 - 1.0) * 8.0;
-            push_sprite(out, SpriteInstance::axis_aligned(
-                [x, y],
-                // Nebula width is fixed; vertical extent also fixed (these
-                // are atlas-sampled at a baked size). They slide with the
-                // wall but don't compress with it.
-                [110.0, 44.0],
-                [1.0, 1.0, 1.0, 0.55],
-                atlas::cell_uvs(atlas::PARALLAX_NEBULA),
-            ));
+            push_sprite(
+                out,
+                SpriteInstance::axis_aligned(
+                    [x, y],
+                    // Nebula width is fixed; vertical extent also fixed (these
+                    // are atlas-sampled at a baked size). They slide with the
+                    // wall but don't compress with it.
+                    [110.0, 44.0],
+                    [1.0, 1.0, 1.0, 0.55],
+                    atlas::cell_uvs(atlas::PARALLAX_NEBULA),
+                ),
+            );
         }
 
         // Distant planet — upper-right, ~30% down from the wall's top edge.
         let planet_size = 54.0;
-        push_sprite(out, SpriteInstance::axis_aligned(
-            [w * 0.82, (horizon - back_wall_h) + back_wall_h * 0.30],
-            [planet_size, planet_size],
-            WHITE,
-            atlas::cell_uvs(atlas::PARALLAX_DISTANT_PLANET),
-        ));
+        push_sprite(
+            out,
+            SpriteInstance::axis_aligned(
+                [w * 0.82, (horizon - back_wall_h) + back_wall_h * 0.30],
+                [planet_size, planet_size],
+                WHITE,
+                atlas::cell_uvs(atlas::PARALLAX_DISTANT_PLANET),
+            ),
+        );
 
         // Far stars — 60 single-pixel sprites scattered across the wall.
         for i in 0..60u32 {
             let (sx, sy) = lcg_canvas_pos(i ^ 0xA53F_C1B5, sky_band);
             let alpha = 0.35 + 0.25 * lcg_unit(i ^ 0x1234_5678);
-            push_sprite(out, SpriteInstance::axis_aligned(
-                [sx, sy],
-                [0.5, 0.5],
-                [1.0, 1.0, 1.0, alpha],
-                atlas::cell_uvs(atlas::SOLID_WHITE),
-            ));
+            push_sprite(
+                out,
+                SpriteInstance::axis_aligned(
+                    [sx, sy],
+                    [0.5, 0.5],
+                    [1.0, 1.0, 1.0, alpha],
+                    atlas::cell_uvs(atlas::SOLID_WHITE),
+                ),
+            );
         }
         // Mid stars — 24 brighter dots near the top of the wall.
         let mid_band = [
@@ -322,12 +332,15 @@ fn push_parallax(out: &mut Vec<DrawCommand>, lane: &LaneGeometry, view_angle_rad
         for i in 0..24u32 {
             let (sx, sy) = lcg_canvas_pos(i ^ 0x5F37_DEAD, mid_band);
             let alpha = 0.55 + 0.30 * lcg_unit(i ^ 0xBEEF_C0DE);
-            push_sprite(out, SpriteInstance::axis_aligned(
-                [sx, sy],
-                [1.0, 1.0],
-                [1.0, 1.0, 1.0, alpha],
-                atlas::cell_uvs(atlas::SOLID_WHITE),
-            ));
+            push_sprite(
+                out,
+                SpriteInstance::axis_aligned(
+                    [sx, sy],
+                    [1.0, 1.0],
+                    [1.0, 1.0, 1.0, alpha],
+                    atlas::cell_uvs(atlas::SOLID_WHITE),
+                ),
+            );
         }
     }
 
@@ -340,23 +353,29 @@ fn push_parallax(out: &mut Vec<DrawCommand>, lane: &LaneGeometry, view_angle_rad
         for i in 0..dust_count {
             let (sx, sy) = lcg_canvas_pos(i ^ 0x71BD_8842, floor_band);
             let alpha = 0.25 + 0.20 * lcg_unit(i ^ 0x6655_AABB);
-            push_sprite(out, SpriteInstance::axis_aligned(
-                [sx, sy],
-                [1.0, 1.0],
-                [0.85, 0.85, 1.0, alpha],
-                atlas::cell_uvs(atlas::SOLID_WHITE),
-            ));
+            push_sprite(
+                out,
+                SpriteInstance::axis_aligned(
+                    [sx, sy],
+                    [1.0, 1.0],
+                    [0.85, 0.85, 1.0, alpha],
+                    atlas::cell_uvs(atlas::SOLID_WHITE),
+                ),
+            );
         }
         // Foreground dust tile sample at low-center of the floor for a
         // subtle near-camera detail. Hidden at low angles where the floor
         // is edge-on.
         if sin_a > 0.2 {
-            push_sprite(out, SpriteInstance::axis_aligned(
-                [w * 0.40, horizon + floor_h * 0.75],
-                [32.0, 32.0],
-                [1.0, 1.0, 1.0, 0.55 * sin_a],
-                atlas::cell_uvs(atlas::PARALLAX_FOREGROUND_DUST),
-            ));
+            push_sprite(
+                out,
+                SpriteInstance::axis_aligned(
+                    [w * 0.40, horizon + floor_h * 0.75],
+                    [32.0, 32.0],
+                    [1.0, 1.0, 1.0, 0.55 * sin_a],
+                    atlas::cell_uvs(atlas::PARALLAX_FOREGROUND_DUST),
+                ),
+            );
         }
     }
 }
@@ -393,21 +412,27 @@ fn push_lane(out: &mut Vec<DrawCommand>, lane: &LaneGeometry) {
     use crate::gfx::VIRTUAL_W;
     let w = VIRTUAL_W as f32;
     // Lane line — full canvas width, thin stroke at `center_y`.
-    push_sprite(out, SpriteInstance::axis_aligned(
-        [w / 2.0, lane.center_y],
-        [w / 2.0, 0.75],
-        LANE_STROKE,
-        atlas::cell_uvs(atlas::SOLID_WHITE),
-    ));
+    push_sprite(
+        out,
+        SpriteInstance::axis_aligned(
+            [w / 2.0, lane.center_y],
+            [w / 2.0, 0.75],
+            LANE_STROKE,
+            atlas::cell_uvs(atlas::SOLID_WHITE),
+        ),
+    );
     // Per-cell ticks — short vertical marks under the lane at each cell x.
     for c in 0..lane.cell_count {
         let p = cell_to_screen(c, lane);
-        push_sprite(out, SpriteInstance::axis_aligned(
-            [p.x, lane.center_y + 5.0],
-            [0.75, 4.0],
-            LANE_TICK,
-            atlas::cell_uvs(atlas::SOLID_WHITE),
-        ));
+        push_sprite(
+            out,
+            SpriteInstance::axis_aligned(
+                [p.x, lane.center_y + 5.0],
+                [0.75, 4.0],
+                LANE_TICK,
+                atlas::cell_uvs(atlas::SOLID_WHITE),
+            ),
+        );
     }
 }
 
@@ -417,7 +442,12 @@ fn push_lane(out: &mut Vec<DrawCommand>, lane: &LaneGeometry) {
  * ============================================================================= */
 
 fn push_range_band_ticks(out: &mut Vec<DrawCommand>, board: &Board, lane: &LaneGeometry) {
-    let Some(player) = board.cells.iter().flatten().find(|s| s.faction == Faction::Player) else {
+    let Some(player) = board
+        .cells
+        .iter()
+        .flatten()
+        .find(|s| s.faction == Faction::Player)
+    else {
         return;
     };
     let pc = player.cell as i32;
@@ -436,12 +466,15 @@ fn push_range_band_ticks(out: &mut Vec<DrawCommand>, board: &Board, lane: &LaneG
         };
         // Short tick just below the lane line, distinct from the lane ticks
         // by being a tad longer and band-colored.
-        push_sprite(out, SpriteInstance::axis_aligned(
-            [p.x, lane.center_y + 14.0],
-            [1.25, 6.0],
-            color,
-            atlas::cell_uvs(atlas::SOLID_WHITE),
-        ));
+        push_sprite(
+            out,
+            SpriteInstance::axis_aligned(
+                [p.x, lane.center_y + 14.0],
+                [1.25, 6.0],
+                color,
+                atlas::cell_uvs(atlas::SOLID_WHITE),
+            ),
+        );
     }
 }
 
@@ -459,12 +492,15 @@ fn push_hazards(out: &mut Vec<DrawCommand>, board: &Board, lane: &LaneGeometry) 
                 HazardKind::Drone => [0.40, 0.78, 0.55, 1.0],
                 HazardKind::Debris => [0.55, 0.50, 0.45, 1.0],
             };
-            push_sprite(out, SpriteInstance::axis_aligned(
-                [p.x, lane.center_y - 8.0],
-                [5.0, 5.0],
-                color,
-                atlas::cell_uvs(atlas::SOLID_WHITE),
-            ));
+            push_sprite(
+                out,
+                SpriteInstance::axis_aligned(
+                    [p.x, lane.center_y - 8.0],
+                    [5.0, 5.0],
+                    color,
+                    atlas::cell_uvs(atlas::SOLID_WHITE),
+                ),
+            );
         }
     }
 }
@@ -572,22 +608,32 @@ fn push_ship(
     let class = ship.klass.as_deref().unwrap_or("frigate");
     let sprite_stance = match ship.orientation {
         Orientation::BowOn { bow: LaneEnd::Fore } => SpriteStance::BowOnFore,
-        Orientation::BowOn { bow: LaneEnd::Aft }  => SpriteStance::BowOnAft,
+        Orientation::BowOn { bow: LaneEnd::Aft } => SpriteStance::BowOnAft,
         Orientation::Broadside => SpriteStance::Broadside,
     };
     if sprites.has_pair(class, sprite_stance) {
-        let left  = cx - width / 2.0;
+        let left = cx - width / 2.0;
         let right = cx + width / 2.0;
-        let side_slug = format!("{}_{}_{}", class, sprite_stance.slug(), SpriteView::Side.slug());
-        let top_slug  = format!("{}_{}_{}", class, sprite_stance.slug(), SpriteView::Top.slug());
+        let side_slug = format!(
+            "{}_{}_{}",
+            class,
+            sprite_stance.slug(),
+            SpriteView::Side.slug()
+        );
+        let top_slug = format!(
+            "{}_{}_{}",
+            class,
+            sprite_stance.slug(),
+            SpriteView::Top.slug()
+        );
         out.push(DrawCommand::TexturedShip(TexturedShipInstance {
-            p0: [left,  top_y],
+            p0: [left, top_y],
             p1: [right, top_y],
             p2: [right, base_y],
-            p3: [left,  base_y],
+            p3: [left, base_y],
             blend_t: sin_a,
             side: SpriteSlug::new(&side_slug),
-            top:  SpriteSlug::new(&top_slug),
+            top: SpriteSlug::new(&top_slug),
         }));
         // Skip chevron + procedural-silhouette art: the painted PNGs
         // own bow direction and outline. Heat bars / shield pips /
@@ -596,12 +642,12 @@ fn push_ship(
     }
 
     match stance {
-        Stance::BowOn => push_bow_on_silhouette(
-            out, cx, base_y, top_y, width, cos_a, bow_fore, fill, stroke,
-        ),
-        Stance::Broadside => push_broadside_silhouette(
-            out, cx, base_y, top_y, width, cos_a, fill, stroke,
-        ),
+        Stance::BowOn => {
+            push_bow_on_silhouette(out, cx, base_y, top_y, width, cos_a, bow_fore, fill, stroke)
+        }
+        Stance::Broadside => {
+            push_broadside_silhouette(out, cx, base_y, top_y, width, cos_a, fill, stroke)
+        }
     }
 
     // Bow chevron — overlaid on the silhouette, alpha = sin(angle). Fades
@@ -629,15 +675,18 @@ fn push_ship(
                 (chx, chy, rot)
             }
         };
-        push_sprite(out, SpriteInstance {
-            pos: [chx, chy],
-            half_size: [chevron_size, chevron_size],
-            color: chev_color,
-            uv_min: atlas::cell_uvs(atlas::BOW_CHEVRON).0,
-            uv_max: atlas::cell_uvs(atlas::BOW_CHEVRON).1,
-            rotation_rad: chrot,
-            _pad: [0.0; 3],
-        });
+        push_sprite(
+            out,
+            SpriteInstance {
+                pos: [chx, chy],
+                half_size: [chevron_size, chevron_size],
+                color: chev_color,
+                uv_min: atlas::cell_uvs(atlas::BOW_CHEVRON).0,
+                uv_max: atlas::cell_uvs(atlas::BOW_CHEVRON).1,
+                rotation_rad: chrot,
+                _pad: [0.0; 3],
+            },
+        );
     }
 }
 
@@ -677,38 +726,104 @@ fn push_bow_on_silhouette(
     let right = stern_edge_x.max(bow_corner_x);
 
     // Stern body rectangle.
-    push_polygon(out, PolygonInstance {
-        p0: [left, top_y],
-        p1: [right, top_y],
-        p2: [right, base_y],
-        p3: [left, base_y],
-        color: fill,
-        uv_min: atlas::cell_uvs(atlas::SOLID_WHITE).0,
-        uv_max: atlas::cell_uvs(atlas::SOLID_WHITE).1,
-    });
+    push_polygon(
+        out,
+        PolygonInstance {
+            p0: [left, top_y],
+            p1: [right, top_y],
+            p2: [right, base_y],
+            p3: [left, base_y],
+            color: fill,
+            uv_min: atlas::cell_uvs(atlas::SOLID_WHITE).0,
+            uv_max: atlas::cell_uvs(atlas::SOLID_WHITE).1,
+        },
+    );
     // Bow triangle (degenerate-quad with two coincident vertices at tip).
-    push_polygon(out, PolygonInstance {
-        p0: [bow_corner_x, top_y],
-        p1: [bow_tip_x, mid_y],
-        p2: [bow_tip_x, mid_y],
-        p3: [bow_corner_x, base_y],
-        color: fill,
-        uv_min: atlas::cell_uvs(atlas::SOLID_WHITE).0,
-        uv_max: atlas::cell_uvs(atlas::SOLID_WHITE).1,
-    });
+    push_polygon(
+        out,
+        PolygonInstance {
+            p0: [bow_corner_x, top_y],
+            p1: [bow_tip_x, mid_y],
+            p2: [bow_tip_x, mid_y],
+            p3: [bow_corner_x, base_y],
+            color: fill,
+            uv_min: atlas::cell_uvs(atlas::SOLID_WHITE).0,
+            uv_max: atlas::cell_uvs(atlas::SOLID_WHITE).1,
+        },
+    );
 
     // Outline strokes around the full silhouette (no internal seam).
     // Stern edge.
-    push_line(out, Point2 { x: stern_edge_x, y: top_y }, Point2 { x: stern_edge_x, y: base_y }, 1.0, stroke);
+    push_line(
+        out,
+        Point2 {
+            x: stern_edge_x,
+            y: top_y,
+        },
+        Point2 {
+            x: stern_edge_x,
+            y: base_y,
+        },
+        1.0,
+        stroke,
+    );
     // Top edge (stern_edge_x -> bow_corner_x).
-    push_line(out, Point2 { x: stern_edge_x, y: top_y }, Point2 { x: bow_corner_x, y: top_y }, 1.0, stroke);
+    push_line(
+        out,
+        Point2 {
+            x: stern_edge_x,
+            y: top_y,
+        },
+        Point2 {
+            x: bow_corner_x,
+            y: top_y,
+        },
+        1.0,
+        stroke,
+    );
     // Bottom edge.
-    push_line(out, Point2 { x: stern_edge_x, y: base_y }, Point2 { x: bow_corner_x, y: base_y }, 1.0, stroke);
+    push_line(
+        out,
+        Point2 {
+            x: stern_edge_x,
+            y: base_y,
+        },
+        Point2 {
+            x: bow_corner_x,
+            y: base_y,
+        },
+        1.0,
+        stroke,
+    );
     // Bow taper edges. When cos_a is near 0 these collapse to a vertical
     // line at bow_corner_x; that's fine — no visible seam because they
     // coincide.
-    push_line(out, Point2 { x: bow_corner_x, y: top_y }, Point2 { x: bow_tip_x, y: mid_y }, 1.0, stroke);
-    push_line(out, Point2 { x: bow_corner_x, y: base_y }, Point2 { x: bow_tip_x, y: mid_y }, 1.0, stroke);
+    push_line(
+        out,
+        Point2 {
+            x: bow_corner_x,
+            y: top_y,
+        },
+        Point2 {
+            x: bow_tip_x,
+            y: mid_y,
+        },
+        1.0,
+        stroke,
+    );
+    push_line(
+        out,
+        Point2 {
+            x: bow_corner_x,
+            y: base_y,
+        },
+        Point2 {
+            x: bow_tip_x,
+            y: mid_y,
+        },
+        1.0,
+        stroke,
+    );
 }
 
 /// Single-silhouette broadside hull: rectangle plus a centered
@@ -729,45 +844,75 @@ fn push_broadside_silhouette(
 ) {
     let half_w = width / 2.0;
     let height = base_y - top_y;
-    push_polygon(out, PolygonInstance {
-        p0: [cx - half_w, top_y],
-        p1: [cx + half_w, top_y],
-        p2: [cx + half_w, base_y],
-        p3: [cx - half_w, base_y],
-        color: fill,
-        uv_min: atlas::cell_uvs(atlas::SOLID_WHITE).0,
-        uv_max: atlas::cell_uvs(atlas::SOLID_WHITE).1,
-    });
+    push_polygon(
+        out,
+        PolygonInstance {
+            p0: [cx - half_w, top_y],
+            p1: [cx + half_w, top_y],
+            p2: [cx + half_w, base_y],
+            p3: [cx - half_w, base_y],
+            color: fill,
+            uv_min: atlas::cell_uvs(atlas::SOLID_WHITE).0,
+            uv_max: atlas::cell_uvs(atlas::SOLID_WHITE).1,
+        },
+    );
     // Superstructure bump: short rectangle perched on top, centered.
     // Height scales with cos(angle) so it reads strongly at side view and
     // recedes at top-down (where the bump would be foreshortened away).
     let bump_w = width * 0.4;
     let bump_h = height * 0.30 * cos_a.max(0.1);
-    push_polygon(out, PolygonInstance {
-        p0: [cx - bump_w / 2.0, top_y - bump_h],
-        p1: [cx + bump_w / 2.0, top_y - bump_h],
-        p2: [cx + bump_w / 2.0, top_y],
-        p3: [cx - bump_w / 2.0, top_y],
-        color: fill,
-        uv_min: atlas::cell_uvs(atlas::SOLID_WHITE).0,
-        uv_max: atlas::cell_uvs(atlas::SOLID_WHITE).1,
-    });
+    push_polygon(
+        out,
+        PolygonInstance {
+            p0: [cx - bump_w / 2.0, top_y - bump_h],
+            p1: [cx + bump_w / 2.0, top_y - bump_h],
+            p2: [cx + bump_w / 2.0, top_y],
+            p3: [cx - bump_w / 2.0, top_y],
+            color: fill,
+            uv_min: atlas::cell_uvs(atlas::SOLID_WHITE).0,
+            uv_max: atlas::cell_uvs(atlas::SOLID_WHITE).1,
+        },
+    );
 
     // Outlines.
     let main = [
-        Point2 { x: cx - half_w, y: top_y },
-        Point2 { x: cx + half_w, y: top_y },
-        Point2 { x: cx + half_w, y: base_y },
-        Point2 { x: cx - half_w, y: base_y },
+        Point2 {
+            x: cx - half_w,
+            y: top_y,
+        },
+        Point2 {
+            x: cx + half_w,
+            y: top_y,
+        },
+        Point2 {
+            x: cx + half_w,
+            y: base_y,
+        },
+        Point2 {
+            x: cx - half_w,
+            y: base_y,
+        },
     ];
     for i in 0..4 {
         push_line(out, main[i], main[(i + 1) % 4], 1.0, stroke);
     }
     let bump = [
-        Point2 { x: cx - bump_w / 2.0, y: top_y - bump_h },
-        Point2 { x: cx + bump_w / 2.0, y: top_y - bump_h },
-        Point2 { x: cx + bump_w / 2.0, y: top_y },
-        Point2 { x: cx - bump_w / 2.0, y: top_y },
+        Point2 {
+            x: cx - bump_w / 2.0,
+            y: top_y - bump_h,
+        },
+        Point2 {
+            x: cx + bump_w / 2.0,
+            y: top_y - bump_h,
+        },
+        Point2 {
+            x: cx + bump_w / 2.0,
+            y: top_y,
+        },
+        Point2 {
+            x: cx - bump_w / 2.0,
+            y: top_y,
+        },
     ];
     for i in 0..3 {
         push_line(out, bump[i], bump[i + 1], 1.0, stroke);
@@ -791,55 +936,61 @@ fn push_view_angle_overlay(out: &mut Vec<DrawCommand>, view_angle_rad: f32) {
     let frac = (view_angle_rad / std::f32::consts::FRAC_PI_2).clamp(0.0, 1.0);
     let cur_w = max_w * frac;
     // Track (background).
-    push_sprite(out, SpriteInstance::axis_aligned(
-        [x_right - max_w / 2.0, y],
-        [max_w / 2.0, bar_h / 2.0],
-        [0.08, 0.12, 0.18, 0.85],
-        atlas::cell_uvs(atlas::SOLID_WHITE),
-    ));
+    push_sprite(
+        out,
+        SpriteInstance::axis_aligned(
+            [x_right - max_w / 2.0, y],
+            [max_w / 2.0, bar_h / 2.0],
+            [0.08, 0.12, 0.18, 0.85],
+            atlas::cell_uvs(atlas::SOLID_WHITE),
+        ),
+    );
     // Fill.
     if cur_w > 0.5 {
-        push_sprite(out, SpriteInstance::axis_aligned(
-            [x_right - max_w + cur_w / 2.0, y],
-            [cur_w / 2.0, bar_h / 2.0],
-            [0.33, 0.81, 0.79, 1.0],
-            atlas::cell_uvs(atlas::SOLID_WHITE),
-        ));
+        push_sprite(
+            out,
+            SpriteInstance::axis_aligned(
+                [x_right - max_w + cur_w / 2.0, y],
+                [cur_w / 2.0, bar_h / 2.0],
+                [0.33, 0.81, 0.79, 1.0],
+                atlas::cell_uvs(atlas::SOLID_WHITE),
+            ),
+        );
     }
     // Tick marks at each fixed angle (0, 15, 30, 45, 60, 75, 90).
     for i in 0..=6 {
         let tick_x = (x_right - max_w) + (i as f32 / 6.0) * max_w;
-        push_sprite(out, SpriteInstance::axis_aligned(
-            [tick_x, y + bar_h + 2.0],
-            [0.5, 2.0],
-            [0.55, 0.50, 0.45, 1.0],
-            atlas::cell_uvs(atlas::SOLID_WHITE),
-        ));
+        push_sprite(
+            out,
+            SpriteInstance::axis_aligned(
+                [tick_x, y + bar_h + 2.0],
+                [0.5, 2.0],
+                [0.55, 0.50, 0.45, 1.0],
+                atlas::cell_uvs(atlas::SOLID_WHITE),
+            ),
+        );
     }
 }
 
 /// Thin line segment from `a` to `b` as a rotated rectangle of width `thickness`.
-fn push_line(
-    out: &mut Vec<DrawCommand>,
-    a: Point2,
-    b: Point2,
-    thickness: f32,
-    color: [f32; 4],
-) {
+fn push_line(out: &mut Vec<DrawCommand>, a: Point2, b: Point2, thickness: f32, color: [f32; 4]) {
     let dx = b.x - a.x;
     let dy = b.y - a.y;
     let len = (dx * dx + dy * dy).sqrt();
     let cx = (a.x + b.x) / 2.0;
     let cy = (a.y + b.y) / 2.0;
-    push_sprite(out, SpriteInstance {
-        pos: [cx, cy],
-        half_size: [len / 2.0, thickness / 2.0],
-        color,
-        uv_min: atlas::cell_uvs(atlas::SOLID_WHITE).0,
-        uv_max: atlas::cell_uvs(atlas::SOLID_WHITE).1,
-        rotation_rad: dy.atan2(dx),
-        _pad: [0.0; 3],
-    });
+    push_sprite(
+        out,
+        SpriteInstance {
+            pos: [cx, cy],
+            half_size: [len / 2.0, thickness / 2.0],
+            color,
+            uv_min: atlas::cell_uvs(atlas::SOLID_WHITE).0,
+            uv_max: atlas::cell_uvs(atlas::SOLID_WHITE).1,
+            rotation_rad: dy.atan2(dx),
+            _pad: [0.0; 3],
+        },
+    );
 }
 
 /* =============================================================================
@@ -854,16 +1005,23 @@ fn push_projectile(out: &mut Vec<DrawCommand>, proj: &Projectile, lane: &LaneGeo
         atlas::TORPEDO
     };
     // Heading aft: flip horizontally (rotation by PI).
-    let rot = if proj.heading == LaneEnd::Aft { std::f32::consts::PI } else { 0.0 };
-    push_sprite(out, SpriteInstance {
-        pos: [pos.x, lane.center_y - 18.0],
-        half_size: [16.0, 8.0],
-        color: WHITE,
-        uv_min: atlas::cell_uvs(cell).0,
-        uv_max: atlas::cell_uvs(cell).1,
-        rotation_rad: rot,
-        _pad: [0.0; 3],
-    });
+    let rot = if proj.heading == LaneEnd::Aft {
+        std::f32::consts::PI
+    } else {
+        0.0
+    };
+    push_sprite(
+        out,
+        SpriteInstance {
+            pos: [pos.x, lane.center_y - 18.0],
+            half_size: [16.0, 8.0],
+            color: WHITE,
+            uv_min: atlas::cell_uvs(cell).0,
+            uv_max: atlas::cell_uvs(cell).1,
+            rotation_rad: rot,
+            _pad: [0.0; 3],
+        },
+    );
 }
 
 /* =============================================================================
@@ -885,24 +1043,34 @@ fn push_heat_bar(
     let bar_x = p.x + width / 2.0 + 8.0;
     let bar_y = lane.center_y;
     // Background.
-    push_sprite(out, SpriteInstance::axis_aligned(
-        [bar_x, bar_y - max_h / 2.0],
-        [bar_w / 2.0, max_h / 2.0],
-        HEAT_BG,
-        atlas::cell_uvs(atlas::SOLID_WHITE),
-    ));
+    push_sprite(
+        out,
+        SpriteInstance::axis_aligned(
+            [bar_x, bar_y - max_h / 2.0],
+            [bar_w / 2.0, max_h / 2.0],
+            HEAT_BG,
+            atlas::cell_uvs(atlas::SOLID_WHITE),
+        ),
+    );
     let ratio = (ship.heat as f32 / ship.heat_max.max(1) as f32).clamp(0.0, 1.0);
     if ratio > 0.0 {
         let fill_h = max_h * ratio;
-        let color = if ship.locked_out { HEAT_LOCKOUT } else { HEAT_FILL };
+        let color = if ship.locked_out {
+            HEAT_LOCKOUT
+        } else {
+            HEAT_FILL
+        };
         // Bottom-aligned: fill grows upward from the bar's bottom edge.
         let bottom_y = bar_y - max_h / 2.0 + max_h; // = bar_y + max_h/2
-        push_sprite(out, SpriteInstance::axis_aligned(
-            [bar_x, bottom_y - fill_h / 2.0],
-            [bar_w / 2.0, fill_h / 2.0],
-            color,
-            atlas::cell_uvs(atlas::SOLID_WHITE),
-        ));
+        push_sprite(
+            out,
+            SpriteInstance::axis_aligned(
+                [bar_x, bottom_y - fill_h / 2.0],
+                [bar_w / 2.0, fill_h / 2.0],
+                color,
+                atlas::cell_uvs(atlas::SOLID_WHITE),
+            ),
+        );
     }
 }
 
@@ -925,22 +1093,58 @@ fn push_shield_pips(
     let stance_broadside = matches!(ship.orientation, Orientation::Broadside);
 
     // Direction the bow points in screen space.
-    let bow_sign = if bow_fore || stance_broadside { 1.0 } else { -1.0 };
+    let bow_sign = if bow_fore || stance_broadside {
+        1.0
+    } else {
+        -1.0
+    };
 
     let zones = [
         // (zone, base position, stacking direction)
-        (HullZone::Bow,
-         Point2 { x: p.x + bow_sign * (width / 2.0 + pad), y: lane.center_y },
-         Point2 { x: bow_sign * (pip * 2.0 + 1.0), y: 0.0 }),
-        (HullZone::Stern,
-         Point2 { x: p.x - bow_sign * (width / 2.0 + pad), y: lane.center_y },
-         Point2 { x: -bow_sign * (pip * 2.0 + 1.0), y: 0.0 }),
-        (HullZone::Starboard,
-         Point2 { x: p.x, y: lane.center_y + total_h / 2.0 + pad },
-         Point2 { x: 0.0, y: pip * 2.0 + 1.0 }),
-        (HullZone::Port,
-         Point2 { x: p.x, y: lane.center_y - total_h / 2.0 - pad },
-         Point2 { x: 0.0, y: -(pip * 2.0 + 1.0) }),
+        (
+            HullZone::Bow,
+            Point2 {
+                x: p.x + bow_sign * (width / 2.0 + pad),
+                y: lane.center_y,
+            },
+            Point2 {
+                x: bow_sign * (pip * 2.0 + 1.0),
+                y: 0.0,
+            },
+        ),
+        (
+            HullZone::Stern,
+            Point2 {
+                x: p.x - bow_sign * (width / 2.0 + pad),
+                y: lane.center_y,
+            },
+            Point2 {
+                x: -bow_sign * (pip * 2.0 + 1.0),
+                y: 0.0,
+            },
+        ),
+        (
+            HullZone::Starboard,
+            Point2 {
+                x: p.x,
+                y: lane.center_y + total_h / 2.0 + pad,
+            },
+            Point2 {
+                x: 0.0,
+                y: pip * 2.0 + 1.0,
+            },
+        ),
+        (
+            HullZone::Port,
+            Point2 {
+                x: p.x,
+                y: lane.center_y - total_h / 2.0 - pad,
+            },
+            Point2 {
+                x: 0.0,
+                y: -(pip * 2.0 + 1.0),
+            },
+        ),
     ];
     for (zone, base, step) in zones {
         let face = ship.shield_profile.face(zone);
@@ -950,12 +1154,15 @@ fn push_shield_pips(
         for i in 0..face.charge {
             let px = base.x + step.x * (i as f32);
             let py = base.y + step.y * (i as f32);
-            push_sprite(out, SpriteInstance::axis_aligned(
-                [px, py],
-                [pip, pip],
-                SHIELD_PIP_CHARGE,
-                atlas::cell_uvs(atlas::SOLID_WHITE),
-            ));
+            push_sprite(
+                out,
+                SpriteInstance::axis_aligned(
+                    [px, py],
+                    [pip, pip],
+                    SHIELD_PIP_CHARGE,
+                    atlas::cell_uvs(atlas::SOLID_WHITE),
+                ),
+            );
         }
     }
 }
@@ -982,17 +1189,23 @@ fn push_queue_glyphs(
     for (i, action_id) in ship.queue.iter().enumerate() {
         let archetype = archetype_of_mount(ship, action_id).unwrap_or(WeaponArchetype::Beam);
         let cell_uv = archetype_to_glyph(archetype);
-        push_sprite(out, SpriteInstance::axis_aligned(
-            [start_x + (i as f32) * spacing, glyph_y],
-            [glyph_size, glyph_size],
-            WHITE,
-            atlas::cell_uvs(cell_uv),
-        ));
+        push_sprite(
+            out,
+            SpriteInstance::axis_aligned(
+                [start_x + (i as f32) * spacing, glyph_y],
+                [glyph_size, glyph_size],
+                WHITE,
+                atlas::cell_uvs(cell_uv),
+            ),
+        );
     }
 }
 
 fn archetype_of_mount(ship: &Ship, action_id: &str) -> Option<WeaponArchetype> {
-    let _ = ship.mounts.iter().find(|m: &&Mount| m.weapon == action_id)?;
+    let _ = ship
+        .mounts
+        .iter()
+        .find(|m: &&Mount| m.weapon == action_id)?;
     Some(WeaponArchetype::Beam)
 }
 
@@ -1027,12 +1240,15 @@ fn push_status_badges(
     let y = lane.center_y - total_h / 2.0 - 10.0;
     for (i, status) in ship.statuses.iter().enumerate() {
         let cell_uv = status_to_badge(status);
-        push_sprite(out, SpriteInstance::axis_aligned(
-            [start_x + (i as f32) * spacing, y],
-            [size, size],
-            WHITE,
-            atlas::cell_uvs(cell_uv),
-        ));
+        push_sprite(
+            out,
+            SpriteInstance::axis_aligned(
+                [start_x + (i as f32) * spacing, y],
+                [size, size],
+                WHITE,
+                atlas::cell_uvs(cell_uv),
+            ),
+        );
     }
 }
 
@@ -1066,12 +1282,16 @@ pub fn win_state(board: &Board) -> WinState {
     for ship in board.cells.iter().flatten() {
         match ship.faction {
             Faction::Player => any_player = true,
-            Faction::Enemy  => any_enemy = true,
+            Faction::Enemy => any_enemy = true,
         }
     }
-    if !any_player { WinState::Defeat }
-    else if !any_enemy { WinState::Victory }
-    else { WinState::Playing }
+    if !any_player {
+        WinState::Defeat
+    } else if !any_enemy {
+        WinState::Victory
+    } else {
+        WinState::Playing
+    }
 }
 
 pub fn push_end_state_overlay(out: &mut Vec<DrawCommand>, state: WinState) {
@@ -1082,12 +1302,15 @@ pub fn push_end_state_overlay(out: &mut Vec<DrawCommand>, state: WinState) {
         WinState::Victory => (VICTORY_TINT, "VICTORY - PRESS ENTER TO RESTART"),
     };
     // Full-canvas tinted overlay quad.
-    push_sprite(out, SpriteInstance::axis_aligned(
-        [VIRTUAL_W as f32 / 2.0, VIRTUAL_H as f32 / 2.0],
-        [VIRTUAL_W as f32 / 2.0, VIRTUAL_H as f32 / 2.0],
-        tint,
-        atlas::cell_uvs(atlas::SOLID_WHITE),
-    ));
+    push_sprite(
+        out,
+        SpriteInstance::axis_aligned(
+            [VIRTUAL_W as f32 / 2.0, VIRTUAL_H as f32 / 2.0],
+            [VIRTUAL_W as f32 / 2.0, VIRTUAL_H as f32 / 2.0],
+            tint,
+            atlas::cell_uvs(atlas::SOLID_WHITE),
+        ),
+    );
     push_centered_banner(out, banner, VIRTUAL_H as f32 / 2.0, 4.0);
 }
 
@@ -1099,14 +1322,22 @@ pub fn push_run_defeated_overlay(out: &mut Vec<DrawCommand>, salvage: u32) {
     use crate::gfx::{VIRTUAL_H, VIRTUAL_W};
     let center_x = VIRTUAL_W as f32 / 2.0;
     let center_y = VIRTUAL_H as f32 / 2.0;
-    push_sprite(out, SpriteInstance::axis_aligned(
-        [center_x, center_y],
-        [center_x, center_y],
-        DEFEAT_TINT,
-        atlas::cell_uvs(atlas::SOLID_WHITE),
-    ));
+    push_sprite(
+        out,
+        SpriteInstance::axis_aligned(
+            [center_x, center_y],
+            [center_x, center_y],
+            DEFEAT_TINT,
+            atlas::cell_uvs(atlas::SOLID_WHITE),
+        ),
+    );
     push_centered_banner(out, "DEFEATED", center_y - 60.0, 5.0);
-    push_centered_banner(out, &format!("TOTAL SALVAGE: {}", salvage), center_y + 10.0, 3.0);
+    push_centered_banner(
+        out,
+        &format!("TOTAL SALVAGE: {}", salvage),
+        center_y + 10.0,
+        3.0,
+    );
     push_centered_banner(out, "PRESS ENTER TO RESTART", center_y + 60.0, 2.5);
 }
 
@@ -1178,10 +1409,7 @@ pub enum BetweenEncounterChoice {
 ///
 /// No-op when neither state applies — the bin should only call this
 /// while between-encounter or run-complete state is active.
-pub fn push_between_encounter_overlay(
-    out: &mut Vec<DrawCommand>,
-    choice: BetweenEncounterChoice,
-) {
+pub fn push_between_encounter_overlay(out: &mut Vec<DrawCommand>, choice: BetweenEncounterChoice) {
     use crate::gfx::{VIRTUAL_H, VIRTUAL_W};
     let center_x = VIRTUAL_W as f32 / 2.0;
     let center_y = VIRTUAL_H as f32 / 2.0;
@@ -1190,28 +1418,49 @@ pub fn push_between_encounter_overlay(
         BetweenEncounterChoice::RunComplete { .. } => VICTORY_TINT,
     };
     // Full-canvas tinted overlay.
-    push_sprite(out, SpriteInstance::axis_aligned(
-        [center_x, center_y],
-        [center_x, center_y],
-        tint,
-        atlas::cell_uvs(atlas::SOLID_WHITE),
-    ));
+    push_sprite(
+        out,
+        SpriteInstance::axis_aligned(
+            [center_x, center_y],
+            [center_x, center_y],
+            tint,
+            atlas::cell_uvs(atlas::SOLID_WHITE),
+        ),
+    );
 
     match choice {
-        BetweenEncounterChoice::EncounterComplete { sector_idx, salvage } => {
+        BetweenEncounterChoice::EncounterComplete {
+            sector_idx,
+            salvage,
+        } => {
             // Banner row: "ENCOUNTER COMPLETE - SECTOR N" at y_center - 60.
             let pixel = 3.0;
             let sector_num = sector_idx + 1;
             let banner = format!("ENCOUNTER COMPLETE - SECTOR {}", sector_num);
             push_centered_banner(out, &banner, center_y - 60.0, pixel);
             // Salvage row: "SALVAGE: N" between banner and choices.
-            push_centered_banner(out, &format!("SALVAGE: {}", salvage), center_y - 15.0, pixel);
+            push_centered_banner(
+                out,
+                &format!("SALVAGE: {}", salvage),
+                center_y - 15.0,
+                pixel,
+            );
             // Choice row: "1 REPAIR    2 UPGRADE    3 CONTINUE" at y_center + 35.
-            push_centered_banner(out, "1 REPAIR  2 UPGRADE  3 CONTINUE", center_y + 35.0, pixel);
+            push_centered_banner(
+                out,
+                "1 REPAIR  2 UPGRADE  3 CONTINUE",
+                center_y + 35.0,
+                pixel,
+            );
         }
         BetweenEncounterChoice::RunComplete { salvage } => {
             push_centered_banner(out, "RUN COMPLETE", center_y - 50.0, 5.0);
-            push_centered_banner(out, &format!("TOTAL SALVAGE: {}", salvage), center_y + 15.0, 3.0);
+            push_centered_banner(
+                out,
+                &format!("TOTAL SALVAGE: {}", salvage),
+                center_y + 15.0,
+                3.0,
+            );
             push_centered_banner(out, "PRESS ENTER TO RESTART", center_y + 55.0, 2.5);
         }
     }
@@ -1233,36 +1482,96 @@ fn push_glyph_5x7(
     color: [f32; 4],
 ) {
     let rows = match ch {
-        'A' => [0b01110, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001],
-        'C' => [0b01110, 0b10001, 0b10000, 0b10000, 0b10000, 0b10001, 0b01110],
-        'D' => [0b11110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b11110],
-        'E' => [0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b11111],
-        'F' => [0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b10000],
-        'G' => [0b01110, 0b10001, 0b10000, 0b10111, 0b10001, 0b10001, 0b01110],
-        'I' => [0b11111, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b11111],
-        'L' => [0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b11111],
-        'M' => [0b10001, 0b11011, 0b10101, 0b10001, 0b10001, 0b10001, 0b10001],
-        'N' => [0b10001, 0b11001, 0b10101, 0b10011, 0b10001, 0b10001, 0b10001],
-        'O' => [0b01110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110],
-        'P' => [0b11110, 0b10001, 0b10001, 0b11110, 0b10000, 0b10000, 0b10000],
-        'R' => [0b11110, 0b10001, 0b10001, 0b11110, 0b10100, 0b10010, 0b10001],
-        'S' => [0b01111, 0b10000, 0b10000, 0b01110, 0b00001, 0b00001, 0b11110],
-        'T' => [0b11111, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100],
-        'U' => [0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110],
-        'V' => [0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01010, 0b00100],
-        'Y' => [0b10001, 0b10001, 0b01010, 0b00100, 0b00100, 0b00100, 0b00100],
-        '0' => [0b01110, 0b10001, 0b10011, 0b10101, 0b11001, 0b10001, 0b01110],
-        '1' => [0b00100, 0b01100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110],
-        '2' => [0b01110, 0b10001, 0b00001, 0b00010, 0b00100, 0b01000, 0b11111],
-        '3' => [0b11111, 0b00010, 0b00100, 0b00010, 0b00001, 0b10001, 0b01110],
-        '4' => [0b00010, 0b00110, 0b01010, 0b10010, 0b11111, 0b00010, 0b00010],
-        '5' => [0b11111, 0b10000, 0b11110, 0b00001, 0b00001, 0b10001, 0b01110],
-        '6' => [0b00110, 0b01000, 0b10000, 0b11110, 0b10001, 0b10001, 0b01110],
-        '7' => [0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b01000, 0b01000],
-        '8' => [0b01110, 0b10001, 0b10001, 0b01110, 0b10001, 0b10001, 0b01110],
-        '9' => [0b01110, 0b10001, 0b10001, 0b01111, 0b00001, 0b00010, 0b01100],
-        '-' => [0b00000, 0b00000, 0b00000, 0b11111, 0b00000, 0b00000, 0b00000],
-        ':' => [0b00000, 0b00100, 0b00100, 0b00000, 0b00100, 0b00100, 0b00000],
+        'A' => [
+            0b01110, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001,
+        ],
+        'C' => [
+            0b01110, 0b10001, 0b10000, 0b10000, 0b10000, 0b10001, 0b01110,
+        ],
+        'D' => [
+            0b11110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b11110,
+        ],
+        'E' => [
+            0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b11111,
+        ],
+        'F' => [
+            0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b10000,
+        ],
+        'G' => [
+            0b01110, 0b10001, 0b10000, 0b10111, 0b10001, 0b10001, 0b01110,
+        ],
+        'I' => [
+            0b11111, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b11111,
+        ],
+        'L' => [
+            0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b11111,
+        ],
+        'M' => [
+            0b10001, 0b11011, 0b10101, 0b10001, 0b10001, 0b10001, 0b10001,
+        ],
+        'N' => [
+            0b10001, 0b11001, 0b10101, 0b10011, 0b10001, 0b10001, 0b10001,
+        ],
+        'O' => [
+            0b01110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110,
+        ],
+        'P' => [
+            0b11110, 0b10001, 0b10001, 0b11110, 0b10000, 0b10000, 0b10000,
+        ],
+        'R' => [
+            0b11110, 0b10001, 0b10001, 0b11110, 0b10100, 0b10010, 0b10001,
+        ],
+        'S' => [
+            0b01111, 0b10000, 0b10000, 0b01110, 0b00001, 0b00001, 0b11110,
+        ],
+        'T' => [
+            0b11111, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100,
+        ],
+        'U' => [
+            0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110,
+        ],
+        'V' => [
+            0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01010, 0b00100,
+        ],
+        'Y' => [
+            0b10001, 0b10001, 0b01010, 0b00100, 0b00100, 0b00100, 0b00100,
+        ],
+        '0' => [
+            0b01110, 0b10001, 0b10011, 0b10101, 0b11001, 0b10001, 0b01110,
+        ],
+        '1' => [
+            0b00100, 0b01100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110,
+        ],
+        '2' => [
+            0b01110, 0b10001, 0b00001, 0b00010, 0b00100, 0b01000, 0b11111,
+        ],
+        '3' => [
+            0b11111, 0b00010, 0b00100, 0b00010, 0b00001, 0b10001, 0b01110,
+        ],
+        '4' => [
+            0b00010, 0b00110, 0b01010, 0b10010, 0b11111, 0b00010, 0b00010,
+        ],
+        '5' => [
+            0b11111, 0b10000, 0b11110, 0b00001, 0b00001, 0b10001, 0b01110,
+        ],
+        '6' => [
+            0b00110, 0b01000, 0b10000, 0b11110, 0b10001, 0b10001, 0b01110,
+        ],
+        '7' => [
+            0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b01000, 0b01000,
+        ],
+        '8' => [
+            0b01110, 0b10001, 0b10001, 0b01110, 0b10001, 0b10001, 0b01110,
+        ],
+        '9' => [
+            0b01110, 0b10001, 0b10001, 0b01111, 0b00001, 0b00010, 0b01100,
+        ],
+        '-' => [
+            0b00000, 0b00000, 0b00000, 0b11111, 0b00000, 0b00000, 0b00000,
+        ],
+        ':' => [
+            0b00000, 0b00100, 0b00100, 0b00000, 0b00100, 0b00100, 0b00000,
+        ],
         ' ' => return,
         _ => return, // unknown char = blank glyph
     };
@@ -1271,12 +1580,15 @@ fn push_glyph_5x7(
             if (bits >> (4 - col)) & 1 == 1 {
                 let px = x + col as f32 * pixel;
                 let py = y + row as f32 * pixel;
-                push_sprite(out, SpriteInstance::axis_aligned(
-                    [px + pixel / 2.0, py + pixel / 2.0],
-                    [pixel / 2.0, pixel / 2.0],
-                    color,
-                    atlas::cell_uvs(atlas::SOLID_WHITE),
-                ));
+                push_sprite(
+                    out,
+                    SpriteInstance::axis_aligned(
+                        [px + pixel / 2.0, py + pixel / 2.0],
+                        [pixel / 2.0, pixel / 2.0],
+                        color,
+                        atlas::cell_uvs(atlas::SOLID_WHITE),
+                    ),
+                );
             }
         }
     }
@@ -1341,32 +1653,66 @@ mod tests {
     #[test]
     fn empty_registry_emits_procedural_silhouette() {
         let mut board = empty_board(7);
-        board.cells[0] = Some(frigate_at(0, Faction::Player, Orientation::BowOn { bow: LaneEnd::Fore }));
-        let scene = compose_scene_with(&board, &DEFAULT_LANE, std::f32::consts::FRAC_PI_4, &EmptySpriteRegistry);
-        let textured_count = scene.iter().filter(|c| matches!(c, DrawCommand::TexturedShip(_))).count();
-        assert_eq!(textured_count, 0, "empty registry should not emit textured-ship draws");
+        board.cells[0] = Some(frigate_at(
+            0,
+            Faction::Player,
+            Orientation::BowOn { bow: LaneEnd::Fore },
+        ));
+        let scene = compose_scene_with(
+            &board,
+            &DEFAULT_LANE,
+            std::f32::consts::FRAC_PI_4,
+            &EmptySpriteRegistry,
+        );
+        let textured_count = scene
+            .iter()
+            .filter(|c| matches!(c, DrawCommand::TexturedShip(_)))
+            .count();
+        assert_eq!(
+            textured_count, 0,
+            "empty registry should not emit textured-ship draws"
+        );
     }
 
     #[test]
     fn loaded_registry_emits_textured_ship_per_ship() {
         let mut board = empty_board(7);
-        board.cells[0] = Some(frigate_at(0, Faction::Player, Orientation::BowOn { bow: LaneEnd::Fore }));
+        board.cells[0] = Some(frigate_at(
+            0,
+            Faction::Player,
+            Orientation::BowOn { bow: LaneEnd::Fore },
+        ));
         board.cells[2] = Some(frigate_at(2, Faction::Enemy, Orientation::Broadside));
-        let scene = compose_scene_with(&board, &DEFAULT_LANE, std::f32::consts::FRAC_PI_4, &AlwaysLoaded);
+        let scene = compose_scene_with(
+            &board,
+            &DEFAULT_LANE,
+            std::f32::consts::FRAC_PI_4,
+            &AlwaysLoaded,
+        );
         let textured: Vec<_> = scene
             .iter()
-            .filter_map(|c| if let DrawCommand::TexturedShip(t) = c { Some(t) } else { None })
+            .filter_map(|c| {
+                if let DrawCommand::TexturedShip(t) = c {
+                    Some(t)
+                } else {
+                    None
+                }
+            })
             .collect();
-        assert_eq!(textured.len(), 2, "expected one textured-ship draw per ship");
+        assert_eq!(
+            textured.len(),
+            2,
+            "expected one textured-ship draw per ship"
+        );
         // sin(45deg) ≈ 0.7071
         for t in &textured {
             assert!((t.blend_t - std::f32::consts::FRAC_1_SQRT_2).abs() < 1e-5);
         }
         // Each ship's slug pair encodes its stance.
         assert_eq!(textured[0].side.as_str(), "frigate_bowOnFore_side");
-        assert_eq!(textured[0].top.as_str(),  "frigate_bowOnFore_top");
+        assert_eq!(textured[0].top.as_str(), "frigate_bowOnFore_top");
         assert_eq!(textured[1].side.as_str(), "frigate_broadside_side");
-        assert_eq!(textured[1].top.as_str(),  "frigate_broadside_top");
+        assert_eq!(textured[1].top.as_str(), "frigate_broadside_top");
     }
 
     #[test]
@@ -1375,14 +1721,29 @@ mod tests {
         // the same scene as compose_scene_with — the tweened path is a
         // strict superset.
         let mut board = empty_board(7);
-        board.cells[2] = Some(frigate_at(2, Faction::Player, Orientation::BowOn { bow: LaneEnd::Fore }));
-        let untweened = compose_scene_with(&board, &DEFAULT_LANE, std::f32::consts::FRAC_PI_4, &EmptySpriteRegistry);
+        board.cells[2] = Some(frigate_at(
+            2,
+            Faction::Player,
+            Orientation::BowOn { bow: LaneEnd::Fore },
+        ));
+        let untweened = compose_scene_with(
+            &board,
+            &DEFAULT_LANE,
+            std::f32::consts::FRAC_PI_4,
+            &EmptySpriteRegistry,
+        );
         let tweened = compose_scene_tweened(
-            &board, &DEFAULT_LANE, std::f32::consts::FRAC_PI_4, &EmptySpriteRegistry,
+            &board,
+            &DEFAULT_LANE,
+            std::f32::consts::FRAC_PI_4,
+            &EmptySpriteRegistry,
             &TweenState::default(),
         );
-        assert_eq!(untweened.len(), tweened.len(),
-            "default TweenState must produce identical draw count");
+        assert_eq!(
+            untweened.len(),
+            tweened.len(),
+            "default TweenState must produce identical draw count"
+        );
     }
 
     #[test]
@@ -1393,23 +1754,32 @@ mod tests {
         // should emit ship polygons whose x coords are shifted LEFT
         // because visual_cell < logical_cell on a left-to-right lane.
         let mut board = empty_board(7);
-        board.cells[4] = Some(frigate_at(4, Faction::Player, Orientation::BowOn { bow: LaneEnd::Fore }));
+        board.cells[4] = Some(frigate_at(
+            4,
+            Faction::Player,
+            Orientation::BowOn { bow: LaneEnd::Fore },
+        ));
         let logical_scene = compose_scene_with(&board, &DEFAULT_LANE, 0.0, &EmptySpriteRegistry);
 
         let mut tween = TweenState::default();
         tween.visual_cells.insert("ship-4".to_string(), 2.0);
-        let tweened = compose_scene_tweened(&board, &DEFAULT_LANE, 0.0, &EmptySpriteRegistry, &tween);
+        let tweened =
+            compose_scene_tweened(&board, &DEFAULT_LANE, 0.0, &EmptySpriteRegistry, &tween);
 
         // Find the first ship polygon in each (the stern body
         // rectangle is the first Polygon emitted after parallax /
         // lane / range bands).
         let logical_x = first_ship_polygon_left_x(&logical_scene)
             .expect("logical scene must have a ship polygon");
-        let tweened_x = first_ship_polygon_left_x(&tweened)
-            .expect("tweened scene must have a ship polygon");
-        assert!(tweened_x < logical_x,
+        let tweened_x =
+            first_ship_polygon_left_x(&tweened).expect("tweened scene must have a ship polygon");
+        assert!(
+            tweened_x < logical_x,
             "tweened ship (visual_cell=2) should be drawn LEFT of logical ship (cell=4); \
-             got logical_x={} tweened_x={}", logical_x, tweened_x);
+             got logical_x={} tweened_x={}",
+            logical_x,
+            tweened_x
+        );
     }
 
     /// Helper: find the leftmost x-coordinate among ship-body polygons.
@@ -1430,15 +1800,25 @@ mod tests {
 
     #[test]
     fn tween_state_cell_for_falls_back_to_logical() {
-        let ship = frigate_at(3, Faction::Player, Orientation::BowOn { bow: LaneEnd::Fore });
+        let ship = frigate_at(
+            3,
+            Faction::Player,
+            Orientation::BowOn { bow: LaneEnd::Fore },
+        );
         let empty = TweenState::default();
-        assert_eq!(empty.cell_for(&ship), 3.0,
-            "empty TweenState should fall back to ship.cell");
+        assert_eq!(
+            empty.cell_for(&ship),
+            3.0,
+            "empty TweenState should fall back to ship.cell"
+        );
 
         let mut populated = TweenState::default();
         populated.visual_cells.insert(ship.id.clone(), 1.5);
-        assert_eq!(populated.cell_for(&ship), 1.5,
-            "TweenState entry should override the logical cell");
+        assert_eq!(
+            populated.cell_for(&ship),
+            1.5,
+            "TweenState entry should override the logical cell"
+        );
     }
 
     #[test]
@@ -1449,7 +1829,11 @@ mod tests {
         assert_eq!(win_state(&empty_board(7)), WinState::Defeat);
 
         let mut b = empty_board(7);
-        b.cells[0] = Some(frigate_at(0, Faction::Player, Orientation::BowOn { bow: LaneEnd::Fore }));
+        b.cells[0] = Some(frigate_at(
+            0,
+            Faction::Player,
+            Orientation::BowOn { bow: LaneEnd::Fore },
+        ));
         assert_eq!(win_state(&b), WinState::Victory, "player alone = victory");
 
         let mut b = empty_board(7);
@@ -1457,7 +1841,11 @@ mod tests {
         assert_eq!(win_state(&b), WinState::Defeat, "enemy alone = defeat");
 
         let mut b = empty_board(7);
-        b.cells[0] = Some(frigate_at(0, Faction::Player, Orientation::BowOn { bow: LaneEnd::Fore }));
+        b.cells[0] = Some(frigate_at(
+            0,
+            Faction::Player,
+            Orientation::BowOn { bow: LaneEnd::Fore },
+        ));
         b.cells[3] = Some(frigate_at(3, Faction::Enemy, Orientation::Broadside));
         assert_eq!(win_state(&b), WinState::Playing);
     }
@@ -1476,11 +1864,19 @@ mod tests {
         // include the tint quad + many sprite draws for the banner.
         let mut out: Vec<DrawCommand> = Vec::new();
         push_end_state_overlay(&mut out, WinState::Defeat);
-        assert!(out.len() > 50, "defeat overlay should emit tint + banner glyphs, got {}", out.len());
+        assert!(
+            out.len() > 50,
+            "defeat overlay should emit tint + banner glyphs, got {}",
+            out.len()
+        );
 
         let mut v_out: Vec<DrawCommand> = Vec::new();
         push_end_state_overlay(&mut v_out, WinState::Victory);
-        assert!(v_out.len() > 50, "victory overlay should emit tint + banner glyphs, got {}", v_out.len());
+        assert!(
+            v_out.len() > 50,
+            "victory overlay should emit tint + banner glyphs, got {}",
+            v_out.len()
+        );
     }
 
     #[test]
@@ -1493,15 +1889,22 @@ mod tests {
         // have read as Defeat in the old behavior) produces NO
         // full-canvas overlay quad.
         let board = empty_board(7);
-        let baseline = compose_scene_with(&board, &DEFAULT_LANE, std::f32::consts::FRAC_PI_4, &EmptySpriteRegistry);
+        let baseline = compose_scene_with(
+            &board,
+            &DEFAULT_LANE,
+            std::f32::consts::FRAC_PI_4,
+            &EmptySpriteRegistry,
+        );
         let has_overlay_quad = baseline.iter().any(|c| {
             matches!(c, DrawCommand::Sprite(s)
                 if s.half_size[0] >= crate::gfx::VIRTUAL_W as f32 / 2.0
                 && s.half_size[1] >= crate::gfx::VIRTUAL_H as f32 / 2.0)
         });
-        assert!(!has_overlay_quad,
+        assert!(
+            !has_overlay_quad,
             "compose_scene must NOT auto-push the end-state overlay anymore; \
-             the bin owns that decision since #77");
+             the bin owns that decision since #77"
+        );
     }
 
     #[test]
@@ -1509,7 +1912,10 @@ mod tests {
         let mut out: Vec<DrawCommand> = Vec::new();
         push_between_encounter_overlay(
             &mut out,
-            BetweenEncounterChoice::EncounterComplete { sector_idx: 0, salvage: 7 },
+            BetweenEncounterChoice::EncounterComplete {
+                sector_idx: 0,
+                salvage: 7,
+            },
         );
         assert!(out.len() > 50,
             "encounter-complete overlay should emit tint + banner + salvage + choice glyphs, got {}",
@@ -1529,9 +1935,11 @@ mod tests {
         // tint-free font glyphs for the "SALVAGE: 0" baseline string.
         let mut out: Vec<DrawCommand> = Vec::new();
         push_salvage_hud(&mut out, 0);
-        assert!(out.len() > 20,
+        assert!(
+            out.len() > 20,
             "salvage HUD should emit a row of font glyph quads, got {}",
-            out.len());
+            out.len()
+        );
         // No full-canvas overlay quad — this is an in-game indicator,
         // not a modal screen.
         let has_overlay_quad = out.iter().any(|c| {
@@ -1539,8 +1947,10 @@ mod tests {
                 if s.half_size[0] >= crate::gfx::VIRTUAL_W as f32 / 2.0
                 && s.half_size[1] >= crate::gfx::VIRTUAL_H as f32 / 2.0)
         });
-        assert!(!has_overlay_quad,
-            "salvage HUD must NOT emit a full-canvas tint quad");
+        assert!(
+            !has_overlay_quad,
+            "salvage HUD must NOT emit a full-canvas tint quad"
+        );
     }
 
     #[test]
@@ -1550,61 +1960,103 @@ mod tests {
         // renders the number (not just the "SALVAGE:" prefix).
         let mut small: Vec<DrawCommand> = Vec::new();
         let mut large: Vec<DrawCommand> = Vec::new();
-        push_salvage_hud(&mut small, 7);       // 1 digit
-        push_salvage_hud(&mut large, 12345);   // 5 digits
-        assert!(large.len() > small.len(),
+        push_salvage_hud(&mut small, 7); // 1 digit
+        push_salvage_hud(&mut large, 12345); // 5 digits
+        assert!(
+            large.len() > small.len(),
             "5-digit salvage HUD ({}) should emit more glyphs than 1-digit ({})",
-            large.len(), small.len());
+            large.len(),
+            small.len()
+        );
     }
 
     #[test]
     fn push_run_defeated_overlay_emits_total_salvage_line() {
         let mut out: Vec<DrawCommand> = Vec::new();
         push_run_defeated_overlay(&mut out, 42);
-        assert!(out.len() > 50,
+        assert!(
+            out.len() > 50,
             "run-defeated overlay should emit tint + banner + salvage + restart glyphs, got {}",
-            out.len());
+            out.len()
+        );
     }
 
     #[test]
     fn push_between_encounter_overlay_run_complete_variant_renders() {
         let mut out: Vec<DrawCommand> = Vec::new();
-        push_between_encounter_overlay(&mut out, BetweenEncounterChoice::RunComplete { salvage: 17 });
-        assert!(out.len() > 50,
+        push_between_encounter_overlay(
+            &mut out,
+            BetweenEncounterChoice::RunComplete { salvage: 17 },
+        );
+        assert!(
+            out.len() > 50,
             "run-complete overlay should emit tint + banner glyphs, got {}",
-            out.len());
+            out.len()
+        );
     }
 
     #[test]
     fn empty_board_still_produces_backdrop_and_lane() {
         let board = empty_board(7);
         let scene = compose_scene(&board, &DEFAULT_LANE, std::f32::consts::FRAC_PI_4);
-        assert!(scene.len() > 20, "expected backdrop + lane, got {}", scene.len());
+        assert!(
+            scene.len() > 20,
+            "expected backdrop + lane, got {}",
+            scene.len()
+        );
     }
 
     #[test]
     fn one_player_ship_produces_visible_sprites() {
         let mut board = empty_board(7);
-        board.cells[0] = Some(frigate_at(0, Faction::Player, Orientation::BowOn { bow: LaneEnd::Fore }));
+        board.cells[0] = Some(frigate_at(
+            0,
+            Faction::Player,
+            Orientation::BowOn { bow: LaneEnd::Fore },
+        ));
         let scene = compose_scene(&board, &DEFAULT_LANE, std::f32::consts::FRAC_PI_4);
-        assert!(scene.len() > 30, "expected backdrop + ship sprites, got {}", scene.len());
+        assert!(
+            scene.len() > 30,
+            "expected backdrop + ship sprites, got {}",
+            scene.len()
+        );
     }
 
     #[test]
     fn ship_with_shield_charges_draws_pips() {
         let mut board_with = empty_board(7);
-        let mut ship = frigate_at(0, Faction::Player, Orientation::BowOn { bow: LaneEnd::Fore });
+        let mut ship = frigate_at(
+            0,
+            Faction::Player,
+            Orientation::BowOn { bow: LaneEnd::Fore },
+        );
         ship.shield_profile = ShieldProfile {
-            bow: ShieldFace { armour: 2, charge: 2 },
-            stern: ShieldFace { armour: 0, charge: 0 },
-            port: ShieldFace { armour: 1, charge: 1 },
-            starboard: ShieldFace { armour: 1, charge: 0 },
+            bow: ShieldFace {
+                armour: 2,
+                charge: 2,
+            },
+            stern: ShieldFace {
+                armour: 0,
+                charge: 0,
+            },
+            port: ShieldFace {
+                armour: 1,
+                charge: 1,
+            },
+            starboard: ShieldFace {
+                armour: 1,
+                charge: 0,
+            },
         };
         board_with.cells[0] = Some(ship);
         let scene_with = compose_scene(&board_with, &DEFAULT_LANE, std::f32::consts::FRAC_PI_4);
 
         let mut bare_board = empty_board(7);
-        bare_board.cells[0] = Some(frigate_at(0, Faction::Player, Orientation::BowOn { bow: LaneEnd::Fore }));
+        bare_board.cells[0] = Some(frigate_at(
+            0,
+            Faction::Player,
+            Orientation::BowOn { bow: LaneEnd::Fore },
+        ));
         let scene_without = compose_scene(&bare_board, &DEFAULT_LANE, std::f32::consts::FRAC_PI_4);
 
         // 2 bow pips + 1 port pip = 3 extra sprites.
@@ -1614,13 +2066,21 @@ mod tests {
     #[test]
     fn ship_with_heat_draws_a_filled_bar() {
         let mut board = empty_board(7);
-        let mut ship = frigate_at(0, Faction::Player, Orientation::BowOn { bow: LaneEnd::Fore });
+        let mut ship = frigate_at(
+            0,
+            Faction::Player,
+            Orientation::BowOn { bow: LaneEnd::Fore },
+        );
         ship.heat = 3;
         board.cells[0] = Some(ship);
         let scene_with = compose_scene(&board, &DEFAULT_LANE, std::f32::consts::FRAC_PI_4);
 
         let mut bare_board = empty_board(7);
-        bare_board.cells[0] = Some(frigate_at(0, Faction::Player, Orientation::BowOn { bow: LaneEnd::Fore }));
+        bare_board.cells[0] = Some(frigate_at(
+            0,
+            Faction::Player,
+            Orientation::BowOn { bow: LaneEnd::Fore },
+        ));
         let scene_without = compose_scene(&bare_board, &DEFAULT_LANE, std::f32::consts::FRAC_PI_4);
 
         assert_eq!(scene_with.len() - scene_without.len(), 1);
@@ -1629,7 +2089,11 @@ mod tests {
     #[test]
     fn projectiles_render_after_ships_in_z_order() {
         let mut board = empty_board(7);
-        board.cells[0] = Some(frigate_at(0, Faction::Player, Orientation::BowOn { bow: LaneEnd::Fore }));
+        board.cells[0] = Some(frigate_at(
+            0,
+            Faction::Player,
+            Orientation::BowOn { bow: LaneEnd::Fore },
+        ));
         board.ordnance.push(Projectile {
             id: "t1".into(),
             kind: "torpedo".into(),
@@ -1652,11 +2116,27 @@ mod tests {
     #[test]
     fn render_example_ts_scenario_composes_without_panic() {
         let mut board = empty_board(7);
-        board.cells[0] = Some(frigate_at(0, Faction::Player, Orientation::BowOn { bow: LaneEnd::Fore }));
+        board.cells[0] = Some(frigate_at(
+            0,
+            Faction::Player,
+            Orientation::BowOn { bow: LaneEnd::Fore },
+        ));
         board.cells[2] = Some(frigate_at(2, Faction::Enemy, Orientation::Broadside));
-        board.cells[3] = Some(frigate_at(3, Faction::Enemy, Orientation::BowOn { bow: LaneEnd::Aft }));
-        board.cells[5] = Some(frigate_at(5, Faction::Enemy, Orientation::BowOn { bow: LaneEnd::Fore }));
-        board.cells[6] = Some(frigate_at(6, Faction::Enemy, Orientation::BowOn { bow: LaneEnd::Fore }));
+        board.cells[3] = Some(frigate_at(
+            3,
+            Faction::Enemy,
+            Orientation::BowOn { bow: LaneEnd::Aft },
+        ));
+        board.cells[5] = Some(frigate_at(
+            5,
+            Faction::Enemy,
+            Orientation::BowOn { bow: LaneEnd::Fore },
+        ));
+        board.cells[6] = Some(frigate_at(
+            6,
+            Faction::Enemy,
+            Orientation::BowOn { bow: LaneEnd::Fore },
+        ));
         board.ordnance.push(Projectile {
             id: "ord".into(),
             kind: "torpedo".into(),
@@ -1668,7 +2148,11 @@ mod tests {
             owner_faction: Faction::Player,
         });
         let scene = compose_scene(&board, &DEFAULT_LANE, std::f32::consts::FRAC_PI_4);
-        assert!(scene.len() > 60, "expected a populated scene, got {}", scene.len());
+        assert!(
+            scene.len() > 60,
+            "expected a populated scene, got {}",
+            scene.len()
+        );
     }
 
     #[test]
@@ -1678,9 +2162,17 @@ mod tests {
         // non-finite vertex positions on some drivers; this catches a
         // regression in the ship-rotation math before bruce sees it.
         let mut board = empty_board(7);
-        board.cells[0] = Some(frigate_at(0, Faction::Player, Orientation::BowOn { bow: LaneEnd::Fore }));
+        board.cells[0] = Some(frigate_at(
+            0,
+            Faction::Player,
+            Orientation::BowOn { bow: LaneEnd::Fore },
+        ));
         board.cells[2] = Some(frigate_at(2, Faction::Enemy, Orientation::Broadside));
-        board.cells[3] = Some(frigate_at(3, Faction::Enemy, Orientation::BowOn { bow: LaneEnd::Aft }));
+        board.cells[3] = Some(frigate_at(
+            3,
+            Faction::Enemy,
+            Orientation::BowOn { bow: LaneEnd::Aft },
+        ));
         for d in [0.0_f32, 15.0, 30.0, 45.0, 60.0, 75.0, 90.0] {
             let scene = compose_scene(&board, &DEFAULT_LANE, d.to_radians());
             for (i, cmd) in scene.iter().enumerate() {
@@ -1688,29 +2180,59 @@ mod tests {
                     DrawCommand::Sprite(s) => {
                         for v in [s.pos, s.half_size, s.uv_min, s.uv_max] {
                             for c in v {
-                                assert!(c.is_finite(), "non-finite sprite coord at angle {}° idx {}: {:?}", d, i, s);
+                                assert!(
+                                    c.is_finite(),
+                                    "non-finite sprite coord at angle {}° idx {}: {:?}",
+                                    d,
+                                    i,
+                                    s
+                                );
                             }
                         }
                     }
                     DrawCommand::Polygon(p) => {
                         for v in [p.p0, p.p1, p.p2, p.p3, p.uv_min, p.uv_max] {
                             for c in v {
-                                assert!(c.is_finite(), "non-finite polygon coord at angle {}° idx {}: {:?}", d, i, p);
+                                assert!(
+                                    c.is_finite(),
+                                    "non-finite polygon coord at angle {}° idx {}: {:?}",
+                                    d,
+                                    i,
+                                    p
+                                );
                             }
                         }
                     }
                     DrawCommand::TexturedShip(t) => {
                         for v in [t.p0, t.p1, t.p2, t.p3] {
                             for c in v {
-                                assert!(c.is_finite(), "non-finite textured-ship coord at angle {}° idx {}: {:?}", d, i, t);
+                                assert!(
+                                    c.is_finite(),
+                                    "non-finite textured-ship coord at angle {}° idx {}: {:?}",
+                                    d,
+                                    i,
+                                    t
+                                );
                             }
                         }
-                        assert!(t.blend_t.is_finite(), "non-finite blend_t at angle {}° idx {}: {:?}", d, i, t);
+                        assert!(
+                            t.blend_t.is_finite(),
+                            "non-finite blend_t at angle {}° idx {}: {:?}",
+                            d,
+                            i,
+                            t
+                        );
                     }
                     DrawCommand::LoftShip(l) => {
                         for v in [l.p0, l.p1, l.p2, l.p3] {
                             for c in v {
-                                assert!(c.is_finite(), "non-finite loft-ship coord at angle {}° idx {}: {:?}", d, i, l);
+                                assert!(
+                                    c.is_finite(),
+                                    "non-finite loft-ship coord at angle {}° idx {}: {:?}",
+                                    d,
+                                    i,
+                                    l
+                                );
                             }
                         }
                     }
