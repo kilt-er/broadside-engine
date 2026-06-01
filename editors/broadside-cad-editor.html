@@ -74,6 +74,12 @@
     background:rgba(13,40,28,.92);border:1px solid #2f6e4e;color:#bfeccd;backdrop-filter:blur(6px);
     font-size:12px;padding:8px 16px;border-radius:8px;white-space:nowrap;box-shadow:0 4px 18px rgba(0,0,0,.4)}
   #pickBanner b{color:#5fe0a0}
+  #sketchBanner{position:absolute;top:12px;left:50%;transform:translateX(-50%);z-index:5;
+    background:rgba(10,28,46,.92);border:1px solid #2f5a7e;color:#bcd8ee;backdrop-filter:blur(6px);
+    font-size:12px;padding:8px 16px;border-radius:8px;white-space:nowrap;box-shadow:0 4px 18px rgba(0,0,0,.4)}
+  #sketchBanner b{color:#5fd8ff}
+  #sketchOverlay{position:absolute;left:0;top:0;pointer-events:none;z-index:3}
+  .stage{position:relative}
   .planebox{background:#060a12;border:1px solid var(--line);border-radius:6px;padding:7px 10px;font-size:11.5px;color:var(--cool);font-family:'Major Mono Display';margin-bottom:6px;word-break:break-word}
   .pickbtn{background:#11281c;border:1px solid #2f6e4e;color:#9fe8bb;font-family:'Chakra Petch';font-size:12px;padding:8px 12px;border-radius:6px;cursor:pointer;width:100%;transition:.12s}
   .pickbtn:hover{background:#16331f;border-color:#5fe0a0;color:#cffadd}
@@ -82,9 +88,7 @@
     font-family:'Chakra Petch';font-size:11px;padding:5px 11px;border-radius:6px;cursor:pointer;backdrop-filter:blur(4px);transition:.12s}
   .snaprow button:hover,.vp-tools button:hover{color:var(--ink);border-color:var(--hot)}
   .snaprow button.on{background:var(--hot);color:#0a0a0a;font-weight:700;border-color:var(--hot)}
-  /* ---- sketch editor canvas ---- */
-  .sketchwrap{position:relative}
-  #sketchpad{display:block;width:100%;border-radius:8px;background:#070d18;border:1px solid var(--line);touch-action:none;cursor:crosshair}
+  /* ---- sketch tools ---- */
   .sk-tools{display:flex;gap:6px;margin-bottom:10px;flex-wrap:wrap}
   .sk-tools .grp{display:flex;border:1px solid var(--line);border-radius:6px;overflow:hidden}
   .sk-tools button{background:transparent;color:var(--dim);border:none;padding:6px 10px;font-family:'Chakra Petch';font-size:11.5px;cursor:pointer;transition:.12s}
@@ -126,6 +130,7 @@
   <button class="topbtn" id="btnSave">⤓ save .json</button>
   <button class="topbtn" id="btnLoad">⤒ load .json</button>
   <button class="topbtn cool" id="btnExport">⤓ export PNG</button>
+  <button class="topbtn accent" id="btnExportGLB">⤓ export GLB</button>
   <input id="fileLoad" type="file" accept="application/json,.json" style="display:none">
 </div>
 
@@ -158,9 +163,13 @@
   <div class="center">
     <div class="stage" id="stage">
       <canvas id="preview"></canvas>
+      <canvas id="sketchOverlay"></canvas>
       <div class="hud">yaw <b id="hYaw">28°</b><br>pitch <b id="hPit">26°</b><br>res <b id="hRes">220×138</b><br>tris <b id="hTris">0</b></div>
       <div id="pickBanner" style="display:none">
         <b>Pick a sketch plane</b> — click an origin plane or a hull face. Drag to orbit · <span style="opacity:.7">Esc to cancel</span>
+      </div>
+      <div id="sketchBanner" style="display:none">
+        <b id="skBannerTool">Line</b> tool — <span id="skBannerHint">click on the plane to place points</span> · <span style="opacity:.7">Esc / ✓ finish</span>
       </div>
       <div class="vp-tools">
         <button id="vGrid" class="on">grid on</button>
@@ -191,15 +200,18 @@
       <h2>sketch · <span class="tag" id="sketchPlaneTag">plane</span></h2>
       <div class="sk-tools">
         <div class="grp" id="skTool">
-          <button data-t="drag" class="on">drag</button>
-          <button data-t="add">add</button>
+          <button data-t="select" class="on" title="orbit · drag points · right-click delete">▱ select</button>
+          <button data-t="line" title="click to chain points">╱ line</button>
+          <button data-t="rect" title="two corners">▭ rect</button>
+          <button data-t="circle" title="center then radius">◯ circle</button>
         </div>
-        <button id="skClose" title="toggle open/closed loop">closed ✓</button>
-        <button id="skFit" title="fit sketch to view">⤢ fit</button>
-        <button id="skImport">⤒ trace img</button>
       </div>
-      <div class="sk-tools" style="margin-top:-4px">
+      <div class="sk-tools" style="margin-top:-2px">
+        <button id="skClose" title="toggle open/closed loop">closed ✓</button>
         <button id="skSnapBtn" title="snap points to grid">snap off</button>
+        <button id="skImport" title="trace a side-view image">⤒ trace</button>
+      </div>
+      <div class="sk-tools" style="margin-top:-2px">
         <div class="grp" id="skMirror" title="mirror while sketching">
           <span style="color:var(--dim);font-size:10.5px;padding:6px 8px;align-self:center;letter-spacing:.5px">mirror</span>
           <button data-m="off" class="on">off</button>
@@ -207,11 +219,12 @@
           <button data-m="v">↕ V</button>
         </div>
       </div>
-      <div class="sketchwrap">
-        <canvas id="sketchpad" width="560" height="360"></canvas>
+      <div class="ctl" style="margin-top:10px">
+        <div id="skReadout" class="planebox" style="color:var(--dim)">draw on the plane in the 3D view →</div>
+        <button class="pickbtn" id="skFinish" style="background:#11281c;border-color:#2f6e4e;color:#9fe8bb">✓ finish sketch</button>
       </div>
       <div class="helprow">
-        scroll = zoom · drag empty space = pan · drag point = move. dbl-click edge <code>+pt</code> · right-click <code>−pt</code>. Grid labels show real units. With <b>mirror</b> on, draw one half and the gold line reflects it.
+        Pick a tool, then draw <b>directly on the plane</b> in the 3D viewport. <b>select</b> = orbit + drag points + right-click to delete. Snap shows a grid; mirror reflects across the gold line.
       </div>
       <input id="fileImport" type="file" accept="image/png,image/jpeg,image/webp">
     </div>
@@ -562,6 +575,8 @@ const hoverMat=new THREE.MeshBasicMaterial({color:0x5fe0a0,transparent:true,opac
 
 function enterPickMode(sketchId){
   pickMode=true; pickTargetSketchId=sketchId;
+  skActive=false; // pause sketch drawing while choosing a plane
+  $('sketchBanner').style.display='none';
   originPlaneGroup.visible=true;
   $('stage').style.cursor='copy';
   $('pickBanner').style.display='';
@@ -678,11 +693,26 @@ function setRes(){
   $('hRes').textContent=`${ST.res.w}×${ST.res.h}`;
 }
 
+// Match the overlay canvas to the displayed preview rectangle so projection lines up.
+function sizeOverlay(){
+  const pr=cvs.getBoundingClientRect(), sr=$('stage').getBoundingClientRect();
+  // position overlay exactly over the preview canvas within the stage
+  skOverlay.style.left=(pr.left-sr.left)+'px';
+  skOverlay.style.top=(pr.top-sr.top)+'px';
+  skOverlay.style.width=pr.width+'px';
+  skOverlay.style.height=pr.height+'px';
+  const w=Math.max(1,Math.round(pr.width)), h=Math.max(1,Math.round(pr.height));
+  if(skOverlay.width!==w||skOverlay.height!==h){ skOverlay.width=w; skOverlay.height=h; }
+}
+
 function loop(){requestAnimationFrame(loop);
   gridHelper.visible=ST.grid;
   setCam();
   renderer.setRenderTarget(rt);renderer.clear();renderer.render(scene,cam);
   renderer.setRenderTarget(null);renderer.clear();renderer.render(postScene,postCam);
+  // sketch overlay (crisp, projected through the live camera)
+  if(skActive){ sizeOverlay(); drawSketchOverlay(); }
+  else if(skOverlay.width>1 && skoCtx){ skoCtx.clearRect(0,0,skOverlay.width,skOverlay.height); }
 }
 
 // ============ FEATURE TREE UI ============
@@ -846,7 +876,7 @@ function renderInspector(){
   if(f.type==='sketch'){ skSection.classList.add('show');
     $('sketchPlaneTag').textContent = f.planeLabel || (f.plane?ORIGIN_PLANES[f.plane].name:'pick a plane');
     openSketch(f); }
-  else skSection.classList.remove('show');
+  else { skSection.classList.remove('show'); if(skActive)closeSketchEdit(); }
 }
 function numRow(label,key,val,min,max,step){
   min=min??0; max=max??6; step=step??0.05;
@@ -901,213 +931,282 @@ function wireInspector(f){
   }
 }
 
-// ============ 2D SKETCH EDITOR ============
-const skCanvas=$('sketchpad'), skCtx=skCanvas.getContext('2d');
-let skFeat=null, skTool='drag', skDrag=-1;
-// view camera for the sketch: world center (cu,cv in model units) + scale (px per unit)
-const skView={cu:0, cv:0, scale:40};
-let skPanning=false, skPanStart=null;
-// snapping
+// ============ IN-VIEWPORT SKETCH EDITOR ============
+// Sketches are drawn directly on their plane in the 3D viewport. The overlay
+// canvas (#sketchOverlay) draws crisp lines projected through the live camera.
+const skOverlay=$('sketchOverlay'); const skoCtx=skOverlay.getContext('2d');
+let skFeat=null;          // sketch feature being edited (null = not in sketch mode)
+let skActive=false;       // are we in sketch-edit mode
+let skTool='select';      // select | line | rect | circle
+let skDrag=-1;            // index of point being dragged (select tool)
 let skSnap=false, skSnapStep=0.5;
-
-// world(model units) <-> screen(px)
-function skToScreen(u,v){
-  return [ skCanvas.width/2 + (u-skView.cu)*skView.scale,
-           skCanvas.height/2 - (v-skView.cv)*skView.scale ];
-}
-function skToModel(sx,sy){
-  return [ skView.cu + (sx-skCanvas.width/2)/skView.scale,
-           skView.cv - (sy-skCanvas.height/2)/skView.scale ];
-}
-function skSnapVal(v){ return skSnap ? Math.round(v/skSnapStep)*skSnapStep : v; }
-
-// "nice" grid step for the current zoom (target ~64px between minor lines)
-function skGridStep(){
-  const target=64/skView.scale; // world units per ~64px
-  const pow=Math.pow(10,Math.floor(Math.log10(target)));
-  const f=target/pow;
-  const nice = f<1.5?1 : f<3.5?2 : f<7.5?5 : 10;
-  return nice*pow;
-}
+let skPending=[];         // in-progress points for the active tool (model u,v)
+let skHover=null;         // current cursor position on plane [u,v] (for preview)
+const CIRCLE_SEGS=24;
 
 // Expand a half-sketch into a full loop when sketch mirroring is on.
-// mirror 'u' reflects across the V axis (u→-u); 'v' across the U axis (v→-v).
 function expandMirror(feat){
   const pts=feat.pts;
   if(!feat.mirror||feat.mirror==='off'||pts.length<2) return pts.slice();
   const ax=feat.mirror;
   const refl = ax==='u' ? p=>[-p[0],p[1]] : p=>[p[0],-p[1]];
-  // forward half + reversed reflected half (skip endpoints that sit on the axis to avoid dupes)
   const onAxis = ax==='u' ? p=>Math.abs(p[0])<1e-6 : p=>Math.abs(p[1])<1e-6;
   const back=[];
   for(let i=pts.length-1;i>=0;i--){ if(onAxis(pts[i])) continue; back.push(refl(pts[i])); }
   return pts.concat(back);
 }
-
-function openSketch(f){
-  skFeat=f; skDrag=-1;
-  if(f.mirror===undefined) f.mirror='off';
-  // sync toolbar to this sketch
-  document.querySelectorAll('#skMirror button').forEach(x=>x.classList.toggle('on',x.dataset.m===f.mirror));
-  const cb=$('skClose'); if(cb){ cb.textContent=f.closed?'closed ✓':'open ✗'; }
-  const sb=$('skSnapBtn'); if(sb){ sb.classList.toggle('on',skSnap); sb.textContent=skSnap?('snap '+fmtNum(skSnapStep)):'snap off'; }
-  skFitSketch(f);
-  if(skSnap)skSnapStep=skGridStep();
-  drawSketch();
-}
-// frame the sketch nicely on open
-function skFitSketch(f){
-  const pts=f.pts; if(!pts||!pts.length){skView.cu=0;skView.cv=0;skView.scale=40;return;}
-  let minU=1e9,maxU=-1e9,minV=1e9,maxV=-1e9;
-  const loop=expandMirror(f);
-  loop.forEach(p=>{minU=Math.min(minU,p[0]);maxU=Math.max(maxU,p[0]);minV=Math.min(minV,p[1]);maxV=Math.max(maxV,p[1]);});
-  const spanU=Math.max(0.5,maxU-minU), spanV=Math.max(0.5,maxV-minV);
-  skView.cu=(minU+maxU)/2; skView.cv=(minV+maxV)/2;
-  const sc=Math.min((skCanvas.width-80)/spanU,(skCanvas.height-80)/spanV);
-  skView.scale=clamp(sc,4,400);
-}
-
-function drawSketch(){
-  if(!skFeat) return;
-  const ctx=skCtx, cv=skCanvas, W=cv.width, H=cv.height;
-  ctx.clearRect(0,0,W,H);
-
-  const step=skGridStep();
-  // visible world bounds
-  const [u0,v1]=skToModel(0,0), [u1,v0]=skToModel(W,H);
-  // minor grid
-  ctx.lineWidth=1; ctx.font='9px "Major Mono Display"';
-  const startU=Math.floor(u0/step)*step, endU=Math.ceil(u1/step)*step;
-  const startV=Math.floor(v0/step)*step, endV=Math.ceil(v1/step)*step;
-  for(let u=startU;u<=endU;u+=step){
-    const [sx]=skToScreen(u,0);
-    const major=Math.abs(u)<1e-6;
-    ctx.strokeStyle=major?'#2c4a6e':'#11203a';
-    ctx.beginPath();ctx.moveTo(sx,0);ctx.lineTo(sx,H);ctx.stroke();
-    if(!major){ ctx.fillStyle='#3a4c68'; ctx.fillText(fmtNum(u), sx+2, H-4); }
-  }
-  for(let v=startV;v<=endV;v+=step){
-    const [,sy]=skToScreen(0,v);
-    const major=Math.abs(v)<1e-6;
-    ctx.strokeStyle=major?'#2c4a6e':'#11203a';
-    ctx.beginPath();ctx.moveTo(0,sy);ctx.lineTo(W,sy);ctx.stroke();
-    if(!major){ ctx.fillStyle='#3a4c68'; ctx.fillText(fmtNum(v), 3, sy-2); }
-  }
-  // origin crosshair
-  const [ox,oy]=skToScreen(0,0);
-  ctx.strokeStyle='#3a597f';ctx.lineWidth=1.5;
-  ctx.beginPath();ctx.moveTo(ox,0);ctx.lineTo(ox,H);ctx.moveTo(0,oy);ctx.lineTo(W,oy);ctx.stroke();
-
-  // mirror axis (construction line)
-  if(skFeat.mirror&&skFeat.mirror!=='off'){
-    ctx.strokeStyle='#ffd86b';ctx.setLineDash([7,5]);ctx.lineWidth=1.5;ctx.beginPath();
-    if(skFeat.mirror==='u'){ ctx.moveTo(ox,0);ctx.lineTo(ox,H); } // reflect across V axis (vertical line u=0)
-    else { ctx.moveTo(0,oy);ctx.lineTo(W,oy); }                    // reflect across U axis (horizontal line v=0)
-    ctx.stroke();ctx.setLineDash([]);
-  }
-
-  // axis labels — name each in-plane axis by its dominant world direction
-  const fr=sketchFrame(skFeat);
-  ctx.fillStyle='#5d7397';ctx.font='11px "Major Mono Display"';
-  ctx.fillText(axisName(fr.U)+' →', W-52, oy-7);
-  ctx.fillText('↑ '+axisName(fr.V), ox+7, 16);
-
-  // the full loop (with mirror expanded) — faint, shows final shape
-  const full=expandMirror(skFeat);
-  if(skFeat.mirror&&skFeat.mirror!=='off'&&full.length>skFeat.pts.length){
-    ctx.strokeStyle='rgba(255,216,107,0.45)';ctx.lineWidth=1.5;ctx.beginPath();
-    full.forEach((p,i)=>{const[sx,sy]=skToScreen(p[0],p[1]);i?ctx.lineTo(sx,sy):ctx.moveTo(sx,sy);});
-    if(skFeat.closed)ctx.closePath();
-    ctx.stroke();
-  }
-
-  // editable polyline (the half you actually drag)
-  const pts=skFeat.pts;
-  ctx.strokeStyle='#5fd8ff';ctx.lineWidth=2;ctx.beginPath();
-  pts.forEach((p,i)=>{const[sx,sy]=skToScreen(p[0],p[1]);i?ctx.lineTo(sx,sy):ctx.moveTo(sx,sy);});
-  if(skFeat.closed&&(!skFeat.mirror||skFeat.mirror==='off'))ctx.closePath();
-  ctx.stroke();
-  if(skFeat.closed&&(!skFeat.mirror||skFeat.mirror==='off')){ctx.fillStyle='rgba(95,216,255,0.06)';ctx.fill();}
-
-  // points
-  pts.forEach((p,i)=>{const[sx,sy]=skToScreen(p[0],p[1]);
-    ctx.fillStyle=i===skDrag?'#ff8a48':'#cfe0f5';ctx.beginPath();ctx.arc(sx,sy,5,0,7);ctx.fill();
-    ctx.strokeStyle='#060a12';ctx.lineWidth=1.5;ctx.stroke();});
-
-  // readout: dimensions + zoom
-  const bb=loopBBox(full);
-  ctx.fillStyle='#46597a';ctx.font='10px "Major Mono Display"';
-  if(bb) ctx.fillText(`${fmtNum(bb.w)} × ${fmtNum(bb.h)} u`, 6, 14);
-  ctx.fillText(`${Math.round(skView.scale)} px/u${skSnap?' · snap '+fmtNum(skSnapStep):''}`, 6, H-6+0);
-}
 function fmtNum(n){ if(Math.abs(n)<1e-9)n=0; const s=Math.abs(n)<10?n.toFixed(Math.abs(n*10%10)?2:1):n.toFixed(1); return (+s).toString(); }
 function loopBBox(pts){ if(!pts||!pts.length)return null;
   let a=1e9,b=-1e9,c=1e9,d=-1e9; pts.forEach(p=>{a=Math.min(a,p[0]);b=Math.max(b,p[0]);c=Math.min(c,p[1]);d=Math.max(d,p[1]);});
   return {w:b-a,h:d-c}; }
-function skHit(sx,sy){const pts=skFeat.pts;for(let i=0;i<pts.length;i++){const[px,py]=skToScreen(pts[i][0],pts[i][1]);if((px-sx)**2+(py-sy)**2<121)return i;}return -1;}
-function skEvt(e){const r=skCanvas.getBoundingClientRect();return[(e.clientX-r.left)*skCanvas.width/r.width,(e.clientY-r.top)*skCanvas.height/r.height];}
-function skSegDist(px,py,a,b){const dx=b[0]-a[0],dy=b[1]-a[1];const t=clamp(((px-a[0])*dx+(py-a[1])*dy)/(dx*dx+dy*dy||1),0,1);return Math.hypot(px-(a[0]+t*dx),py-(a[1]+t*dy));}
-function skInsert(mx,my){const pts=skFeat.pts;let best=pts.length,bd=1e9;
-  const closedLoop = skFeat.closed && (!skFeat.mirror||skFeat.mirror==='off');
-  const lim=closedLoop?pts.length:pts.length-1;
-  for(let k=0;k<lim;k++){const a=pts[k],b=pts[(k+1)%pts.length];const d=skSegDist(mx,my,a,b);if(d<bd){bd=d;best=k+1;}}
-  pts.splice(best,0,[skSnapVal(mx),skSnapVal(my)]);skDrag=best;}
+function skSnapVal(v){ return skSnap ? Math.round(v/skSnapStep)*skSnapStep : v; }
+function skGridStep(){
+  // base grid step on the on-screen scale of the plane (use camera view size)
+  const worldPerPx = (2*(4.5/ST.zoom)) / (skOverlay.clientHeight||400);
+  const target=64*worldPerPx;
+  const pow=Math.pow(10,Math.floor(Math.log10(target||1)));
+  const f=(target||1)/pow;
+  const nice = f<1.5?1 : f<3.5?2 : f<7.5?5 : 10;
+  return nice*pow;
+}
 
-skCanvas.addEventListener('pointerdown',e=>{ if(!skFeat)return;
-  const[sx,sy]=skEvt(e);
-  if(e.button===2)return; // handled by contextmenu
-  if(e.button===1||e.altKey){ skPanning=true; skPanStart=[sx,sy,skView.cu,skView.cv]; return; }
-  const i=skHit(sx,sy);
-  if(skTool==='drag'){
-    if(i>=0){ skDrag=i; }
-    else { skPanning=true; skPanStart=[sx,sy,skView.cu,skView.cv]; } // empty space → pan
-  } else { // add tool
-    const[mx,my]=skToModel(sx,sy); skInsert(mx,my); rebuild();
+// ---- projection: world point <-> overlay screen px ----
+function worldToScreen(w){
+  const v=new THREE.Vector3(w[0],w[1],w[2]).project(cam);
+  const W=skOverlay.width, H=skOverlay.height;
+  return [ (v.x*0.5+0.5)*W, (-v.y*0.5+0.5)*H, v.z ];
+}
+// frame-local (u,v) -> world (on the plane, n=0) -> screen
+function uvToScreen(fr,u,v){ return worldToScreen(frameToWorld(fr,u,v,0)); }
+
+// ---- ray from overlay cursor onto the sketch plane -> (u,v) ----
+function cursorToUV(clientX,clientY){
+  if(!skFeat) return null;
+  const fr=sketchFrame(skFeat);
+  const r=skOverlay.getBoundingClientRect();
+  const ndc=new THREE.Vector2(((clientX-r.left)/r.width)*2-1, -((clientY-r.top)/r.height)*2+1);
+  raycaster.setFromCamera(ndc,cam);
+  const ro=raycaster.ray.origin, rd=raycaster.ray.direction;
+  const O=new THREE.Vector3(...fr.O), N=new THREE.Vector3(...fr.N);
+  const denom=rd.dot(N);
+  if(Math.abs(denom)<1e-6) return null; // ray parallel to plane
+  const t=O.clone().sub(ro).dot(N)/denom;
+  if(t<0) return null; // behind camera
+  const hit=ro.clone().add(rd.clone().multiplyScalar(t));
+  // project hit onto frame axes
+  const d=hit.sub(O);
+  const u=d.dot(new THREE.Vector3(...fr.U));
+  const v=d.dot(new THREE.Vector3(...fr.V));
+  return [skSnapVal(u), skSnapVal(v)];
+}
+
+function setSkTool(t){
+  skTool=t; skPending=[];
+  document.querySelectorAll('#skTool button').forEach(x=>x.classList.toggle('on',x.dataset.t===t));
+  const banner=$('sketchBanner');
+  if(skActive){ banner.style.display = ''; }
+  $('skBannerTool').textContent={select:'Select',line:'Line',rect:'Rectangle',circle:'Circle'}[t];
+  $('skBannerHint').textContent={
+    select:'drag points · right-click to delete · drag empty space to orbit',
+    line:'click to chain points · double-click or Esc to finish',
+    rect:'click two opposite corners',
+    circle:'click center, then click radius'
+  }[t];
+  $('stage').style.cursor = t==='select' ? '' : 'crosshair';
+}
+
+function openSketch(f){
+  skFeat=f; skActive=true; skDrag=-1; skPending=[]; skHover=null;
+  if(f.mirror===undefined) f.mirror='off';
+  document.querySelectorAll('#skMirror button').forEach(x=>x.classList.toggle('on',x.dataset.m===f.mirror));
+  const cb=$('skClose'); if(cb) cb.textContent=f.closed?'closed ✓':'open ✗';
+  const sb=$('skSnapBtn'); if(sb){ sb.classList.toggle('on',skSnap); sb.textContent=skSnap?('snap '+fmtNum(skSnapStep)):'snap off'; }
+  setSkTool('select');
+  updateReadout();
+}
+function closeSketchEdit(){
+  skActive=false; skFeat=null; skPending=[]; skDrag=-1;
+  $('sketchBanner').style.display='none';
+  $('stage').style.cursor='';
+}
+function updateReadout(){
+  if(!skFeat) return;
+  const bb=loopBBox(expandMirror(skFeat));
+  const ro=$('skReadout');
+  if(ro) ro.textContent = bb ? `${fmtNum(bb.w)} × ${fmtNum(bb.h)} u · ${skFeat.pts.length} pts` : 'draw on the plane in the 3D view →';
+}
+
+// ---- draw overlay (called every frame from loop) ----
+function drawSketchOverlay(){
+  const W=skOverlay.width, H=skOverlay.height;
+  skoCtx.clearRect(0,0,W,H);
+  if(!skActive||!skFeat) return;
+  const fr=sketchFrame(skFeat);
+
+  // grid (only when snap on) — draw a finite lattice of plane lines around origin
+  if(skSnap){
+    const step=skGridStep(); const N=20;
+    skoCtx.lineWidth=1; skoCtx.strokeStyle='rgba(60,90,130,0.35)';
+    for(let i=-N;i<=N;i++){
+      // lines of constant u
+      let a=uvToScreen(fr,i*step,-N*step), b=uvToScreen(fr,i*step,N*step);
+      if(a[2]<1&&b[2]<1){skoCtx.beginPath();skoCtx.moveTo(a[0],a[1]);skoCtx.lineTo(b[0],b[1]);skoCtx.stroke();}
+      // lines of constant v
+      let c=uvToScreen(fr,-N*step,i*step), d=uvToScreen(fr,N*step,i*step);
+      if(c[2]<1&&d[2]<1){skoCtx.beginPath();skoCtx.moveTo(c[0],c[1]);skoCtx.lineTo(d[0],d[1]);skoCtx.stroke();}
+    }
   }
-  drawSketch();
-});
-skCanvas.addEventListener('pointermove',e=>{ if(!skFeat)return;
-  const[sx,sy]=skEvt(e);
-  if(skPanning){ const dxU=(sx-skPanStart[0])/skView.scale, dvV=(sy-skPanStart[1])/skView.scale;
-    skView.cu=skPanStart[2]-dxU; skView.cv=skPanStart[3]+dvV; drawSketch(); return; }
-  if(skDrag<0)return;
-  let[mx,my]=skToModel(sx,sy); skFeat.pts[skDrag]=[skSnapVal(mx),skSnapVal(my)];
-  drawSketch();rebuild();
-});
-window.addEventListener('pointerup',()=>{ skPanning=false; if(skDrag>=0){skDrag=-1;drawSketch();} });
-skCanvas.addEventListener('dblclick',e=>{ if(!skFeat)return;
-  const[sx,sy]=skEvt(e);const[mx,my]=skToModel(sx,sy);skInsert(mx,my);drawSketch();rebuild();});
-skCanvas.addEventListener('contextmenu',e=>{ e.preventDefault();if(!skFeat)return;
-  const[sx,sy]=skEvt(e);const i=skHit(sx,sy);
-  if(i>=0&&skFeat.pts.length>3){skFeat.pts.splice(i,1);drawSketch();rebuild();}});
-// zoom toward cursor
-skCanvas.addEventListener('wheel',e=>{ if(!skFeat)return; e.preventDefault();
-  const[sx,sy]=skEvt(e); const[mu,mv]=skToModel(sx,sy);
-  const factor=e.deltaY>0?0.9:1.1; skView.scale=clamp(skView.scale*factor,3,600);
-  // keep world point under cursor fixed
-  const[nsx,nsy]=skToScreen(mu,mv);
-  skView.cu += (nsx-sx)/skView.scale; skView.cv -= (nsy-sy)/skView.scale;
-  drawSketch();
-},{passive:false});
 
-document.querySelectorAll('#skTool button').forEach(b=>b.onclick=()=>{
-  document.querySelectorAll('#skTool button').forEach(x=>x.classList.remove('on'));b.classList.add('on');skTool=b.dataset.t;});
+  // mirror construction line
+  if(skFeat.mirror&&skFeat.mirror!=='off'){
+    const big=200;
+    let a,b;
+    if(skFeat.mirror==='u'){ a=uvToScreen(fr,0,-big); b=uvToScreen(fr,0,big); }
+    else { a=uvToScreen(fr,-big,0); b=uvToScreen(fr,big,0); }
+    skoCtx.strokeStyle='rgba(255,216,107,0.8)';skoCtx.lineWidth=1.5;skoCtx.setLineDash([8,6]);
+    skoCtx.beginPath();skoCtx.moveTo(a[0],a[1]);skoCtx.lineTo(b[0],b[1]);skoCtx.stroke();skoCtx.setLineDash([]);
+  }
+
+  // committed geometry: full mirror-expanded loop faint, editable half bright
+  const full=expandMirror(skFeat);
+  const drawLoop=(pts,close,style,wdt)=>{
+    if(pts.length<2)return; skoCtx.strokeStyle=style;skoCtx.lineWidth=wdt;skoCtx.beginPath();
+    pts.forEach((p,i)=>{const s=uvToScreen(fr,p[0],p[1]);i?skoCtx.lineTo(s[0],s[1]):skoCtx.moveTo(s[0],s[1]);});
+    if(close)skoCtx.closePath(); skoCtx.stroke();
+  };
+  const closedHalf = skFeat.closed && (!skFeat.mirror||skFeat.mirror==='off');
+  if(skFeat.mirror&&skFeat.mirror!=='off'&&full.length>skFeat.pts.length)
+    drawLoop(full, skFeat.closed, 'rgba(255,216,107,0.45)',1.5);
+  drawLoop(skFeat.pts, closedHalf, '#5fd8ff', 2);
+  if(closedHalf){ // fill
+    skoCtx.fillStyle='rgba(95,216,255,0.07)';skoCtx.beginPath();
+    skFeat.pts.forEach((p,i)=>{const s=uvToScreen(fr,p[0],p[1]);i?skoCtx.lineTo(s[0],s[1]):skoCtx.moveTo(s[0],s[1]);});
+    skoCtx.closePath();skoCtx.fill();
+  }
+
+  // in-progress tool preview
+  if(skTool!=='select' && (skPending.length||skHover)){
+    skoCtx.strokeStyle='#5fe0a0';skoCtx.lineWidth=1.5;skoCtx.setLineDash([5,4]);
+    const prev=previewPts();
+    if(prev&&prev.length>1){ skoCtx.beginPath();
+      prev.forEach((p,i)=>{const s=uvToScreen(fr,p[0],p[1]);i?skoCtx.lineTo(s[0],s[1]):skoCtx.moveTo(s[0],s[1]);});
+      if(prev._close)skoCtx.closePath();
+      skoCtx.stroke(); }
+    skoCtx.setLineDash([]);
+  }
+
+  // points (editable half)
+  skFeat.pts.forEach((p,i)=>{const s=uvToScreen(fr,p[0],p[1]); if(s[2]>=1)return;
+    skoCtx.fillStyle=i===skDrag?'#ff8a48':'#cfe0f5';skoCtx.beginPath();skoCtx.arc(s[0],s[1],4.5,0,7);skoCtx.fill();
+    skoCtx.strokeStyle='#060a12';skoCtx.lineWidth=1.5;skoCtx.stroke();});
+
+  // hover dot when a draw tool is active
+  if(skTool!=='select'&&skHover){ const s=uvToScreen(fr,skHover[0],skHover[1]);
+    skoCtx.fillStyle='#5fe0a0';skoCtx.beginPath();skoCtx.arc(s[0],s[1],3.5,0,7);skoCtx.fill(); }
+}
+
+// preview points for the active tool given pending + hover
+function previewPts(){
+  const h=skHover;
+  if(skTool==='line'){ const a=skPending.concat(h?[h]:[]); return a; }
+  if(skTool==='rect'){ if(!skPending.length||!h)return null;
+    const [a]=skPending, b=h; const r=[[a[0],a[1]],[b[0],a[1]],[b[0],b[1]],[a[0],b[1]]]; r._close=true; return r; }
+  if(skTool==='circle'){ if(!skPending.length||!h)return null;
+    const [c]=skPending; const rad=Math.hypot(h[0]-c[0],h[1]-c[1]); const r=[];
+    for(let i=0;i<CIRCLE_SEGS;i++){const a=i/CIRCLE_SEGS*Math.PI*2;r.push([c[0]+Math.cos(a)*rad,c[1]+Math.sin(a)*rad]);}
+    r._close=true; return r; }
+  return null;
+}
+
+// commit a tool action on click
+function skToolClick(uv){
+  if(skTool==='line'){
+    skPending.push(uv);
+    // if closing near first pending point, finish
+  } else if(skTool==='rect'){
+    skPending.push(uv);
+    if(skPending.length===2){ const [a,b]=skPending;
+      skFeat.pts=[[a[0],a[1]],[b[0],a[1]],[b[0],b[1]],[a[0],b[1]]]; skFeat.closed=true;
+      skPending=[]; rebuild(); updateReadout(); }
+  } else if(skTool==='circle'){
+    skPending.push(uv);
+    if(skPending.length===2){ const [c,e]=skPending; const rad=Math.hypot(e[0]-c[0],e[1]-c[1]);
+      const pts=[]; for(let i=0;i<CIRCLE_SEGS;i++){const a=i/CIRCLE_SEGS*Math.PI*2;pts.push([c[0]+Math.cos(a)*rad,c[1]+Math.sin(a)*rad]);}
+      skFeat.pts=pts; skFeat.closed=true; skPending=[]; rebuild(); updateReadout(); }
+  }
+}
+function finishLine(){
+  if(skTool==='line'&&skPending.length>=2){ skFeat.pts=skPending.slice(); skFeat.closed=(skPending.length>=3);
+    rebuild(); updateReadout(); }
+  skPending=[];
+}
+
+// hit-test a committed point in screen space
+function skHitPoint(clientX,clientY){
+  if(!skFeat)return -1; const fr=sketchFrame(skFeat);
+  const r=skOverlay.getBoundingClientRect();
+  const px=(clientX-r.left)*skOverlay.width/r.width, py=(clientY-r.top)*skOverlay.height/r.height;
+  for(let i=0;i<skFeat.pts.length;i++){const s=uvToScreen(fr,skFeat.pts[i][0],skFeat.pts[i][1]);
+    if((s[0]-px)**2+(s[1]-py)**2<144)return i;}
+  return -1;
+}
+
+// ---- sketch pointer handling on the stage (only when skActive) ----
+let skStageDown=false, skStageMoved=0, skDownXY=null;
+function onSketchPointerDown(e){
+  if(!skActive) return false;
+  if(e.button===2){ // right-click delete (select tool)
+    if(skTool==='select'){ const i=skHitPoint(e.clientX,e.clientY);
+      if(i>=0&&skFeat.pts.length>3){ skFeat.pts.splice(i,1); rebuild(); updateReadout(); } }
+    return true;
+  }
+  skStageDown=true; skStageMoved=0; skDownXY=[e.clientX,e.clientY];
+  if(skTool==='select'){
+    const i=skHitPoint(e.clientX,e.clientY);
+    skDrag=i; // -1 means empty → will orbit
+  }
+  return true;
+}
+function onSketchPointerMove(e){
+  if(!skActive) return false;
+  if(skStageDown) skStageMoved+=Math.abs(e.clientX-skDownXY[0])+Math.abs(e.clientY-skDownXY[1]);
+  if(skTool==='select'){
+    if(skStageDown && skDrag>=0){ const uv=cursorToUV(e.clientX,e.clientY); if(uv){skFeat.pts[skDrag]=uv;rebuild();updateReadout();} return true; }
+    return false; // let orbit happen when not dragging a point
+  } else {
+    // draw tools: update hover preview
+    skHover=cursorToUV(e.clientX,e.clientY);
+    return true; // suppress orbit while a draw tool is active
+  }
+}
+function onSketchPointerUp(e){
+  if(!skActive) return false;
+  const wasClick = skStageMoved<6;
+  if(skTool==='select'){ skDrag=-1; skStageDown=false; return false; }
+  // draw tools: a click commits a tool point
+  if(wasClick && e.button===0){ const uv=cursorToUV(e.clientX,e.clientY); if(uv) skToolClick(uv); }
+  skStageDown=false;
+  return true;
+}
+
+// tool buttons
+document.querySelectorAll('#skTool button').forEach(b=>b.onclick=()=>{ setSkTool(b.dataset.t); });
 $('skClose').onclick=()=>{ if(!skFeat)return; skFeat.closed=!skFeat.closed;
-  $('skClose').textContent=skFeat.closed?'closed ✓':'open ✗'; drawSketch(); rebuild(); };
-$('skFit').onclick=()=>{ if(!skFeat)return; skFitSketch(skFeat); drawSketch(); };
+  $('skClose').textContent=skFeat.closed?'closed ✓':'open ✗'; rebuild(); };
 $('skSnapBtn').onclick=()=>{ skSnap=!skSnap; const b=$('skSnapBtn');
-  b.classList.toggle('on',skSnap); b.textContent=skSnap?('snap '+fmtNum(skGridStep())):'snap off';
-  if(skSnap)skSnapStep=skGridStep(); drawSketch(); };
+  b.classList.toggle('on',skSnap); if(skSnap)skSnapStep=skGridStep();
+  b.textContent=skSnap?('snap '+fmtNum(skSnapStep)):'snap off'; };
+$('skFinish').onclick=()=>{ if(skTool==='line')finishLine(); closeSketchEdit(); SEL=null; renderTree(); renderInspector(); };
 document.querySelectorAll('#skMirror button').forEach(b=>b.onclick=()=>{ if(!skFeat)return;
   document.querySelectorAll('#skMirror button').forEach(x=>x.classList.remove('on'));b.classList.add('on');
-  skFeat.mirror=b.dataset.m; drawSketch(); rebuild(); });
+  skFeat.mirror=b.dataset.m; rebuild(); });
 
 // ---- trace an image silhouette into the current sketch ----
 $('skImport').onclick=()=>{ if(skFeat) $('fileImport').click(); };
 $('fileImport').onchange=e=>{
   const file=e.target.files[0]; if(!file||!skFeat) return;
   const img=new Image();
-  img.onload=()=>{ const traced=traceSilhouette(img); if(traced&&traced.length>=3){ skFeat.pts=traced; skFeat.closed=true; drawSketch(); rebuild(); } e.target.value=''; };
+  img.onload=()=>{ const traced=traceSilhouette(img); if(traced&&traced.length>=3){ skFeat.pts=traced; skFeat.closed=true; updateReadout(); rebuild(); } e.target.value=''; };
   img.src=URL.createObjectURL(file);
 };
 function traceSilhouette(img){
@@ -1223,6 +1322,169 @@ function exportPNG(){
 }
 $('btnExport').onclick=exportPNG;
 
+/* =====================================================================
+ * === ENGINE EXPORT CONTRACT (GLB) — owned by the GLB export spec ===
+ * Stable boundary between the CAD tool and the Broadside engine importer.
+ * Engine team consumes the GLB this produces; they do not edit the tool.
+ *
+ * Contract (per spec):
+ *  - Axes RAW: +X length (prow +X), +Y up, +Z starboard. NO glTF +Z-forward
+ *    reorientation. POSITION accessors are final ship-space, read verbatim.
+ *  - Transforms (mirror/array/piece offsets) BAKED into vertex positions.
+ *    No reliance on node TRS (importer ignores the scene-graph hierarchy).
+ *  - One primitive PER MATERIAL (grouped by matKey); not merged across mats.
+ *  - PBR materials: baseColorFactor (LINEAR rgba), emissiveFactor for glow.
+ *    KHR_materials_unlit on MeshBasicMaterial parts (the engine glow).
+ *  - No COLOR_0 vertex colors (engine groups by material).
+ *  - scene.extras = { laz, lel } authored key-light direction (deg).
+ *    Palette bands / render res are intentionally NOT exported.
+ *  - Center on origin, author ~12 units long, keep max extent < ~18.
+ * ===================================================================== */
+function srgbToLinear(c){ return c<=0.04045 ? c/12.92 : Math.pow((c+0.055)/1.055,2.4); }
+function hexToLinearRGB(hex){
+  const r=((hex>>16)&255)/255, g=((hex>>8)&255)/255, b=(hex&255)/255;
+  return [srgbToLinear(r),srgbToLinear(g),srgbToLinear(b)];
+}
+// pad a byte length up to a 4-byte boundary (glTF requires aligned chunks/accessors)
+function pad4(n){ return (n+3)&~3; }
+
+function buildGLB(){
+  const pieces=generatePieces();
+  if(!pieces.length) return null;
+
+  // group baked geometries by material key
+  const byMat=new Map();
+  for(const p of pieces){ if(!byMat.has(p.matKey)) byMat.set(p.matKey,[]); byMat.get(p.matKey).push(p.geo); }
+
+  // assemble interleaved-by-attribute binary buffers; track min/max for accessors
+  const bin=[];           // array of {data:Float32Array|Uint32Array, target}
+  const accessors=[], bufferViews=[], meshes=[], materials=[], matIndex=new Map();
+  let byteOffset=0;
+  const chunks=[]; // raw ArrayBuffers to concat into the BIN chunk
+
+  function addBufferView(typedArray, target){
+    const bytes=typedArray.byteLength;
+    const bv={buffer:0, byteOffset:byteOffset, byteLength:bytes};
+    if(target) bv.target=target;
+    bufferViews.push(bv);
+    chunks.push(typedArray.buffer.slice(typedArray.byteOffset, typedArray.byteOffset+bytes));
+    // pad to 4 bytes
+    const padded=pad4(bytes);
+    if(padded>bytes) chunks.push(new ArrayBuffer(padded-bytes));
+    byteOffset+=padded;
+    return bufferViews.length-1;
+  }
+
+  // global bounds for the centering/extent guard
+  let gMin=[1e9,1e9,1e9], gMax=[-1e9,-1e9,-1e9];
+
+  for(const [matKey,geos] of byMat){
+    // concatenate this material's pieces into one position/normal/index set
+    let posArr=[], nrmArr=[], idxArr=[], base=0;
+    for(const g of geos){
+      const pos=g.getAttribute('position'); const nrm=g.getAttribute('normal');
+      const idx=g.getIndex();
+      for(let i=0;i<pos.count;i++){
+        const x=pos.getX(i),y=pos.getY(i),z=pos.getZ(i);
+        posArr.push(x,y,z);
+        nrmArr.push(nrm?nrm.getX(i):0, nrm?nrm.getY(i):1, nrm?nrm.getZ(i):0);
+        gMin[0]=Math.min(gMin[0],x);gMin[1]=Math.min(gMin[1],y);gMin[2]=Math.min(gMin[2],z);
+        gMax[0]=Math.max(gMax[0],x);gMax[1]=Math.max(gMax[1],y);gMax[2]=Math.max(gMax[2],z);
+      }
+      if(idx){ for(let i=0;i<idx.count;i++) idxArr.push(base+idx.getX(i)); }
+      else { for(let i=0;i<pos.count;i++) idxArr.push(base+i); }
+      base+=pos.count;
+    }
+    const positions=new Float32Array(posArr);
+    const normals=new Float32Array(nrmArr);
+    const indices=new Uint32Array(idxArr);
+
+    // per-primitive min/max for POSITION accessor
+    let pmin=[1e9,1e9,1e9], pmax=[-1e9,-1e9,-1e9];
+    for(let i=0;i<positions.length;i+=3){ for(let k=0;k<3;k++){ pmin[k]=Math.min(pmin[k],positions[i+k]); pmax[k]=Math.max(pmax[k],positions[i+k]); } }
+
+    const bvPos=addBufferView(positions,34962);
+    const bvNrm=addBufferView(normals,34962);
+    const bvIdx=addBufferView(indices,34963);
+
+    const aPos=accessors.length;
+    accessors.push({bufferView:bvPos,componentType:5126,count:positions.length/3,type:'VEC3',min:pmin,max:pmax});
+    const aNrm=accessors.length;
+    accessors.push({bufferView:bvNrm,componentType:5126,count:normals.length/3,type:'VEC3'});
+    const aIdx=accessors.length;
+    accessors.push({bufferView:bvIdx,componentType:5125,count:indices.length,type:'SCALAR'});
+
+    // material
+    const md=MATS[matKey]||MATS.hull;
+    const lin=hexToLinearRGB(md.col);
+    const mat={ name:matKey, pbrMetallicRoughness:{ baseColorFactor:[lin[0],lin[1],lin[2],1], metallicFactor:0, roughnessFactor:0.85 } };
+    if(md.emissive){ const e=hexToLinearRGB(md.emissive); mat.emissiveFactor=[e[0],e[1],e[2]]; }
+    if(md.basic){ mat.extensions={KHR_materials_unlit:{}}; mat.emissiveFactor=[lin[0],lin[1],lin[2]]; }
+    const mi=materials.length; materials.push(mat); matIndex.set(matKey,mi);
+
+    meshes.push({ name:matKey, primitives:[{ attributes:{POSITION:aPos, NORMAL:aNrm}, indices:aIdx, material:mi }] });
+  }
+
+  // assemble BIN
+  let binLen=0; for(const c of chunks) binLen+=c.byteLength;
+  const binBuf=new Uint8Array(binLen); let o=0;
+  for(const c of chunks){ binBuf.set(new Uint8Array(c),o); o+=c.byteLength; }
+
+  const nodes=meshes.map((m,i)=>({mesh:i, name:m.name}));
+  const gltf={
+    asset:{version:'2.0', generator:'Broadside CAD Editor'},
+    extensionsUsed: materials.some(m=>m.extensions&&m.extensions.KHR_materials_unlit)?['KHR_materials_unlit']:undefined,
+    scene:0,
+    scenes:[{ nodes:nodes.map((_,i)=>i), extras:{ laz:ST.laz, lel:ST.lel } }],
+    nodes, meshes, materials, accessors, bufferViews,
+    buffers:[{ byteLength:binLen }]
+  };
+  if(!gltf.extensionsUsed) delete gltf.extensionsUsed;
+
+  return { gltf, binBuf, bounds:{min:gMin,max:gMax} };
+}
+
+function packGLB(gltf, binBuf){
+  const enc=new TextEncoder();
+  let jsonBytes=enc.encode(JSON.stringify(gltf));
+  // pad JSON chunk with spaces to 4 bytes
+  let jsonPad=pad4(jsonBytes.length)-jsonBytes.length;
+  if(jsonPad){ const t=new Uint8Array(jsonBytes.length+jsonPad); t.set(jsonBytes); for(let i=0;i<jsonPad;i++)t[jsonBytes.length+i]=0x20; jsonBytes=t; }
+  let binPad=pad4(binBuf.length)-binBuf.length;
+  const binTotal=binBuf.length+binPad;
+  const total=12 + 8+jsonBytes.length + 8+binTotal;
+  const buf=new ArrayBuffer(total); const dv=new DataView(buf); const u8=new Uint8Array(buf);
+  let p=0;
+  dv.setUint32(p,0x46546C67,true);p+=4;      // 'glTF'
+  dv.setUint32(p,2,true);p+=4;               // version
+  dv.setUint32(p,total,true);p+=4;           // total length
+  dv.setUint32(p,jsonBytes.length,true);p+=4;
+  dv.setUint32(p,0x4E4F534A,true);p+=4;      // 'JSON'
+  u8.set(jsonBytes,p);p+=jsonBytes.length;
+  dv.setUint32(p,binTotal,true);p+=4;
+  dv.setUint32(p,0x004E4942,true);p+=4;      // 'BIN\0'
+  u8.set(binBuf,p);p+=binBuf.length;
+  // remaining binPad bytes already zero
+  return new Blob([buf],{type:'model/gltf-binary'});
+}
+
+function exportGLB(){
+  const built=buildGLB();
+  if(!built){ alert('Nothing to export — add some geometry first.'); return; }
+  const ext=built.bounds; const maxExtent=Math.max(
+    ext.max[0]-ext.min[0], ext.max[1]-ext.min[1], ext.max[2]-ext.min[2]);
+  if(maxExtent>18){
+    if(!confirm(`This ship's largest dimension is ${maxExtent.toFixed(1)} units (engine prefers < ~18, ~12 long). Export anyway?`)) return;
+  }
+  const blob=packGLB(built.gltf, built.binBuf);
+  const a=document.createElement('a'); a.href=URL.createObjectURL(blob);
+  a.download='broadside-ship.glb'; a.click();
+  setTimeout(()=>URL.revokeObjectURL(a.href),2000);
+}
+$('btnExportGLB').onclick=exportGLB;
+/* === END ENGINE EXPORT CONTRACT (GLB) === */
+
+
 // ============ GLOBAL CONTROLS WIRING ============
 document.querySelectorAll('.addbtn').forEach(b=>b.onclick=()=>addFeature(b.dataset.add));
 document.querySelectorAll('#presets button').forEach(b=>b.onclick=()=>{
@@ -1253,36 +1515,51 @@ document.querySelectorAll('#bgpre button').forEach(b=>b.onclick=()=>setBg(b.data
 $('vGrid').onclick=()=>{ST.grid=!ST.grid;$('vGrid').classList.toggle('on',ST.grid);$('vGrid').textContent=ST.grid?'grid on':'grid off';};
 $('vWire').onclick=()=>{ST.wire=!ST.wire;$('vWire').classList.toggle('on',ST.wire);rebuild();};
 
-// orbit + pick
+// orbit + pick + sketch
 let pdrag=false,plx=0,ply=0,pdownX=0,pdownY=0,pmoved=0;
-cvs.addEventListener('pointerdown',e=>{pdrag=true;plx=e.clientX;ply=e.clientY;pdownX=e.clientX;pdownY=e.clientY;pmoved=0;});
+cvs.addEventListener('pointerdown',e=>{
+  if(skActive && !pickMode){ if(onSketchPointerDown(e)){ if(skTool!=='select'){ return; } } }
+  pdrag=true;plx=e.clientX;ply=e.clientY;pdownX=e.clientX;pdownY=e.clientY;pmoved=0;
+});
 window.addEventListener('pointerup',e=>{
   if(pickMode && pdrag && pmoved<6){
-    // treat as a click → pick the plane/face under cursor
     const pick=pickAt(e.clientX,e.clientY);
     if(pick){ commitPick(pick); }
+  } else if(skActive && !pickMode){
+    onSketchPointerUp(e);
   }
   pdrag=false;
 });
 window.addEventListener('pointermove',e=>{
   if(pickMode && !pdrag){
-    // hover preview
     const pick=pickAt(e.clientX,e.clientY);
     if(pick){ showHoverFor(pick); $('stage').style.cursor='copy'; }
     else { clearHover(); $('stage').style.cursor='crosshair'; }
     return;
   }
+  if(skActive && !pickMode){
+    const handled=onSketchPointerMove(e);
+    // if a draw tool is active, suppress orbit entirely; if select+dragging a point, also suppress
+    if(handled) return;
+  }
   if(!pdrag)return;
   pmoved+=Math.abs(e.clientX-plx)+Math.abs(e.clientY-ply);
   ST.yaw=(ST.yaw+(e.clientX-plx)*0.5+360)%360;ST.pitch=clamp(ST.pitch+(e.clientY-ply)*0.35,8,89);
   plx=e.clientX;ply=e.clientY;
-  if(pickMode && pmoved>6) clearHover(); // orbiting, drop hover
+  if(pickMode && pmoved>6) clearHover();
   $('hYaw').textContent=Math.round(ST.yaw)+'°';$('hPit').textContent=Math.round(ST.pitch)+'°';
   $('pitch').value=Math.round(ST.pitch);$('pv').textContent=Math.round(ST.pitch)+'°';
   document.querySelectorAll('.snap').forEach(x=>x.classList.remove('on'));});
 cvs.addEventListener('wheel',e=>{e.preventDefault();ST.zoom=clamp(ST.zoom*(e.deltaY>0?0.92:1.08),0.4,4);},{passive:false});
-window.addEventListener('resize',setRes);
-window.addEventListener('keydown',e=>{ if(e.key==='Escape'&&pickMode){ exitPickMode(); renderInspector(); } });
+// right-click delete while sketching (select tool) — prevent context menu
+$('stage').addEventListener('contextmenu',e=>{ if(skActive&&!pickMode){ e.preventDefault(); onSketchPointerDown(e); } });
+window.addEventListener('resize',()=>{setRes();sizeOverlay();});
+window.addEventListener('keydown',e=>{
+  if(e.key==='Escape'){
+    if(pickMode){ exitPickMode(); renderInspector(); }
+    else if(skActive){ if(skTool==='line'){ finishLine(); } setSkTool('select'); }
+  }
+});
 
 // commit a picked plane/face onto the target sketch and open it
 function commitPick(pick){
