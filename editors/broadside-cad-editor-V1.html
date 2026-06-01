@@ -1,0 +1,957 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Broadside — CAD Editor</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;500;700&family=Major+Mono+Display&display=swap');
+  :root{
+    --bg:#070b14;--panel:#0d1524;--panel2:#0a111f;--line:#1d2c44;--ink:#cfe0f5;
+    --dim:#5d7397;--faint:#46597a;--hot:#ff8a48;--cool:#5fd8ff;--gold:#ffd86b;
+    --grid:#13233e;--ok:#5fe0a0;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{
+    background:radial-gradient(circle at 22% 10%,#10203c 0,transparent 52%),
+               radial-gradient(circle at 88% 90%,#1a1230 0,transparent 48%),var(--bg);
+    color:var(--ink);font-family:'Chakra Petch',sans-serif;-webkit-font-smoothing:antialiased;
+    overflow:hidden;
+  }
+  /* ---- top bar ---- */
+  .topbar{display:flex;align-items:center;gap:16px;padding:10px 18px;border-bottom:1px solid var(--line);
+    background:linear-gradient(180deg,#0c1422,#080e19);height:54px}
+  h1{font-family:'Major Mono Display',monospace;font-size:19px;font-weight:400;letter-spacing:1px;white-space:nowrap}
+  h1 .b{color:var(--hot)}
+  .topbar .spacer{flex:1}
+  .topbtn{background:var(--panel);border:1px solid var(--line);color:var(--dim);
+    font-family:'Chakra Petch';font-size:12px;padding:7px 13px;border-radius:6px;cursor:pointer;transition:.13s;white-space:nowrap}
+  .topbtn:hover{color:var(--ink);border-color:var(--hot)}
+  .topbtn.accent{background:var(--hot);color:#0a0a0a;font-weight:700;border-color:var(--hot)}
+  .topbtn.cool{background:var(--cool);color:#06121a;font-weight:700;border-color:var(--cool)}
+  /* ---- 3-column layout ---- */
+  .app{display:grid;grid-template-columns:248px 1fr 312px;height:calc(100vh - 54px)}
+  .col{overflow-y:auto;overflow-x:hidden}
+  .col::-webkit-scrollbar{width:9px}
+  .col::-webkit-scrollbar-thumb{background:#1d2c44;border-radius:5px}
+  .left{border-right:1px solid var(--line);background:var(--panel2)}
+  .center{display:flex;flex-direction:column;background:#060a12;overflow:hidden}
+  .right{border-left:1px solid var(--line);background:var(--panel2)}
+  .sect{padding:13px 14px;border-bottom:1px solid var(--line)}
+  .sect h2{font-size:10.5px;letter-spacing:1.4px;text-transform:uppercase;color:var(--dim);margin-bottom:10px;display:flex;align-items:center;gap:7px}
+  .sect h2 .tag{margin-left:auto;font-size:9px;color:var(--faint);letter-spacing:.5px}
+  /* ---- feature tree ---- */
+  .addrow{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px}
+  .addbtn{background:var(--panel);border:1px solid var(--line);color:var(--dim);
+    font-family:'Chakra Petch';font-size:11px;padding:6px 9px;border-radius:6px;cursor:pointer;transition:.12s;flex:1;min-width:64px;text-align:center}
+  .addbtn:hover{color:var(--ink);border-color:var(--cool)}
+  .addbtn .ic{color:var(--cool);margin-right:3px}
+  .tree{display:flex;flex-direction:column;gap:3px}
+  .feat{display:flex;align-items:center;gap:8px;padding:8px 10px;border:1px solid transparent;border-radius:7px;
+    cursor:pointer;transition:.1s;background:var(--panel);position:relative}
+  .feat:hover{border-color:var(--line)}
+  .feat.sel{border-color:var(--hot);background:#16121c}
+  .feat.suppressed{opacity:.4}
+  .feat .ico{width:18px;height:18px;flex:none;display:grid;place-items:center;font-size:13px}
+  .feat .nm{flex:1;font-size:12.5px;color:var(--ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .feat .nm small{display:block;color:var(--faint);font-size:9.5px;letter-spacing:.4px;text-transform:uppercase}
+  .feat .grip{color:var(--faint);font-size:13px;cursor:grab;flex:none}
+  .feat .x{color:var(--faint);font-size:14px;flex:none;width:18px;text-align:center;border-radius:4px}
+  .feat .x:hover{color:var(--hot);background:#1c1410}
+  .feat.dragover{border-top:2px solid var(--hot)}
+  .ico.sketch{color:var(--cool)} .ico.extrude{color:var(--hot)} .ico.mirror{color:var(--gold)}
+  .ico.array{color:var(--ok)} .ico.prim{color:#b78cff}
+  .empty{color:var(--faint);font-size:11.5px;font-style:italic;padding:8px 4px;line-height:1.5}
+  /* ---- viewport ---- */
+  .stage{flex:1;position:relative;display:flex;align-items:center;justify-content:center;min-height:0}
+  #preview{image-rendering:pixelated;image-rendering:crisp-edges;cursor:grab;background:transparent}
+  #preview:active{cursor:grabbing}
+  .hud{position:absolute;top:12px;left:14px;font-family:'Major Mono Display';font-size:10.5px;color:var(--dim);line-height:1.7;pointer-events:none}
+  .hud b{color:var(--cool)}
+  .vp-tools{position:absolute;top:12px;right:14px;display:flex;flex-direction:column;gap:6px;align-items:flex-end}
+  .snaprow{position:absolute;bottom:12px;left:50%;transform:translateX(-50%);display:flex;gap:6px}
+  .snaprow button,.vp-tools button{background:rgba(13,21,36,.82);border:1px solid var(--line);color:var(--dim);
+    font-family:'Chakra Petch';font-size:11px;padding:5px 11px;border-radius:6px;cursor:pointer;backdrop-filter:blur(4px);transition:.12s}
+  .snaprow button:hover,.vp-tools button:hover{color:var(--ink);border-color:var(--hot)}
+  .snaprow button.on{background:var(--hot);color:#0a0a0a;font-weight:700;border-color:var(--hot)}
+  /* ---- sketch editor canvas ---- */
+  .sketchwrap{position:relative}
+  #sketchpad{display:block;width:100%;border-radius:8px;background:#070d18;border:1px solid var(--line);touch-action:none;cursor:crosshair}
+  .sk-tools{display:flex;gap:6px;margin-bottom:10px;flex-wrap:wrap}
+  .sk-tools .grp{display:flex;border:1px solid var(--line);border-radius:6px;overflow:hidden}
+  .sk-tools button{background:transparent;color:var(--dim);border:none;padding:6px 10px;font-family:'Chakra Petch';font-size:11.5px;cursor:pointer;transition:.12s}
+  .sk-tools button:hover{color:var(--ink)}
+  .sk-tools button.on{background:var(--cool);color:#06121a;font-weight:700}
+  /* ---- param controls ---- */
+  .ctl{display:flex;flex-direction:column;gap:5px;margin-bottom:13px}
+  .ctl label{font-size:10px;letter-spacing:1px;text-transform:uppercase;color:var(--dim)}
+  .ctl .row{display:flex;align-items:center;gap:9px}
+  input[type=range]{flex:1;accent-color:var(--hot);min-width:0}
+  .v{font-family:'Major Mono Display';font-size:11px;color:var(--hot);min-width:44px;text-align:right}
+  .seg{display:flex;border:1px solid var(--line);border-radius:6px;overflow:hidden;flex-wrap:wrap}
+  .seg button{background:transparent;color:var(--dim);border:none;padding:6px 10px;font-family:'Chakra Petch';font-size:11px;cursor:pointer;flex:1;transition:.12s}
+  .seg button.on{background:var(--cool);color:#06121a;font-weight:700}
+  .seg.hot button.on{background:var(--hot);color:#0a0a0a}
+  input[type=text],input[type=number]{background:#060a12;border:1px solid var(--line);color:var(--ink);
+    font-family:'Chakra Petch';font-size:12px;padding:6px 9px;border-radius:6px;width:100%}
+  input[type=color]{width:36px;height:26px;border:1px solid var(--line);border-radius:5px;background:none;cursor:pointer;padding:0;flex:none}
+  .nparam{display:none}
+  .nparam.show{display:block}
+  .nothing{color:var(--faint);font-size:12px;font-style:italic;line-height:1.6;padding:6px 2px}
+  .danger{background:var(--panel);border:1px solid var(--line);color:var(--hot);
+    font-family:'Chakra Petch';font-size:11.5px;padding:7px 12px;border-radius:6px;cursor:pointer;width:100%;transition:.12s;margin-top:4px}
+  .danger:hover{background:#1c1410;border-color:var(--hot)}
+  .small{font-size:10.5px;color:var(--faint);line-height:1.5;margin-top:6px}
+  .pill{display:inline-block;font-size:9.5px;letter-spacing:.6px;text-transform:uppercase;padding:2px 7px;border-radius:20px;background:#11203a;color:var(--cool);border:1px solid var(--line)}
+  .helprow{font-size:10.5px;color:var(--faint);line-height:1.5;margin-top:8px;border-top:1px solid var(--line);padding-top:8px}
+  .helprow code{font-family:'Major Mono Display';color:var(--cool);font-size:10px}
+  /* hidden file input */
+  #fileImport{display:none}
+</style>
+</head>
+<body>
+<div class="topbar">
+  <h1>BROAD<span class="b">SIDE</span> · cad</h1>
+  <span class="pill" id="featCountPill">0 features</span>
+  <div class="spacer"></div>
+  <button class="topbtn" id="btnNew">new ship</button>
+  <button class="topbtn" id="btnSave">⤓ save .json</button>
+  <button class="topbtn" id="btnLoad">⤒ load .json</button>
+  <button class="topbtn cool" id="btnExport">⤓ export PNG</button>
+  <input id="fileLoad" type="file" accept="application/json,.json" style="display:none">
+</div>
+
+<div class="app">
+  <!-- ============ LEFT: FEATURE TREE ============ -->
+  <div class="col left">
+    <div class="sect">
+      <h2>feature tree <span class="tag" id="treeOrder">build order ↓</span></h2>
+      <div class="addrow">
+        <button class="addbtn" data-add="sketch"><span class="ic">✎</span>sketch</button>
+        <button class="addbtn" data-add="extrude"><span class="ic">⬗</span>extrude</button>
+        <button class="addbtn" data-add="prim"><span class="ic">◧</span>solid</button>
+        <button class="addbtn" data-add="mirror"><span class="ic">⇋</span>mirror</button>
+        <button class="addbtn" data-add="array"><span class="ic">⠿</span>array</button>
+      </div>
+      <div class="tree" id="tree"></div>
+    </div>
+    <div class="sect">
+      <h2>presets</h2>
+      <div class="seg hot" id="presets">
+        <button data-p="dagger">dagger</button>
+        <button data-p="brick">brick</button>
+        <button data-p="needle">needle</button>
+      </div>
+      <div class="small">Presets replace the current feature tree with a starting design you can edit.</div>
+    </div>
+  </div>
+
+  <!-- ============ CENTER: VIEWPORT ============ -->
+  <div class="center">
+    <div class="stage" id="stage">
+      <canvas id="preview"></canvas>
+      <div class="hud">yaw <b id="hYaw">28°</b><br>pitch <b id="hPit">26°</b><br>res <b id="hRes">220×138</b><br>tris <b id="hTris">0</b></div>
+      <div class="vp-tools">
+        <button id="vGrid" class="on">grid on</button>
+        <button id="vWire">wireframe</button>
+      </div>
+      <div class="snaprow">
+        <button class="snap on" data-yaw="28">▸ right</button>
+        <button class="snap" data-yaw="152">◂ left</button>
+        <button class="snap" data-yaw="118">▴ fore</button>
+        <button class="snap" data-yaw="298">▾ aft</button>
+        <button class="snap" data-yaw="90" data-pitch="89">⤓ top</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ RIGHT: INSPECTOR ============ -->
+  <div class="col right">
+    <!-- selected-feature parameters -->
+    <div class="sect" id="inspector">
+      <h2>inspector <span class="tag" id="inspName">— nothing selected</span></h2>
+      <div id="inspBody">
+        <div class="nothing">Select a feature in the tree to edit it, or add one with the buttons top-left. Start with a <b>sketch</b>, then <b>extrude</b> it.</div>
+      </div>
+    </div>
+
+    <!-- sketch editor (shown only when a sketch is selected) -->
+    <div class="sect nparam" id="sketchSection">
+      <h2>sketch · <span class="tag" id="sketchPlaneTag">plane</span></h2>
+      <div class="sk-tools">
+        <div class="grp" id="skTool">
+          <button data-t="drag" class="on">drag</button>
+          <button data-t="add">add</button>
+        </div>
+        <button id="skClose" title="toggle open/closed loop">closed ✓</button>
+        <button id="skImport">⤒ trace img</button>
+      </div>
+      <div class="sketchwrap">
+        <canvas id="sketchpad" width="560" height="360"></canvas>
+      </div>
+      <div class="helprow">
+        drag points · dbl-click edge <code>+pt</code> · right-click <code>−pt</code>. The sketch is drawn on the highlighted plane; extrude it to make a solid.
+      </div>
+      <input id="fileImport" type="file" accept="image/png,image/jpeg,image/webp">
+    </div>
+
+    <!-- render / palette settings -->
+    <div class="sect">
+      <h2>render</h2>
+      <div class="ctl"><label>¾ pitch</label><div class="row"><input id="pitch" type="range" min="8" max="89" value="26"><span class="v" id="pv">26°</span></div></div>
+      <div class="ctl"><label>palette bands</label>
+        <div class="seg" id="bands">
+          <button data-b="2">2</button><button data-b="3">3</button>
+          <button data-b="4" class="on">4</button><button data-b="5">5</button><button data-b="16">full</button>
+        </div>
+      </div>
+      <div class="ctl"><label>light azimuth</label><div class="row"><input id="laz" type="range" min="-180" max="180" value="-50"><span class="v" id="lazv">-50°</span></div></div>
+      <div class="ctl"><label>light elevation</label><div class="row"><input id="lel" type="range" min="5" max="90" value="60"><span class="v" id="lelv">60°</span></div></div>
+      <div class="ctl"><label>render res</label>
+        <div class="seg" id="res">
+          <button data-w="120" data-h="75">120</button>
+          <button data-w="160" data-h="100">160</button>
+          <button data-w="220" data-h="138" class="on">220</button>
+          <button data-w="320" data-h="200">320</button>
+          <button data-w="480" data-h="300">480</button>
+        </div>
+      </div>
+      <div class="ctl"><label>background</label>
+        <div class="row">
+          <input id="bgpick" type="color" value="#060a12">
+          <div class="seg" id="bgpre" style="flex:1">
+            <button data-c="#ffffff">white</button>
+            <button data-c="#8895a8">grey</button>
+            <button data-c="#060a12" class="on">dark</button>
+            <button data-c="#0a1c3a">blue</button>
+          </div>
+        </div>
+      </div>
+      <div class="ctl"><label>export scale</label>
+        <div class="seg" id="exScale">
+          <button data-x="1" class="on">1×</button><button data-x="2">2×</button>
+          <button data-x="4">4×</button><button data-x="8">8×</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+</body>
+
+<script type="importmap">
+{ "imports": { "three": "https://cdnjs.cloudflare.com/ajax/libs/three.js/0.160.0/three.module.min.js" } }
+</script>
+<script type="module">
+import * as THREE from 'three';
+const $=id=>document.getElementById(id);
+const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
+const lerp=(a,b,t)=>a+(b-a)*t;
+let UID=1; const uid=()=>'f'+(UID++);
+
+// ============ VIEW / RENDER STATE ============
+const ST={ pitch:26, yaw:28, zoom:1, bands:4, laz:-50, lel:60,
+  res:{w:220,h:138}, grid:true, wire:false };
+
+// ============ FEATURE MODEL ============
+// Each feature is a plain object with {id,type,name,suppressed,...params}.
+// The build order is the array order. Mirror/Array act on the *result so far*
+// or on a referenced feature, producing additional geometry.
+//
+// Coordinate convention (matches loft editor): X = length (prow +X),
+// Y = up, Z = half-width (starboard +Z). Units are arbitrary "metres".
+//
+// SKETCH: a 2D polyline on a plane. plane ∈ {xy, xz, top(=xz at y), side(=xy)}.
+//   We support 3 planes: 'side' (XY, looking down -Z) profile in length/height,
+//   'plan' (XZ, looking down -Y) profile in length/width,
+//   'cross' (ZY, looking down -X) profile in width/height.
+//   pts: [[u,v],...] in plane-local coords roughly -1..1. closed:bool.
+// EXTRUDE: refs a sketch id; depth; mode sym|one|taper; taper factor; material.
+// PRIM: box|cyl|sphere with size + position + material (quick greebles/engines).
+// MIRROR: axis x|y|z, mirrors everything built before it (or a target feature).
+// ARRAY: count, spacing vector, target feature id (or 'all-before').
+let FEATURES=[];
+let SEL=null; // selected feature id
+
+const PLANES={
+  side:{name:'side (length × height)', axisU:'x', axisV:'y', normal:'z'},
+  plan:{name:'plan (length × width)',  axisU:'x', axisV:'z', normal:'y'},
+  cross:{name:'cross (width × height)',axisU:'z', axisV:'y', normal:'x'},
+};
+const MATS={
+  hull:{label:'hull', col:0xb4c6e0},
+  hullD:{label:'hull dark', col:0x6f88ad},
+  tower:{label:'tower', col:0xc8d8ee},
+  dark:{label:'detail', col:0x3c4a64},
+  canopy:{label:'canopy', col:0x5fd8ff, emissive:0x0a2230},
+  gun:{label:'gun', col:0xff8a48, emissive:0x331100},
+  batt:{label:'battery', col:0xffd86b, emissive:0x221800},
+  engine:{label:'engine glow', col:0x6fe0ff, basic:true},
+};
+function makeMat(key,wire){
+  const m=MATS[key]||MATS.hull;
+  if(m.basic) return new THREE.MeshBasicMaterial({color:m.col,wireframe:wire,side:THREE.DoubleSide});
+  return new THREE.MeshLambertMaterial({color:m.col,emissive:m.emissive||0x000000,flatShading:true,wireframe:wire,side:THREE.DoubleSide});
+}
+
+// default sketch profiles per plane (u,v roughly -1..1, closed loops)
+function defaultSketch(plane){
+  if(plane==='plan') // length × width, symmetric wedge outline (the "dagger")
+    return {closed:true, pts:[[-1,0.0],[-0.9,0.42],[0.2,0.30],[0.8,0.12],[1.0,0.0],[0.8,-0.12],[0.2,-0.30],[-0.9,-0.42]]};
+  if(plane==='side') // length × height, shallow wedge in profile
+    return {closed:true, pts:[[-1,-0.16],[-0.95,0.24],[0.3,0.16],[1.0,0.0],[0.3,-0.06],[-0.95,-0.24]]};
+  // cross: width × height ring (dorsal up, chine wide, belly down)
+  return {closed:true, pts:[[0,0.55],[0.55,0.4],[1.0,0.05],[0.6,-0.45],[0,-0.55],[-0.6,-0.45],[-1.0,0.05],[-0.55,0.4]]};
+}
+
+// ============ GEOMETRY ENGINE ============
+// Map a sketch's plane-local (u,v) to a world point at a given offset along the normal.
+function planeToWorld(plane,u,v,n){
+  const P=PLANES[plane];
+  // base position from u,v on the plane axes, n along normal
+  const out={x:0,y:0,z:0};
+  out[P.axisU]=u; out[P.axisV]=v; out[P.normal]=n;
+  return [out.x,out.y,out.z];
+}
+
+// Triangulate a closed polygon (fan from centroid — fine for convex-ish hull profiles).
+function capIndices(ringStart,count,centroidIdx,flip){
+  const idx=[];
+  for(let i=0;i<count;i++){
+    const a=ringStart+i, b=ringStart+(i+1)%count;
+    if(flip) idx.push(centroidIdx,b,a); else idx.push(centroidIdx,a,b);
+  }
+  return idx;
+}
+
+// Build an extruded solid from a sketch. Returns a BufferGeometry.
+function buildExtrude(sketch,feat){
+  const pts=sketch.pts; if(!pts||pts.length<3) return null;
+  const plane=sketch.plane;
+  const depth=feat.depth, mode=feat.mode, taper=feat.taper;
+  // per-feature position offset (lets you place/stack extrudes)
+  const off=[feat.px||0, feat.py||0, feat.pz||0];
+  let n0,n1;
+  if(mode==='sym'){ n0=-depth/2; n1=depth/2; }
+  else if(mode==='one'){ n0=0; n1=depth; }
+  else { n0=-depth/2; n1=depth/2; }
+  const sFar = mode==='taper' ? taper : 1.0;
+
+  // ensure the 2D loop is counter-clockwise so the extrusion winds consistently
+  let area=0;
+  for(let i=0;i<pts.length;i++){const a=pts[i],b=pts[(i+1)%pts.length];area+=a[0]*b[1]-b[0]*a[1];}
+  const loop = area<0 ? pts.slice().reverse() : pts.slice();
+
+  const m=loop.length;
+  const verts=[], idx=[];
+  const ring0=[], ring1=[];
+  for(const [u,v] of loop){ const p=planeToWorld(plane,u,v,n0); ring0.push([p[0]+off[0],p[1]+off[1],p[2]+off[2]]); }
+  for(const [u,v] of loop){ const p=planeToWorld(plane,u*sFar,v*sFar,n1); ring1.push([p[0]+off[0],p[1]+off[1],p[2]+off[2]]); }
+  ring0.forEach(p=>verts.push(...p));
+  ring1.forEach(p=>verts.push(...p));
+  // side walls — winding chosen so normals face outward for a CCW loop
+  for(let i=0;i<m;i++){ const j=(i+1)%m;
+    const a=i,b=j,c=m+i,d=m+j;
+    idx.push(a,c,b, b,c,d);
+  }
+  // caps
+  const c0=[0,0,0],c1=[0,0,0];
+  ring0.forEach(p=>{c0[0]+=p[0];c0[1]+=p[1];c0[2]+=p[2];});
+  ring1.forEach(p=>{c1[0]+=p[0];c1[1]+=p[1];c1[2]+=p[2];});
+  c0[0]/=m;c0[1]/=m;c0[2]/=m; c1[0]/=m;c1[1]/=m;c1[2]/=m;
+  const ci0=verts.length/3; verts.push(...c0);
+  const ci1=verts.length/3; verts.push(...c1);
+  idx.push(...capIndices(0,m,ci0,false));  // near cap faces -normal
+  idx.push(...capIndices(m,m,ci1,true));   // far cap faces +normal
+  const g=new THREE.BufferGeometry();
+  g.setAttribute('position',new THREE.Float32BufferAttribute(verts,3));
+  g.setIndex(idx);
+  flipInwardFaces(verts, idx);   // guarantee outward winding regardless of plane handedness
+  g.setIndex(idx);
+  g.computeVertexNormals();
+  return g;
+}
+
+// Flip any triangle whose geometric normal points toward the mesh centroid,
+// so all faces wind outward. Works for any plane/handedness. Mutates idx in place.
+function flipInwardFaces(verts, idx){
+  let cx=0,cy=0,cz=0; const nv=verts.length/3;
+  for(let i=0;i<verts.length;i+=3){cx+=verts[i];cy+=verts[i+1];cz+=verts[i+2];}
+  cx/=nv;cy/=nv;cz/=nv;
+  for(let t=0;t<idx.length;t+=3){
+    const a=idx[t]*3,b=idx[t+1]*3,c=idx[t+2]*3;
+    const ux=verts[b]-verts[a],uy=verts[b+1]-verts[a+1],uz=verts[b+2]-verts[a+2];
+    const vx=verts[c]-verts[a],vy=verts[c+1]-verts[a+1],vz=verts[c+2]-verts[a+2];
+    const nx=uy*vz-uz*vy, ny=uz*vx-ux*vz, nz=ux*vy-uy*vx;
+    const fx=(verts[a]+verts[b]+verts[c])/3-cx, fy=(verts[a+1]+verts[b+1]+verts[c+1])/3-cy, fz=(verts[a+2]+verts[b+2]+verts[c+2])/3-cz;
+    if(nx*fx+ny*fy+nz*fz < 0){ const tmp=idx[t+1]; idx[t+1]=idx[t+2]; idx[t+2]=tmp; }
+  }
+}
+
+// A built piece: {geo, matKey, transform(THREE.Matrix4 baked already)}
+// We bake transforms into geometry so mirror/array can clone vertex data directly.
+function bakeMatrix(geo,mat4){ const g=geo.clone(); g.applyMatrix4(mat4); g.computeVertexNormals(); return g; }
+
+function mirrorGeo(geo,axis){
+  const s=new THREE.Matrix4().makeScale(axis==='x'?-1:1, axis==='y'?-1:1, axis==='z'?-1:1);
+  const g=geo.clone(); g.applyMatrix4(s);
+  // flip winding so normals face out after negative scale
+  const index=g.getIndex();
+  if(index){ const arr=index.array; for(let i=0;i<arr.length;i+=3){const t=arr[i+1];arr[i+1]=arr[i+2];arr[i+2]=t;} index.needsUpdate=true; }
+  g.computeVertexNormals();
+  return g;
+}
+
+// Generate the full scene-piece list from the feature tree.
+// Returns array of {geo, matKey}. Sketches alone produce nothing visible.
+function generatePieces(){
+  // resolve sketches by id for extrude refs
+  const sketchById={};
+  FEATURES.forEach(f=>{ if(f.type==='sketch') sketchById[f.id]=f; });
+
+  let pieces=[]; // each {geo, matKey, srcId}
+  for(const f of FEATURES){
+    if(f.suppressed) continue;
+    if(f.type==='sketch'){ /* no geometry */ }
+    else if(f.type==='extrude'){
+      const sk=sketchById[f.sketchId] || FEATURES.find(x=>x.type==='sketch');
+      if(!sk) continue;
+      const g=buildExtrude(sk,f);
+      if(g) pieces.push({geo:g,matKey:f.matKey,srcId:f.id});
+    }
+    else if(f.type==='prim'){
+      let g;
+      if(f.shape==='box') g=new THREE.BoxGeometry(f.sx,f.sy,f.sz);
+      else if(f.shape==='cyl') g=new THREE.CylinderGeometry(f.sz/2,f.sz/2,f.sx,Math.max(3,f.seg||8));
+      else g=new THREE.SphereGeometry(Math.max(f.sx,f.sz)/2,Math.max(4,f.seg||8),Math.max(3,Math.round((f.seg||8)*0.7)));
+      const M=new THREE.Matrix4();
+      const rot=new THREE.Euler(THREE.MathUtils.degToRad(f.rx||0),THREE.MathUtils.degToRad(f.ry||0),THREE.MathUtils.degToRad(f.rz||0));
+      M.compose(new THREE.Vector3(f.px,f.py,f.pz),new THREE.Quaternion().setFromEuler(rot),new THREE.Vector3(1,1,1));
+      pieces.push({geo:bakeMatrix(g,M),matKey:f.matKey,srcId:f.id});
+    }
+    else if(f.type==='mirror'){
+      // mirror selected target (or everything before) and append
+      const targets = f.target==='all' ? pieces.slice() : pieces.filter(p=>p.srcId===f.target);
+      const added=[];
+      for(const p of targets){ added.push({geo:mirrorGeo(p.geo,f.axis),matKey:p.matKey,srcId:f.id}); }
+      pieces.push(...added);
+    }
+    else if(f.type==='array'){
+      const targets = f.target==='all' ? pieces.slice() : pieces.filter(p=>p.srcId===f.target);
+      const added=[];
+      for(let k=1;k<f.count;k++){
+        const M=new THREE.Matrix4().makeTranslation(f.dx*k,f.dy*k,f.dz*k);
+        for(const p of targets){ added.push({geo:bakeMatrix(p.geo,M),matKey:p.matKey,srcId:f.id}); }
+      }
+      pieces.push(...added);
+    }
+  }
+  return pieces;
+}
+
+// ============ THREE RENDERER (pixel pipeline) ============
+const cvs=$('preview');
+const renderer=new THREE.WebGLRenderer({canvas:cvs,antialias:false,alpha:true,premultipliedAlpha:false,preserveDrawingBuffer:true});
+renderer.setPixelRatio(1); renderer.setClearColor(0x000000,0);
+const scene=new THREE.Scene();
+const cam=new THREE.OrthographicCamera(-1,1,1,-1,0.1,400);
+const key=new THREE.DirectionalLight(0xffffff,1.6);
+const fill=new THREE.DirectionalLight(0x88aaff,0.45); fill.position.set(4,2,-3);
+const amb=new THREE.AmbientLight(0x3a4560,0.9);
+scene.add(key,fill,amb);
+
+let gridHelper=new THREE.GridHelper(40,20,0x1d3a5c,0x12233e);
+gridHelper.position.y=-4; scene.add(gridHelper);
+
+let ship=new THREE.Group(); scene.add(ship);
+let triCount=0;
+
+function rebuild(){
+  scene.remove(ship);
+  ship.traverse(o=>{if(o.geometry)o.geometry.dispose();});
+  ship=new THREE.Group();
+  const pieces=generatePieces();
+  triCount=0;
+  for(const p of pieces){
+    const mesh=new THREE.Mesh(p.geo, makeMat(p.matKey,ST.wire));
+    ship.add(mesh);
+    const idx=p.geo.getIndex();
+    triCount += idx ? idx.count/3 : p.geo.attributes.position.count/3;
+  }
+  scene.add(ship);
+  $('hTris').textContent=Math.round(triCount);
+  $('featCountPill').textContent=FEATURES.length+(FEATURES.length===1?' feature':' features');
+}
+
+// ---- pixel post pass (posterize) ----
+let rt=new THREE.WebGLRenderTarget(ST.res.w,ST.res.h,{minFilter:THREE.NearestFilter,magFilter:THREE.NearestFilter});
+const postScene=new THREE.Scene(); const postCam=new THREE.OrthographicCamera(-1,1,1,-1,0,1);
+const postMat=new THREE.ShaderMaterial({
+  uniforms:{tex:{value:rt.texture},bands:{value:ST.bands}},
+  vertexShader:`varying vec2 vUv;void main(){vUv=uv;gl_Position=vec4(position,1.0);}`,
+  fragmentShader:`varying vec2 vUv;uniform sampler2D tex;uniform float bands;
+    void main(){vec4 c=texture2D(tex,vUv);if(c.a<0.5){discard;}
+      vec3 q=floor(c.rgb*bands+0.5)/bands; gl_FragColor=vec4(q,1.0);}`,
+  transparent:true
+});
+postScene.add(new THREE.Mesh(new THREE.PlaneGeometry(2,2),postMat));
+
+function setCam(){
+  const y=THREE.MathUtils.degToRad(ST.yaw), p=THREE.MathUtils.degToRad(ST.pitch); const r=60;
+  cam.position.set(r*Math.cos(p)*Math.sin(y), r*Math.sin(p), r*Math.cos(p)*Math.cos(y));
+  cam.lookAt(0,0,0);
+  const aspect=ST.res.w/ST.res.h, view=4.5/ST.zoom;
+  cam.left=-view*aspect;cam.right=view*aspect;cam.top=view;cam.bottom=-view;cam.updateProjectionMatrix();
+}
+function setLight(){const az=THREE.MathUtils.degToRad(ST.laz),el=THREE.MathUtils.degToRad(ST.lel);
+  key.position.set(Math.cos(el)*Math.sin(az)*10,Math.sin(el)*10,Math.cos(el)*Math.cos(az)*10);}
+function setRes(){
+  rt.dispose();
+  rt=new THREE.WebGLRenderTarget(ST.res.w,ST.res.h,{minFilter:THREE.NearestFilter,magFilter:THREE.NearestFilter});
+  postMat.uniforms.tex.value=rt.texture;
+  renderer.setSize(ST.res.w,ST.res.h,false);
+  const stage=$('stage');
+  const availW=stage.clientWidth-24, availH=stage.clientHeight-24;
+  let f=Math.min(availW/ST.res.w, availH/ST.res.h);
+  if(f>=1) f=Math.max(1,Math.floor(f)); // integer upscale when room
+  cvs.style.width=(ST.res.w*f)+'px'; cvs.style.height=(ST.res.h*f)+'px';
+  $('hRes').textContent=`${ST.res.w}×${ST.res.h}`;
+}
+
+function loop(){requestAnimationFrame(loop);
+  gridHelper.visible=ST.grid;
+  setCam();
+  renderer.setRenderTarget(rt);renderer.clear();renderer.render(scene,cam);
+  renderer.setRenderTarget(null);renderer.clear();renderer.render(postScene,postCam);
+}
+
+// ============ FEATURE TREE UI ============
+const ICONS={sketch:'✎',extrude:'⬗',prim:'◧',mirror:'⇋',array:'⠿'};
+const TYPELABEL={sketch:'sketch',extrude:'extrude',prim:'solid',mirror:'mirror',array:'array'};
+let dragSrc=null;
+
+function renderTree(){
+  const tree=$('tree'); tree.innerHTML='';
+  if(FEATURES.length===0){
+    tree.innerHTML='<div class="empty">No features yet. Add a <b>sketch</b>, then <b>extrude</b> it into a hull.</div>';
+    return;
+  }
+  FEATURES.forEach((f,i)=>{
+    const el=document.createElement('div');
+    el.className='feat'+(f.id===SEL?' sel':'')+(f.suppressed?' suppressed':'');
+    el.draggable=true; el.dataset.id=f.id;
+    el.innerHTML=`
+      <span class="grip">⠿</span>
+      <span class="ico ${f.type}">${ICONS[f.type]}</span>
+      <span class="nm">${escapeHtml(f.name)}<small>${TYPELABEL[f.type]}</small></span>
+      <span class="x" title="delete">×</span>`;
+    el.onclick=e=>{ if(e.target.classList.contains('x')){deleteFeature(f.id);return;} selectFeature(f.id); };
+    // drag reorder
+    el.addEventListener('dragstart',()=>{dragSrc=f.id;el.style.opacity='.4';});
+    el.addEventListener('dragend',()=>{dragSrc=null;el.style.opacity='';document.querySelectorAll('.feat').forEach(x=>x.classList.remove('dragover'));});
+    el.addEventListener('dragover',e=>{e.preventDefault();el.classList.add('dragover');});
+    el.addEventListener('dragleave',()=>el.classList.remove('dragover'));
+    el.addEventListener('drop',e=>{e.preventDefault();reorder(dragSrc,f.id);});
+    tree.appendChild(el);
+  });
+}
+function escapeHtml(s){return String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
+
+function reorder(srcId,destId){
+  if(!srcId||srcId===destId) return;
+  const si=FEATURES.findIndex(f=>f.id===srcId), di=FEATURES.findIndex(f=>f.id===destId);
+  const [item]=FEATURES.splice(si,1);
+  const ni=FEATURES.findIndex(f=>f.id===destId);
+  FEATURES.splice(ni,0,item);
+  renderTree(); rebuild();
+}
+function deleteFeature(id){
+  FEATURES=FEATURES.filter(f=>f.id!==id);
+  // clear dangling refs
+  FEATURES.forEach(f=>{ if((f.type==='extrude'&&f.sketchId===id)) f.sketchId=null;
+    if((f.type==='mirror'||f.type==='array')&&f.target===id) f.target='all'; });
+  if(SEL===id) SEL=null;
+  renderTree(); renderInspector(); rebuild();
+}
+function selectFeature(id){ SEL=id; renderTree(); renderInspector(); }
+
+// ---- adding features ----
+function nextName(type){
+  const n=FEATURES.filter(f=>f.type===type).length+1;
+  return ({sketch:'Sketch',extrude:'Extrude',prim:'Solid',mirror:'Mirror',array:'Array'}[type])+' '+n;
+}
+function addFeature(type){
+  let f={id:uid(),type,name:nextName(type),suppressed:false};
+  if(type==='sketch'){ f.plane='plan'; const d=defaultSketch('plan'); f.pts=d.pts.map(p=>p.slice()); f.closed=d.closed; }
+  else if(type==='extrude'){
+    const lastSketch=[...FEATURES].reverse().find(x=>x.type==='sketch');
+    f.sketchId=lastSketch?lastSketch.id:null; f.depth=1.2; f.mode='sym'; f.taper=0.4; f.matKey='hull';
+    f.px=0; f.py=0; f.pz=0;
+  }
+  else if(type==='prim'){ f.shape='box'; f.sx=1;f.sy=0.5;f.sz=0.5; f.px=0;f.py=0;f.pz=0; f.rx=0;f.ry=0;f.rz=0; f.seg=8; f.matKey='dark'; }
+  else if(type==='mirror'){ f.axis='z'; f.target='all'; }
+  else if(type==='array'){ f.count=3; f.dx=0;f.dy=0;f.dz=0.8; f.target='all'; }
+  FEATURES.push(f); selectFeature(f.id); rebuild();
+}
+
+// ---- inspector ----
+function targetOptions(currentId){
+  // features that produce geometry, built before this one
+  const idx=FEATURES.findIndex(f=>f.id===currentId);
+  let html='<option value="all">everything before this</option>';
+  FEATURES.slice(0,idx).forEach(f=>{
+    if(f.type==='sketch') return;
+    html+=`<option value="${f.id}">${escapeHtml(f.name)}</option>`;
+  });
+  return html;
+}
+function matOptions(sel){
+  return Object.entries(MATS).map(([k,m])=>`<option value="${k}"${k===sel?' selected':''}>${m.label}</option>`).join('');
+}
+
+function renderInspector(){
+  const f=FEATURES.find(x=>x.id===SEL);
+  const skSection=$('sketchSection');
+  if(!f){
+    $('inspName').textContent='— nothing selected';
+    $('inspBody').innerHTML='<div class="nothing">Select a feature in the tree to edit it, or add one with the buttons top-left. Start with a <b>sketch</b>, then <b>extrude</b> it.</div>';
+    skSection.classList.remove('show'); return;
+  }
+  $('inspName').textContent=f.name;
+  let h=`<div class="ctl"><label>name</label><input type="text" id="ip_name" value="${escapeHtml(f.name)}"></div>`;
+  h+=`<div class="ctl"><div class="seg" id="ip_supseg"><button data-v="0" class="${f.suppressed?'':'on'}">shown</button><button data-v="1" class="${f.suppressed?'on':''}">hidden</button></div></div>`;
+
+  if(f.type==='sketch'){
+    h+=`<div class="ctl"><label>sketch plane</label><div class="seg" id="ip_plane">
+      <button data-v="plan" class="${f.plane==='plan'?'on':''}">plan</button>
+      <button data-v="side" class="${f.plane==='side'?'on':''}">side</button>
+      <button data-v="cross" class="${f.plane==='cross'?'on':''}">cross</button></div></div>`;
+    h+=`<div class="small">Plan = length×width (top-down). Side = length×height. Cross = width×height (bow-on ring). Edit the outline below; extrude it to make a solid.</div>`;
+  }
+  else if(f.type==='extrude'){
+    const sketches=FEATURES.filter(x=>x.type==='sketch');
+    h+=`<div class="ctl"><label>profile sketch</label><select id="ip_sketch" style="width:100%">${
+      sketches.map(s=>`<option value="${s.id}"${s.id===f.sketchId?' selected':''}>${escapeHtml(s.name)} (${s.plane})</option>`).join('')||'<option>— no sketch —</option>'
+    }</select></div>`;
+    h+=`<div class="ctl"><label>depth <span class="v" id="lbl_depth">${f.depth.toFixed(2)}</span></label><div class="row"><input type="range" id="ip_depth" min="5" max="400" value="${Math.round(f.depth*100)}"></div></div>`;
+    h+=`<div class="ctl"><label>direction</label><div class="seg" id="ip_mode">
+      <button data-v="sym" class="${f.mode==='sym'?'on':''}">symmetric</button>
+      <button data-v="one" class="${f.mode==='one'?'on':''}">one side</button>
+      <button data-v="taper" class="${f.mode==='taper'?'on':''}">taper</button></div></div>`;
+    h+=`<div class="ctl ${f.mode==='taper'?'':'nparam'}" id="taperWrap"><label>taper scale <span class="v" id="lbl_taper">${f.taper.toFixed(2)}</span></label><div class="row"><input type="range" id="ip_taper" min="0" max="150" value="${Math.round(f.taper*100)}"></div></div>`;
+    h+=`<div class="small" style="margin:2px 0 8px">position — slide along the hull</div>`;
+    h+=numRow('pos X (length)','px',f.px||0,-12,12)+numRow('pos Y (height)','py',f.py||0,-12,12)+numRow('pos Z (width)','pz',f.pz||0,-12,12);
+    h+=`<div class="ctl"><label>material</label><select id="ip_mat" style="width:100%">${matOptions(f.matKey)}</select></div>`;
+  }
+  else if(f.type==='prim'){
+    h+=`<div class="ctl"><label>shape</label><div class="seg" id="ip_shape">
+      <button data-v="box" class="${f.shape==='box'?'on':''}">box</button>
+      <button data-v="cyl" class="${f.shape==='cyl'?'on':''}">cylinder</button>
+      <button data-v="sphere" class="${f.shape==='sphere'?'on':''}">sphere</button></div></div>`;
+    h+=numRow('size X','sx',f.sx)+numRow('size Y','sy',f.sy)+numRow('size Z','sz',f.sz);
+    h+=numRow('pos X','px',f.px,-12,12)+numRow('pos Y','py',f.py,-12,12)+numRow('pos Z','pz',f.pz,-12,12);
+    h+=numRow('rot X°','rx',f.rx,-180,180,1)+numRow('rot Y°','ry',f.ry,-180,180,1)+numRow('rot Z°','rz',f.rz,-180,180,1);
+    h+=`<div class="ctl"><label>facets <span class="v" id="lbl_seg">${f.seg}</span></label><div class="row"><input type="range" id="ip_seg" min="3" max="16" value="${f.seg}"></div></div>`;
+    h+=`<div class="ctl"><label>material</label><select id="ip_mat" style="width:100%">${matOptions(f.matKey)}</select></div>`;
+  }
+  else if(f.type==='mirror'){
+    h+=`<div class="ctl"><label>mirror across axis</label><div class="seg" id="ip_axis">
+      <button data-v="x" class="${f.axis==='x'?'on':''}">X (fore/aft)</button>
+      <button data-v="y" class="${f.axis==='y'?'on':''}">Y (up/down)</button>
+      <button data-v="z" class="${f.axis==='z'?'on':''}">Z (port/stbd)</button></div></div>`;
+    h+=`<div class="ctl"><label>target</label><select id="ip_target" style="width:100%">${targetOptions(f.id).replace(`value="${f.target}"`,`value="${f.target}" selected`)}</select></div>`;
+    h+=`<div class="small">Duplicates the target mirrored across the chosen axis. Z mirror gives port/starboard symmetry — sketch one side, mirror it.</div>`;
+  }
+  else if(f.type==='array'){
+    h+=`<div class="ctl"><label>count <span class="v" id="lbl_count">${f.count}</span></label><div class="row"><input type="range" id="ip_count" min="2" max="12" value="${f.count}"></div></div>`;
+    h+=numRow('spacing X','dx',f.dx,-8,8)+numRow('spacing Y','dy',f.dy,-8,8)+numRow('spacing Z','dz',f.dz,-8,8);
+    h+=`<div class="ctl"><label>target</label><select id="ip_target" style="width:100%">${targetOptions(f.id).replace(`value="${f.target}"`,`value="${f.target}" selected`)}</select></div>`;
+    h+=`<div class="small">Repeats the target N times along the spacing vector. Great for engine banks (target the engine solid, space along Z) or windows.</div>`;
+  }
+  h+=`<button class="danger" id="ip_del">delete feature</button>`;
+  $('inspBody').innerHTML=h;
+  wireInspector(f);
+
+  // sketch editor visibility
+  if(f.type==='sketch'){ skSection.classList.add('show'); $('sketchPlaneTag').textContent=PLANES[f.plane].name; openSketch(f); }
+  else skSection.classList.remove('show');
+}
+function numRow(label,key,val,min,max,step){
+  min=min??0; max=max??6; step=step??0.05;
+  return `<div class="ctl"><label>${label}</label><div class="row"><input type="number" id="ipn_${key}" value="${val}" step="${step}" style="width:100%"></div></div>`;
+}
+
+function wireInspector(f){
+  const on=(id,ev,fn)=>{const el=$(id);if(el)el.addEventListener(ev,fn);};
+  on('ip_name','input',e=>{f.name=e.target.value;renderTree();$('inspName').textContent=f.name;});
+  // suppress toggle
+  document.querySelectorAll('#ip_supseg button').forEach(b=>b.onclick=()=>{
+    f.suppressed=b.dataset.v==='1';
+    document.querySelectorAll('#ip_supseg button').forEach(x=>x.classList.remove('on'));b.classList.add('on');
+    renderTree(); rebuild();
+  });
+  on('ip_del','click',()=>deleteFeature(f.id));
+
+  const seg=(wrap,fn)=>document.querySelectorAll(`#${wrap} button`).forEach(b=>b.onclick=()=>{
+    document.querySelectorAll(`#${wrap} button`).forEach(x=>x.classList.remove('on'));b.classList.add('on');fn(b.dataset.v);});
+
+  if(f.type==='sketch'){
+    seg('ip_plane',v=>{ f.plane=v; const d=defaultSketch(v); f.pts=d.pts.map(p=>p.slice()); f.closed=d.closed;
+      $('sketchPlaneTag').textContent=PLANES[v].name; openSketch(f); rebuild(); });
+  }
+  else if(f.type==='extrude'){
+    on('ip_sketch','change',e=>{f.sketchId=e.target.value;rebuild();});
+    on('ip_depth','input',e=>{f.depth=+e.target.value/100;$('lbl_depth').textContent=f.depth.toFixed(2);rebuild();});
+    seg('ip_mode',v=>{f.mode=v;$('taperWrap').classList.toggle('nparam',v!=='taper');rebuild();});
+    on('ip_taper','input',e=>{f.taper=+e.target.value/100;$('lbl_taper').textContent=f.taper.toFixed(2);rebuild();});
+    ['px','py','pz'].forEach(k=>on('ipn_'+k,'input',e=>{f[k]=+e.target.value;rebuild();}));
+    on('ip_mat','change',e=>{f.matKey=e.target.value;rebuild();});
+  }
+  else if(f.type==='prim'){
+    seg('ip_shape',v=>{f.shape=v;rebuild();});
+    ['sx','sy','sz','px','py','pz','rx','ry','rz'].forEach(k=>on('ipn_'+k,'input',e=>{f[k]=+e.target.value;rebuild();}));
+    on('ip_seg','input',e=>{f.seg=+e.target.value;$('lbl_seg').textContent=f.seg;rebuild();});
+    on('ip_mat','change',e=>{f.matKey=e.target.value;rebuild();});
+  }
+  else if(f.type==='mirror'){
+    seg('ip_axis',v=>{f.axis=v;rebuild();});
+    on('ip_target','change',e=>{f.target=e.target.value;rebuild();});
+  }
+  else if(f.type==='array'){
+    on('ip_count','input',e=>{f.count=+e.target.value;$('lbl_count').textContent=f.count;rebuild();});
+    ['dx','dy','dz'].forEach(k=>on('ipn_'+k,'input',e=>{f[k]=+e.target.value;rebuild();}));
+    on('ip_target','change',e=>{f.target=e.target.value;rebuild();});
+  }
+}
+
+// ============ 2D SKETCH EDITOR ============
+const skCanvas=$('sketchpad'), skCtx=skCanvas.getContext('2d');
+let skFeat=null, skTool='drag', skDrag=-1;
+const SK_PAD=30;
+// model (u,v in -1..1) -> screen.  u maps left→right, v maps bottom→top.
+function skToScreen(u,v){const w=skCanvas.width-SK_PAD*2,h=skCanvas.height-SK_PAD*2;
+  return [SK_PAD+(u*0.5+0.5)*w, SK_PAD+(0.5-v*0.5)*h];}
+function skToModel(sx,sy){const w=skCanvas.width-SK_PAD*2,h=skCanvas.height-SK_PAD*2;
+  return [clamp(((sx-SK_PAD)/w-0.5)*2,-1,1), clamp((0.5-(sy-SK_PAD)/h)*2,-1,1)];}
+
+function openSketch(f){ skFeat=f; skDrag=-1; drawSketch(); }
+
+function drawSketch(){
+  if(!skFeat) return;
+  const ctx=skCtx, cv=skCanvas;
+  ctx.clearRect(0,0,cv.width,cv.height);
+  // grid
+  ctx.strokeStyle='#13233e';ctx.lineWidth=1;
+  for(let i=0;i<=8;i++){const x=SK_PAD+(cv.width-SK_PAD*2)*i/8;ctx.beginPath();ctx.moveTo(x,SK_PAD);ctx.lineTo(x,cv.height-SK_PAD);ctx.stroke();}
+  for(let i=0;i<=6;i++){const y=SK_PAD+(cv.height-SK_PAD*2)*i/6;ctx.beginPath();ctx.moveTo(SK_PAD,y);ctx.lineTo(cv.width-SK_PAD,y);ctx.stroke();}
+  // center axes
+  ctx.strokeStyle='#24405f';ctx.setLineDash([4,4]);
+  const [cx0,cy0]=skToScreen(0,0);
+  ctx.beginPath();ctx.moveTo(SK_PAD,cy0);ctx.lineTo(cv.width-SK_PAD,cy0);ctx.stroke();
+  ctx.beginPath();ctx.moveTo(cx0,SK_PAD);ctx.lineTo(cx0,cv.height-SK_PAD);ctx.stroke();
+  ctx.setLineDash([]);
+  // axis labels
+  const P=PLANES[skFeat.plane];
+  ctx.fillStyle='#46597a';ctx.font='10px "Major Mono Display"';
+  ctx.fillText(P.axisU.toUpperCase()+' →',cv.width-SK_PAD-22,cy0-6);
+  ctx.fillText('↑ '+P.axisV.toUpperCase(),cx0+6,SK_PAD+12);
+  // polyline
+  const pts=skFeat.pts;
+  ctx.strokeStyle='#5fd8ff';ctx.lineWidth=2;ctx.beginPath();
+  pts.forEach((p,i)=>{const[sx,sy]=skToScreen(p[0],p[1]);i?ctx.lineTo(sx,sy):ctx.moveTo(sx,sy);});
+  if(skFeat.closed)ctx.closePath();
+  ctx.stroke();
+  // fill hint
+  ctx.fillStyle='rgba(95,216,255,0.06)';if(skFeat.closed)ctx.fill();
+  // points
+  pts.forEach((p,i)=>{const[sx,sy]=skToScreen(p[0],p[1]);
+    ctx.fillStyle=i===skDrag?'#ff8a48':'#cfe0f5';ctx.beginPath();ctx.arc(sx,sy,5,0,7);ctx.fill();
+    ctx.strokeStyle='#060a12';ctx.lineWidth=1.5;ctx.stroke();});
+}
+function skHit(sx,sy){const pts=skFeat.pts;for(let i=0;i<pts.length;i++){const[px,py]=skToScreen(pts[i][0],pts[i][1]);if((px-sx)**2+(py-sy)**2<110)return i;}return -1;}
+function skEvt(e){const r=skCanvas.getBoundingClientRect();return[(e.clientX-r.left)*skCanvas.width/r.width,(e.clientY-r.top)*skCanvas.height/r.height];}
+function skSegDist(px,py,a,b){const dx=b[0]-a[0],dy=b[1]-a[1];const t=clamp(((px-a[0])*dx+(py-a[1])*dy)/(dx*dx+dy*dy||1),0,1);return Math.hypot(px-(a[0]+t*dx),py-(a[1]+t*dy));}
+function skInsert(mx,my){const pts=skFeat.pts;let best=pts.length,bd=1e9;
+  const lim=skFeat.closed?pts.length:pts.length-1;
+  for(let k=0;k<lim;k++){const a=pts[k],b=pts[(k+1)%pts.length];const d=skSegDist(mx,my,a,b);if(d<bd){bd=d;best=k+1;}}
+  pts.splice(best,0,[mx,my]);skDrag=best;}
+
+skCanvas.addEventListener('pointerdown',e=>{ if(!skFeat)return;
+  const[sx,sy]=skEvt(e); if(e.button===2)return;
+  const i=skHit(sx,sy);
+  if(skTool==='drag'){skDrag=i;}
+  else{const[mx,my]=skToModel(sx,sy);skInsert(mx,my);rebuild();}
+  drawSketch();
+});
+skCanvas.addEventListener('pointermove',e=>{ if(!skFeat||skDrag<0)return;
+  const[sx,sy]=skEvt(e);const[mx,my]=skToModel(sx,sy);
+  skFeat.pts[skDrag]=[mx,my];drawSketch();rebuild();
+});
+window.addEventListener('pointerup',()=>{if(skDrag>=0){skDrag=-1;drawSketch();}});
+skCanvas.addEventListener('dblclick',e=>{ if(!skFeat)return;
+  const[sx,sy]=skEvt(e);const[mx,my]=skToModel(sx,sy);skInsert(mx,my);drawSketch();rebuild();});
+skCanvas.addEventListener('contextmenu',e=>{ e.preventDefault();if(!skFeat)return;
+  const[sx,sy]=skEvt(e);const i=skHit(sx,sy);
+  if(i>=0&&skFeat.pts.length>3){skFeat.pts.splice(i,1);drawSketch();rebuild();}});
+
+document.querySelectorAll('#skTool button').forEach(b=>b.onclick=()=>{
+  document.querySelectorAll('#skTool button').forEach(x=>x.classList.remove('on'));b.classList.add('on');skTool=b.dataset.t;});
+$('skClose').onclick=()=>{ if(!skFeat)return; skFeat.closed=!skFeat.closed;
+  $('skClose').textContent=skFeat.closed?'closed ✓':'open ✗'; drawSketch(); rebuild(); };
+
+// ---- trace an image silhouette into the current sketch ----
+$('skImport').onclick=()=>{ if(skFeat) $('fileImport').click(); };
+$('fileImport').onchange=e=>{
+  const file=e.target.files[0]; if(!file||!skFeat) return;
+  const img=new Image();
+  img.onload=()=>{ const traced=traceSilhouette(img); if(traced&&traced.length>=3){ skFeat.pts=traced; skFeat.closed=true; drawSketch(); rebuild(); } e.target.value=''; };
+  img.src=URL.createObjectURL(file);
+};
+function traceSilhouette(img){
+  const TW=120, TH=Math.max(20,Math.round(120/(img.width/img.height)));
+  const oc=document.createElement('canvas');oc.width=TW;oc.height=TH;
+  const octx=oc.getContext('2d');octx.drawImage(img,0,0,TW,TH);
+  let data;try{data=octx.getImageData(0,0,TW,TH).data;}catch(err){return null;}
+  const bg=[data[0],data[1],data[2],data[3]];
+  const isShip=i=>{const a=data[i+3];if(a<24)return false;const dr=data[i]-bg[0],dg=data[i+1]-bg[1],db=data[i+2]-bg[2];return(dr*dr+dg*dg+db*db)>1600||bg[3]<24;};
+  // scan columns, capture top & bottom silhouette → upper + lower contour
+  const cols=22, upper=[], lower=[];
+  for(let c=0;c<cols;c++){const px=Math.round(c/(cols-1)*(TW-1));let top=-1,bot=-1;
+    for(let y=0;y<TH;y++){const i=(y*TW+px)*4;if(isShip(i)){if(top<0)top=y;bot=y;}}
+    if(top<0){continue;}
+    const u=(c/(cols-1))*2-1;
+    upper.push([u, -((top/TH)*2-1)]);   // canvas y down → model v up
+    lower.push([u, -((bot/TH)*2-1)]);
+  }
+  if(upper.length<2)return null;
+  // closed loop: upper L→R then lower R→L
+  return upper.concat(lower.reverse());
+}
+
+// ============ PRESETS ============
+function presetDagger(){
+  const skPlan={id:uid(),type:'sketch',name:'Hull plan',suppressed:false,plane:'plan',closed:true,
+    pts:[[-1,0],[-0.92,0.46],[0.1,0.34],[0.7,0.16],[1,0],[0.7,-0.16],[0.1,-0.34],[-0.92,-0.46]]};
+  const exPlan={id:uid(),type:'extrude',name:'Hull body',suppressed:false,sketchId:skPlan.id,depth:0.9,mode:'sym',taper:0.4,matKey:'hull'};
+  const skTower={id:uid(),type:'sketch',name:'Tower plan',suppressed:false,plane:'plan',closed:true,
+    pts:[[-0.85,0.12],[-0.55,0.12],[-0.5,0],[ -0.55,-0.12],[-0.85,-0.12]]};
+  const exTower={id:uid(),type:'extrude',name:'Command tower',suppressed:false,sketchId:skTower.id,depth:1.4,mode:'one',taper:0.5,matKey:'tower'};
+  const engine={id:uid(),type:'prim',name:'Engine bell',suppressed:false,shape:'cyl',sx:0.5,sy:0.4,sz:0.4,px:-3.6,py:0,pz:0.5,rx:0,ry:0,rz:90,seg:8,matKey:'dark'};
+  const engArr={id:uid(),type:'array',name:'Engine bank',suppressed:false,count:3,dx:0,dy:0,dz:-0.5,target:engine.id};
+  const gun={id:uid(),type:'prim',name:'Spinal gun',suppressed:false,shape:'cyl',sx:1.0,sy:0.1,sz:0.12,px:3.4,py:0,pz:0,rx:0,ry:0,rz:90,seg:6,matKey:'gun'};
+  return [skPlan,exPlan,skTower,exTower,engine,engArr,gun];
+}
+function presetBrick(){
+  const sk={id:uid(),type:'sketch',name:'Box plan',suppressed:false,plane:'plan',closed:true,
+    pts:[[-1,0.5],[1,0.5],[1,-0.5],[-1,-0.5]]};
+  const ex={id:uid(),type:'extrude',name:'Hull body',suppressed:false,sketchId:sk.id,depth:1.0,mode:'sym',taper:1,matKey:'hull'};
+  const eng={id:uid(),type:'prim',name:'Engine',suppressed:false,shape:'box',sx:0.4,sy:0.5,sz:0.5,px:-3.2,py:0,pz:1.4,rx:0,ry:0,rz:0,seg:8,matKey:'engine'};
+  const arr={id:uid(),type:'array',name:'Engine row',suppressed:false,count:4,dx:0,dy:0,dz:-0.9,target:eng.id};
+  return [sk,ex,eng,arr];
+}
+function presetNeedle(){
+  const sk={id:uid(),type:'sketch',name:'Cross ring',suppressed:false,plane:'cross',closed:true,
+    pts:[[0,0.5],[0.4,0.3],[0.5,0],[0.4,-0.3],[0,-0.5],[-0.4,-0.3],[-0.5,0],[-0.4,0.3]]};
+  const ex={id:uid(),type:'extrude',name:'Fuselage',suppressed:false,sketchId:sk.id,depth:6.5,mode:'sym',taper:0.08,matKey:'hull'};
+  return [sk,ex];
+}
+function applyPreset(name){
+  FEATURES = name==='dagger'?presetDagger() : name==='brick'?presetBrick() : presetNeedle();
+  SEL=null; renderTree(); renderInspector(); rebuild();
+}
+
+// ============ SAVE / LOAD ============
+function serialize(){ return JSON.stringify({version:1, st:{bands:ST.bands,laz:ST.laz,lel:ST.lel,res:ST.res}, features:FEATURES},null,1); }
+$('btnSave').onclick=()=>{
+  const blob=new Blob([serialize()],{type:'application/json'});
+  const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='broadside-ship.json';a.click();
+  setTimeout(()=>URL.revokeObjectURL(a.href),2000);
+};
+$('btnLoad').onclick=()=>$('fileLoad').click();
+$('fileLoad').onchange=e=>{
+  const file=e.target.files[0];if(!file)return;
+  const rd=new FileReader();
+  rd.onload=()=>{try{
+    const d=JSON.parse(rd.result);
+    if(!d.features)throw 0;
+    FEATURES=d.features; SEL=null;
+    // ensure UID counter is ahead of loaded ids
+    FEATURES.forEach(f=>{const m=/^f(\d+)$/.exec(f.id);if(m)UID=Math.max(UID,+m[1]+1);});
+    if(d.st){ if(d.st.res){ST.res=d.st.res;} if(d.st.bands){ST.bands=d.st.bands;postMat.uniforms.bands.value=ST.bands;} }
+    renderTree();renderInspector();setRes();rebuild();
+  }catch(err){alert('Could not read that file as a Broadside ship design.');}
+  e.target.value='';};
+  rd.readAsText(file);
+};
+$('btnNew').onclick=()=>{ if(FEATURES.length&&!confirm('Clear the current ship and start fresh?'))return; FEATURES=[];SEL=null;renderTree();renderInspector();rebuild(); };
+
+// ============ PNG EXPORT ============
+let EXSCALE=1;
+function renderFrameNow(){ const gridWas=gridHelper.visible; gridHelper.visible=false;
+  setCam();renderer.setRenderTarget(rt);renderer.clear();renderer.render(scene,cam);
+  renderer.setRenderTarget(null);renderer.clear();renderer.render(postScene,postCam); gridHelper.visible=gridWas; }
+function exportPNG(){
+  renderFrameNow();
+  const w=ST.res.w,h=ST.res.h;
+  const src=document.createElement('canvas');src.width=w;src.height=h;
+  src.getContext('2d').drawImage(cvs,0,0,w,h);
+  let out=src;
+  if(EXSCALE>1){out=document.createElement('canvas');out.width=w*EXSCALE;out.height=h*EXSCALE;
+    const o=out.getContext('2d');o.imageSmoothingEnabled=false;o.drawImage(src,0,0,w*EXSCALE,h*EXSCALE);}
+  out.toBlob(b=>{const a=document.createElement('a');a.href=URL.createObjectURL(b);
+    a.download=`broadside_y${Math.round(ST.yaw)}_p${Math.round(ST.pitch)}_${w}px@${EXSCALE}x.png`;a.click();
+    setTimeout(()=>URL.revokeObjectURL(a.href),2000);},'image/png');
+}
+$('btnExport').onclick=exportPNG;
+
+// ============ GLOBAL CONTROLS WIRING ============
+document.querySelectorAll('.addbtn').forEach(b=>b.onclick=()=>addFeature(b.dataset.add));
+document.querySelectorAll('#presets button').forEach(b=>b.onclick=()=>{
+  document.querySelectorAll('#presets button').forEach(x=>x.classList.remove('on'));b.classList.add('on');applyPreset(b.dataset.p);});
+
+document.querySelectorAll('.snap').forEach(b=>b.onclick=()=>{
+  document.querySelectorAll('.snap').forEach(x=>x.classList.remove('on'));b.classList.add('on');
+  ST.yaw=+b.dataset.yaw;$('hYaw').textContent=ST.yaw+'°';
+  if(b.dataset.pitch){ST.pitch=+b.dataset.pitch;$('pitch').value=ST.pitch;$('pv').textContent=ST.pitch+'°';$('hPit').textContent=ST.pitch+'°';}
+});
+$('pitch').oninput=e=>{ST.pitch=+e.target.value;$('pv').textContent=ST.pitch+'°';$('hPit').textContent=ST.pitch+'°';};
+$('laz').oninput=e=>{ST.laz=+e.target.value;$('lazv').textContent=ST.laz+'°';setLight();};
+$('lel').oninput=e=>{ST.lel=+e.target.value;$('lelv').textContent=ST.lel+'°';setLight();};
+document.querySelectorAll('#bands button').forEach(b=>b.onclick=()=>{
+  document.querySelectorAll('#bands button').forEach(x=>x.classList.remove('on'));b.classList.add('on');
+  ST.bands=+b.dataset.b;postMat.uniforms.bands.value=ST.bands;});
+document.querySelectorAll('#res button').forEach(b=>b.onclick=()=>{
+  document.querySelectorAll('#res button').forEach(x=>x.classList.remove('on'));b.classList.add('on');
+  ST.res={w:+b.dataset.w,h:+b.dataset.h};setRes();});
+document.querySelectorAll('#exScale button').forEach(b=>b.onclick=()=>{
+  document.querySelectorAll('#exScale button').forEach(x=>x.classList.remove('on'));b.classList.add('on');EXSCALE=+b.dataset.x;});
+
+const stageEl=$('stage');
+function setBg(c){stageEl.style.background=c;$('bgpick').value=c;
+  document.querySelectorAll('#bgpre button').forEach(x=>x.classList.toggle('on',x.dataset.c.toLowerCase()===c.toLowerCase()));}
+$('bgpick').oninput=e=>setBg(e.target.value);
+document.querySelectorAll('#bgpre button').forEach(b=>b.onclick=()=>setBg(b.dataset.c));
+$('vGrid').onclick=()=>{ST.grid=!ST.grid;$('vGrid').classList.toggle('on',ST.grid);$('vGrid').textContent=ST.grid?'grid on':'grid off';};
+$('vWire').onclick=()=>{ST.wire=!ST.wire;$('vWire').classList.toggle('on',ST.wire);rebuild();};
+
+// orbit
+let pdrag=false,plx=0,ply=0;
+cvs.addEventListener('pointerdown',e=>{pdrag=true;plx=e.clientX;ply=e.clientY;});
+window.addEventListener('pointerup',()=>pdrag=false);
+window.addEventListener('pointermove',e=>{if(!pdrag)return;
+  ST.yaw=(ST.yaw+(e.clientX-plx)*0.5+360)%360;ST.pitch=clamp(ST.pitch+(e.clientY-ply)*0.35,8,89);
+  plx=e.clientX;ply=e.clientY;
+  $('hYaw').textContent=Math.round(ST.yaw)+'°';$('hPit').textContent=Math.round(ST.pitch)+'°';
+  $('pitch').value=Math.round(ST.pitch);$('pv').textContent=Math.round(ST.pitch)+'°';
+  document.querySelectorAll('.snap').forEach(x=>x.classList.remove('on'));});
+cvs.addEventListener('wheel',e=>{e.preventDefault();ST.zoom=clamp(ST.zoom*(e.deltaY>0?0.92:1.08),0.4,4);},{passive:false});
+window.addEventListener('resize',setRes);
+
+// ============ INIT ============
+document.querySelector('#presets button[data-p="dagger"]').classList.add('on');
+applyPreset('dagger');
+setRes(); setCam(); setLight();
+postMat.uniforms.bands.value=ST.bands;
+loop();
+</script>
+</html>
