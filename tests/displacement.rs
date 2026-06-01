@@ -29,8 +29,8 @@
 
 use broadside_engine::resolve::{apply_effect, Content};
 use broadside_engine::types::{
-    Action, ActionCost, Arc, Board, DisplaceMode, Effect, EventBus, Faction, LaneEnd, Mount,
-    MovementMode, Orientation, Projectile, RangeBand, ShieldFace, ShieldProfile, Ship, Targeting,
+    Action, ActionCost, Board, DisplaceMode, Effect, EventBus, Faction, LaneEnd, MovementMode,
+    Orientation, Projectile, RangeBand, ShieldFace, ShieldProfile, Ship, Targeting,
     TargetingPattern, WeaponArchetype,
 };
 use std::collections::HashMap;

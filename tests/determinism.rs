@@ -163,6 +163,7 @@ fn content() -> DetContent {
 /// A ship with a configurable mount loadout, a non-trivial cooldown map, and
 /// optional statuses. The cooldown map is the whole point — it's the
 /// `HashMap` whose iteration order must never leak into outcomes.
+#[allow(clippy::too_many_arguments)] // a deliberately explicit test fixture; bundling these into a struct would obscure the per-test setup
 fn ship(
     id: &str,
     faction: Faction,
