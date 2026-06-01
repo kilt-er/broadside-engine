@@ -80,12 +80,10 @@ pub enum EncounterOutcome {
 pub fn encounter_outcome(board: &Board) -> EncounterOutcome {
     let mut has_player = false;
     let mut has_enemy = false;
-    for slot in &board.cells {
-        if let Some(s) = slot {
-            match s.faction {
-                Faction::Player => has_player = true,
-                Faction::Enemy => has_enemy = true,
-            }
+    for s in board.cells.iter().flatten() {
+        match s.faction {
+            Faction::Player => has_player = true,
+            Faction::Enemy => has_enemy = true,
         }
     }
     if !has_player {

@@ -47,8 +47,8 @@
 //! ~5 from defeat) unlocks the first tier in 1 run, the second in
 //! 2-3 runs, and the high-tier in roughly a 10-run arc. Tune later.
 //!
-//! Per the lead's brief: this module defines structure + persistence
-//! + unlock threshold logic, NOT the per-run "purchase a subsystem at
+//! Per the lead's brief: this module defines structure plus persistence
+//! plus unlock threshold logic, NOT the per-run "purchase a subsystem at
 //! the upgrade UI" flow — that's renderer's #77 between-encounter
 //! screen layered on top.
 
