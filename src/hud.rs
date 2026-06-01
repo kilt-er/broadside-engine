@@ -107,6 +107,42 @@ fn scaled_ship_extent(stance: Stance, view_angle_rad: f32) -> (f32, f32) {
     (width * SHIP_SCALE, total_h * SHIP_SCALE)
 }
 
+/// On-screen height (virtual px) of a loft ship's blit quad. The loft pipeline
+/// renders every ship into the SAME `LOW_W`×`LOW_H` (320×200) offscreen with the
+/// hull centred at the world origin, so the ship's content is centred in that
+/// texture. Blitting that texture into a quad of a FIXED height (this constant)
+/// × the texture's aspect, centred on the lane, does two things the per-stance
+/// 2D `scaled_ship_extent` bbox did not:
+///   1. SEATS the ship on the lane — a content-centred texture into a
+///      lane-centred quad puts the hull's centre on the lane line (the 2D bbox
+///      varied wildly by stance — broadside's `height·cosθ + length·sinθ` made a
+///      very tall quad that dipped the ship below the lane).
+///   2. CONSISTENT SCALE — one height for every ship/stance, so a ship doesn't
+///      jump size when it reorients (true relative ship size still comes from
+///      the 3D framing inside the loft pass, not here).
+/// Tuned to ~fill a lane cell at the 7-cell layout; bruce dials final size.
+const LOFT_SHIP_HEIGHT_PX: f32 = 150.0;
+
+/// Aspect of the loft offscreen (`loft_gpu::LOW_W / LOW_H` = 320/200). Mirrored
+/// here as a plain const so `hud` stays buildable without the `render` feature
+/// (where `loft_gpu` isn't compiled). Kept in sync with the house-style res.
+const LOFT_TEXTURE_ASPECT: f32 = 320.0 / 200.0;
+
+/// Lane-seated blit rect (`(left, top, right, bottom)`) for a loft ship centred
+/// at screen-x `cx` on the lane at `center_y`. Fixed height × the loft texture's
+/// aspect, centred on the lane so the content-centred texture sits ON the lane
+/// line. Stance-independent (the 3D pose lives in the texture).
+fn loft_dest_rect(cx: f32, center_y: f32) -> (f32, f32, f32, f32) {
+    let h = LOFT_SHIP_HEIGHT_PX;
+    let w = h * LOFT_TEXTURE_ASPECT;
+    (
+        cx - w / 2.0,
+        center_y - h / 2.0,
+        cx + w / 2.0,
+        center_y + h / 2.0,
+    )
+}
+
 /* ---- entry point --------------------------------------------------------- */
 
 /// Build the full frame's draw command list, back-to-front. Sprites and
@@ -593,13 +629,18 @@ fn push_ship(
     // renderer) and the mesh kind.
     let is_player = ship.faction == Faction::Player;
     if let Some(loft_kind) = sprites.loft_kind(&ship.id, is_player) {
-        let left = cx - width / 2.0;
-        let right = cx + width / 2.0;
+        // Loft ships use a dedicated lane-seated dest-rect (fixed height × the
+        // loft texture aspect, centred on the lane) rather than the per-stance
+        // 2D `scaled_ship_extent` bbox: the loft texture is content-centred, so
+        // a lane-centred quad seats the hull ON the lane and keeps a consistent
+        // size across stances (the 2D bbox's tall broadside quad dipped the ship
+        // below the lane). The 3D pose/foreshortening lives inside the texture.
+        let (left, top, right, bottom) = loft_dest_rect(cx, p.y);
         out.push(DrawCommand::LoftShip(LoftShipInstance {
-            p0: [left, top_y],
-            p1: [right, top_y],
-            p2: [right, base_y],
-            p3: [left, base_y],
+            p0: [left, top],
+            p1: [right, top],
+            p2: [right, bottom],
+            p3: [left, bottom],
             ship_id: SpriteSlug::new(&ship.id),
             kind: loft_kind,
         }));
