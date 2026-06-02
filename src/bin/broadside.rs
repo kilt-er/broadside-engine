@@ -422,6 +422,10 @@ struct App {
     /// other variants gate input until the player presses the
     /// matching exit key.
     demo_state: DemoState,
+    /// Combat-juice VFX (#51): observes board state-diffs each frame and emits
+    /// transient weapon-fire / hit / explosion / trail effects + the live
+    /// telegraph cue. Read-only over the board; never touches the resolver.
+    vfx: broadside_engine::vfx::CombatVfx,
     /// Shared audio state. `None` if the `audio` feature is off OR the
     /// audio backend failed to open on startup (headless CI, missing
     /// driver). When present, the bus is re-installed on every
@@ -445,6 +449,7 @@ impl App {
             sectors: placeholder_sectors(),
             run: Run::new(Self::fresh_player_ship()),
             demo_state: DemoState::Playing,
+            vfx: broadside_engine::vfx::CombatVfx::new(),
             #[cfg(feature = "audio")]
             audio: None,
         };
@@ -863,6 +868,13 @@ impl ApplicationHandler for App {
                     .flatten()
                     .map(|s| (s.id.clone(), s.orientation))
                     .collect();
+                // Combat juice (#51): diff the board for this frame (spawns
+                // hit/explosion/trail/beam effects), then advance lifetimes by a
+                // fixed ~60 Hz dt. observe() is read-only over the board and
+                // idempotent on unchanged frames, so running it every redraw is
+                // safe — it only spawns on an actual state change.
+                self.vfx.observe(&self.board);
+                let vfx_active = self.vfx.advance(1.0 / 60.0);
                 let Some(gfx) = self.gfx.as_mut() else { return };
                 for (id, orient) in &loft_ships {
                     gfx.sync_loft_pose(id, *orient);
@@ -871,6 +883,9 @@ impl ApplicationHandler for App {
                 gfx.retain_loft_poses(&live_ids);
                 let loft_animating = gfx.advance_loft_poses(1.0 / 60.0);
                 let mut instances = hud::compose_scene_tweened(&self.board, &self.lane, angle, gfx, &tween);
+                // Combat-juice effects sit above ships/ordnance, below the
+                // salvage HUD + modal overlays (pushed next).
+                self.vfx.emit(&mut instances, &self.board, &self.lane);
                 // In-game salvage counter (top-right) — only shown
                 // during Playing state. The modal overlays surface
                 // salvage in their own banners.
@@ -909,11 +924,11 @@ impl ApplicationHandler for App {
                     }
                     Err(e) => log::warn!("surface error: {e:?}"),
                 }
-                // Keep redrawing while a turn tween is in flight OR the loft
-                // ship is animating (idle breathing + reorient tweens), so the
-                // 3D ship stays live. Otherwise let the event loop sleep until
-                // the next input.
-                if active_tween || loft_animating {
+                // Keep redrawing while a turn tween is in flight, the loft ship
+                // is animating (idle breathing + reorient tweens), OR combat
+                // juice is still playing — so effects animate to completion.
+                // Otherwise let the event loop sleep until the next input.
+                if active_tween || loft_animating || vfx_active {
                     if let Some(w) = self.window.as_ref() {
                         w.request_redraw();
                     }
