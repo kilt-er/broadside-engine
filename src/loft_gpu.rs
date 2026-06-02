@@ -832,20 +832,23 @@ fn camera_view_proj(yaw_rad: f32, pitch_rad: f32, aspect: f32) -> [f32; 16] {
         r * pitch_rad.cos() * yaw_rad.cos(),
     ];
     let view = look_at(eye, [0.0, 0.0, 0.0], [0.0, 1.0, 0.0]);
-    // Ortho half-height in world units. Tight enough that the largest ship (the
-    // dagger, ~12u long at the default 2.0 stretch) fills most of the 320×200
-    // offscreen — otherwise the ship is a small island in a mostly-transparent
-    // texture and reads tiny once blit into the lane. ONE fixed value across all
-    // ships preserves their TRUE relative scale (the 7.75u CAD ship renders
-    // ~65% of the dagger, as authored — no per-ship fudge). bruce dials true
-    // ship scale at the asset source.
+    // Ortho half-height in world units — the framing zoom. ONE fixed value
+    // across all ships/stances so true relative scale is preserved and a ship
+    // doesn't pop size when it reorients. Sized so the WORST-case stance fits:
+    // the perpendicular broadside ship projects its full 12u length VERTICALLY
+    // under the 48° top-down pitch, so the box must be tall enough to clear it
+    // — at half=5 that overran the box and clipped the broadside bow flat (#49;
+    // measured NDC height 2.64 > 2.0). half=7 (14u tall box) fits the broadside
+    // bow with margin (NDC ~1.89); bow-on ships have width to spare. bruce dials
+    // final scale.
     let half = HALF_EXTENT;
     let proj = ortho(-half * aspect, half * aspect, -half, half, 0.1, 100.0);
     mul4(proj, view)
 }
 
 /// Ortho half-height (world units) — the framing zoom. See [`camera_view_proj`].
-const HALF_EXTENT: f32 = 5.0;
+/// 7.0 clears the broadside ship's vertical projection at the 48° pitch (#49).
+const HALF_EXTENT: f32 = 7.0;
 
 fn normalize3(v: [f32; 3]) -> [f32; 3] {
     let m = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
