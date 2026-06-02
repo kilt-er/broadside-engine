@@ -804,8 +804,9 @@ pub struct Catalog {
     pub classes: Vec<ClassDef>,
     #[serde(default)]
     pub fieldkit: Vec<serde_json::Value>,
+    /// Campaign sector map. Canonical catalog data — see [`SectorDef`].
     #[serde(default)]
-    pub sectors: Vec<serde_json::Value>,
+    pub sectors: Vec<SectorDef>,
     pub patrols: Vec<PatrolDef>,
     #[serde(default)]
     pub commendations: Vec<serde_json::Value>,
@@ -818,6 +819,63 @@ pub struct CatalogMeta {
     #[serde(rename = "newAxes")]
     pub new_axes: Vec<String>,
     pub bands: Vec<RangeBand>,
+}
+
+/// A campaign-map sector as it appears in the **catalog** (the design doc's
+/// `SECTORS` literal, `broadside-analysis.html:1176-1189` / sector-map §XI;
+/// content's #50-keystone ruling confirmed this is the canonical schema, not
+/// the Phase-3 [`Sector`] guess).
+///
+/// This is **catalog data**, deliberately distinct from the **runtime**
+/// [`Sector`] / [`EncounterDef`] / [`ShipSpawn`] types that the run-loop uses
+/// to materialize a board. Per the canonical campaign model (§XI dynamic spawn
+/// pool, §VIII capital engagements) a sector does **not** carry a static
+/// encounter list: `intro` seeds the global spawn pool when the player first
+/// reaches the sector, encounters are generated at runtime from the
+/// accumulated pool + patrol tier, and `capital` is the one fixed end-of-sector
+/// boss fight. The pool→encounter generator that bridges [`SectorDef`] to the
+/// runtime types is a separate content task; this type is just the loaded
+/// shape.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SectorDef {
+    /// Display name (e.g. `"Drift Belt"`).
+    pub name: String,
+    /// Graph node id. **A string, not an int** — the dotted form (`"0"`,
+    /// `"2.1"`, `"4.2"`, `"5.1"`) encodes the branching campaign map; branch
+    /// siblings share a major number. Successor / branch links are derived
+    /// from the node numbering, not stored.
+    pub node: String,
+    /// Lane length for this sector's encounters (the canonical board sizes
+    /// 5 / 7 / 9).
+    pub lane: u8,
+    /// Display names of enemy ship types **first introduced** in this sector
+    /// (`["Skiff", "Lancer"]`). These ENTER the global spawn pool on arrival;
+    /// it is **not** the full per-encounter spawn list. Empty for sectors that
+    /// introduce nothing new (Staging / Citadel / Crimson Anomaly).
+    #[serde(default)]
+    pub intro: Vec<String>,
+    /// The sector's boss capital-ship display name (`"The Dasher"`). The
+    /// catalog stores `"—"` (U+2014 em-dash) — or `""` — for "no capital";
+    /// only Staging (the run start) has none. Deserialized to `None` in those
+    /// cases via [`deserialize_capital`] so callers branch on `Option` rather
+    /// than sniffing a sentinel string.
+    #[serde(default, deserialize_with = "deserialize_capital")]
+    pub capital: Option<String>,
+}
+
+/// Serde helper for [`SectorDef::capital`]: maps the catalog's "no capital"
+/// sentinels (`"—"` U+2014 em-dash, or empty string) to `None`; any other
+/// string is `Some(name)`. A literal JSON `null` is also `None`.
+fn deserialize_capital<'de, D>(de: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw: Option<String> = Option::deserialize(de)?;
+    Ok(match raw {
+        None => None,
+        Some(s) if s == "\u{2014}" || s.trim().is_empty() => None,
+        Some(s) => Some(s),
+    })
 }
 
 /// A weapon mod (`Action.mod` is its id). The TS shape is `{ id, name, cd, desc }`.
@@ -1078,6 +1136,59 @@ pub struct SaveState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sector_def_parses_canonical_catalog_shape() {
+        // The exact catalog shape (broadside.catalog.json sectors[0]): a sector
+        // with a capital, and one with the "—" no-capital sentinel.
+        let with_capital = r#"{"name":"Drift Belt","node":"1","lane":7,"intro":["Skiff","Lancer"],"capital":"The Dasher"}"#;
+        let s: SectorDef = serde_json::from_str(with_capital).unwrap();
+        assert_eq!(s.name, "Drift Belt");
+        assert_eq!(s.node, "1"); // string, not int
+        assert_eq!(s.lane, 7);
+        assert_eq!(s.intro, vec!["Skiff".to_string(), "Lancer".to_string()]);
+        assert_eq!(s.capital.as_deref(), Some("The Dasher"));
+
+        // Staging: em-dash capital + empty intro -> None / [].
+        let staging = r#"{"name":"Staging","node":"0","lane":5,"intro":[],"capital":"—"}"#;
+        let st: SectorDef = serde_json::from_str(staging).unwrap();
+        assert_eq!(st.capital, None, "em-dash sentinel maps to None");
+        assert!(st.intro.is_empty());
+    }
+
+    #[test]
+    fn sector_def_capital_sentinels_all_map_to_none() {
+        for sentinel in [r#""—""#, r#""""#, "null"] {
+            let json = format!(r#"{{"name":"X","node":"9","lane":9,"capital":{sentinel}}}"#);
+            let s: SectorDef = serde_json::from_str(&json).unwrap();
+            assert_eq!(s.capital, None, "sentinel {sentinel} should be None");
+        }
+        // A real name is preserved.
+        let s: SectorDef = serde_json::from_str(
+            r#"{"name":"X","node":"9","lane":9,"capital":"Citadel Warlord"}"#,
+        )
+        .unwrap();
+        assert_eq!(s.capital.as_deref(), Some("Citadel Warlord"));
+    }
+
+    #[test]
+    fn catalog_sectors_field_deserializes_a_vec_of_sector_defs() {
+        // Catalog.sectors is now strict Vec<SectorDef>, not Vec<Value>: a
+        // minimal catalog with a 2-entry sectors[] round-trips.
+        let cat_json = r#"{
+            "meta": {"schema":"v","lane":[5,7,9],"newAxes":[],"bands":["pointBlank","close","mid","long","extreme"]},
+            "actions": [], "mods": [], "subsystems": [], "statuses": [], "enemies": [],
+            "sectors": [
+                {"name":"Staging","node":"0","lane":5,"intro":[],"capital":"—"},
+                {"name":"Drift Belt","node":"1","lane":7,"intro":["Skiff"],"capital":"The Dasher"}
+            ],
+            "patrols": []
+        }"#;
+        let cat: Catalog = serde_json::from_str(cat_json).unwrap();
+        assert_eq!(cat.sectors.len(), 2);
+        assert_eq!(cat.sectors[0].capital, None);
+        assert_eq!(cat.sectors[1].lane, 7);
+    }
 
     #[test]
     fn orientation_roundtrips_through_ts_shape() {
