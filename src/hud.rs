@@ -128,6 +128,7 @@ fn scaled_ship_extent(stance: Stance, view_angle_rad: f32) -> (f32, f32) {
 ///   2. CONSISTENT SCALE — one height for every ship/stance, so a ship doesn't
 ///      jump size when it reorients (true relative ship size still comes from
 ///      the 3D framing inside the loft pass, not here).
+///
 /// Tuned to ~fill a lane cell at the 7-cell layout; bruce dials final size.
 const LOFT_SHIP_HEIGHT_PX: f32 = 150.0;
 
@@ -2179,9 +2180,10 @@ mod tests {
                 charge: 0,
             },
         };
-        // Test the emitter directly: `compose_scene` gates the per-ship overlay
-        // HUD off for the #45/#46 showcase (SHOW_PLACEHOLDER_HUD = false), so
-        // assert against `push_shield_pips` rather than the compose delta.
+        // Test the emitter directly (not via the compose delta): the overlay
+        // HUD is re-anchored to the loft footprint and ON
+        // (SHOW_PLACEHOLDER_HUD = true), so `push_shield_pips` is the precise
+        // unit under test regardless of compose-level gating.
         let mut with = Vec::new();
         push_shield_pips(
             &mut with,
