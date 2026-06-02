@@ -3835,12 +3835,12 @@ mod tests {
             starboard: crate::types::ShieldFace { armour: 0, charge: 0 },
         };
         let mut p = make_ship("p", Faction::Player, 1, 5, LaneEnd::Fore);
-        p.shield_profile = zero.clone();
+        p.shield_profile = zero;
         p.queue = vec!["flak".into()];
         let mut t = make_ship("t", Faction::Enemy, 2, 5, LaneEnd::Fore);
-        t.shield_profile = zero.clone();
+        t.shield_profile = zero;
         let mut n = make_ship("n", Faction::Enemy, 3, 5, LaneEnd::Fore);
-        n.shield_profile = zero.clone();
+        n.shield_profile = zero;
         let mut board = make_board(7, vec![
             None, Some(p), Some(t), Some(n), None, None, None,
         ]);
@@ -3921,7 +3921,7 @@ mod tests {
         let mut p = make_ship("p", Faction::Player, 1, 5, LaneEnd::Fore);
         p.queue = vec!["pc".into()];
         let mut t = make_ship("t", Faction::Enemy, 2, 3, LaneEnd::Fore);
-        t.shield_profile = zero.clone();
+        t.shield_profile = zero;
         let mut board = make_board(7, vec![None, Some(p), Some(t), None, None, None, None]);
         fire_player_queue("p", &mut board, &ModContent(modded_weapon("pc", "precision_core", 3)));
         assert!(board.cells[2].is_none(), "lethal hit killed the target");
