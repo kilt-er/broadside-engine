@@ -100,8 +100,12 @@ pub struct ShipPose {
     idle_t: f32,
 }
 
-/// How long a bow-on↔broadside reorient tween takes (seconds).
-pub const REORIENT_SECS: f32 = 0.45;
+/// How long a bow-on↔broadside reorient tween takes (seconds). Snappy (#52,
+/// bruce: the turn read slow) — a crisp ~quarter-second 90° swing. The tween
+/// always interpolates the SHORTEST path between the two stance yaws (now a
+/// clean 90°, since reorient toggles bow-on↔broadside rather than the old 180°
+/// Fore↔Aft flip), so there's no over-spin to sit through.
+pub const REORIENT_SECS: f32 = 0.28;
 /// Idle bob/sway/roll amplitudes — low, so a resting ship "breathes" without
 /// looking adrift. Roll is the visible one (a few degrees of yaw wobble); the
 /// bob is a vertical pixel nudge applied by the caller via [`ShipPose::idle_bob`].

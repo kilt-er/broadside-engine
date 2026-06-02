@@ -63,8 +63,8 @@ use broadside_engine::resolve::{
 };
 use broadside_engine::subsystems::{HEAT_SINK, POINT_BLANK_DOCTRINE};
 use broadside_engine::types::{
-    Arc as TArc, Board, EventBus, Faction, LaneEnd, Mount, Orientation, Run, Sector, ShieldFace,
-    ShieldProfile, Ship,
+    Arc as TArc, Board, Effect, EventBus, Faction, LaneEnd, Mount, Orientation, ReorientTo, Run,
+    Sector, ShieldFace, ShieldProfile, Ship,
 };
 
 /* =============================================================================
@@ -129,9 +129,42 @@ pub fn apply_intent(
     };
 
     match intent {
+        // --- Reorient: a 90° turn that TOGGLES bow-on ↔ broadside and stops
+        // perpendicular — NOT the 180° bow Fore↔Aft about-face the static
+        // `__reorient_flip` synthetic encodes (#52, bruce). We read the
+        // player's current orientation here and pick the target stance: bow-on
+        // → broadside, broadside → bow-on. The synthetic supplies the action's
+        // name/cost/targeting; we override only its REORIENT effect. Stays
+        // bin-local — no resolve.rs / AI change (enemy reorient uses its own
+        // action def). Reaching bow-Aft via control is a deferred follow-up.
+        Intent::ReorientFlip => {
+            let Some(id) = intent_to_action_id(&intent) else {
+                return false;
+            };
+            let Some(mut action) = content.action(id).cloned() else {
+                return false;
+            };
+            let bow_on = board
+                .cells
+                .iter()
+                .flatten()
+                .find(|s| s.id == player_id)
+                .map(|s| matches!(s.orientation, Orientation::BowOn { .. }))
+                .unwrap_or(true);
+            let to = if bow_on {
+                ReorientTo::Broadside
+            } else {
+                ReorientTo::BowOn
+            };
+            action.effects = vec![Effect::REORIENT { to }];
+            apply_instant_action(&player_id, &action, board, content);
+            run_world_phase(board, content);
+            true
+        }
+
         // --- Instant intents: apply the synthetic action atomically, then
         // advance the world phase. ---
-        Intent::MoveLeft | Intent::MoveRight | Intent::ReorientFlip | Intent::Vent => {
+        Intent::MoveLeft | Intent::MoveRight | Intent::Vent => {
             let Some(id) = intent_to_action_id(&intent) else {
                 return false;
             };
