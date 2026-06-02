@@ -33,34 +33,34 @@ pub const CELLS_PER_ROW: u32 = ATLAS_SIZE / CELL_SIZE; // 8
  * ============================================================================= */
 
 pub const BOW_CHEVRON: (u32, u32) = (0, 0);
-pub const TORPEDO:     (u32, u32) = (1, 0);
-pub const MISSILE:     (u32, u32) = (2, 0);
+pub const TORPEDO: (u32, u32) = (1, 0);
+pub const MISSILE: (u32, u32) = (2, 0);
 
-pub const GLYPH_BEAM:         (u32, u32) = (0, 1);
-pub const GLYPH_ORDNANCE:     (u32, u32) = (1, 1);
-pub const GLYPH_BROADSIDE:    (u32, u32) = (2, 1);
+pub const GLYPH_BEAM: (u32, u32) = (0, 1);
+pub const GLYPH_ORDNANCE: (u32, u32) = (1, 1);
+pub const GLYPH_BROADSIDE: (u32, u32) = (2, 1);
 pub const GLYPH_DISPLACEMENT: (u32, u32) = (3, 1);
-pub const GLYPH_CONTROL:      (u32, u32) = (4, 1);
-pub const GLYPH_MOVEMENT:     (u32, u32) = (5, 1);
-pub const GLYPH_DEFENSIVE:    (u32, u32) = (6, 1);
+pub const GLYPH_CONTROL: (u32, u32) = (4, 1);
+pub const GLYPH_MOVEMENT: (u32, u32) = (5, 1);
+pub const GLYPH_DEFENSIVE: (u32, u32) = (6, 1);
 
-pub const TELEGRAPH_FIRE:    (u32, u32) = (0, 2);
-pub const TELEGRAPH_LOCK:    (u32, u32) = (1, 2);
-pub const TELEGRAPH_PUSH:    (u32, u32) = (2, 2);
-pub const TELEGRAPH_PULL:    (u32, u32) = (3, 2);
-pub const TELEGRAPH_REORIENT:(u32, u32) = (4, 2);
-pub const TELEGRAPH_DEPLOY:  (u32, u32) = (5, 2);
+pub const TELEGRAPH_FIRE: (u32, u32) = (0, 2);
+pub const TELEGRAPH_LOCK: (u32, u32) = (1, 2);
+pub const TELEGRAPH_PUSH: (u32, u32) = (2, 2);
+pub const TELEGRAPH_PULL: (u32, u32) = (3, 2);
+pub const TELEGRAPH_REORIENT: (u32, u32) = (4, 2);
+pub const TELEGRAPH_DEPLOY: (u32, u32) = (5, 2);
 
-pub const STATUS_HULL_BREACH:     (u32, u32) = (0, 3);
+pub const STATUS_HULL_BREACH: (u32, u32) = (0, 3);
 pub const STATUS_SYSTEMS_OFFLINE: (u32, u32) = (1, 3);
-pub const STATUS_TARGET_LOCK:     (u32, u32) = (2, 3);
-pub const STATUS_SHIELDS_UP:      (u32, u32) = (3, 3);
+pub const STATUS_TARGET_LOCK: (u32, u32) = (2, 3);
+pub const STATUS_SHIELDS_UP: (u32, u32) = (3, 3);
 
-pub const PARALLAX_FAR_STARS:        (u32, u32) = (0, 4);
-pub const PARALLAX_NEBULA:           (u32, u32) = (1, 4);
-pub const PARALLAX_DISTANT_PLANET:   (u32, u32) = (2, 4);
-pub const PARALLAX_MID_STARS:        (u32, u32) = (3, 4);
-pub const PARALLAX_FOREGROUND_DUST:  (u32, u32) = (4, 4);
+pub const PARALLAX_FAR_STARS: (u32, u32) = (0, 4);
+pub const PARALLAX_NEBULA: (u32, u32) = (1, 4);
+pub const PARALLAX_DISTANT_PLANET: (u32, u32) = (2, 4);
+pub const PARALLAX_MID_STARS: (u32, u32) = (3, 4);
+pub const PARALLAX_FOREGROUND_DUST: (u32, u32) = (4, 4);
 
 /// Solid white cell. Multiply by the instance color tint to render a flat
 /// colored quad — the workhorse for heat bars, range-band ticks, ship faces,
@@ -156,16 +156,16 @@ pub(crate) fn cell_origin(cell: (u32, u32)) -> (u32, u32) {
  * Analysis HTML CSS tokens, transcribed to RGBA. Used throughout below.
  * ------------------------------------------------------------------------ */
 
-const GOLD:        [u8; 4] = [0x54, 0xcf, 0xc9, 255]; // --gold (teal-leaning)
-const VERMILLION:  [u8; 4] = [0xe0, 0x7a, 0x3c, 255]; // --vermillion
-const C_BEAM:      [u8; 4] = [0x5a, 0xd1, 0xcb, 255]; // beam archetype
-const C_ORD:       [u8; 4] = [0xe0, 0xa2, 0x3c, 255]; // ordnance archetype
-const C_BROAD:     [u8; 4] = [0xe0, 0x66, 0x4a, 255]; // broadside archetype
-const C_DISP:      [u8; 4] = [0x9b, 0x8c, 0xdb, 255]; // displacement archetype
-const C_CTRL:      [u8; 4] = [0x6f, 0xbf, 0x7a, 255]; // control archetype
-const C_MOVE:      [u8; 4] = [0x5a, 0x9f, 0xe0, 255]; // movement archetype
-const C_DEF:       [u8; 4] = [0x8a, 0xa0, 0xb8, 255]; // defensive archetype
-const PAPER_DIM:   [u8; 4] = [0x93, 0xa6, 0xbd, 255];
+const GOLD: [u8; 4] = [0x54, 0xcf, 0xc9, 255]; // --gold (teal-leaning)
+const VERMILLION: [u8; 4] = [0xe0, 0x7a, 0x3c, 255]; // --vermillion
+const C_BEAM: [u8; 4] = [0x5a, 0xd1, 0xcb, 255]; // beam archetype
+const C_ORD: [u8; 4] = [0xe0, 0xa2, 0x3c, 255]; // ordnance archetype
+const C_BROAD: [u8; 4] = [0xe0, 0x66, 0x4a, 255]; // broadside archetype
+const C_DISP: [u8; 4] = [0x9b, 0x8c, 0xdb, 255]; // displacement archetype
+const C_CTRL: [u8; 4] = [0x6f, 0xbf, 0x7a, 255]; // control archetype
+const C_MOVE: [u8; 4] = [0x5a, 0x9f, 0xe0, 255]; // movement archetype
+const C_DEF: [u8; 4] = [0x8a, 0xa0, 0xb8, 255]; // defensive archetype
+const PAPER_DIM: [u8; 4] = [0x93, 0xa6, 0xbd, 255];
 
 /* ---- projectiles ---------------------------------------------------------- */
 
@@ -285,7 +285,14 @@ fn draw_glyph_broadside(buf: &mut [u8], cell: (u32, u32)) {
     let (cx, cy) = cell_origin(cell);
     let c = C_BROAD;
     // Horizontal band across the cell.
-    fill_rect(buf, cx + 4, cy + 14, 24, 4, [c[0] / 4, c[1] / 4, c[2] / 4, 180]);
+    fill_rect(
+        buf,
+        cx + 4,
+        cy + 14,
+        24,
+        4,
+        [c[0] / 4, c[1] / 4, c[2] / 4, 180],
+    );
     // Left-pointing arrow.
     for i in 0..6u32 {
         let half = i.min(3);
@@ -490,7 +497,14 @@ fn draw_telegraph_deploy(buf: &mut [u8], cell: (u32, u32)) {
         }
     }
     // Hazard square at the bottom.
-    fill_rect(buf, cx + 10, cy + 25, 12, 4, [c[0] / 2, c[1] / 2, c[2] / 2, 220]);
+    fill_rect(
+        buf,
+        cx + 10,
+        cy + 25,
+        12,
+        4,
+        [c[0] / 2, c[1] / 2, c[2] / 2, 220],
+    );
 }
 
 /* ---- status badges -------------------------------------------------------- */
@@ -568,9 +582,18 @@ fn draw_parallax_far_stars(buf: &mut [u8], cell: (u32, u32)) {
     let (cx, cy) = cell_origin(cell);
     // Deterministic pseudo-random scatter.
     let stars = [
-        (3_u32, 5_u32), (7, 11), (12, 3), (19, 17), (26, 7),
-        (4, 23), (29, 26), (15, 28), (22, 12), (9, 19),
-        (28, 18), (1, 14),
+        (3_u32, 5_u32),
+        (7, 11),
+        (12, 3),
+        (19, 17),
+        (26, 7),
+        (4, 23),
+        (29, 26),
+        (15, 28),
+        (22, 12),
+        (9, 19),
+        (28, 18),
+        (1, 14),
     ];
     let dim = [180, 200, 220, 160];
     let bright = [240, 250, 255, 220];
@@ -583,17 +606,44 @@ fn draw_parallax_far_stars(buf: &mut [u8], cell: (u32, u32)) {
 /// Nebula — a soft cloud of two complementary tints on transparent.
 fn draw_parallax_nebula(buf: &mut [u8], cell: (u32, u32)) {
     let (cx, cy) = cell_origin(cell);
-    let tint_a = [120, 80, 180, 90];  // dusty purple
-    let tint_b = [80, 120, 200, 70];  // dusty blue
-    // Soft blobs via squared-distance threshold.
+    // Three overlapping gaussian-ish lobes (purple + blue) with a SMOOTH alpha
+    // falloff by distance, so the cloud feathers at its edges instead of the
+    // two hard-edged ovals the threshold version drew (#46). Alpha sums across
+    // lobes where they overlap, giving a denser core.
+    let lobes: [(f32, f32, f32, [u8; 3]); 3] = [
+        (9.0, 13.0, 7.5, [120, 80, 180]),  // purple, left
+        (20.0, 15.0, 6.5, [80, 120, 200]), // blue, right
+        (14.0, 18.0, 5.0, [100, 90, 190]), // violet, lower-mid blend
+    ];
     for y in 0..CELL_SIZE as i32 {
         for x in 0..CELL_SIZE as i32 {
-            let d1 = (x - 10).pow(2) + (y - 14).pow(2);
-            let d2 = (x - 22).pow(2) + (y - 16).pow(2);
-            if d1 < 80 {
-                put_pixel(buf, cx + x as u32, cy + y as u32, tint_a);
-            } else if d2 < 60 {
-                put_pixel(buf, cx + x as u32, cy + y as u32, tint_b);
+            let mut a = 0.0_f32;
+            let mut r = 0.0_f32;
+            let mut g = 0.0_f32;
+            let mut b = 0.0_f32;
+            for (lx, ly, rad, col) in &lobes {
+                let dx = x as f32 - lx;
+                let dy = y as f32 - ly;
+                let d2 = dx * dx + dy * dy;
+                // Smooth falloff: 1 at centre → 0 at radius, clamped.
+                let f = (1.0 - d2 / (rad * rad)).clamp(0.0, 1.0);
+                if f > 0.0 {
+                    let wa = f * 0.55; // peak per-lobe alpha
+                    a += wa;
+                    r += col[0] as f32 * wa;
+                    g += col[1] as f32 * wa;
+                    b += col[2] as f32 * wa;
+                }
+            }
+            if a > 0.01 {
+                let inv = 1.0 / a;
+                let alpha = (a * 160.0).min(150.0) as u8; // cap so it stays a wisp
+                put_pixel(
+                    buf,
+                    cx + x as u32,
+                    cy + y as u32,
+                    [(r * inv) as u8, (g * inv) as u8, (b * inv) as u8, alpha],
+                );
             }
         }
     }
@@ -604,27 +654,35 @@ fn draw_parallax_nebula(buf: &mut [u8], cell: (u32, u32)) {
 /// background position.
 fn draw_parallax_distant_planet(buf: &mut [u8], cell: (u32, u32)) {
     let (cx, cy) = cell_origin(cell);
-    let body = [80, 90, 110, 255];
-    let shadow = [40, 50, 70, 255];
-    let highlight = [140, 150, 170, 255];
+    // Four tones dark→light. Shaded by a SMOOTH terminator (dot of the surface
+    // normal with an upper-left light), bucketed into bands — no hard diagonal
+    // seam (the old `dx+dy<0` half-plane split read as a straight line across
+    // the sphere; #46).
+    let tones = [
+        [38, 46, 66, 255],    // night side
+        [60, 70, 92, 255],    // terminator
+        [92, 102, 124, 255],  // lit body
+        [150, 160, 180, 255], // highlight
+    ];
+    let r = 12.0_f32; // sphere radius (px); cell is 32, centre 16
+                      // Light direction (upper-left, toward viewer): normalized.
+    let lx = -0.55_f32;
+    let ly = -0.55_f32;
+    let lz = 0.63_f32;
     for y in 0..CELL_SIZE as i32 {
         for x in 0..CELL_SIZE as i32 {
-            let dx = x - 16;
-            let dy = y - 16;
-            let d = dx * dx + dy * dy;
-            if d > 144 {
+            let dx = (x - 16) as f32;
+            let dy = (y - 16) as f32;
+            let d2 = dx * dx + dy * dy;
+            if d2 > r * r {
                 continue;
             }
-            // Light from upper-left; darker as we go right/down.
-            let lit = dx + dy < 0;
-            let edge = d > 100;
-            let c = if edge {
-                shadow
-            } else if lit {
-                highlight
-            } else {
-                body
-            };
+            // Surface normal of a sphere at this pixel: (dx, dy, z)/r.
+            let nz = (r * r - d2).max(0.0).sqrt();
+            let ndotl = ((dx * lx + dy * ly + nz * lz) / r).clamp(-1.0, 1.0);
+            // Map [-1,1] lambert → one of the 4 tones.
+            let t = ((ndotl + 1.0) * 0.5 * tones.len() as f32) as usize;
+            let c = tones[t.min(tones.len() - 1)];
             put_pixel(buf, cx + x as u32, cy + y as u32, c);
         }
     }
@@ -634,9 +692,18 @@ fn draw_parallax_distant_planet(buf: &mut [u8], cell: (u32, u32)) {
 fn draw_parallax_mid_stars(buf: &mut [u8], cell: (u32, u32)) {
     let (cx, cy) = cell_origin(cell);
     let stars = [
-        (2_u32, 8_u32), (6, 20), (11, 14), (16, 6), (21, 23),
-        (24, 11), (27, 19), (3, 27), (13, 29), (18, 16),
-        (25, 4), (8, 3),
+        (2_u32, 8_u32),
+        (6, 20),
+        (11, 14),
+        (16, 6),
+        (21, 23),
+        (24, 11),
+        (27, 19),
+        (3, 27),
+        (13, 29),
+        (18, 16),
+        (25, 4),
+        (8, 3),
     ];
     let bright = [255, 250, 240, 240];
     let dim = [200, 215, 230, 180];
@@ -657,9 +724,7 @@ fn draw_parallax_mid_stars(buf: &mut [u8], cell: (u32, u32)) {
 /// fewer points; tiled in the renderer's foreground parallax band.
 fn draw_parallax_foreground_dust(buf: &mut [u8], cell: (u32, u32)) {
     let (cx, cy) = cell_origin(cell);
-    let motes = [
-        (5_u32, 18_u32), (14, 8), (23, 22), (28, 14),
-    ];
+    let motes = [(5_u32, 18_u32), (14, 8), (23, 22), (28, 14)];
     for (x, y) in motes {
         // Each mote is a 2x2 highlight + a 1px halo.
         fill_rect(buf, cx + x, cy + y, 2, 2, [255, 240, 200, 220]);
@@ -727,15 +792,31 @@ mod tests {
     #[test]
     fn every_cell_inside_atlas_bounds() {
         let cells: &[(u32, u32)] = &[
-            BOW_CHEVRON, TORPEDO, MISSILE,
-            GLYPH_BEAM, GLYPH_ORDNANCE, GLYPH_BROADSIDE, GLYPH_DISPLACEMENT,
-            GLYPH_CONTROL, GLYPH_MOVEMENT, GLYPH_DEFENSIVE,
-            TELEGRAPH_FIRE, TELEGRAPH_LOCK, TELEGRAPH_PUSH, TELEGRAPH_PULL,
-            TELEGRAPH_REORIENT, TELEGRAPH_DEPLOY,
-            STATUS_HULL_BREACH, STATUS_SYSTEMS_OFFLINE, STATUS_TARGET_LOCK,
+            BOW_CHEVRON,
+            TORPEDO,
+            MISSILE,
+            GLYPH_BEAM,
+            GLYPH_ORDNANCE,
+            GLYPH_BROADSIDE,
+            GLYPH_DISPLACEMENT,
+            GLYPH_CONTROL,
+            GLYPH_MOVEMENT,
+            GLYPH_DEFENSIVE,
+            TELEGRAPH_FIRE,
+            TELEGRAPH_LOCK,
+            TELEGRAPH_PUSH,
+            TELEGRAPH_PULL,
+            TELEGRAPH_REORIENT,
+            TELEGRAPH_DEPLOY,
+            STATUS_HULL_BREACH,
+            STATUS_SYSTEMS_OFFLINE,
+            STATUS_TARGET_LOCK,
             STATUS_SHIELDS_UP,
-            PARALLAX_FAR_STARS, PARALLAX_NEBULA, PARALLAX_DISTANT_PLANET,
-            PARALLAX_MID_STARS, PARALLAX_FOREGROUND_DUST,
+            PARALLAX_FAR_STARS,
+            PARALLAX_NEBULA,
+            PARALLAX_DISTANT_PLANET,
+            PARALLAX_MID_STARS,
+            PARALLAX_FOREGROUND_DUST,
             SOLID_WHITE,
         ];
         for (c, r) in cells {
@@ -748,15 +829,31 @@ mod tests {
     #[test]
     fn named_cells_are_distinct() {
         let cells: &[(u32, u32)] = &[
-            BOW_CHEVRON, TORPEDO, MISSILE,
-            GLYPH_BEAM, GLYPH_ORDNANCE, GLYPH_BROADSIDE, GLYPH_DISPLACEMENT,
-            GLYPH_CONTROL, GLYPH_MOVEMENT, GLYPH_DEFENSIVE,
-            TELEGRAPH_FIRE, TELEGRAPH_LOCK, TELEGRAPH_PUSH, TELEGRAPH_PULL,
-            TELEGRAPH_REORIENT, TELEGRAPH_DEPLOY,
-            STATUS_HULL_BREACH, STATUS_SYSTEMS_OFFLINE, STATUS_TARGET_LOCK,
+            BOW_CHEVRON,
+            TORPEDO,
+            MISSILE,
+            GLYPH_BEAM,
+            GLYPH_ORDNANCE,
+            GLYPH_BROADSIDE,
+            GLYPH_DISPLACEMENT,
+            GLYPH_CONTROL,
+            GLYPH_MOVEMENT,
+            GLYPH_DEFENSIVE,
+            TELEGRAPH_FIRE,
+            TELEGRAPH_LOCK,
+            TELEGRAPH_PUSH,
+            TELEGRAPH_PULL,
+            TELEGRAPH_REORIENT,
+            TELEGRAPH_DEPLOY,
+            STATUS_HULL_BREACH,
+            STATUS_SYSTEMS_OFFLINE,
+            STATUS_TARGET_LOCK,
             STATUS_SHIELDS_UP,
-            PARALLAX_FAR_STARS, PARALLAX_NEBULA, PARALLAX_DISTANT_PLANET,
-            PARALLAX_MID_STARS, PARALLAX_FOREGROUND_DUST,
+            PARALLAX_FAR_STARS,
+            PARALLAX_NEBULA,
+            PARALLAX_DISTANT_PLANET,
+            PARALLAX_MID_STARS,
+            PARALLAX_FOREGROUND_DUST,
             SOLID_WHITE,
         ];
         for (i, a) in cells.iter().enumerate() {
