@@ -40,9 +40,9 @@ use broadside_engine::runs::{
     generate_campaign, mark_defeated, AdvanceResult, EncounterOutcome,
 };
 use broadside_engine::types::{
-    Action, ActionCost, Arc, Board, EncounterDef, Effect, Faction, LaneEnd, Mount, Orientation,
-    Projectile, RangeBand, Run, Sector, ShieldFace, ShieldProfile, Ship, ShipSpawn, Targeting,
-    TargetingPattern, WeaponArchetype,
+    Action, ActionCost, Arc, Board, EncounterDef, Effect, Faction, LaneEnd, Mount, MovementMode,
+    Orientation, Projectile, RangeBand, Run, Sector, ShieldFace, ShieldProfile, Ship, ShipSpawn,
+    Targeting, TargetingPattern, WeaponArchetype,
 };
 use std::collections::HashMap;
 
@@ -550,11 +550,103 @@ fn build_generated_ship(spawn: &ShipSpawn) -> Option<Ship> {
     ))
 }
 
+/// A one-cell forward thrust the player uses to CLOSE RANGE on far enemies.
+/// Arc-less SELF so it always fires; bow-relative THRUST steps +1 (the
+/// player is bow=Fore, facing up-lane toward the enemies).
+fn close_in() -> Action {
+    Action {
+        id: "close_in".into(),
+        name: "Close In".into(),
+        archetype: WeaponArchetype::Movement,
+        cost: ActionCost { heat: 0, cooldown_max: 0, advances_turn: true },
+        targeting: Targeting {
+            pattern: TargetingPattern::SELF,
+            band: vec![RangeBand::PointBlank],
+            optimal_band: RangeBand::PointBlank,
+            requires_arc: None,
+            facing_relative: false,
+            hits_all: false,
+        },
+        effects: vec![Effect::DISPLACE_SELF {
+            mode: MovementMode::THRUST,
+            distance: 1,
+            direction: None,
+        }],
+        r#mod: None,
+        icon: None,
+    }
+}
+
+/// Content serving both the siege_beam and the close_in thrust, for the
+/// moving-player generated-campaign playthrough.
+struct MovingContent {
+    beam: Action,
+    thrust: Action,
+}
+impl Content for MovingContent {
+    fn action(&self, id: &str) -> Option<&Action> {
+        match id {
+            "siege_beam" => Some(&self.beam),
+            "close_in" => Some(&self.thrust),
+            _ => None,
+        }
+    }
+    fn spawn_projectile(&self, _: &str, _: &Ship) -> Projectile {
+        panic!("run-loop scenarios don't fire ordnance");
+    }
+}
+
+/// Drive an encounter board to completion with a MOVING player: each round,
+/// if the nearest enemy is out of the siege_beam's band (distance > 4 = past
+/// Mid), queue `close_in` to advance one cell; otherwise queue `siege_beam`.
+/// Models a real playstyle (you close on distant ships) rather than firing
+/// from a fixed mouth — the #65 fix, since lane-7 sectors spawn enemies at
+/// Long range that a stationary Mid-band weapon can never reach.
+fn fight_moving(board: &mut Board, content: &dyn Content, cap: usize) -> FightResult {
+    for round in 1..=cap {
+        // Locate the player and the nearest enemy distance.
+        let player_cell = board
+            .cells
+            .iter()
+            .flatten()
+            .find(|s| s.faction == Faction::Player)
+            .map(|s| s.cell);
+        let nearest_enemy_dist = board
+            .cells
+            .iter()
+            .flatten()
+            .filter(|s| s.faction == Faction::Enemy)
+            .map(|s| s.cell)
+            .zip(std::iter::repeat(player_cell.unwrap_or(0)))
+            .map(|(e, p)| e.abs_diff(p))
+            .min();
+
+        if let Some(pc) = player_cell {
+            if let Some(slot) = board.cells[pc].as_mut() {
+                // siege_beam covers PB/Close/Mid = distance <= 4. Closer than
+                // that → fire; farther → thrust to close.
+                slot.queue = match nearest_enemy_dist {
+                    Some(d) if d > 4 => vec!["close_in".into()],
+                    _ => vec!["siege_beam".into()],
+                };
+            }
+        }
+
+        resolve_round(board, content);
+
+        match encounter_outcome(board) {
+            EncounterOutcome::Won => return FightResult::Won { rounds: round },
+            EncounterOutcome::Lost => return FightResult::Lost { rounds: round },
+            EncounterOutcome::InProgress => continue,
+        }
+    }
+    panic!("moving fight did not terminate within {cap} rounds");
+}
+
 #[test]
-#[ignore = "#65: tier-2 generated sector-2 encounter stalemates >64 rounds (balance bug, resolver diagnosing); un-ignore once #65 lands"]
 fn generated_spawn_pool_campaign_plays_through_to_victory() {
     let catalog = generated_campaign_catalog();
-    let content = LoopContent(siege_beam());
+    let content = MovingContent { beam: siege_beam(), thrust: close_in() };
     let sectors = generate_campaign(&catalog, 1);
 
     // Sanity: the generated campaign has the expected shape before we play
@@ -583,7 +675,9 @@ fn generated_spawn_pool_campaign_plays_through_to_victory() {
         };
 
         let mut board = build_encounter_board(&enc, run.player.clone(), build_generated_ship);
-        let result = fight_to_completion(&mut board, &content, true, 64);
+        // Moving player: close range on far enemies, then fire (the #65 fix —
+        // a stationary Mid-band weapon can't reach Long-range spawns).
+        let result = fight_moving(&mut board, &content, 64);
         assert!(
             matches!(result, FightResult::Won { .. }),
             "player clears generated encounter {} — got {result:?}",
