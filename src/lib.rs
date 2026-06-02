@@ -91,6 +91,8 @@ pub mod gfx;
 pub mod hud;
 #[cfg(feature = "render")]
 pub mod loft_gpu;
+#[cfg(feature = "render")]
+pub mod vfx;
 #[cfg(all(feature = "render", feature = "runtime"))]
 pub mod sprites;
 #[cfg(feature = "audio")]
