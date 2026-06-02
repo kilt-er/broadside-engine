@@ -152,7 +152,45 @@ two hull-3 + one hull-7(override) = 1+1+3 = 5; `salvage_for_boss_encounter_doubl
 **Intent:** Add a won encounter's salvage to the live `Run`, in place, with
 `saturating_add`. The bin calls this once per encounter-complete event (not per
 frame). `award_run_salvage_saturates_not_overflows` (src/meta.rs:461) pins the
-saturation.
+saturation. *(This is the per-enemy / flat path; the capital-aware path below
+supersedes the old flat `is_boss → ×2` reward.)*
+
+---
+
+## Capital tier-salvage chain (#63/#66)
+
+*The data-driven boss-reward path: a capital boss encounter pays its
+[`CapitalDef`](types.md)'s tier-scaled salvage instead of the flat per-enemy sum.*
+
+### `fn capital_salvage_for_tier(capital, patrol_tier) -> u32` (src/meta.rs:282)
+
+**Intent:** Interpolate a capital's salvage reward for the run's patrol tier. **Linear**
+between `salvage_p1` (tier 1) and `salvage_p7` (tier 7) over the 6 steps — the plainest
+reading of "scales with patrol tier," **not a balance knob** (the sP1/sP7 numbers are
+doc-canonical). Tiers clamp to `[1, 7]`; `salvage_p1: None` (the Void Sovereign — no tier-1
+payout) floors to 0 at the low end (interpolating from 0 is the honest read of "undefined
+at P1"). **Worked example:** `capital_salvage_for_tier` test (src/meta.rs:732) — tier 1 →
+sP1, tier 7 → sP7, tier 4 → the midpoint.
+
+### `fn salvage_for_capital_encounter(encounter, catalog, patrol_tier) -> Option<u32>` (src/meta.rs:305)
+
+**Intent:** Tier-scaled salvage for a won **capital** encounter. `None` if the encounter
+isn't a boss, or its boss ship doesn't match a catalog capital (caller falls back to the
+per-enemy path). Matches the capital **by `name`** — the boss spawn's `class_id` carries
+the capital's display name (set by [`runs::capital_spawn`](runs.md)).
+
+### `fn award_run_salvage_with_catalog<F>(run, encounter, catalog, patrol_tier, class_to_ship)` (src/meta.rs:329)
+
+**Intent:** The **capital-aware** award — a capital boss pays the doc-canonical tier-scaled
+salvage (`salvage_for_capital_encounter`), any other encounter falls back to the per-enemy
+`salvage_for_encounter_win`. The data-driven replacement for the flat `is_boss → ×2`. (The
+bin's `App::award_encounter_salvage` inlines this same logic — see
+[`broadside.md`](broadside.md) — to satisfy the borrow split, but the rule is identical.)
+
+**Cross-references:** consumes [`CapitalDef`](types.md) from `Catalog::capitals`; the
+matching capital is the one [`runs::capital_spawn`](runs.md) fielded; the live caller is
+the bin's [`award_encounter_salvage`](broadside.md), which fires on the
+`EncounterOutcome::Won` transition.
 
 ---
 

@@ -179,6 +179,21 @@ The richest section.
   The pool→encounter generator that turns `SectorDef` into runtime `Sector`s is
   [`runs::generate_campaign`](runs.md) (#60). `Catalog::sectors` is now typed
   `Vec<SectorDef>` (#149 — it was a `Vec<serde_json::Value>` placeholder).
+- **`CapitalDef`** (#63) — the **catalog** shape of one boss capital ship (the
+  end-of-sector engagement [`SectorDef::capital`](runs.md) names; one per sector). Six
+  fields, the whole canonical spec: `id`, `name` (e.g. `"The Dasher"`), `sector` (the
+  `SectorDef::name` it ends), `corrupt` (a Patrol-4+ corrupted-variant **eligibility
+  flag** — the variant's stats are content's), and the **salvage reward** pair
+  `salvage_p1: Option<i32>` / `salvage_p7: i32`. **Salvage_p1/p7 are the salvage PAYOUT
+  for destroying the capital at Patrol tier 1 vs 7 (rewards that scale with tier — NOT
+  combat stats/hull).** `salvage_p1` is `Option` because the catalog stores `null` for
+  the one capital not awarded at tier 1 (the Void Sovereign). **Serde keys stay `sP1` /
+  `sP7`** (`#[serde(rename)]`), both `#[serde(default)]` so minimal entries parse. The
+  doc authors **no per-capital combat loadout** here — per-capital combat distinctiveness
+  (the Twins spawning two ships, the Coward fleeing) is content's future runtime-synthesis
+  follow-up, decoupled from this type. `Catalog::capitals` is now typed `Vec<CapitalDef>`.
+  The tier→salvage interpolation that consumes it is
+  [`meta::capital_salvage_for_tier`](meta.md).
 
 ---
 

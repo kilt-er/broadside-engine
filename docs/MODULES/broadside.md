@@ -168,6 +168,17 @@ failed to open — headless CI, no driver).
   encounter.
 - `restart_run` (471) — reset run + content + board to sector-0/encounter-0,
   clear tweens, re-install audio. Called from the run-end overlays.
+- `award_encounter_salvage` (668) — **the first live salvage accrual** (the old flat
+  per-enemy path was never bin-wired). Fires on the `EncounterOutcome::Won` transition
+  (before advancing, so `current_encounter` still points at the won encounter). A
+  capital/boss encounter pays the doc-canonical tier-scaled [`CapitalDef`](types.md)
+  salvage via [`salvage_for_capital_encounter`](meta.md); any other encounter falls back
+  to per-enemy salvage. Only fires when a catalog is loaded (the placeholder campaign has
+  no capitals, so nothing to reward → skip). Inlines
+  [`award_run_salvage_with_catalog`](meta.md)'s rule rather than calling it — it computes
+  `earned` under immutable borrows (`catalog`/`enc`/`sectors`), then applies it to
+  `self.run` under the mutable borrow, sidestepping a `self.catalog` + `self.run`
+  double-borrow.
 - `apply_path_choice` (486) — the EncounterComplete 1/2/3 handler: `D1` repairs
   +2 hull (stays in the overlay), `D2` is the upgrade placeholder, `D3` continues
   via `advance_after_win` (branching on `AdvanceResult` to load the next board or

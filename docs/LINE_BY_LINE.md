@@ -715,13 +715,19 @@ see the architect-to-reviewer thread.
 **Intent:** The JSON payload exported by the analysis doc's "Copy JSON" button.
 Field-for-field port of the TS `Catalog` interface.
 
-**Drift note: `unknown[]` placeholders → `Vec<serde_json::Value>`.** Five fields —
-`capitals`, `classes`, `fieldkit`, `sectors`, `commendations` — are typed as
-`unknown[]` in the TS source (`types.ts:206–210`). The Rust port carries them as
-`Vec<serde_json::Value>` (lines 744–753) so they parse today and can be tightened to
-real types later without breaking any consumer. Each has `#[serde(default)]` so a
-catalog missing one of these arrays still parses — defensive against partial test
-fixtures. **Drift watch list item resolved.**
+**Drift note: `unknown[]` placeholders → typed where consumed.** These fields were
+typed `unknown[]` in the TS source (`types.ts:206–210`) and started as
+`Vec<serde_json::Value>` in the Rust port. As the campaign layer landed they've been
+**tightened to real types as consumers arrived**: `sectors: Vec<SectorDef>` (#149,
+the #60 spawn-pool generator), `capitals: Vec<CapitalDef>` (#63, the tier-salvage
+chain). The remaining `classes`/`fieldkit`/`commendations` stay
+`Vec<serde_json::Value>` (no typed consumer yet). Each keeps `#[serde(default)]` so a
+catalog missing the array still parses (defensive against partial fixtures). The
+campaign types: **`SectorDef`** = the catalog sector shape (name/node/lane/intro/
+capital — see [`runs.rs` spawn-pool generator](#srcrunsrs)); **`CapitalDef`** = the
+catalog boss-capital shape (`id`/`name`/`sector`/`corrupt`/`salvage_p1: Option`/
+`salvage_p7`, serde keys `sP1`/`sP7`; salvage_p1/p7 are tier-1/7 **rewards, not combat
+stats**), consumed by [`meta::capital_salvage_for_tier`](#srcmetars).
 
 #### `struct CatalogMeta` (types.rs:757)
 
@@ -4554,6 +4560,22 @@ by win time), honoring `hp_override`, then `×2` for `is_boss`. `award_run_salva
 **Worked examples:** `salvage_for_encounter_sums_per_enemy` (src/meta.rs:387) — 1+1+3 = 5;
 `salvage_for_boss_encounter_doubles` (src/meta.rs:421) — 3 × 2 = 6;
 `award_run_salvage_saturates_not_overflows` (src/meta.rs:461).
+
+### Capital tier-salvage chain (#63/#66, src/meta.rs:282-341)
+
+The data-driven boss-reward path — a capital boss pays its [`CapitalDef`](#srctypesrs)'s
+tier-scaled salvage, superseding the flat `is_boss → ×2`. `capital_salvage_for_tier`
+(src/meta.rs:282) **linearly interpolates** salvage between `salvage_p1` (tier 1) and
+`salvage_p7` (tier 7) over the 6 steps (clamped to `[1,7]`; `salvage_p1: None` → 0-floor for
+the Void Sovereign) — doc-canonical numbers, not a balance knob. `salvage_for_capital_encounter`
+(src/meta.rs:305) returns the tier-scaled value if the won encounter is a boss whose ship
+matches a catalog capital **by name** (the boss spawn carries the capital's display name from
+`runs::capital_spawn`), else `None`. `award_run_salvage_with_catalog` (src/meta.rs:329) is the
+capital-aware award (capital → tier-scaled, else per-enemy fallback). The bin's
+`App::award_encounter_salvage` ([`broadside.rs`](#srcbinbroadsidesrs):668) inlines this rule
+(borrow-split) and is the **first live salvage accrual**, firing on the
+`EncounterOutcome::Won` transition. **Worked example:** `capital_salvage_for_tier` test
+(src/meta.rs:732) — tier 1 → sP1, tier 7 → sP7, tier 4 → midpoint.
 
 ### Unlock ladder + `fn accumulate_into_meta(meta, run) -> Vec<String>` (src/meta.rs:272, 293)
 
