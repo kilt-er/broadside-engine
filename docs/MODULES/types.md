@@ -156,7 +156,11 @@ The richest section.
   `Vec<serde_json::Value>` with `#[serde(default)]`.
 - **`CatalogMeta`** — schema, lane sizes, new-axes tracker, declared bands.
 - **`ModDef`, `StatusDef`, `PatrolDef`, `EnemyDef`** — straight ports of the TS
-  catalog sub-records.
+  catalog sub-records. (`ModDef` is the *catalog record* for a weapon mod; the
+  *runtime behavior* of the seven recognised mods — `twin_linked` / `autoloader` /
+  `flak_burst` / `incendiary` / `emp_charge` / `targeting_laser` / `precision_core` —
+  is dispatched off `Action::r#mod` in the resolver: see the weapon-mod section of
+  [`resolve.md`](resolve.md).)
 
 ---
 

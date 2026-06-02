@@ -3374,14 +3374,27 @@ application, factored out of the queue loop. Returns whether it fired.
 > writing `tests/run_loop.rs`. If a future change wants mounts to be a hard prerequisite,
 > the gate belongs right here at the top of `run_action`.
 
-- **Line 384-386**: apply each effect via `apply_effect` (resolve.rs:719). Effects may
-  mutate cells, ordnance, statuses.
-- **Line 394-401**: heat + cooldown bookkeeping, *after* effects, against the ship at its
+- **Line 385-401**: apply the effect list via `apply_effect`, **possibly twice** — the
+  `twin_linked` weapon-mod (#50) makes the effects run for `passes = 2`, **re-resolving
+  targeting before the second pass** (content ruling: the second volley re-aims at the board
+  the first left — a first-pass kill shortens a spinal line, a first-pass DISPLACE moves the
+  firing ship). Cost/heat/cooldown are still paid **once** (below) — twin_linked doubles
+  effect application, it's not a re-queued action. See the **weapon-mod dispatch** entry
+  below for the full mod set.
+- **Line 396-401**: the `precision_core` pre-snapshot — when that mod is present, record
+  which targeted cells hold a ship *before* the effects run, so post-bookkeeping can tell if
+  the action made a clean kill (cell occupied before, empty after; any-lethal, overkill
+  counts).
+- **Line 426-453**: heat + cooldown bookkeeping, *after* effects, against the ship at its
   post-effect cell (if it survived). Heat *always* increments by `action.cost.heat`;
-  lockout fires when heat ≥ heat_max; cooldown resets unconditionally to
-  `cost.cooldown_max` (hit or miss). Matches TS.
-- **Line 402-404**: emit `OnDamageDealt`. Subsystem authors hooking this fire on every
-  fired action, not just successful damage.
+  lockout fires when heat ≥ heat_max; cooldown resets to `cost.cooldown_max` (hit or miss) —
+  **except `precision_core` on a clean kill overrides it to 0** (line 451), the recharge
+  applied *here* (after the base insert) so it wins; doing it during effects would be
+  clobbered by this very insert. That ordering is the precision_core subtlety.
+- **Line 464-466**: emit `OnDamageDealt` **unconditionally** — once per fired action, even
+  if the attacker self-destructed (reviewer divergence #1: the pre-fix code nested this in
+  the survived-the-action guard, so a self-destructing attacker silently skipped the hook;
+  `source_cell` is `None` when the attacker is gone, but subscribers still run).
 
 **Worked example (`execute_queue_overheats_and_records_cooldown`, resolve.rs:1897):**
 Attacker starts heat=5, heat_max=6, queue=[pulse_laser]. After the queue fires: heat=6
@@ -3393,6 +3406,63 @@ check (resolve.rs:362) until vented.
 pulse_laser into an empty lane (forward arc, no target). `resolve_targeting` returns
 `[]`, the arc gate skips the action, heat stays 0, cooldown stays absent (or
 unchanged). The contract is "no bore, no cost."
+
+---
+
+### Weapon-mod dispatch — `enum WeaponMod` (resolve.rs:947), `fn apply_on_hit_mod` (resolve.rs:1020), `fn action_advances_turn` (resolve.rs:1004)
+
+**Mirrors:** the analysis doc's weapon-mod list; no TS analog (the TS engine never wired
+mods). Landed at commit 1619bac (#50). **Intent:** a weapon mod attaches to ONE action via
+[`Action::r#mod`](#srctypesrs) (a single mod id string) and modifies how that action fires.
+`WeaponMod::from_id` (resolve.rs:961) is an **exhaustive match that is the drift guard** — an
+unrecognised id yields `None` and the action fires un-modded (forward-compatible with mods
+the resolver doesn't implement yet).
+
+**Two dispatch points, by mod kind:**
+
+- **Action-level mods, in [`run_action`](#phase-1--3--fn-run_actionship_id-lookup_id-action-board-content---bool-resolversr346)** —
+  the mods that change *how the whole action runs*:
+  - **`twin_linked`** (resolve.rs:385-424) — apply the effect list twice; targeting
+    re-resolves before the second pass (re-aims at the post-first-volley board); cost/heat/
+    cooldown paid once.
+  - **`precision_core`** (resolve.rs:396-452) — snapshot targeted-occupied cells before
+    effects; if the action made a clean kill, override the cooldown reset to **0** in the
+    post-effect bookkeeping (recharge — fire it again next turn). The "applied after the base
+    cooldown insert so it wins" ordering is the subtlety; doing it during effects would be
+    clobbered.
+  - **`autoloader`** (resolve.rs:984-1009) — free-fire: forces the action to **not advance
+    the turn**. The resolver pipeline never branches on turn-advance, so this is **exposed as
+    a public seam** (`action_advances_turn`, resolve.rs:1004 — returns the autoloader override
+    else the action's declared `cost.advances_turn`) for the SS turn dispatcher in
+    [`input.rs`](#srcinputrs) to consume. **Resolver-side ready, turn-layer wiring pending** —
+    `input.rs::apply_intent` does not yet call `action_advances_turn`, so autoloader is parsed
+    + override-ready but not yet visibly free-fire until that wire lands.
+
+- **On-hit mods, in `apply_on_hit_mod`** (resolve.rs:1020) — the riders that land **per
+  connected hit**, called from the `DAMAGE` arm of `apply_effect` (resolve.rs:804-808) once
+  per cell that held a ship pre-hit (so the rider lands on contact **even if the shield ate
+  the hull damage**):
+  - **`flak_burst`** — 1 dmg to each lane-neighbour (hit_cell ±1) through the full
+    shield-mediated pipeline (dummy impact weapon, falloff off — same precedent as
+    ReactorBreach splash), **faction-blind** (hits allies too — pairs with "Unfriendly Fire");
+    the hit cell itself is not re-damaged.
+  - **`incendiary`** — `APPLY_STATUS hullBreach 3` on the hit cell.
+  - **`emp_charge`** — `APPLY_STATUS systemsOffline 3`.
+  - **`targeting_laser`** — `APPLY_STATUS targetLock` (duration 5, the demo's long-ish value;
+    consumed by the next hit).
+  - **`precision_core`** here is a **deliberate no-op** — its cooldown recharge is handled in
+    `run_action` post-bookkeeping (see above), not here, because a recharge written during
+    effects would be clobbered by run_action's own cooldown insert.
+
+**Design choice — on-hit helper, NOT a bus subscriber** (resolve.rs:1017-1019): the on-hit
+mods are dispatched by a direct function call from the DAMAGE arm, **not** via an `EventBus`
+hook, so they **never re-enter the resolver through the bus** (no chained-emit risk, no
+ordering ambiguity against the OnDamageDealt subscribers). Same rationale as why subsystems
+are content-side data, not bus closures (see [`subsystems.rs`](#srcsubsystemsrs)).
+
+**Drift / scoping:** first pass is **single-mod-only** (`r#mod` is one id). The doc's
+"autoloader alongside another mod" combo is a deferred follow-up needing an architect
+`r#mod → Vec` types change; not wired here.
 
 ---
 

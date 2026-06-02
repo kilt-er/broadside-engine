@@ -399,6 +399,47 @@ and the splash-before-lethal invariant.
 
 ---
 
+## Weapon mods (the 7-mod dispatch, commit 1619bac / #50)
+
+A weapon mod attaches to ONE action via [`Action::r#mod`](types.md) (a single mod-id
+string) and changes how that action fires. `WeaponMod::from_id` (resolve.rs:961) is an
+**exhaustive match that doubles as the drift guard** — an unrecognised id → `None` → the
+action fires un-modded (forward-compatible with mods not yet implemented). No TS analog;
+the TS engine never wired mods. The seven dispatch at **two points by kind**:
+
+**Action-level (in `run_action`)** — change how the whole action runs:
+- **`twin_linked`** — effect list runs twice, targeting **re-resolved before pass 2** (the
+  second volley re-aims at the board the first left); cost/heat/cooldown paid once.
+- **`precision_core`** — pre-snapshot targeted-occupied cells; on a clean kill, override
+  the post-effect cooldown reset to **0** (recharge). The subtlety: applied *after* the base
+  cooldown insert in `run_action`'s bookkeeping so it wins — a recharge written during
+  effects would be clobbered by that insert.
+- **`autoloader`** — free-fire (no turn advance). The resolver never branches on
+  turn-advance, so this is a **public seam** `action_advances_turn` (resolve.rs:1004) for the
+  SS turn dispatcher in [`input.rs`](input.md). **Resolver-side ready, turn-layer wiring
+  pending** — `input.rs::apply_intent` does not yet call it, so autoloader is parsed +
+  override-ready but not yet visibly free-fire.
+
+**On-hit (in `apply_on_hit_mod`, resolve.rs:1020)** — riders that land per connected hit,
+called from the DAMAGE arm of `apply_effect` once per cell that held a ship pre-hit (so they
+land on contact **even if the shield ate the hull damage**):
+- **`flak_burst`** — 1 dmg to each lane-neighbour (±1) via the shield-mediated dummy-impact
+  pipeline (falloff off, same precedent as ReactorBreach splash), **faction-blind**; the hit
+  cell itself isn't re-damaged.
+- **`incendiary`** → `hullBreach 3`; **`emp_charge`** → `systemsOffline 3`;
+  **`targeting_laser`** → `targetLock` (dur 5, consumed by the next hit). **`precision_core`**
+  is a no-op here (its recharge is handled in `run_action`, see above).
+
+**Design choice — on-hit helper, NOT a bus subscriber** (resolve.rs:1017-1019): dispatched by
+a direct call from the DAMAGE arm, never via the `EventBus`, so it can't re-enter the resolver
+through the bus — same rationale as content-side subsystems vs bus closures. **Scoping:**
+single-mod-only first pass (`r#mod` is one id); the "autoloader + another mod" combo is a
+deferred `r#mod → Vec` change. Mods referenced from class loadouts in
+[`classes.md`](classes.md) and the catalog `ModDef` in [`catalog.md`](catalog.md) /
+[`types.md`](types.md).
+
+---
+
 ## Cross-references
 
 - **Type vocabulary:** every type from [`src/types.rs`](types.md).
