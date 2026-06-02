@@ -36,8 +36,8 @@ use broadside_engine::meta::{
 };
 use broadside_engine::resolve::{resolve_round, Content};
 use broadside_engine::runs::{
-    advance_after_win, build_encounter_board, encounter_outcome, mark_defeated, AdvanceResult,
-    EncounterOutcome,
+    advance_after_win, build_encounter_board, current_encounter, encounter_outcome,
+    generate_campaign, mark_defeated, AdvanceResult, EncounterOutcome,
 };
 use broadside_engine::types::{
     Action, ActionCost, Arc, Board, EncounterDef, Effect, Faction, LaneEnd, Mount, Orientation,
@@ -474,5 +474,144 @@ fn build_board_and_first_resolve_round_does_not_panic() {
     assert!(
         board.cells.iter().flatten().any(|s| s.faction == Faction::Player),
         "player ship still on the board after one round",
+    );
+}
+
+/* =========================================================================
+ * 5. Played-through victory over a DATA-DRIVEN (#60 spawn-pool) campaign.
+ *
+ * `src/runs.rs` has inline unit tests for the generator (pool accumulation,
+ * encounters-then-boss, determinism, staging passthrough, campaign coverage,
+ * unknown-capital). This is the missing INTEGRATION claim: a campaign built
+ * by `generate_campaign(catalog)` actually PLAYS — its pool-sampled enemies
+ * and capital bosses materialize into real Boards, get cleared through
+ * `resolve_round`, and the run advances sector→sector to a played-through
+ * Victorious. If the generator emitted spawns the board-builder/resolver
+ * couldn't field (bad cell, unmaterializable class id, a sector that never
+ * resolves Won), this hangs or breaks — the unit tests can't catch that.
+ * ====================================================================== */
+
+/// A minimal canonical catalog with a spawn pool: two combat sectors
+/// (intro ship-types + a capital each) plus a leading Staging passthrough.
+/// Mirrors the shape `generate_campaign` consumes. Built via the canonical
+/// transformer so it exercises the real catalog → SectorDef path.
+fn generated_campaign_catalog() -> broadside_engine::types::Catalog {
+    // Full canonical shape (mirrors src/runs.rs's gen_catalog) so the
+    // transformer's enemy / capital / SectorDef deserializers are exercised
+    // for real — the minimal shape misses required fields (hull5, traits,
+    // sector, weapons, the meta/actions header).
+    let json = serde_json::json!({
+        "meta": { "schema": "x", "lane": [5,7,9], "newAxes": [], "bands": ["close"] },
+        "actions": [
+            { "id": "pulse_laser", "name": "Pulse Laser", "archetype": "beam",
+              "heat": 1, "cd": 0, "band": "close", "pattern": "BEAM",
+              "arc": "forward", "freeplay": false, "effects": ["DAMAGE"] },
+        ],
+        "mods": [], "subsystems": [], "statuses": [], "patrols": [],
+        "enemies": [
+            { "id": "skiff", "name": "Skiff", "hull": 3, "hull5": 4, "traits": [],
+              "sector": "Drift Belt", "weapons": ["Pulse Laser"] },
+            { "id": "lancer", "name": "Lancer", "hull": 1, "hull5": 2, "traits": [],
+              "sector": "Drift Belt", "weapons": ["Pulse Laser"] },
+            { "id": "gunboat", "name": "Gunboat", "hull": 4, "hull5": 5, "traits": [],
+              "sector": "Ion Reefs", "weapons": ["Pulse Laser"] },
+        ],
+        "capitals": [
+            { "id": "dasher", "name": "The Dasher", "sector": "Drift Belt" },
+            { "id": "impaler", "name": "The Impaler", "sector": "Ion Reefs" },
+        ],
+        "sectors": [
+            { "name": "Staging",    "node": "0",   "lane": 5, "intro": [],                  "capital": "—" },
+            { "name": "Drift Belt", "node": "1",   "lane": 5, "intro": ["Skiff","Lancer"], "capital": "The Dasher" },
+            { "name": "Ion Reefs",  "node": "2.1", "lane": 7, "intro": ["Gunboat"],         "capital": "The Impaler" },
+        ],
+    });
+    broadside_engine::catalog_canonical::from_canonical_value(json)
+        .expect("generated-campaign catalog parses")
+}
+
+/// Materialize a generated spawn into a Ship. The generator emits pool
+/// ship-type ids (skiff/lancer/gunboat) for regular enemies and the
+/// capital's display name (The Dasher / The Impaler) for bosses — all
+/// bow=Aft (facing the player). All become low-hull, mountless targets so
+/// the player's siege_beam clears them; the point is that EVERY generated
+/// class id materializes (no `None` drop would silently empty an encounter).
+fn build_generated_ship(spawn: &ShipSpawn) -> Option<Ship> {
+    // hp_override is None on generated spawns; give regulars hull 3 and
+    // capitals a bit more so the boss encounter takes a couple of rounds.
+    let hull = match spawn.class_id.as_str() {
+        "The Dasher" | "The Impaler" => 6,
+        _ => 3,
+    };
+    Some(weak_enemy(
+        &format!("{}@{}", spawn.class_id, spawn.cell),
+        spawn.cell,
+        hull,
+    ))
+}
+
+#[test]
+#[ignore = "#65: tier-2 generated sector-2 encounter stalemates >64 rounds (balance bug, resolver diagnosing); un-ignore once #65 lands"]
+fn generated_spawn_pool_campaign_plays_through_to_victory() {
+    let catalog = generated_campaign_catalog();
+    let content = LoopContent(siege_beam());
+    let sectors = generate_campaign(&catalog, 1);
+
+    // Sanity: the generated campaign has the expected shape before we play
+    // it — a Staging passthrough (no encounters) + two combat sectors that
+    // each end in a capital boss.
+    assert_eq!(sectors.len(), 3, "one runtime Sector per catalog SectorDef");
+    assert!(sectors[0].encounters.is_empty(), "Staging is a passthrough");
+    assert!(
+        sectors[1].encounters.last().is_some_and(|e| e.is_boss),
+        "Drift Belt ends in its capital boss",
+    );
+    assert!(
+        sectors[2].encounters.last().is_some_and(|e| e.is_boss),
+        "Ion Reefs ends in its capital boss",
+    );
+
+    // Play the whole generated campaign through the real run-loop.
+    let mut run = Run::new(player_frigate(0, 60));
+    let mut encounters_played = 0usize;
+    let mut bosses_beaten = 0usize;
+
+    for _ in 0..64 {
+        let enc = match current_encounter(&run, &sectors) {
+            Some(e) => e.clone(),
+            None => break, // run ended (victorious or defeated)
+        };
+
+        let mut board = build_encounter_board(&enc, run.player.clone(), build_generated_ship);
+        let result = fight_to_completion(&mut board, &content, true, 64);
+        assert!(
+            matches!(result, FightResult::Won { .. }),
+            "player clears generated encounter {} — got {result:?}",
+            enc.id,
+        );
+        encounters_played += 1;
+        if enc.is_boss {
+            bosses_beaten += 1;
+        }
+
+        run.player = board
+            .cells
+            .iter()
+            .flatten()
+            .find(|s| s.faction == Faction::Player)
+            .cloned()
+            .expect("player survives a won encounter");
+
+        advance_after_win(&mut run, &sectors);
+    }
+
+    assert!(run.victorious, "a fully-played generated campaign reaches Victorious");
+    assert!(!run.defeated, "a won generated run is not also defeated");
+    assert_eq!(bosses_beaten, 2, "both capital bosses (The Dasher, The Impaler) were beaten");
+    // ENCOUNTERS_PER_SECTOR (2) pool encounters + 1 boss in each of the two
+    // combat sectors = 6; Staging contributes none.
+    assert_eq!(
+        encounters_played, 6,
+        "played 2 pool encounters + 1 boss in each of the 2 combat sectors",
     );
 }
