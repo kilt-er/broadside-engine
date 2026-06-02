@@ -31,8 +31,8 @@
 //! class of failure the wgpu render path hit — it runs in CI with no GPU.
 
 use broadside_engine::meta::{
-    accumulate_into_meta, award_run_salvage, salvage_for_encounter_win, MetaProgression,
-    SUBSYSTEM_UNLOCK_THRESHOLDS,
+    accumulate_into_meta, award_run_salvage, award_run_salvage_with_catalog,
+    salvage_for_encounter_win, MetaProgression, SUBSYSTEM_UNLOCK_THRESHOLDS,
 };
 use broadside_engine::resolve::{resolve_round, Content};
 use broadside_engine::runs::{
@@ -199,6 +199,18 @@ fn build_ship(spawn: &ShipSpawn) -> Option<Ship> {
 
 fn encounter(id: &str, spawns: Vec<ShipSpawn>, is_boss: bool) -> EncounterDef {
     EncounterDef { id: id.into(), enemy_ships: spawns, hazards: Vec::new(), is_boss }
+}
+
+/// Materialize a capital-boss spawn (class_id = the capital's display name)
+/// into a killable target ship, so the capital-salvage integration test can
+/// actually WIN the boss encounter. The salvage value comes from the
+/// CapitalDef tier endpoints, not this ship's hull — so a low hull is fine.
+fn build_capital_ship(spawn: &ShipSpawn) -> Option<Ship> {
+    Some(weak_enemy(
+        &format!("{}@{}", spawn.class_id, spawn.cell),
+        spawn.cell,
+        spawn.hp_override.unwrap_or(3),
+    ))
 }
 
 /// A two-sector campaign: sector 0 has two single-target encounters,
@@ -406,8 +418,15 @@ fn winning_an_encounter_accrues_salvage_into_the_run() {
     assert_eq!(run.salvage, 3, "the run banks the encounter's salvage");
 }
 
+/// The CATALOG-LESS fallback reward path: `award_run_salvage` (no catalog)
+/// still applies the flat `is_boss → ×2` multiplier. This is NOT the
+/// canonical capital reward anymore — the live bin path uses the tier-scaled
+/// `award_run_salvage_with_catalog` (see
+/// `capital_boss_win_accrues_tier_scaled_salvage_into_the_run` below). This
+/// test pins the still-valid no-catalog fallback (placeholder campaign with
+/// no CapitalDefs), so it must NOT be read as "capitals pay ×2 in the game."
 #[test]
-fn boss_encounter_doubles_salvage_on_a_real_win() {
+fn catalogless_boss_fallback_doubles_salvage_on_a_real_win() {
     let content = LoopContent(siege_beam());
     let enc = encounter("boss", vec![spawn("target", 1, 3, LaneEnd::Fore)], true);
     let mut run = Run::new(player_frigate(0, 30));
@@ -419,7 +438,82 @@ fn boss_encounter_doubles_salvage_on_a_real_win() {
     ));
 
     award_run_salvage(&mut run, &enc, build_ship);
-    assert_eq!(run.salvage, 2, "boss flag doubles the one tier-1 kill (1 -> 2)");
+    assert_eq!(
+        run.salvage, 2,
+        "catalog-less fallback: the flat is_boss ×2 doubles the one tier-1 kill (1 -> 2)",
+    );
+}
+
+/// The LIVE reward path (the bin's `award_encounter_salvage`): a capital-boss
+/// win, played through real boards, banks the doc-canonical TIER-SCALED
+/// capital salvage (CapitalDef salvage_p1→salvage_p7 interpolation) into the
+/// run, and `accumulate_into_meta` rolls it forward. content's meta.rs units
+/// pin `capital_salvage_for_tier` / `salvage_for_capital_encounter` at the
+/// function level; this locks the same value flowing through the run loop
+/// exactly as the bin awards it.
+///
+/// The Dasher: salvage_p1=2, salvage_p7=7. At patrol tier 4 the interpolation
+/// is 2 + (7-2)*(4-1)/6 = 2 + 2 = 4 (matching content's
+/// `capital_salvage_interpolates_p1_to_p7_by_tier`).
+#[test]
+fn capital_boss_win_accrues_tier_scaled_salvage_into_the_run() {
+    // Catalog with one capital carrying the tier endpoints.
+    let json = serde_json::json!({
+        "meta": { "schema": "x", "lane": [5], "newAxes": [], "bands": ["close"] },
+        "actions": [], "mods": [], "subsystems": [], "statuses": [],
+        "enemies": [], "patrols": [],
+        "capitals": [
+            { "id": "dasher", "name": "The Dasher", "sector": "Drift Belt",
+              "corrupt": true, "sP1": 2, "sP7": 7 },
+        ],
+    });
+    let catalog = broadside_engine::catalog_canonical::from_canonical_value(json)
+        .expect("capital catalog parses");
+
+    // A capital-boss encounter: a single boss spawn whose class_id is the
+    // capital's display NAME (exactly how runs::capital_spawn builds it). The
+    // boss materializes as a killable target so the player wins it.
+    let enc = encounter(
+        "drift_belt_boss",
+        vec![spawn("The Dasher", 1, 3, LaneEnd::Fore)],
+        true,
+    );
+    let mut run = Run::new(player_frigate(0, 30));
+    let content = LoopContent(siege_beam());
+
+    let mut board = build_encounter_board(&enc, run.player.clone(), build_capital_ship);
+    assert!(matches!(
+        fight_to_completion(&mut board, &content, true, 8),
+        FightResult::Won { .. }
+    ));
+
+    // The bin's live award path, at patrol tier 4.
+    let patrol_tier = 4u8;
+    award_run_salvage_with_catalog(&mut run, &enc, &catalog, patrol_tier, build_capital_ship);
+    assert_eq!(
+        run.salvage, 4,
+        "The Dasher (sP1=2, sP7=7) at tier 4 pays the interpolated 4 — NOT the flat ×2 fallback (which would be 2)",
+    );
+
+    // And it rolls into the persistent meta total like any other run salvage.
+    let mut meta = MetaProgression::default();
+    accumulate_into_meta(&mut meta, &run);
+    assert_eq!(
+        meta.total_salvage_earned, 4,
+        "tier-scaled capital salvage accrues into the meta total through the rollover",
+    );
+
+    // Tier sensitivity: the SAME capital win at tier 1 pays the low endpoint
+    // (2), at tier 7 the high endpoint (7) — proving the reward genuinely
+    // scales with patrol tier through the live award path, not a flat value.
+    let award_at = |tier: u8| {
+        let mut r = Run::new(player_frigate(0, 30));
+        award_run_salvage_with_catalog(&mut r, &enc, &catalog, tier, build_capital_ship);
+        r.salvage
+    };
+    assert_eq!(award_at(1), 2, "tier 1 → salvage_p1");
+    assert_eq!(award_at(7), 7, "tier 7 → salvage_p7");
+    assert!(award_at(1) < award_at(4) && award_at(4) < award_at(7), "salvage rises with tier");
 }
 
 #[test]
