@@ -57,6 +57,7 @@ use broadside_engine::input::{
     intent_to_action_id, key_to_intent, synthetic_card_action_id, DemoContent, Intent, Key,
 };
 use broadside_engine::catalog::{enemy_ship_from_catalog_at_tier, load_from_path};
+use broadside_engine::meta::{salvage_for_capital_encounter, salvage_for_encounter_win};
 use broadside_engine::perspective::{fractional_cell_to_screen, LaneGeometry, DEFAULT_LANE};
 use broadside_engine::resolve::{
     apply_instant_action, find_player_id, fire_player_queue, run_world_phase, Content,
@@ -654,6 +655,45 @@ impl App {
         }))
     }
 
+    /// Award salvage for the just-cleared encounter into `self.run`. Called
+    /// on the `EncounterOutcome::Won` transition, BEFORE the run advances
+    /// (so `current_encounter` still points at the encounter that was won).
+    ///
+    /// Capital/boss encounters pay the doc-canonical tier-scaled
+    /// [`CapitalDef`] salvage (#63) via `award_run_salvage_with_catalog`;
+    /// other encounters fall back to per-enemy salvage. Only fires when a
+    /// catalog loaded — the placeholder campaign has no capitals, so there's
+    /// nothing to reward and we skip (the old flat-salvage path was never
+    /// wired into the bin, so this is the first live salvage accrual).
+    fn award_encounter_salvage(&mut self) {
+        let Some(catalog) = self.catalog.as_ref() else {
+            return; // no catalog → placeholder campaign, no salvage source
+        };
+        let Some(enc) = current_encounter(&self.run, &self.sectors) else {
+            return;
+        };
+        let patrol_tier = self
+            .sectors
+            .get(self.run.current_sector_idx)
+            .map(|s| s.patrol_tier)
+            .unwrap_or(1);
+        // Compute the salvage with only IMMUTABLE borrows (catalog, enc,
+        // sectors), then apply it to self.run with the mutable borrow —
+        // avoids borrowing self.catalog and self.run simultaneously.
+        let earned = salvage_for_capital_encounter(enc, catalog, patrol_tier).unwrap_or_else(|| {
+            // Non-capital fallback: per-enemy salvage via the same
+            // spawn→Ship builder build_current_board uses.
+            salvage_for_encounter_win(enc, |spawn| {
+                if spawn.class_id == "warlord" {
+                    return Some(boss_ship_for_spawn(spawn));
+                }
+                enemy_ship_from_catalog_at_tier(catalog, spawn, patrol_tier)
+                    .or_else(|| Some(fallback_ship_for_spawn(spawn)))
+            })
+        });
+        self.run.salvage = self.run.salvage.saturating_add(earned);
+    }
+
     /// Reset run + content + board to a fresh sector-0 / encounter-0
     /// start. Called on Restart from `RunComplete` / `RunDefeated`
     /// overlays. Also re-installs audio on the new board's EventBus.
@@ -972,6 +1012,15 @@ impl ApplicationHandler for App {
                     // Post-mutation: did this turn end an encounter?
                     match encounter_outcome(&self.board) {
                         EncounterOutcome::Won => {
+                            // Award salvage for the just-cleared encounter
+                            // BEFORE advancing the run (the run still points
+                            // at this encounter). Capital bosses pay the
+                            // doc-canonical tier-scaled CapitalDef salvage
+                            // (#63); other encounters fall back to per-enemy
+                            // salvage. Data-driven only when the catalog
+                            // loaded; no-op otherwise (placeholder campaign
+                            // has no capitals to reward).
+                            self.award_encounter_salvage();
                             self.demo_state = DemoState::EncounterComplete;
                         }
                         EncounterOutcome::Lost => {
