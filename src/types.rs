@@ -884,26 +884,23 @@ where
 /// One per sector — the fixed end-of-sector engagement ([`SectorDef::capital`]
 /// names it). This is the typed catalog representation that replaces the
 /// per-boss fallback to the warlord synthesizer, so each capital ("The
-/// Dasher", "The Impaler", …) carries its own stats.
+/// Dasher", "The Impaler", …) is a distinct catalog entry.
 ///
 /// Like [`SectorDef`], this is **catalog data** distinct from the **runtime**
 /// Ship a capital materializes into on the board; the capital → Ship builder
-/// (mounts, shield profile, behavior hooks) is runtime/content's lane.
+/// (combat loadout, behavior) is runtime/content's lane. The doc authors **no
+/// per-capital combat loadout** (no hull / shields / mounts here) — per-capital
+/// combat distinctiveness (e.g. the Twins spawning two ships, the Coward
+/// fleeing) is content's future runtime-synthesis follow-up, decoupled from
+/// this type. These six fields are the whole canonical catalog spec.
 ///
-/// ## Tier scaling
+/// ## Salvage reward (not combat stats)
 ///
-/// `sp1` / `sp7` are the capital's strength at Patrol tier 1 vs tier 7 — the
-/// scaling endpoints, mirroring [`EnemyDef`]'s `hull` / `hull5` convention.
-/// `sp1` is `Option` because the catalog stores `null` for some entries
-/// (the run-start tier where that capital isn't yet reachable).
-///
-/// ## Extensibility
-///
-/// The current catalog carries only `{id, name, sector, corrupt, sP1, sP7}`.
-/// Richer per-capital design data the doc may specify (hull / shield profile /
-/// mounts / behavior hooks) lands here as **additive `Option` / defaulted
-/// fields** so the existing catalog keeps parsing and content can fill them
-/// without reopening this type.
+/// `salvage_p1` / `salvage_p7` are the **salvage payout for destroying this
+/// capital** at Patrol tier 1 vs tier 7 (design doc §VIII "Salvage P1/P7"),
+/// scaling with tier — they are **rewards, not strength/hull**. `salvage_p1`
+/// is `Option` because the catalog stores `null` for the capital not awarded
+/// at tier 1 (the Void Sovereign).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CapitalDef {
     /// Internal id (e.g. `"dasher"`).
@@ -913,21 +910,23 @@ pub struct CapitalDef {
     /// Display name of the sector this capital ends (matches
     /// [`SectorDef::name`], e.g. `"Drift Belt"`).
     pub sector: String,
-    /// Corrupted (Voidtouched) variant flag. Drives the corrupted-capital
-    /// behavior/visuals; precise effect is content's to define.
+    /// Whether this capital has a Patrol-4+ **corrupted variant** (design doc
+    /// §VIII 699-700) — an eligibility flag for the harder corrupted form at
+    /// higher tiers; the variant's stats/behavior are content's to define.
     #[serde(default)]
     pub corrupt: bool,
-    /// Strength at Patrol tier 1. `null` in the catalog → `None` (capital not
-    /// reachable at that tier). Catalog key `sP1`.
+    /// Salvage reward for killing this capital at Patrol tier 1. `null` in the
+    /// catalog → `None` (the Void Sovereign awards none at tier 1). Catalog
+    /// key `sP1`.
     #[serde(rename = "sP1", default)]
-    pub sp1: Option<i32>,
-    /// Strength at Patrol tier 7 (the scaling ceiling). Catalog key `sP7`.
-    /// `#[serde(default)]` (→ 0) so minimal capital entries that omit the
-    /// stat — fixtures, or a forward catalog that lists a capital before its
-    /// balance numbers land — still parse; the canonical catalog always
-    /// supplies it.
+    pub salvage_p1: Option<i32>,
+    /// Salvage reward for killing this capital at Patrol tier 7 (the scaling
+    /// ceiling). Catalog key `sP7`. `#[serde(default)]` (→ 0) so minimal
+    /// capital entries that omit it — fixtures, or a forward catalog that
+    /// lists a capital before its salvage numbers land — still parse; the
+    /// canonical catalog always supplies it.
     #[serde(rename = "sP7", default)]
-    pub sp7: i32,
+    pub salvage_p7: i32,
 }
 
 /// A weapon mod (`Action.mod` is its id). The TS shape is `{ id, name, cd, desc }`.
@@ -1225,29 +1224,29 @@ mod tests {
 
     #[test]
     fn capital_def_parses_canonical_catalog_shape() {
-        // Exact catalog.capitals[] shape (broadside.catalog.json): sP1/sP7
-        // rename + the null-sP1 case.
+        // Exact catalog.capitals[] shape (broadside.catalog.json): the salvage
+        // sP1/sP7 -> salvage_p1/salvage_p7 rename + the null-sP1 case.
         let dasher = r#"{"id":"dasher","name":"The Dasher","sector":"Drift Belt","corrupt":true,"sP1":2,"sP7":7}"#;
         let c: CapitalDef = serde_json::from_str(dasher).unwrap();
         assert_eq!(c.id, "dasher");
         assert_eq!(c.name, "The Dasher");
         assert_eq!(c.sector, "Drift Belt");
         assert!(c.corrupt);
-        assert_eq!(c.sp1, Some(2));
-        assert_eq!(c.sp7, 7);
+        assert_eq!(c.salvage_p1, Some(2));
+        assert_eq!(c.salvage_p7, 7);
 
-        // sP1 null -> None.
+        // sP1 null -> None (the Void Sovereign awards no tier-1 salvage).
         let null_sp1 = r#"{"id":"x","name":"X","sector":"S","corrupt":false,"sP1":null,"sP7":9}"#;
         let c2: CapitalDef = serde_json::from_str(null_sp1).unwrap();
-        assert_eq!(c2.sp1, None);
+        assert_eq!(c2.salvage_p1, None);
         assert!(!c2.corrupt);
 
         // sP1 absent also -> None (serde default); corrupt absent -> false.
         let minimal = r#"{"id":"y","name":"Y","sector":"S","sP7":8}"#;
         let c3: CapitalDef = serde_json::from_str(minimal).unwrap();
-        assert_eq!(c3.sp1, None);
+        assert_eq!(c3.salvage_p1, None);
         assert!(!c3.corrupt);
-        assert_eq!(c3.sp7, 8);
+        assert_eq!(c3.salvage_p7, 8);
     }
 
     #[test]
@@ -1264,7 +1263,7 @@ mod tests {
         let cat: Catalog = serde_json::from_str(cat_json).unwrap();
         assert_eq!(cat.capitals.len(), 2);
         assert_eq!(cat.capitals[0].id, "dasher");
-        assert_eq!(cat.capitals[1].sp7, 8);
+        assert_eq!(cat.capitals[1].salvage_p7, 8);
     }
 
     #[test]
