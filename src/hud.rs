@@ -90,15 +90,13 @@ const VICTORY_TINT: [f32; 4] = [1.00, 0.80, 0.20, 0.45];
 /// the lane-cell-count option flagged to the lead, needs his ruling).
 const SHIP_SCALE: f32 = 2.0;
 
-/// Whether to draw the placeholder per-ship overlay HUD (heat bar, shield pips,
-/// queue glyphs, status badges) and the range-band ruler. OFF for the #45/#46
-/// ship-showcase: these are crude placeholder glyphs anchored to the 2D
-/// `ship_bbox`, which the #44 loft seating decoupled from — so they float off
-/// the 3D ships and read as artifacts (the dark-blue side-bands + teal specks
-/// in bruce's screenshot). The #46 HUD pass rebuilds them loft-anchored + clean
-/// and flips this back on. Kept as a single gate so nothing is deleted — the
-/// emitters and compose structure stay intact, just suppressed for now.
-const SHOW_PLACEHOLDER_HUD: bool = false;
+/// Whether to draw the per-ship overlay HUD (heat bar, shield pips, queue
+/// glyphs, status badges) and the range-band ruler. ON: these are functional
+/// combat/threat readouts bruce wants present + clean. The #45 fix RE-ANCHORED
+/// them to the loft ship footprint (`ship_bbox` now returns the loft dest-rect
+/// extent, not the stale 2D `scaled_ship_extent` the #44 seating decoupled
+/// from) so they sit ON the ships instead of floating off as artifacts.
+const SHOW_PLACEHOLDER_HUD: bool = true;
 
 /// Scaled `(width, total_h)` of a ship silhouette at the current view angle.
 /// Single source of truth for both the silhouette draw (`push_ship`) and the
@@ -275,12 +273,18 @@ pub fn compose_scene_tweened(
 /// Returns `(width, total_h)` so overlay helpers (heat bar, shield pips,
 /// queue glyphs, status badges) can position consistently against the
 /// current silhouette regardless of stance or angle.
-fn ship_bbox(ship: &Ship, view_angle_rad: f32) -> (f32, f32) {
-    let stance = match ship.orientation {
-        Orientation::BowOn { .. } => Stance::BowOn,
-        Orientation::Broadside => Stance::Broadside,
-    };
-    scaled_ship_extent(stance, view_angle_rad)
+fn ship_bbox(_ship: &Ship, _view_angle_rad: f32) -> (f32, f32) {
+    // Ships now render via the loft pipeline into a FIXED lane dest-rect
+    // (`loft_dest_rect`), so the overlay HUD (heat / shield / queue / status)
+    // must anchor to THAT footprint, not the old per-stance 2D
+    // `scaled_ship_extent` (which the #44 loft seating decoupled from — the
+    // cause of the floating overlays in #45). One uniform box per ship: the
+    // loft quad's full width × height, centred on the lane. Overlays offset
+    // from these edges sit just outside the hull, consistent across stances.
+    (
+        LOFT_SHIP_HEIGHT_PX * LOFT_TEXTURE_ASPECT,
+        LOFT_SHIP_HEIGHT_PX,
+    )
 }
 
 #[inline]
