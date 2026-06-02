@@ -312,6 +312,33 @@ taken.
 
 ---
 
+## Ability tiles (Shogun-style, #53)
+
+Added at commit bd6e47e: the player's abilities surfaced Shogun-Showdown-style —
+**(a)** name/blurb tiles above the player ship, **(b)** a compact cooldown row below
+the lane. The **bin assembles the `AbilityTile` list** (it has the `Content` registry
+for names + cooldown maxima and the player `Ship` for live cooldown state); hud just
+lays them out.
+
+- **`struct AbilityTile`** (src/hud.rs:1458) — one player ability flattened for
+  display: `slot` (the trigger key `'1'`..`'3'` / `'5'`..`'7'`), `name`, `blurb`
+  (first-pass synthesized from archetype/effect by the bin; swaps to a real
+  `Action::description` if content adds one), `cooldown` (turns remaining, 0 = ready),
+  `cooldown_max` (the "n/N" readout length).
+- **`push_ability_tiles(out, tiles, anchor_x, top_y)`** (src/hud.rs:1481) — a centered
+  row of name/blurb tiles ABOVE the ship (96×26 each), key-coloured teal when ready /
+  dim violet on cooldown, "`<slot> NAME`" header + blurb below, left-aligned.
+- **`push_cooldown_row(out, tiles, lane)`** (src/hud.rs:1538) — a compact chip row
+  BELOW the lane: one chip per ability, teal when ready, dim with a remaining-turns
+  number when on cooldown.
+
+First-pass look (bruce iterates). The hud/bin split mirrors the rest of the
+compositor: hud is data-driven layout, the bin owns the state assembly (same shape as
+the overlay-decision split since #77). Tile colours: `TILE_READY`/`TILE_COOLDOWN`/
+`TILE_BG`/`TILE_TEXT` consts (src/hud.rs:1473).
+
+---
+
 ## Cross-references
 
 - **Atlas glyphs:** [`src/atlas.rs`](atlas.md). All non-text sprites

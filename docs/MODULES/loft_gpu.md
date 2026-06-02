@@ -65,7 +65,9 @@ phase. **Pure state + math, no GPU**, so it's unit-testable headless.
 
 - `reorient_to(to)` (src/loft_gpu.rs:123) — begin a smooth reorient, tweening from the
   *current displayed* yaw (so mid-tween re-flips don't snap) to `to`'s base yaw over
-  `REORIENT_SECS` (0.45).
+  `REORIENT_SECS` (**0.28** since #52 — a crisp ~quarter-second swing; the tween takes the
+  shortest path between stance yaws, and the player's reorient is now a clean 90° bow-on↔
+  broadside toggle with no 180° over-spin).
 - `advance(dt)` (src/loft_gpu.rs:138) — advance idle + any tween; clears the tween when
   elapsed ≥ dur.
 - `yaw_deg_no_idle` (src/loft_gpu.rs:152) — base or `smoothstep`-eased tween yaw (the

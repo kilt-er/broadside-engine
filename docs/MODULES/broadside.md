@@ -59,10 +59,19 @@ intent needs the player; if the player is gone (defeat), only Restart is legal,
 everything else no-ops.
 
 The `match intent`:
-- **Instant intents** `MoveLeft`/`MoveRight`/`ReorientFlip`/`Vent` (133-146):
-  resolve the synthetic action id, clone its `Action` from `content`, apply it
-  atomically via `apply_instant_action`, then `run_world_phase`. These take
-  effect *on the press*.
+- **Instant intents** `MoveLeft`/`MoveRight`/`Vent`: resolve the synthetic action
+  id, clone its `Action` from `content`, apply it atomically via
+  `apply_instant_action`, then `run_world_phase`. These take effect *on the press*.
+- **`ReorientFlip`** — its **own arm** since #52 (commit 83503f6). bruce wanted Tab
+  to be a **90° turn that toggles bow-on ↔ broadside and stops perpendicular**, NOT
+  the 180° bow Fore↔Aft about-face the static `__reorient_flip` synthetic
+  (`ReorientTo::Flip`) encodes. So the bin reads the player's current orientation,
+  picks the target stance (bow-on → Broadside, broadside → BowOn), and **overrides
+  the synthetic's REORIENT effect** with that target — the synthetic still supplies
+  the action's name/cost/targeting. **Bin-local**: no resolve.rs / AI change (enemy
+  reorient still uses its own action def). Reaching bow-Aft via control is a
+  deferred follow-up. (Pairs with loft_gpu's `REORIENT_SECS` drop to 0.28 — the
+  tween already takes the shortest path, now a clean 90° with no 180° over-spin.)
 - **`PlayCard`** (151-170): validate + decrement charges via
   `content.try_play_card`; on `Played`, run the synthetic `__card_<id>` action
   instantly then advance the world. Other `PlayResult`s (UnknownCard /

@@ -41,6 +41,7 @@ glance what is documented vs. what is pending.*
 - [`src/loft_gpu.rs`](#srcloft_gpurs) — in-engine loft render pipeline: depth-tested 3D hull → posterize → cut-out texture (Stages 2-4)
 - [`src/atlas.rs`](#srcatlasrs) — procedural 256×256 sprite atlas
 - [`src/hud.rs`](#srchudrs) — scene compositor (DrawCommand list)
+- [`src/vfx.rs`](#srcvfxrs) — combat juice: read-only board-diff → transient beams/flashes/explosions/trails + telegraph cue
 - [`src/subsystems.rs`](#srcsubsystemsrs) — runtime subsystem behavior: install registry, attacker-side damage modifier, end-of-turn heat
 - [`src/cards.rs`](#srccardsrs) — field-kit Cards: catalog, per-ship inventory, BOARD-note dispatch, play validation
 - [`src/classes.rs`](#srcclassesrs) — canonical 5-class roster + Signature actions (+ provisional Aegis "Sweep")
@@ -3059,6 +3060,17 @@ The in-game top-right counter. A single row of inline 5×7 glyphs showing
 `"SALVAGE: {n}"` ~16px from the top-right edge. Always visible during
 `Playing` state so the player sees the counter tick up on encounter wins.
 
+#### Ability tiles — `struct AbilityTile` (line 1458) + `push_ability_tiles` (1481) / `push_cooldown_row` (1538)
+
+Shogun-style ability surfacing added at #53 (commit bd6e47e). `AbilityTile { slot, name,
+blurb, cooldown, cooldown_max }` is one player ability flattened for display; the **bin
+assembles the list** (it holds the `Content` registry for names/cooldown-maxima + the player
+`Ship` for live cooldown state), hud just lays it out — same data-driven-layout/bin-owns-state
+split as the overlay decision (#77). `push_ability_tiles` draws a centered row of name/blurb
+tiles ABOVE the ship (teal when ready, dim violet on cooldown); `push_cooldown_row` draws a
+compact chip row BELOW the lane (teal ready / dim with remaining-turns number). First-pass
+look; bruce iterates. Full detail in [`docs/MODULES/hud.md`](MODULES/hud.md).
+
 #### `enum BetweenEncounterChoice` (line 1103) + `fn push_between_encounter_overlay` (line 1129)
 
 Phase 3 between-encounter and run-complete overlays. Two variants:
@@ -3159,6 +3171,63 @@ cleanup that nobody has prioritised. Renderer-owned decision.
 ---
 
 No open architectural items.
+
+---
+
+## `src/vfx.rs`
+
+*Combat juice (#51 / Phase D): turns combat events into transient visuals — beams,
+hit flashes, destroy explosions, ordnance trails, and the enemy-intent telegraph cue.
+The defining decision: it sources events by **diffing the board against the previous
+frame's snapshot**, NEVER subscribing to the [`EventBus`](#srctypesrs) and never
+calling a resolver function — satisfying the "no chained emit" invariant **by
+construction** (no callback at all). Pure state + math, no `wgpu`, headless-testable.
+Full companion at [`docs/MODULES/vfx.md`](MODULES/vfx.md).*
+
+**Mirrors:** no TS analog — render-tier combat juice. The look is first-pass
+flat-colour quads (bruce iterates the art); the durable value is the event→effect→draw
+plumbing.
+
+### Effect types + `Snapshot` (src/vfx.rs:44–102)
+
+`Effect { kind, age, dur }` with an eased 0→1 lifetime; `EffectKind` is `Beam` /
+`HitFlash` / `Explosion` / `Trail` (the telegraph cue is NOT a transient — it pulses
+live from the board). `Snapshot` (src/vfx.rs:83) is the diff baseline: `ships: id →
+(hull, cell, faction)` + `ordnance: id → cell` — the mechanism that replaces an
+EventBus subscription.
+
+### `struct CombatVfx` (src/vfx.rs:107)
+
+The live state: active `effects` + `prev: Option<Snapshot>`. `observe(board)`
+(src/vfx.rs:126, read-only) diffs against the prev frame and spawns effects, storing
+the current as the next baseline (first observe = baseline, spawns nothing). `diff`
+(src/vfx.rs:134) is the inference: hull drop → `HitFlash` + a `Beam` from the nearest
+opposing ship (`nearest_opponent_cell` heuristic — the resolver doesn't surface
+attacker→target yet); vanished id → `Explosion`; moved ordnance → `Trail`. `advance(dt)`
+(src/vfx.rs:196) ages + culls expired, returns `true` while any survive (redraw
+keepalive). `emit(out, board, lane)` (src/vfx.rs:213) appends [`DrawCommand`](#srcgfxrs)s
+for active effects + the live telegraph cues (red marker above any enemy with a
+non-empty queue).
+
+**Cross-references:** driven by the bin's frame loop ([`broadside.rs`](#srcbinbroadsidesrs));
+produces [`DrawCommand`](#srcgfxrs)s positioned via
+[`perspective::fractional_cell_to_screen`](#srcperspectivers); the read-only-diff design
+is the deliberate counterpart to the resolver's [EventBus "no chained emit"](#srctypesrs)
+invariant. **Worked examples:** `first_observe_spawns_nothing` (src/vfx.rs:377),
+`hull_drop_spawns_hit_flash_and_beam` (src/vfx.rs:390), `vanished_ship_spawns_explosion`
+(src/vfx.rs:404), `advance_expires_effects` (src/vfx.rs:437),
+`telegraph_emits_for_enemy_with_queue` (src/vfx.rs:452).
+
+### Draw helpers (src/vfx.rs:258–320)
+
+Flat-colour quads via the atlas `SOLID_WHITE` cell: `emit_beam` (rotated thin rect,
+fading+thinning; used for Beam + Trail), `emit_flash` (expanding fading square; peak 16
+hit / 30 explosion), `emit_telegraph` (red marker at `lane.center_y − 96`, first-pass
+chevron-bar).
+
+**Drift:** the beam pairing is a nearest-opponent heuristic, not a true attacker→target
+link (the resolver doesn't surface one); flat-quad look is placeholder pending bruce's
+art. The event-by-state-diff design is durable.
 
 ---
 
