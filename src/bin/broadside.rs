@@ -289,15 +289,19 @@ fn load_catalog() -> Option<broadside_engine::types::Catalog> {
 }
 
 /* =============================================================================
- * Ability-tile assembly (#53).
+ * Ability-tile assembly (#53 redesign / #64).
  *
- * The renderer (hud) lays out tiles, but only the bin has the Content registry
- * to resolve action names / cooldown maxima, so we flatten the player's
- * abilities into `hud::AbilityTile`s here: mounts 1/2/3 (weapon action ids) +
- * field-kit cards 5/6/7. Live cooldown comes from `Ship::cooldowns`.
+ * The renderer (hud) lays out + animates the square icon tiles, but only the
+ * bin has the Content registry to resolve a mount/card action's archetype
+ * (→ icon), damage, and cooldown-max. So we flatten a ship's abilities into
+ * `hud::AbilityTile`s here: mounts → slots 1/2/3, field-kit cards → 5/6/7.
+ * `queued_index` is the action's position in the ship's `queue` (drives the
+ * below↔above animation for the player and the readying-stack for enemies);
+ * live cooldown comes from `Ship::cooldowns`. Reused for the player (animated
+ * below↔above) and for each enemy (telegraph stack from its queue).
  * ============================================================================= */
 
-/// Screen-x of the player's lane cell, or `None` if there's no player.
+/// Screen-x of a faction's first ship on the lane, or `None`.
 fn player_lane_x(board: &Board, lane: &LaneGeometry) -> Option<f32> {
     board
         .cells
@@ -307,70 +311,72 @@ fn player_lane_x(board: &Board, lane: &LaneGeometry) -> Option<f32> {
         .map(|s| fractional_cell_to_screen(s.cell as f32, lane).x)
 }
 
-/// Flatten the player's abilities into display tiles. Mounts (slots 1/2/3) read
-/// their weapon action def; cards (slots 5/6/7) read the synthetic
-/// `__card_<id>` action def. Name + cooldown-max come from the action; live
-/// cooldown from the ship. First-pass blurb is synthesized from the action's
-/// archetype/effects (Action carries no description field yet — see #53 note).
-fn build_ability_tiles(board: &Board, content: &dyn Content) -> Vec<hud::AbilityTile> {
-    let Some(player) = board.cells.iter().flatten().find(|s| s.faction == Faction::Player) else {
-        return Vec::new();
-    };
+/// Archetype → placeholder icon (until real per-ability art lands).
+fn archetype_icon(a: WeaponArchetype) -> hud::AbilityIcon {
+    match a {
+        WeaponArchetype::Beam => hud::AbilityIcon::Beam,
+        WeaponArchetype::Ordnance => hud::AbilityIcon::Ordnance,
+        WeaponArchetype::Broadside => hud::AbilityIcon::Broadside,
+        WeaponArchetype::Displacement => hud::AbilityIcon::Displacement,
+        WeaponArchetype::Control => hud::AbilityIcon::Control,
+        WeaponArchetype::Movement => hud::AbilityIcon::Movement,
+        WeaponArchetype::Defensive => hud::AbilityIcon::Defensive,
+    }
+}
+
+/// First `DAMAGE` effect amount of an action (`0` = non-damage), for the tile's
+/// damage pips.
+fn action_damage(action: &broadside_engine::types::Action) -> i32 {
+    action
+        .effects
+        .iter()
+        .find_map(|e| match e {
+            Effect::DAMAGE { amount, .. } => Some(*amount),
+            _ => None,
+        })
+        .unwrap_or(0)
+}
+
+/// `Some(position)` of `action_id` in `ship.queue`, else `None`.
+fn queue_index(ship: &Ship, action_id: &str) -> Option<usize> {
+    ship.queue.iter().position(|q| q == action_id)
+}
+
+/// Build one ship's ability tiles (mounts → 1/2/3, cards → 5/6/7). `icon` /
+/// `damage` / `cooldown_max` come from the action def; `cooldown` from the
+/// ship; `queued_index` from the ship's queue order.
+fn build_ship_tiles(ship: &Ship, content: &dyn Content) -> Vec<hud::AbilityTile> {
     let mut tiles = Vec::new();
-    // Mounts → slots '1'..'3'.
-    for (i, mount) in player.mounts.iter().take(3).enumerate() {
+    for (i, mount) in ship.mounts.iter().take(3).enumerate() {
         if let Some(action) = content.action(&mount.weapon) {
             tiles.push(hud::AbilityTile {
                 slot: (b'1' + i as u8) as char,
-                name: action.name.clone(),
-                blurb: ability_blurb(action),
-                cooldown: player.cooldowns.get(&mount.weapon).copied().unwrap_or(0).max(0),
+                icon: archetype_icon(action.archetype),
+                damage: action_damage(action),
+                cooldown: ship.cooldowns.get(&mount.weapon).copied().unwrap_or(0).max(0),
                 cooldown_max: action.cost.cooldown_max.max(0),
+                queued_index: queue_index(ship, &mount.weapon),
             });
         }
     }
-    // Field-kit cards → slots '5'..'7'. Cards gate on charges, not cooldown.
+    // Field-kit cards → slots '5'..'7'. Cards gate on charges, not cooldown;
+    // their queued form is the synthetic `__card_<id>` action.
     for (i, slot) in ['5', '6', '7'].iter().enumerate() {
-        if let Some(card_id) = content.card_at(&player.id, i) {
+        if let Some(card_id) = content.card_at(&ship.id, i) {
             let synth = synthetic_card_action_id(&card_id);
             if let Some(action) = content.action(&synth) {
                 tiles.push(hud::AbilityTile {
                     slot: *slot,
-                    name: action.name.clone(),
-                    blurb: ability_blurb(action),
+                    icon: archetype_icon(action.archetype),
+                    damage: action_damage(action),
                     cooldown: 0,
                     cooldown_max: 0,
+                    queued_index: queue_index(ship, &synth),
                 });
             }
         }
     }
     tiles
-}
-
-/// First-pass "what it does" line for an ability tile, synthesized from the
-/// action's archetype (Action has no description field yet; swap to
-/// `action.description` once content adds one — #53). Kept to glyph-font-safe
-/// uppercase words.
-fn ability_blurb(action: &broadside_engine::types::Action) -> String {
-    let kind = match action.archetype {
-        WeaponArchetype::Beam => "BEAM",
-        WeaponArchetype::Ordnance => "ORDNANCE",
-        WeaponArchetype::Broadside => "BROADSIDE",
-        WeaponArchetype::Displacement => "DISPLACE",
-        WeaponArchetype::Control => "CONTROL",
-        WeaponArchetype::Movement => "MOVE",
-        WeaponArchetype::Defensive => "DEFENSE",
-    };
-    // Pull the first damage/heat figure out of the effects for a touch of
-    // detail; otherwise just the archetype word.
-    for e in &action.effects {
-        match e {
-            Effect::DAMAGE { amount, .. } => return format!("{kind} DMG {amount}"),
-            Effect::VENT_HEAT { amount, .. } => return format!("{kind} VENT {amount}"),
-            _ => {}
-        }
-    }
-    kind.to_string()
 }
 
 /// Mirrors the board state hard-coded in `render-example.ts`. Used as both
@@ -544,6 +550,10 @@ struct App {
     /// transient weapon-fire / hit / explosion / trail effects + the live
     /// telegraph cue. Read-only over the board; never touches the resolver.
     vfx: broadside_engine::vfx::CombatVfx,
+    /// Player ability-tile layout/animation state (#64): tweens each tile
+    /// between its resting below-lane slot and its above-ship queue-stack slot
+    /// as abilities are queued/dequeued.
+    ability_hud: broadside_engine::hud::AbilityHud,
     /// Shared audio state. `None` if the `audio` feature is off OR the
     /// audio backend failed to open on startup (headless CI, missing
     /// driver). When present, the bus is re-installed on every
@@ -580,6 +590,7 @@ impl App {
             run: Run::new(Self::fresh_player_ship()),
             demo_state: DemoState::Playing,
             vfx: broadside_engine::vfx::CombatVfx::new(),
+            ability_hud: broadside_engine::hud::AbilityHud::new(),
             #[cfg(feature = "audio")]
             audio: None,
         };
@@ -1005,6 +1016,19 @@ impl ApplicationHandler for App {
                 // safe — it only spawns on an actual state change.
                 self.vfx.observe(&self.board);
                 let vfx_active = self.vfx.advance(1.0 / 60.0);
+                // Ability tiles (#64): build the player's tiles and advance the
+                // below↔above queue animation (~60 Hz). Built before the gfx
+                // borrow (needs &board/&content); emitted into the draw list in
+                // the Playing block below.
+                let player_tiles = self
+                    .board
+                    .cells
+                    .iter()
+                    .flatten()
+                    .find(|s| s.faction == Faction::Player)
+                    .map(|p| build_ship_tiles(p, &self.content))
+                    .unwrap_or_default();
+                let ability_active = self.ability_hud.advance(&player_tiles, 1.0 / 60.0);
                 let Some(gfx) = self.gfx.as_mut() else { return };
                 for (id, orient) in &loft_ships {
                     gfx.sync_loft_pose(id, *orient);
@@ -1021,17 +1045,25 @@ impl ApplicationHandler for App {
                 // salvage in their own banners.
                 if matches!(demo_state, DemoState::Playing) {
                     push_salvage_hud(&mut instances, salvage);
-                    // Ability tiles (#53): name/blurb tiles above the player +
-                    // a cooldown row below the lane. Assembled from the player's
-                    // mounts + field-kit cards (names/cooldown-max via content,
-                    // live cooldown via ship state).
-                    let tiles = build_ability_tiles(&self.board, &self.content);
+                    // Player ability tiles (#64): resting row below the lane,
+                    // queued ones animated up into the above-ship stack.
                     if let Some(px) = player_lane_x(&self.board, &self.lane) {
-                        // Tile row bottom sits above the loft ship silhouette.
-                        let top_y = self.lane.center_y - 110.0;
-                        hud::push_ability_tiles(&mut instances, &tiles, px, top_y);
+                        self.ability_hud
+                            .emit_player(&mut instances, &player_tiles, px, &self.lane);
                     }
-                    hud::push_cooldown_row(&mut instances, &tiles, &self.lane);
+                    // Enemy telegraph stacks: above each enemy, its readying
+                    // (queued, off-cooldown) abilities. Stateless per enemy.
+                    for enemy in self
+                        .board
+                        .cells
+                        .iter()
+                        .flatten()
+                        .filter(|s| s.faction == Faction::Enemy)
+                    {
+                        let etiles = build_ship_tiles(enemy, &self.content);
+                        let ex = fractional_cell_to_screen(enemy.cell as f32, &self.lane).x;
+                        hud::push_enemy_telegraph(&mut instances, &etiles, ex, &self.lane);
+                    }
                 }
                 // Push the appropriate demo-state overlay on top.
                 // Compose no longer auto-pushes — the bin owns the
@@ -1066,10 +1098,10 @@ impl ApplicationHandler for App {
                     Err(e) => log::warn!("surface error: {e:?}"),
                 }
                 // Keep redrawing while a turn tween is in flight, the loft ship
-                // is animating (idle breathing + reorient tweens), OR combat
-                // juice is still playing — so effects animate to completion.
-                // Otherwise let the event loop sleep until the next input.
-                if active_tween || loft_animating || vfx_active {
+                // is animating (idle breathing + reorient tweens), combat juice
+                // is still playing, OR an ability tile is mid-queue-animation —
+                // so all animate to completion. Otherwise sleep until next input.
+                if active_tween || loft_animating || vfx_active || ability_active {
                     if let Some(w) = self.window.as_ref() {
                         w.request_redraw();
                     }
