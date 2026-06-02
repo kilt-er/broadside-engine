@@ -336,31 +336,36 @@ fn push_parallax(out: &mut Vec<DrawCommand>, lane: &LaneGeometry, view_angle_rad
         // Sky band rect: y from (horizon - back_wall_h) to horizon.
         let sky_band = [0.0_f32, horizon - back_wall_h, w, back_wall_h];
 
-        // Nebula patches across the upper third of the back wall.
-        for i in 0..3 {
-            let x = w * (0.18 + (i as f32) * 0.32);
-            // Place at ~25% down from the wall's top edge.
-            let y = (horizon - back_wall_h) + back_wall_h * 0.25 + (i as f32 - 1.0) * 8.0;
+        // Nebula patches at VARIED depths (#14) — not a single row. Each entry
+        // is (x-fraction, y-fraction-down-the-wall, half-width, half-height,
+        // alpha). Far clouds sit higher / smaller / dimmer; near clouds lower /
+        // bigger / brighter, so the field reads layered in depth.
+        let wall_top = horizon - back_wall_h;
+        let nebulae = [
+            // (xf,   yf,    hw,    hh,   alpha)  — far, mid, near
+            (0.14_f32, 0.16_f32, 38.0_f32, 16.0_f32, 0.42_f32), // far: high, small, dim
+            (0.50, 0.40, 64.0, 26.0, 0.55),                     // mid
+            (0.78, 0.62, 88.0, 34.0, 0.66),                     // near: low, big, bright
+        ];
+        for (xf, yf, hw, hh, alpha) in nebulae {
             push_sprite(
                 out,
                 SpriteInstance::axis_aligned(
-                    [x, y],
-                    // Nebula width is fixed; vertical extent also fixed (these
-                    // are atlas-sampled at a baked size). They slide with the
-                    // wall but don't compress with it.
-                    [110.0, 44.0],
-                    [1.0, 1.0, 1.0, 0.55],
+                    [w * xf, wall_top + back_wall_h * yf],
+                    [hw, hh],
+                    [1.0, 1.0, 1.0, alpha],
                     atlas::cell_uvs(atlas::PARALLAX_NEBULA),
                 ),
             );
         }
 
-        // Distant planet — upper-right, ~30% down from the wall's top edge.
-        let planet_size = 54.0;
+        // Distant planet — sits HIGH and small (far depth), offset right and
+        // clear of the nebula row so the background reads layered, not lined-up.
+        let planet_size = 40.0;
         push_sprite(
             out,
             SpriteInstance::axis_aligned(
-                [w * 0.82, (horizon - back_wall_h) + back_wall_h * 0.30],
+                [w * 0.66, wall_top + back_wall_h * 0.20],
                 [planet_size, planet_size],
                 WHITE,
                 atlas::cell_uvs(atlas::PARALLAX_DISTANT_PLANET),
