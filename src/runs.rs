@@ -129,6 +129,15 @@ pub fn advance_after_win(run: &mut Run, sectors: &[Sector]) -> AdvanceResult {
     if run.defeated || run.victorious {
         return AdvanceResult::AlreadyEnded;
     }
+    // Skip past empty passthrough sectors (e.g. Staging) so the win is
+    // accounted against the sector `current_encounter` actually served, and
+    // the run never rests on a sector that has no encounters to fight.
+    while run.current_sector_idx < sectors.len()
+        && sectors[run.current_sector_idx].encounters.is_empty()
+    {
+        run.current_sector_idx += 1;
+        run.completed_encounters = 0;
+    }
     let sector_idx = run.current_sector_idx;
     if sector_idx >= sectors.len() {
         // Out of bounds — declaring victory is the safe interpretation.
@@ -175,8 +184,23 @@ pub fn current_encounter<'s>(run: &Run, sectors: &'s [Sector]) -> Option<&'s Enc
     if run.defeated || run.victorious {
         return None;
     }
-    let sector = sectors.get(run.current_sector_idx)?;
-    sector.encounters.get(run.completed_encounters as usize)
+    // The encounter at the current offset within the current sector...
+    if let Some(enc) = sectors
+        .get(run.current_sector_idx)
+        .and_then(|s| s.encounters.get(run.completed_encounters as usize))
+    {
+        return Some(enc);
+    }
+    // ...or, when the current sector is an empty passthrough (Staging), the
+    // first encounter of the next non-empty sector. `advance_after_win`
+    // keeps the run from resting on an empty sector, so this only fires for
+    // a run that opens on one.
+    let next = run.current_sector_idx.saturating_add(1);
+    sectors
+        .get(next..)
+        .into_iter()
+        .flatten()
+        .find_map(|s| s.encounters.first())
 }
 
 /* =========================================================================
@@ -965,6 +989,51 @@ mod tests {
 
     fn new_run() -> Run {
         Run::new(make_player(0, 5))
+    }
+
+    #[test]
+    fn progression_passes_through_an_empty_leading_sector() {
+        // A Staging-style passthrough (no encounters) followed by a combat
+        // sector. The run opens on the empty sector; `current_encounter`
+        // must serve the combat sector's first encounter, and
+        // `advance_after_win` must normalize past the empty sector instead
+        // of stalling. The generated campaign (#60) opens on an empty
+        // Staging sector and was unwinnable until this.
+        let staging = Sector {
+            id: "staging".into(),
+            name: "Staging".into(),
+            patrol_tier: 1,
+            encounters: Vec::new(),
+        };
+        let combat = Sector {
+            id: "drift".into(),
+            name: "Drift".into(),
+            patrol_tier: 1,
+            encounters: vec![enc("c_e0", Vec::new(), false), enc("c_boss", Vec::new(), true)],
+        };
+        let sectors = vec![staging, combat];
+        let mut run = new_run();
+
+        // Opens on the empty sector but serves the combat sector's first enc.
+        assert_eq!(
+            current_encounter(&run, &sectors).map(|e| e.id.as_str()),
+            Some("c_e0"),
+            "current_encounter skips the empty Staging passthrough",
+        );
+
+        // Winning it normalizes the run into the combat sector.
+        advance_after_win(&mut run, &sectors);
+        assert_eq!(run.current_sector_idx, 1, "advance lands in the combat sector");
+        assert_eq!(
+            current_encounter(&run, &sectors).map(|e| e.id.as_str()),
+            Some("c_boss"),
+            "next encounter is the combat sector's boss",
+        );
+
+        // Clearing the final-sector boss flips victorious — the empty
+        // leading sector never stalled the run.
+        advance_after_win(&mut run, &sectors);
+        assert!(run.victorious, "campaign completes; the empty sector did not stall it");
     }
 
     #[test]
