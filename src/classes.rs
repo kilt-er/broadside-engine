@@ -1,209 +1,245 @@
-//! Phase 2 class scaffold (task #62 step 2): three placeholder
-//! [`ClassDef`]s + their Signature [`Action`]s.
+//! Canonical ship-class roster (#50) + their Signature [`Action`]s.
 //!
 //! Architect's task #62 step 1 landed [`crate::types::ClassDef`] +
-//! [`crate::types::ClassAffinity`] on origin (`f57c060`). This module
-//! provides the **content** half: three placeholder classes the demo can
-//! seed, and the Signature actions each one's `signature` field
-//! references.
+//! [`crate::types::ClassAffinity`]. This module provides the **content**
+//! half: the player class roster the demo seeds, and the Signature actions
+//! each class's `signature` field references.
+//!
+//! ## The roster (#50 — replaces the Phase-2 placeholders)
+//!
+//! The canonical roster is the five classes specified in the analysis doc
+//! (`broadside-analysis.html` CLASSES, lines 1143-1165), transcribed
+//! verbatim (set1/set2/signature/affinity/passive):
+//!
+//! - **wanderer** Frigate "Drifter" (Flexible)  — Slip
+//! - **ronin**    Destroyer "Ronin" (BowOn)      — Ram
+//! - **shadow**   Phantom "Shade" (Broadside)    — Phase (+passive)
+//! - **jujitsuka** Monitor "Anvil" (BowOn)       — Throw
+//! - **chainmaster** Carrier "Tessen" (Broadside) — Swap Toss
+//!
+//! Plus **aegis** — the broadside-native 6th class from bruce's
+//! hand-painted art (NOT in the doc; content's "Option A: Sweep"
+//! identity). See [`aegis`].
+//!
+//! The earlier Phase-2 placeholders (Vanguard/Wraith/Bulwark, task #62)
+//! are retired by this roster.
 //!
 //! ## Catalog vs content split
 //!
 //! - [`ClassDef`] (in `types.rs`) is the wire shape — id, name, affinity,
 //!   set1/set2 action-id lists, signature action id, optional passive
 //!   prose, flavour `desc`. Lives in `Catalog::classes`.
-//! - This module is the **runtime registration step**: each Signature is
-//!   a real [`Action`] that needs to be present in `Content::action(id)`
-//!   for the resolver to dispatch it. `DemoContent::default` calls
-//!   [`DemoContent::register_class_signatures`] (added in
-//!   `src/input.rs`) which inserts all three Signatures into the
+//! - This module is the **runtime registration step**: each Signature is a
+//!   real [`Action`] that must be present in `Content::action(id)` for the
+//!   resolver to dispatch it. `DemoContent::register_class_signatures`
+//!   (in `src/input.rs`) inserts every Signature builder below into the
 //!   action registry.
 //!
-//! ## Signature semantics
+//! ## Canonical signature semantics (the five #97-aligned self-moves)
 //!
-//! Per the analysis HTML's "free-fire" framing, a Signature is dispatched
-//! through `Ship::klass` rather than through one of the ship's mounts —
-//! it's the class-specific hero ability. The action def is still a normal
-//! [`Action`] (cost, targeting, effects); the only thing that makes it
-//! a "Signature" is the ClassDef pointing at its id. There's **no input
-//! wiring yet**: pressing a key to fire the Signature is deferred per
-//! task #62's "defer the input wiring; just have the Action defs in
-//! place." When that lands, the dispatch becomes:
+//! The doc's five signatures are self-relative maneuvers (see the #84/#97
+//! fix in `catalog_canonical.rs` — the canonical export tags them
+//! `pattern: SELF` and they resolve as DISPLACE_SELF, NOT DISPLACE_TARGET):
 //!
-//! ```text
-//! key press -> Intent::FireSignature
-//!           -> look up player.klass -> ClassDef
-//!           -> queue ClassDef.signature (the action id)
-//!           -> regular execute_queue / apply_instant_action path
-//! ```
+//! - **slip** — trade places with the ship directly ahead → DISPLACE_SELF
+//!   TRACTOR_SWAP.
+//! - **ram** — shove the ship ahead, collision damage → DISPLACE_SELF BURN
+//!   forward (collision billed by `resolve_self_move`).
+//! - **phase** — pass through the ship ahead → DISPLACE_SELF SLIP.
+//! - **throw** — hurl the ship behind you → DISPLACE_SELF BURN aft.
+//! - **swap_toss** — swap the cells fore and aft → DISPLACE_SELF
+//!   TRACTOR_SWAP (the faithful single-swap subset; the doc's two-sided
+//!   fore-AND-aft swap has no single-effect representation today).
 //!
-//! ## Why these three classes
-//!
-//! Task #62 names them: Frigate "Vanguard", Scout "Wraith", Gunboat
-//! "Bulwark". These are **task-spec** names — they don't match the
-//! analysis HTML's class roster (`wanderer`, `ronin`, `shadow`, etc.).
-//! The canonical roster will replace these when the real catalog export
-//! lands; until then these three exercise the three [`ClassAffinity`]
-//! variants:
-//!
-//! - **Vanguard** (`Flexible`) — Overcharge: heat-intensive alpha strike
-//! - **Wraith**  (`BowOn`)    — Phase Drift: JUMP + targetLock combo
-//! - **Bulwark** (`Broadside`) — Broadside Volley: bidirectional fire
-//!
-//! Each Signature action id starts with the class's flavour name
-//! (`overcharge`, `phase_drift`, `broadside_volley`) for log readability;
-//! they're not prefixed with `__` because they're real catalog actions,
-//! not synthetic player-input shells.
+//! These mirror the catalog-canonical inflation exactly so the demo
+//! (hand-built `DemoContent`, which doesn't load the full catalog) serves
+//! the same behaviour the catalog path produces.
 
 use crate::types::{
-    Action, ActionCost, Arc as TArc, ClassAffinity, ClassDef, Effect, MovementMode, RangeBand,
-    ReorientTo, StatusKind, Targeting, TargetingPattern, WeaponArchetype,
+    Action, ActionCost, Arc as TArc, ClassAffinity, ClassDef, Effect, LaneEnd, MovementMode,
+    RangeBand, ReorientTo, Targeting, TargetingPattern, WeaponArchetype,
 };
 
 /* =========================================================================
  * Canonical class + signature ids.
  *
- * Adding a new class goes here, in [`placeholder_classes`], in the
- * matching `synthetic_*_signature` builder, and (the runtime side) in
- * `DemoContent::register_class_signatures` in input.rs.
+ * Adding a class: add the const, the builder, append to
+ * [`canonical_classes`], add the `synthetic_*` signature builder, and
+ * register it in `DemoContent::register_class_signatures` (input.rs).
  * ====================================================================== */
 
-pub const CLASS_VANGUARD: &str = "vanguard";
-pub const CLASS_WRAITH: &str = "wraith";
-pub const CLASS_BULWARK: &str = "bulwark";
-
-/// Aegis — the first broadside-native PLAYER class (bruce's hand-painted
-/// `aegis_*.png` art; the bin already sets `player.klass = "aegis"`). NOT
-/// in the canonical analysis-doc roster (which is the five Shogun-derived
-/// classes wanderer/ronin/shadow/jujitsuka/chainmaster) — Aegis is an
-/// additive 6th class built on the art. Identity is content's
-/// doc-grounded "Option A: Sweep" (the lead approved proceeding on the rec
-/// since the doc is silent on Aegis): an aggressive both-flanks broadside
-/// bruiser whose signature fires both lane-ends then sweeps the hull
-/// around. If bruce later rules Aegis is a RESKIN of a canonical broadside
-/// class (chainmaster/shadow) rather than a new one, this entry is cheap to
-/// retire — it's one ClassDef + one synthetic action.
+pub const CLASS_WANDERER: &str = "wanderer";
+pub const CLASS_RONIN: &str = "ronin";
+pub const CLASS_SHADOW: &str = "shadow";
+pub const CLASS_JUJITSUKA: &str = "jujitsuka";
+pub const CLASS_CHAINMASTER: &str = "chainmaster";
+/// Aegis — broadside-native 6th class (bruce's art); see [`aegis`].
 pub const CLASS_AEGIS: &str = "aegis";
 
-pub const SIG_OVERCHARGE: &str = "overcharge";
-pub const SIG_PHASE_DRIFT: &str = "phase_drift";
-pub const SIG_BROADSIDE_VOLLEY: &str = "broadside_volley";
+pub const SIG_SLIP: &str = "slip";
+pub const SIG_RAM: &str = "ram";
+pub const SIG_PHASE: &str = "phase";
+pub const SIG_THROW: &str = "throw";
+pub const SIG_SWAP_TOSS: &str = "swap_toss";
 pub const SIG_BROADSIDE_SWEEP: &str = "broadside_sweep";
 
-/// All three placeholder Signature action ids, in class order
-/// (Vanguard → Wraith → Bulwark).
-pub const PLACEHOLDER_SIGNATURE_IDS: &[&str] = &[
-    SIG_OVERCHARGE,
-    SIG_PHASE_DRIFT,
-    SIG_BROADSIDE_VOLLEY,
+/// Every Signature action id this module synthesizes, in roster order.
+pub const SIGNATURE_IDS: &[&str] = &[
+    SIG_SLIP,
+    SIG_RAM,
+    SIG_PHASE,
+    SIG_THROW,
+    SIG_SWAP_TOSS,
+    SIG_BROADSIDE_SWEEP,
 ];
 
 /* =========================================================================
- * The three ClassDefs.
+ * The class roster.
  * ====================================================================== */
 
-/// Build the three placeholder [`ClassDef`]s the demo seeds into the
-/// catalog. Replaces / complements `Catalog::classes` content when no
-/// real export is loaded.
+/// Build the full player-class roster the demo seeds into the catalog: the
+/// five canonical classes from the analysis doc plus the broadside-native
+/// Aegis. Replaces the retired Phase-2 placeholders.
+///
+/// (Name kept as `placeholder_classes` for caller stability — the bin and
+/// the input.rs signature-coverage test consume it by this name. It is no
+/// longer placeholders; it's the canonical roster.)
 pub fn placeholder_classes() -> Vec<ClassDef> {
-    vec![vanguard(), wraith(), bulwark()]
+    canonical_classes()
 }
 
-/// Frigate "Vanguard" — Flexible affinity, Overcharge signature.
-///
-/// The starter class. No strong stance bias (Flexible) so the player
-/// can experiment with both bow-on and broadside as they learn. The
-/// Signature is an alpha-strike heat-bomb: high single-shot damage
-/// for a heat cost that locks the next turn out (forcing a Vent).
-pub fn vanguard() -> ClassDef {
+/// The canonical roster: wanderer, ronin, shadow, jujitsuka, chainmaster,
+/// aegis.
+pub fn canonical_classes() -> Vec<ClassDef> {
+    vec![
+        wanderer(),
+        ronin(),
+        shadow(),
+        jujitsuka(),
+        chainmaster(),
+        aegis(),
+    ]
+}
+
+/// Frigate "Drifter" (`wanderer`) — Flexible, Slip. The default-unlocked
+/// starter: a balanced beam + broadside opener with no strong stance bias.
+/// Doc CLASSES line 1144-1147.
+pub fn wanderer() -> ClassDef {
     ClassDef {
-        id: CLASS_VANGUARD.into(),
-        name: "Frigate \"Vanguard\"".into(),
+        id: CLASS_WANDERER.into(),
+        name: "Frigate \"Drifter\"".into(),
         affinity: ClassAffinity::Flexible,
         unlock: Some("Unlocked by default".into()),
-        // Demo mount weapons. Real loadouts replace these when the
-        // canonical catalog lands.
-        set1: vec!["pulse_laser".into(), "torpedo".into()],
-        set2: vec!["pulse_laser".into(), "broadside_battery".into()],
-        signature: SIG_OVERCHARGE.into(),
+        set1: vec!["broadside_battery".into(), "pulse_laser".into()],
+        set2: vec!["railgun_broadside".into(), "grav_snare".into()],
+        signature: SIG_SLIP.into(),
         passive: None,
-        desc: "Starter frigate. Balanced loadout, no strong stance bias. \
-               Overcharge dumps a single high-damage shot at the cost of \
-               near-certain lockout — pairs with a Vent on the next turn."
+        desc: "The starting hull; a balanced beam + broadside opener with no \
+               strong stance bias. Slip trades places with the ship directly \
+               ahead — slip past a blocker without spending the turn."
             .into(),
     }
 }
 
-/// Scout "Wraith" — BowOn affinity, Phase Drift signature.
-///
-/// Bow-on specialist with a positional / control signature: JUMP
-/// forward (bow-direction blink) and target-lock whatever was in the
-/// forward arc before the jump. The lock fires on the FIRST follow-up
-/// hit per the canonical targetLock status, so the Scout pairs the
-/// signature with a queued spinal/beam to cash the doubled hit.
-pub fn wraith() -> ClassDef {
+/// Destroyer "Ronin" (`ronin`) — BowOn, Ram. A bow-on bruiser built around
+/// its strong front and collision damage. Doc line 1148-1151.
+pub fn ronin() -> ClassDef {
     ClassDef {
-        id: CLASS_WRAITH.into(),
-        name: "Scout \"Wraith\"".into(),
+        id: CLASS_RONIN.into(),
+        name: "Destroyer \"Ronin\"".into(),
         affinity: ClassAffinity::BowOn,
-        unlock: None, // available from start
-        set1: vec!["pulse_laser".into(), "blink_drive".into()],
-        set2: vec!["particle_lance".into(), "afterburner".into()],
-        signature: SIG_PHASE_DRIFT.into(),
+        unlock: Some("Defeat The Twins".into()),
+        set1: vec!["particle_lance".into(), "blink_drive".into()],
+        set2: vec!["railgun_broadside".into(), "tractor_toss".into()],
+        signature: SIG_RAM.into(),
+        passive: None,
+        desc: "Bow-on bruiser built around its strong front and collision \
+               damage. Ram shoves the ship ahead, dealing collision damage \
+               on impact; collision perks shine."
+            .into(),
+    }
+}
+
+/// Phantom "Shade" (`shadow`) — Broadside, Phase, + passive. The only class
+/// with a passive layered on the signature; a broadside skirmisher that
+/// slips between threats. Doc line 1152-1156.
+pub fn shadow() -> ClassDef {
+    ClassDef {
+        id: CLASS_SHADOW.into(),
+        name: "Phantom \"Shade\"".into(),
+        affinity: ClassAffinity::Broadside,
+        unlock: Some("Defeat The Warlord".into()),
+        set1: vec!["broadside_battery".into(), "tractor_beam".into()],
+        set2: vec!["particle_lance".into(), "blink_drive".into()],
+        signature: SIG_PHASE.into(),
         passive: Some(
-            "Lock applied by Phase Drift carries through the jump — the \
-             Scout's next-turn shot finds its mark even if the target tries \
-             to reorient out of the spinal line."
+            "When moving, the Phantom advances as far as possible in the \
+             chosen direction."
                 .into(),
         ),
-        desc: "Light, bow-on skirmisher. Phase Drift blinks the ship \
-               forward and target-locks the bow-arc threat; chain a Pulse \
-               Laser into the locked target for a doubled-damage spike."
+        desc: "A broadside skirmisher that slips between threats — the only \
+               class with a passive layered on its signature. Phase passes \
+               through the ship directly ahead."
             .into(),
     }
 }
 
-/// Gunboat "Bulwark" — Broadside affinity, Broadside Volley signature.
-///
-/// Broadside specialist. The Signature fires both lane directions
-/// simultaneously when the hull is turned across the lane, so it shines
-/// when the player is pinched between threats — the directional shield
-/// favours the broadside stance against flanking, and the Signature
-/// punishes both flanks at once.
-pub fn bulwark() -> ClassDef {
+/// Monitor "Anvil" (`jujitsuka`) — BowOn, Throw. A reversed-stance brawler
+/// that fights over its stern, turning displacement into kills. Doc line
+/// 1157-1160.
+pub fn jujitsuka() -> ClassDef {
     ClassDef {
-        id: CLASS_BULWARK.into(),
-        name: "Gunboat \"Bulwark\"".into(),
-        affinity: ClassAffinity::Broadside,
-        unlock: None,
-        set1: vec!["broadside_battery".into(), "flak_battery".into()],
-        set2: vec!["railgun_broadside".into(), "grav_snare".into()],
-        signature: SIG_BROADSIDE_VOLLEY.into(),
+        id: CLASS_JUJITSUKA.into(),
+        name: "Monitor \"Anvil\"".into(),
+        affinity: ClassAffinity::BowOn,
+        unlock: Some("Defeat the Flagship on Patrol 2".into()),
+        set1: vec!["repulsor".into(), "scatter_laser".into()],
+        set2: vec!["beam_cannon".into(), "grav_snare".into()],
+        signature: SIG_THROW.into(),
         passive: None,
-        desc: "Heavy gunboat. Broadside Volley fires every broadside mount \
-               in both lane directions when the hull bears — the answer to \
-               being flanked is to flank back. Strong with bow-shield armour \
-               left for chip damage; weak on heat economy."
+        desc: "A reversed-stance brawler that fights over its stern, turning \
+               displacement into kills. Throw hurls the ship behind you, \
+               dealing collision damage."
             .into(),
     }
 }
 
-/// Aegis — Broadside affinity, Broadside Sweep signature. The first
-/// broadside-native PLAYER class (bruce's hand-painted art), content's
-/// doc-grounded "Option A: Sweep" identity.
+/// Carrier "Tessen" (`chainmaster`) — Broadside, Swap Toss. Ordnance-heavy
+/// broadside hull; multi-target launches reliably trigger chain subsystems.
+/// Doc line 1161-1164.
+pub fn chainmaster() -> ClassDef {
+    ClassDef {
+        id: CLASS_CHAINMASTER.into(),
+        name: "Carrier \"Tessen\"".into(),
+        affinity: ClassAffinity::Broadside,
+        unlock: Some("Defeat the Flagship on Patrol 3".into()),
+        set1: vec!["heavy_torpedo".into(), "afterburner".into()],
+        set2: vec!["flak_battery".into(), "missile_salvo".into()],
+        signature: SIG_SWAP_TOSS.into(),
+        passive: None,
+        desc: "Ordnance-heavy broadside hull; multi-target launches reliably \
+               trigger chain subsystems. Swap Toss swaps the cells directly \
+               fore and aft."
+            .into(),
+    }
+}
+
+/// Aegis (`aegis`) — Broadside, Broadside Sweep. The first broadside-native
+/// PLAYER class (bruce's hand-painted art; the bin sets
+/// `player.klass = "aegis"`). NOT in the canonical doc roster — an additive
+/// 6th class, content's doc-grounded "Option A: Sweep" identity (the lead
+/// approved proceeding on the rec since the doc is silent on Aegis).
 ///
-/// The aggressive both-flanks bruiser. Where the placeholder Bulwark just
-/// fires both lane-ends, Aegis's Sweep fires both flanks AND sweeps the
-/// hull around (REORIENT flip) — turning the defensive stance-flip the
-/// player is otherwise forced into by enemy lane-end pressure into an
-/// OFFENSIVE identity. It's the mechanical inverse of the enemy AI's job
-/// ("maximise distinct threatened lane-ends"): when pincered, you turn
-/// broadside and punish both sides at once, then re-present.
+/// The aggressive both-flanks bruiser: where a plain broadside battery just
+/// fires both lane-ends, Aegis's Sweep fires both flanks AND sweeps the hull
+/// around (REORIENT flip) — turning the defensive stance-flip the player is
+/// otherwise forced into by enemy lane-end pressure into an OFFENSIVE
+/// identity. Mechanical inverse of the enemy AI's "maximise distinct
+/// threatened lane-ends" directive.
 ///
-/// Loadouts reuse the canonical broadside actions: set1 close two-way
-/// pressure (broadside_battery + flak_battery), set2 range + pull-into-line
-/// (railgun_broadside + grav_snare). Affinity Broadside so the directional
-/// shield favours the committed stance.
+/// If bruce later rules Aegis is a reskin of a canonical broadside class
+/// (chainmaster/shadow) rather than new, this entry + [`synthetic_broadside_sweep`]
+/// are cheap to retire.
 pub fn aegis() -> ClassDef {
     ClassDef {
         id: CLASS_AEGIS.into(),
@@ -224,124 +260,111 @@ pub fn aegis() -> ClassDef {
 }
 
 /* =========================================================================
- * The three Signature Actions.
+ * Signature Actions.
  *
- * Each is a real [`Action`] that the resolver dispatches like any other
- * — heat / cooldown / arc / band gates apply. The "Signature" framing
- * lives in the [`ClassDef::signature`] pointer, not in the Action shape.
+ * Each is a real [`Action`] the resolver dispatches like any other — heat /
+ * cooldown / arc / band gates apply. The five canonical signatures mirror
+ * the catalog-canonical inflation (catalog_canonical.rs, #97) so the demo's
+ * hand-built registry serves identical behaviour to the catalog path.
  * ====================================================================== */
 
-/// Overcharge — Vanguard's alpha-strike. High-damage forward beam at
-/// short-to-mid range, heat cost is at the lockout threshold so it
-/// almost always forces a Vent next turn (matching the "alpha strike"
-/// framing in the task spec).
-///
-/// Targeting: BEAM (first-occupant in bow direction), Forward arc
-/// (must be bow-on facing the target), allowed bands close/mid/long
-/// with optimal close. Effects: a single DAMAGE 6, no band-falloff
-/// override — falloff applies normally per the canonical pipeline.
-pub fn synthetic_overcharge() -> Action {
+/// Build a free-fire SELF-pattern displacement action shell (the shared
+/// shape of slip / ram / phase / throw / swap_toss): pattern SELF, no arc,
+/// point-blank band, free-fire (does not advance the turn). The caller
+/// supplies the id, name, cost, and the DISPLACE_SELF effect.
+fn self_move_signature(
+    id: &str,
+    name: &str,
+    heat: i32,
+    cooldown_max: i32,
+    effect: Effect,
+) -> Action {
     Action {
-        id: SIG_OVERCHARGE.into(),
-        name: "Overcharge".into(),
-        archetype: WeaponArchetype::Beam,
-        cost: ActionCost { heat: 5, cooldown_max: 4, advances_turn: true },
-        targeting: Targeting {
-            pattern: TargetingPattern::BEAM,
-            band: vec![
-                RangeBand::PointBlank,
-                RangeBand::Close,
-                RangeBand::Mid,
-                RangeBand::Long,
-            ],
-            optimal_band: RangeBand::Close,
-            requires_arc: Some(TArc::Forward),
-            facing_relative: true,
-            hits_all: false,
-        },
-        effects: vec![Effect::DAMAGE { amount: 6, band_falloff: None }],
-        r#mod: None,
-        icon: None,
-    }
-}
-
-/// Phase Drift — Wraith's positional combo. Two effects in declaration
-/// order:
-///
-/// 1. `DISPLACE_SELF { mode: JUMP, distance: 2, direction: None }`. JUMP
-///    ignores the path entirely; direction None falls back to ship
-///    orientation (so the Wraith blinks "forward" relative to its bow).
-/// 2. `APPLY_STATUS { status: TargetLock, duration: 1 }` against the
-///    targeting cells (the forward-arc BEAM first-occupant — resolved
-///    BEFORE the jump, so the lock lands on whoever was in arc at the
-///    start of the turn, even if the jump moves the Wraith out of arc).
-///
-/// Heat is moderate (2) so the Wraith can follow up with a queued Pulse
-/// Laser on the next turn to cash the lock's doubled-damage bonus.
-pub fn synthetic_phase_drift() -> Action {
-    Action {
-        id: SIG_PHASE_DRIFT.into(),
-        name: "Phase Drift".into(),
+        id: id.into(),
+        name: name.into(),
         archetype: WeaponArchetype::Movement,
-        cost: ActionCost { heat: 2, cooldown_max: 3, advances_turn: true },
+        cost: ActionCost { heat, cooldown_max, advances_turn: false },
         targeting: Targeting {
-            pattern: TargetingPattern::BEAM,
-            band: vec![
-                RangeBand::Close,
-                RangeBand::Mid,
-                RangeBand::Long,
-            ],
-            optimal_band: RangeBand::Mid,
-            requires_arc: Some(TArc::Forward),
+            pattern: TargetingPattern::SELF,
+            band: vec![RangeBand::PointBlank],
+            optimal_band: RangeBand::PointBlank,
+            requires_arc: None,
             facing_relative: true,
             hits_all: false,
         },
-        effects: vec![
-            // JUMP first so the lock applies to the *pre-jump* target.
-            Effect::DISPLACE_SELF {
-                mode: MovementMode::JUMP,
-                distance: 2,
-                direction: None,
-            },
-            Effect::APPLY_STATUS {
-                status: StatusKind::TargetLock,
-                duration: 1,
-            },
-        ],
+        effects: vec![effect],
         r#mod: None,
         icon: None,
     }
 }
 
-/// Broadside Volley — Bulwark's bidirectional fire. Targeting pattern
-/// `BROADSIDE` returns the first occupant in BOTH lane directions when
-/// the broadside arc bears, so a single DAMAGE 4 effect lands on each.
-///
-/// Heat cost is high (4) and cooldown long (4) — the Volley is the
-/// Bulwark's heavy commit, not a per-turn option. Requires the
-/// broadside stance to bear.
-pub fn synthetic_broadside_volley() -> Action {
-    Action {
-        id: SIG_BROADSIDE_VOLLEY.into(),
-        name: "Broadside Volley".into(),
-        archetype: WeaponArchetype::Broadside,
-        cost: ActionCost { heat: 4, cooldown_max: 4, advances_turn: true },
-        targeting: Targeting {
-            pattern: TargetingPattern::BROADSIDE,
-            band: vec![
-                RangeBand::Close,
-                RangeBand::Mid,
-                RangeBand::Long,
-            ],
-            optimal_band: RangeBand::Mid,
-            requires_arc: Some(TArc::BroadsideArc),
-            facing_relative: false,
-            hits_all: false,
+/// Slip (wanderer) — trade places with the ship directly ahead.
+/// DISPLACE_SELF TRACTOR_SWAP. Doc heat 1 / cd 5, free-fire.
+pub fn synthetic_slip() -> Action {
+    self_move_signature(
+        SIG_SLIP,
+        "Slip",
+        1,
+        5,
+        Effect::DISPLACE_SELF { mode: MovementMode::TRACTOR_SWAP, distance: 1, direction: None },
+    )
+}
+
+/// Ram (ronin) — shove the ship ahead, collision damage on impact.
+/// DISPLACE_SELF BURN forward; `resolve_self_move` bills the collision when
+/// the burn is blocked by the ship ahead. Doc heat 2 / cd 6.
+pub fn synthetic_ram() -> Action {
+    self_move_signature(
+        SIG_RAM,
+        "Ram",
+        2,
+        6,
+        Effect::DISPLACE_SELF { mode: MovementMode::BURN, distance: 2, direction: None },
+    )
+}
+
+/// Phase (shadow) — pass through the ship directly ahead. DISPLACE_SELF
+/// SLIP (skip occupants, land in the first free cell beyond). Doc heat 1 /
+/// cd 5.
+pub fn synthetic_phase() -> Action {
+    self_move_signature(
+        SIG_PHASE,
+        "Phase",
+        1,
+        5,
+        Effect::DISPLACE_SELF { mode: MovementMode::SLIP, distance: 2, direction: None },
+    )
+}
+
+/// Throw (jujitsuka) — hurl the ship behind you, collision damage.
+/// DISPLACE_SELF BURN toward the stern (`direction: Aft` overrides the
+/// bow-relative step). Doc heat 2 / cd 6.
+pub fn synthetic_throw() -> Action {
+    self_move_signature(
+        SIG_THROW,
+        "Throw",
+        2,
+        6,
+        Effect::DISPLACE_SELF {
+            mode: MovementMode::BURN,
+            distance: 2,
+            direction: Some(LaneEnd::Aft),
         },
-        effects: vec![Effect::DAMAGE { amount: 4, band_falloff: None }],
-        r#mod: None,
-        icon: None,
-    }
+    )
+}
+
+/// Swap Toss (chainmaster) — swap the cells directly fore and aft.
+/// DISPLACE_SELF TRACTOR_SWAP (the faithful single bow-side swap subset; the
+/// two-sided fore-AND-aft swap has no single-effect representation today).
+/// Doc heat 2 / cd 7.
+pub fn synthetic_swap_toss() -> Action {
+    self_move_signature(
+        SIG_SWAP_TOSS,
+        "Swap Toss",
+        2,
+        7,
+        Effect::DISPLACE_SELF { mode: MovementMode::TRACTOR_SWAP, distance: 1, direction: None },
+    )
 }
 
 /// Broadside Sweep — Aegis's signature. The both-flanks-then-pivot move.
@@ -352,15 +375,13 @@ pub fn synthetic_broadside_volley() -> Action {
 ///    ships (one per flank) eat 3.
 /// 2. `REORIENT { to: Flip }` — after the volley the hull flips
 ///    stance-preserving (bow↔stern), re-presenting the broadside the other
-///    way for next round. This is the "sweep": it both keeps Aegis
-///    committed broadside (rather than drifting back to bow-on) AND is the
-///    visible telegraph that distinguishes Aegis from a plain
-///    `broadside_volley` reskin.
+///    way for next round. The "sweep": keeps Aegis committed broadside AND
+///    is the visible telegraph distinguishing it from a plain both-ends
+///    battery.
 ///
-/// Heat 4 / cooldown 5 — a heavy commit like the other signatures, not a
-/// per-turn option. Requires the BroadsideArc to bear (broadside stance).
-/// The DAMAGE resolves BEFORE the reorient, so the hit lands on whoever was
-/// in the broadside line at fire time, then the flip happens.
+/// Heat 4 / cooldown 5 — a heavy commit. Requires the BroadsideArc to bear.
+/// DAMAGE resolves BEFORE the reorient (lands on who's in the line at fire
+/// time, then the flip happens).
 pub fn synthetic_broadside_sweep() -> Action {
     Action {
         id: SIG_BROADSIDE_SWEEP.into(),
@@ -376,9 +397,7 @@ pub fn synthetic_broadside_sweep() -> Action {
             hits_all: false,
         },
         effects: vec![
-            // Fire both flanks first...
             Effect::DAMAGE { amount: 3, band_falloff: None },
-            // ...then sweep the hull around to re-present the guns.
             Effect::REORIENT { to: ReorientTo::Flip },
         ],
         r#mod: None,
@@ -393,119 +412,103 @@ pub fn synthetic_broadside_sweep() -> Action {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::{HashMap, HashSet};
 
     #[test]
-    fn placeholder_classes_yields_three_distinct_class_defs() {
-        let classes = placeholder_classes();
-        assert_eq!(classes.len(), 3);
-        let ids: std::collections::HashSet<&str> =
-            classes.iter().map(|c| c.id.as_str()).collect();
-        assert!(ids.contains(CLASS_VANGUARD));
-        assert!(ids.contains(CLASS_WRAITH));
-        assert!(ids.contains(CLASS_BULWARK));
-        assert_eq!(ids.len(), 3, "class ids must be unique");
+    fn canonical_roster_has_six_distinct_classes() {
+        let cs = canonical_classes();
+        assert_eq!(cs.len(), 6);
+        let ids: HashSet<&str> = cs.iter().map(|c| c.id.as_str()).collect();
+        for id in [
+            CLASS_WANDERER, CLASS_RONIN, CLASS_SHADOW, CLASS_JUJITSUKA,
+            CLASS_CHAINMASTER, CLASS_AEGIS,
+        ] {
+            assert!(ids.contains(id), "roster missing `{id}`");
+        }
+        assert_eq!(ids.len(), 6, "class ids must be unique");
     }
 
-    /// The `signature` field on each ClassDef must point at the matching
-    /// canonical Signature id. Reviewer's audit will check the same:
-    /// if a `signature` references an unknown action id, the resolver
-    /// silently no-ops the Signature press, which the player reads as
-    /// the class being broken.
     #[test]
-    fn every_class_def_signature_id_matches_canonical() {
-        let cs = placeholder_classes();
-        let by_id: std::collections::HashMap<&str, &ClassDef> =
-            cs.iter().map(|c| (c.id.as_str(), c)).collect();
-        assert_eq!(by_id[CLASS_VANGUARD].signature, SIG_OVERCHARGE);
-        assert_eq!(by_id[CLASS_WRAITH].signature, SIG_PHASE_DRIFT);
-        assert_eq!(by_id[CLASS_BULWARK].signature, SIG_BROADSIDE_VOLLEY);
+    fn placeholder_classes_aliases_the_canonical_roster() {
+        // The bin + input.rs coverage test consume `placeholder_classes`;
+        // it now returns the canonical roster.
+        assert_eq!(placeholder_classes().len(), canonical_classes().len());
     }
 
-    /// Each class covers a distinct affinity so the three together
-    /// exercise the full [`ClassAffinity`] enum. If a future variant
-    /// gets added to ClassAffinity, this list extends.
+    /// Every ClassDef's `signature` must point at a Signature id this module
+    /// synthesizes — otherwise the resolver silently no-ops the press.
     #[test]
-    fn three_classes_cover_three_affinities() {
-        let cs = placeholder_classes();
-        let mut affs: Vec<ClassAffinity> = cs.iter().map(|c| c.affinity).collect();
-        affs.sort_by_key(|a| match a {
-            ClassAffinity::Flexible => 0,
-            ClassAffinity::BowOn => 1,
-            ClassAffinity::Broadside => 2,
-        });
-        assert_eq!(
-            affs,
-            vec![
-                ClassAffinity::Flexible,
-                ClassAffinity::BowOn,
-                ClassAffinity::Broadside,
-            ],
-        );
-    }
-
-    /// Every Signature action id starts WITHOUT the `__` synthetic
-    /// prefix — Signatures are real catalog actions, not synthetic
-    /// player-input shells, so they collide-safe naturally.
-    #[test]
-    fn signature_ids_are_not_synthetic_prefixed() {
-        for id in PLACEHOLDER_SIGNATURE_IDS {
+    fn every_signature_id_is_synthesized() {
+        let synthesized: HashSet<&str> = SIGNATURE_IDS.iter().copied().collect();
+        for c in canonical_classes() {
             assert!(
-                !id.starts_with("__"),
-                "Signature id `{id}` must not use the synthetic `__` prefix",
+                synthesized.contains(c.signature.as_str()),
+                "class `{}` signature `{}` is not in SIGNATURE_IDS",
+                c.id, c.signature,
             );
         }
     }
 
+    /// Each canonical signature id maps to a builder; pin the id↔builder
+    /// agreement.
     #[test]
-    fn overcharge_is_a_high_heat_alpha_strike() {
-        let a = synthetic_overcharge();
-        assert_eq!(a.id, SIG_OVERCHARGE);
-        // High heat — task spec says it forces a Vent next turn. The
-        // demo player's `heat_max` is 6; cost 5 puts the player one shot
-        // away from lockout from a cold start, which is the "alpha
-        // strike" framing.
-        assert!(a.cost.heat >= 4, "Overcharge must cost enough heat to be a commit");
-        // Forward arc — bow-on only.
-        assert_eq!(a.targeting.requires_arc, Some(TArc::Forward));
-        // Single DAMAGE effect with a high amount.
-        let dmg: i32 = a.effects.iter().filter_map(|e| match e {
-            Effect::DAMAGE { amount, .. } => Some(*amount),
-            _ => None,
-        }).sum();
-        assert!(dmg >= 5, "Overcharge must deal at least 5 raw damage");
+    fn signature_builders_match_their_ids() {
+        let builders: HashMap<&str, Action> = [
+            (SIG_SLIP, synthetic_slip()),
+            (SIG_RAM, synthetic_ram()),
+            (SIG_PHASE, synthetic_phase()),
+            (SIG_THROW, synthetic_throw()),
+            (SIG_SWAP_TOSS, synthetic_swap_toss()),
+            (SIG_BROADSIDE_SWEEP, synthetic_broadside_sweep()),
+        ].into_iter().collect();
+        for (id, action) in &builders {
+            assert_eq!(&action.id, id, "builder id mismatch for `{id}`");
+        }
     }
 
     #[test]
-    fn phase_drift_has_jump_then_target_lock_in_that_order() {
-        let a = synthetic_phase_drift();
-        // Effects in declaration order: DISPLACE_SELF::JUMP first,
-        // APPLY_STATUS::TargetLock second. The order matters: pre-jump
-        // targeting selects the locked cells, then the jump moves the
-        // ship out — see module docstring for the rationale.
+    fn affinities_cover_all_three_variants() {
+        let affs: HashSet<ClassAffinity> =
+            canonical_classes().iter().map(|c| c.affinity).collect();
+        assert!(affs.contains(&ClassAffinity::Flexible));
+        assert!(affs.contains(&ClassAffinity::BowOn));
+        assert!(affs.contains(&ClassAffinity::Broadside));
+    }
+
+    /* ---- the five canonical self-move signatures (#97-aligned) ------ */
+
+    #[test]
+    fn slip_and_swap_toss_are_tractor_swaps() {
+        for a in [synthetic_slip(), synthetic_swap_toss()] {
+            assert!(matches!(
+                a.effects[0],
+                Effect::DISPLACE_SELF { mode: MovementMode::TRACTOR_SWAP, .. }
+            ), "{} should be DISPLACE_SELF TRACTOR_SWAP", a.id);
+            assert!(!a.cost.advances_turn, "{} is free-fire", a.id);
+        }
+    }
+
+    #[test]
+    fn ram_burns_forward_throw_burns_aft() {
         assert!(matches!(
-            a.effects[0],
-            Effect::DISPLACE_SELF { mode: MovementMode::JUMP, .. }
+            synthetic_ram().effects[0],
+            Effect::DISPLACE_SELF { mode: MovementMode::BURN, direction: None, .. }
         ));
         assert!(matches!(
-            a.effects[1],
-            Effect::APPLY_STATUS { status: StatusKind::TargetLock, .. }
+            synthetic_throw().effects[0],
+            Effect::DISPLACE_SELF { mode: MovementMode::BURN, direction: Some(LaneEnd::Aft), .. }
         ));
-        assert_eq!(a.effects.len(), 2, "Phase Drift should have exactly two effects");
     }
 
     #[test]
-    fn broadside_volley_requires_broadside_arc() {
-        let a = synthetic_broadside_volley();
-        // Requires the BroadsideArc to bear — i.e., the ship must be
-        // turned broadside. Forward / Rear arcs do NOT bear; Turret
-        // ships could theoretically fire it but no Bulwark mount is
-        // Turret-arc'd in the placeholder loadouts.
-        assert_eq!(a.targeting.requires_arc, Some(TArc::BroadsideArc));
-        // BROADSIDE pattern fires both lane directions when bearing.
-        assert_eq!(a.targeting.pattern, TargetingPattern::BROADSIDE);
+    fn phase_is_slip_movement() {
+        assert!(matches!(
+            synthetic_phase().effects[0],
+            Effect::DISPLACE_SELF { mode: MovementMode::SLIP, .. }
+        ));
     }
 
-    /* ---- Aegis (#50, first broadside-native player class) ---------- */
+    /* ---- Aegis (#50) ------------------------------------------------ */
 
     #[test]
     fn aegis_is_a_broadside_class_with_the_sweep_signature() {
@@ -513,8 +516,6 @@ mod tests {
         assert_eq!(a.id, CLASS_AEGIS);
         assert_eq!(a.affinity, ClassAffinity::Broadside);
         assert_eq!(a.signature, SIG_BROADSIDE_SWEEP);
-        // Loadouts reference the canonical broadside actions (the same ids
-        // the catalog ships); both sets are 2 actions like every class.
         assert_eq!(a.set1.len(), 2);
         assert_eq!(a.set2.len(), 2);
         assert!(a.set1.contains(&"broadside_battery".to_string()));
@@ -524,20 +525,14 @@ mod tests {
     fn broadside_sweep_fires_both_flanks_then_flips() {
         let a = synthetic_broadside_sweep();
         assert_eq!(a.id, SIG_BROADSIDE_SWEEP);
-        // BROADSIDE pattern + BroadsideArc → fires both lane-ends when the
-        // hull bears.
         assert_eq!(a.targeting.pattern, TargetingPattern::BROADSIDE);
         assert_eq!(a.targeting.requires_arc, Some(TArc::BroadsideArc));
-        // Effects in order: DAMAGE first (lands on who's in the line at fire
-        // time), then the stance-preserving flip — the "sweep" that
-        // distinguishes Aegis from a plain broadside_volley.
         assert!(matches!(a.effects[0], Effect::DAMAGE { .. }));
         assert!(matches!(
             a.effects[1],
             Effect::REORIENT { to: ReorientTo::Flip }
         ));
         assert_eq!(a.effects.len(), 2, "Sweep is exactly DAMAGE then flip");
-        // A heavy commit, not a per-turn option.
         assert!(a.cost.heat >= 4 && a.cost.cooldown_max >= 4);
     }
 }

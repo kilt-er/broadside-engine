@@ -372,10 +372,13 @@ impl DemoContent {
     /// "press a key to fire the Signature" is deferred — these defs
     /// just exist in the action registry, ready for that later step.
     pub fn register_class_signatures(&mut self) {
-        self.insert(crate::classes::synthetic_overcharge());
-        self.insert(crate::classes::synthetic_phase_drift());
-        self.insert(crate::classes::synthetic_broadside_volley());
-        // Aegis (first broadside-native player class, #50) signature.
+        // The canonical roster's five self-move signatures (#50/#97) ...
+        self.insert(crate::classes::synthetic_slip());
+        self.insert(crate::classes::synthetic_ram());
+        self.insert(crate::classes::synthetic_phase());
+        self.insert(crate::classes::synthetic_throw());
+        self.insert(crate::classes::synthetic_swap_toss());
+        // ... plus Aegis's broadside-native signature (#50).
         self.insert(crate::classes::synthetic_broadside_sweep());
     }
 
