@@ -13,8 +13,9 @@
 //!
 //! That posterized texture is what the existing `gfx` 2D compositor blits into
 //! the lane via its `TexturedShip` path — so the rest of the renderer never
-//! sees 3D or depth. **House style is locked engine-wide: [`LOW_W`]×[`LOW_H`]
-//! (320×200) internal, [`BANDS`] (8).**
+//! sees 3D or depth. The ship buffer is [`LOW_W`]×[`LOW_H`] (160×100, #48 —
+//! chunky ship pixels) at [`BANDS`] (8) posterize bands; this is the SHIP
+//! resolution only, independent of the 2D compositor / HUD virtual res.
 //!
 //! ## Camera / motion (orientation-driven, NOT auto-spin)
 //!
@@ -32,12 +33,17 @@
 use crate::loft::HullMesh;
 use crate::types::{LaneEnd, Orientation};
 
-/// Locked house-style internal render resolution (bruce's confirmed look:
-/// 320×200 resolves the greebles, 8 posterize bands gives the smoother HD-2D
-/// shading). Engine-wide, not per-ship.
-pub const LOW_W: u32 = 320;
-pub const LOW_H: u32 = 200;
-/// Posterize band count (house style).
+/// Loft offscreen render resolution — the SHIP pixel size. #48 drops this from
+/// 320×200 to 160×100 for chunkier ship pixels: the loft output blits
+/// nearest-neighbour into a fixed lane dest-rect, so a lower offscreen res =
+/// bigger on-screen texels = more pixellated ships. This is the SHIP buffer
+/// ONLY — the 2D compositor / HUD virtual res (SALVAGE text, ruler, background)
+/// is untouched and stays crisp. Aspect stays 1.6 (160/100 = 320/200), so the
+/// lane dest-rect in hud is unchanged. bruce dials the exact chunkiness on the
+/// pixellation-check (one-line change here).
+pub const LOW_W: u32 = 160;
+pub const LOW_H: u32 = 100;
+/// Posterize band count — kept at 8 (this is about pixel SIZE, not colour count).
 pub const BANDS: f32 = 8.0;
 
 /// Default hull albedo (loft editor `0xb4c6e0`, linear-ish sRGB stored) used
