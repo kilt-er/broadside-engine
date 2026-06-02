@@ -260,6 +260,87 @@ pub fn award_run_salvage<F>(
 }
 
 /* =========================================================================
+ * Capital-ship salvage (#63 follow-up).
+ *
+ * Per the design doc (§VIII 698-705): capital ships are the ONLY salvage
+ * droppers, and the payout SCALES WITH PATROL TIER between the catalog's
+ * `salvage_p1` (tier 1) and `salvage_p7` (tier 7) endpoints. This replaces
+ * the flat `is_boss → ×2` heuristic for capital encounters with the
+ * canonical per-capital, tier-interpolated reward.
+ * ====================================================================== */
+
+/// Salvage a capital drops at `patrol_tier`, linearly interpolated between
+/// the catalog's tier-1 (`salvage_p1`) and tier-7 (`salvage_p7`) endpoints.
+///
+/// - `salvage_p1: None` (the Void Sovereign — Patrol-7-only, no tier-1
+///   payout) → treated as 0 at the low end; at tier 7 it still pays
+///   `salvage_p7`. Interpolating from 0 is the honest read of "undefined at
+///   P1" if a None-P1 capital is somehow reached below P7.
+/// - Tiers clamp to [1, 7] (the canonical patrol range).
+/// - Doc-canonical numbers (the sP1/sP7 catalog fields); linear is the
+///   plainest reading of "scales with patrol tier" — not a balance knob.
+pub fn capital_salvage_for_tier(capital: &crate::types::CapitalDef, patrol_tier: u8) -> u32 {
+    let p1 = capital.salvage_p1.unwrap_or(0).max(0) as i64;
+    let p7 = capital.salvage_p7.max(0) as i64;
+    let tier = patrol_tier.clamp(1, 7);
+    if tier <= 1 {
+        return p1 as u32;
+    }
+    if tier >= 7 {
+        return p7 as u32;
+    }
+    // Linear over the 6 steps between P1 and P7 (interior tiers 2..=6).
+    let span = (tier as i64) - 1;
+    (p1 + (p7 - p1) * span / 6).max(0) as u32
+}
+
+/// Salvage for a won CAPITAL encounter: the tier-scaled
+/// [`capital_salvage_for_tier`] for whichever [`crate::types::CapitalDef`]
+/// the boss encounter fielded. `None` if the encounter isn't a boss or its
+/// boss ship doesn't match a catalog capital (caller falls back to the
+/// per-enemy [`salvage_for_encounter_win`]).
+///
+/// The boss spawn's `class_id` carries the capital's display NAME (set by
+/// `runs::capital_spawn`), so capitals are matched by `name`.
+pub fn salvage_for_capital_encounter(
+    encounter: &crate::types::EncounterDef,
+    catalog: &crate::types::Catalog,
+    patrol_tier: u8,
+) -> Option<u32> {
+    if !encounter.is_boss {
+        return None;
+    }
+    let boss = encounter.enemy_ships.first()?;
+    let capital = catalog
+        .capitals
+        .iter()
+        .find(|c| c.name.eq_ignore_ascii_case(&boss.class_id))?;
+    Some(capital_salvage_for_tier(capital, patrol_tier))
+}
+
+/// Award salvage for a won encounter, capital-aware. A CAPITAL boss
+/// encounter awards the doc-canonical tier-scaled capital salvage
+/// ([`salvage_for_capital_encounter`]); any other encounter falls back to
+/// the per-enemy [`salvage_for_encounter_win`]. The data-driven replacement
+/// for the flat `is_boss → ×2` reward.
+///
+/// `patrol_tier` is the run's global difficulty tier; `class_to_ship` is the
+/// spawn→Ship builder used only on the non-capital fallback path.
+pub fn award_run_salvage_with_catalog<F>(
+    run: &mut Run,
+    encounter: &crate::types::EncounterDef,
+    catalog: &crate::types::Catalog,
+    patrol_tier: u8,
+    class_to_ship: F,
+) where
+    F: FnMut(&crate::types::ShipSpawn) -> Option<Ship>,
+{
+    let earned = salvage_for_capital_encounter(encounter, catalog, patrol_tier)
+        .unwrap_or_else(|| salvage_for_encounter_win(encounter, class_to_ship));
+    run.salvage = run.salvage.saturating_add(earned);
+}
+
+/* =========================================================================
  * Run end → meta-progression rollover.
  * ====================================================================== */
 
@@ -629,5 +710,126 @@ mod tests {
                 "unlock id `{id}` not in the known canonical-catalog id set; \
                  update the test or the threshold table");
         }
+    }
+
+    /* ---- capital salvage (#63 follow-up) --------------------------- */
+
+    fn capital(name: &str, sp1: Option<i32>, sp7: i32) -> crate::types::CapitalDef {
+        crate::types::CapitalDef {
+            id: name.to_lowercase().replace(' ', "_"),
+            name: name.into(),
+            sector: "Test".into(),
+            corrupt: false,
+            salvage_p1: sp1,
+            salvage_p7: sp7,
+        }
+    }
+
+    #[test]
+    fn capital_salvage_interpolates_p1_to_p7_by_tier() {
+        // The Dasher: P1=2, P7=7. Tier endpoints exact; interior linear.
+        let c = capital("The Dasher", Some(2), 7);
+        assert_eq!(capital_salvage_for_tier(&c, 1), 2, "tier 1 = salvage_p1");
+        assert_eq!(capital_salvage_for_tier(&c, 7), 7, "tier 7 = salvage_p7");
+        // Interior: 2 + (7-2)*(t-1)/6.  t=4 → 2 + 5*3/6 = 2+2 = 4.
+        assert_eq!(capital_salvage_for_tier(&c, 4), 4);
+        // Monotonic non-decreasing across the tier range.
+        let seq: Vec<u32> = (1..=7).map(|t| capital_salvage_for_tier(&c, t)).collect();
+        for w in seq.windows(2) {
+            assert!(w[0] <= w[1], "salvage should not decrease with tier: {seq:?}");
+        }
+        // Clamp: tier 0 → P1, tier 9 → P7.
+        assert_eq!(capital_salvage_for_tier(&c, 0), 2);
+        assert_eq!(capital_salvage_for_tier(&c, 9), 7);
+    }
+
+    #[test]
+    fn capital_salvage_none_p1_floors_to_zero_low_pays_p7_high() {
+        // Void Sovereign: P1=None (Patrol-7-only), P7=11.
+        let c = capital("Void Sovereign", None, 11);
+        assert_eq!(capital_salvage_for_tier(&c, 1), 0, "None P1 → 0 at tier 1");
+        assert_eq!(capital_salvage_for_tier(&c, 7), 11, "still pays P7 at tier 7");
+        assert!(capital_salvage_for_tier(&c, 4) > 0, "interpolates up from 0");
+    }
+
+    /// Build a catalog with one capital so salvage_for_capital_encounter can
+    /// resolve a boss encounter's class_id → CapitalDef by name.
+    fn capital_catalog() -> crate::types::Catalog {
+        let json = serde_json::json!({
+            "meta": { "schema": "x", "lane": [5], "newAxes": [], "bands": ["close"] },
+            "actions": [], "mods": [], "subsystems": [], "statuses": [],
+            "enemies": [], "patrols": [],
+            "capitals": [
+                { "id": "dasher", "name": "The Dasher", "sector": "Drift Belt",
+                  "corrupt": true, "sP1": 2, "sP7": 7 },
+            ],
+        });
+        crate::catalog_canonical::from_canonical_value(json).expect("capital catalog parses")
+    }
+
+    fn boss_encounter(capital_name: &str) -> EncounterDef {
+        EncounterDef {
+            id: "boss".into(),
+            enemy_ships: vec![ShipSpawn {
+                class_id: capital_name.into(), // capital_spawn sets class_id = capital NAME
+                cell: 3,
+                orientation: Orientation::BowOn { bow: LaneEnd::Aft },
+                hp_override: None,
+            }],
+            hazards: vec![],
+            is_boss: true,
+        }
+    }
+
+    #[test]
+    fn capital_encounter_salvage_uses_the_matched_capital_at_tier() {
+        let cat = capital_catalog();
+        let enc = boss_encounter("The Dasher");
+        assert_eq!(salvage_for_capital_encounter(&enc, &cat, 1), Some(2));
+        assert_eq!(salvage_for_capital_encounter(&enc, &cat, 7), Some(7));
+        assert_eq!(salvage_for_capital_encounter(&enc, &cat, 4), Some(4));
+        // Non-boss → None (caller falls back to per-enemy salvage).
+        let mut non_boss = boss_encounter("The Dasher");
+        non_boss.is_boss = false;
+        assert_eq!(salvage_for_capital_encounter(&non_boss, &cat, 7), None);
+        // Boss whose class_id isn't a known capital → None.
+        let unknown = boss_encounter("The Phantom Menace");
+        assert_eq!(salvage_for_capital_encounter(&unknown, &cat, 7), None);
+    }
+
+    #[test]
+    fn award_with_catalog_uses_capital_salvage_for_a_capital_boss() {
+        let cat = capital_catalog();
+        let mut run = new_run();
+        run.salvage = 0;
+        let enc = boss_encounter("The Dasher");
+        // Tier 7 → The Dasher pays salvage_p7 = 7, NOT the old flat ×2 of a
+        // per-hull sum.
+        award_run_salvage_with_catalog(&mut run, &enc, &cat, 7, |spawn| {
+            Some(ship_with_hull(&spawn.class_id, 14))
+        });
+        assert_eq!(run.salvage, 7, "capital boss awards its tier-7 salvage");
+    }
+
+    #[test]
+    fn award_with_catalog_falls_back_to_per_enemy_for_non_capital() {
+        let cat = capital_catalog();
+        let mut run = new_run();
+        run.salvage = 0;
+        // A non-boss encounter with one hull-3 skiff → per-enemy salvage = 1.
+        let enc = EncounterDef {
+            id: "e".into(),
+            enemy_ships: vec![ShipSpawn {
+                class_id: "skiff".into(), cell: 2,
+                orientation: Orientation::BowOn { bow: LaneEnd::Aft },
+                hp_override: None,
+            }],
+            hazards: vec![],
+            is_boss: false,
+        };
+        award_run_salvage_with_catalog(&mut run, &enc, &cat, 5, |spawn| {
+            Some(ship_with_hull(&spawn.class_id, 3))
+        });
+        assert_eq!(run.salvage, 1, "non-capital → per-enemy fallback (hull-3 = 1)");
     }
 }
