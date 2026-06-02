@@ -51,7 +51,7 @@ use broadside_engine::hud::{
 };
 use broadside_engine::runs::{
     advance_after_win, boss_ship_for_spawn, build_encounter_board, current_encounter, encounter_outcome, fallback_ship_for_spawn,
-    mark_defeated, placeholder_sectors, AdvanceResult, EncounterOutcome,
+    generate_campaign, mark_defeated, placeholder_sectors, AdvanceResult, EncounterOutcome,
 };
 use broadside_engine::input::{
     intent_to_action_id, key_to_intent, synthetic_card_action_id, DemoContent, Intent, Key,
@@ -554,6 +554,18 @@ struct App {
 
 impl App {
     fn new() -> Self {
+        // #62: drive the campaign off the canonical catalog when it loaded —
+        // generate_campaign turns the catalog's SectorDef[] into runtime
+        // sectors via the #60 spawn-pool generator. Falls back to the
+        // hand-authored placeholder_sectors() if the catalog is absent
+        // (headless / missing asset), so the demo still runs. Patrol tier
+        // starts at 1 (the run's global difficulty; meta/run state will
+        // drive it later).
+        let catalog = load_catalog();
+        let sectors = match catalog.as_ref() {
+            Some(cat) if !cat.sectors.is_empty() => generate_campaign(cat, 1),
+            _ => placeholder_sectors(),
+        };
         #[allow(unused_mut)]
         let mut app = Self {
             window: None,
@@ -561,10 +573,10 @@ impl App {
             board: render_example_board(),
             lane: demo_lane(),
             content: fresh_content(),
-            catalog: load_catalog(),
+            catalog,
             camera_angle_idx: CAMERA_ANGLE_DEFAULT_INDEX,
             tween_anchors: HashMap::new(),
-            sectors: placeholder_sectors(),
+            sectors,
             run: Run::new(Self::fresh_player_ship()),
             demo_state: DemoState::Playing,
             vfx: broadside_engine::vfx::CombatVfx::new(),
