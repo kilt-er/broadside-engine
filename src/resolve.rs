@@ -381,8 +381,46 @@ fn run_action(
     // cell (the gun's position at fire time). Movement triggered by this
     // action shifts the ship for the NEXT call's reads, not for the current
     // effect chain.
-    for fx in &action.effects {
-        apply_effect(fx, action, ship_cell, &cells, board, content);
+    //
+    // twin_linked (#50): the action's effects run TWICE. Cost/heat/cooldown
+    // are still paid once (below) — the mod only doubles effect application,
+    // it is not a re-queued action. Targeting is RE-RESOLVED before the second
+    // pass (content ruling) so the second volley re-aims at the board left by
+    // the first (e.g. the first volley's kill clears a cell, so the spinal
+    // line shortens). The re-resolve reads the ship's current cell, which a
+    // DISPLACE effect in the first pass may have moved.
+    // precision_core: snapshot which targeted cells hold a ship BEFORE the
+    // effects run, so after bookkeeping we can tell whether this action killed
+    // one (the cell is occupied now and empty after). Recorded only when the
+    // mod is present, to avoid the scan otherwise.
+    let precision_core = WeaponMod::of(action) == Some(WeaponMod::PrecisionCore);
+    let precision_targets: Vec<usize> = if precision_core {
+        cells.iter().copied().filter(|&c| board.cells[c].is_some()).collect()
+    } else {
+        Vec::new()
+    };
+
+    let passes = if WeaponMod::of(action).map(WeaponMod::applies_effects_twice).unwrap_or(false) {
+        2
+    } else {
+        1
+    };
+    for pass in 0..passes {
+        // Re-resolve targeting on the second pass against the (possibly moved)
+        // ship and (possibly mutated) board.
+        let pass_cells = if pass == 0 {
+            cells.clone()
+        } else {
+            match find_cell_by_id(board, ship_id) {
+                Some(cur) => resolve_targeting(action, board, cur),
+                None => break, // attacker gone after the first pass
+            }
+        };
+        // The effect source is the ship's CURRENT cell for this pass.
+        let pass_source = find_cell_by_id(board, ship_id).unwrap_or(ship_cell);
+        for fx in &action.effects {
+            apply_effect(fx, action, pass_source, &pass_cells, board, content);
+        }
     }
 
     // Heat + cooldown bookkeeping happen AFTER effects, against the ship at
@@ -392,6 +430,13 @@ fn run_action(
     // the board — a self-destruct (e.g. ReactorBreach) or reactor-breach
     // splash could have cleared its cell, and Rust (unlike TS) cannot write
     // fields on a ship that no longer occupies a cell.
+    // precision_core (#50): did this action make a clean kill? Computed BEFORE
+    // the mutable `ship` borrow below to avoid aliasing `board.cells`. "Clean
+    // kill" = any targeted cell that held a ship before the effects is now
+    // empty (any-lethal; overkill counts — content ruling).
+    let precision_kill =
+        precision_core && precision_targets.iter().any(|&c| board.cells[c].is_none());
+
     let post_cell = find_cell_by_id(board, ship_id);
     if let Some(post_cell) = post_cell {
         if let Some(ship) = board.cells[post_cell].as_mut() {
@@ -399,7 +444,12 @@ fn run_action(
             if ship.heat >= ship.heat_max {
                 ship.locked_out = true;
             }
-            ship.cooldowns.insert(lookup_id.to_string(), action.cost.cooldown_max);
+            // The cooldown bookkeeping insert. precision_core overrides it to 0
+            // on a clean kill — applied here (after the base insert) so the
+            // recharge wins; doing it during effects would be clobbered by this
+            // very insert. Keyed by `lookup_id`, the action's cooldown slot.
+            let cd = if precision_kill { 0 } else { action.cost.cooldown_max };
+            ship.cooldowns.insert(lookup_id.to_string(), cd);
         }
     }
     // `onDamageDealt` fires UNCONDITIONALLY — once per fired action — to match
@@ -737,9 +787,26 @@ pub fn apply_effect(
 ) {
     match fx {
         Effect::DAMAGE { amount, .. } => {
+            // The attacker's id, captured BEFORE any hit so the on-hit mod
+            // dispatch (precision_core) can re-find it after the board mutates.
+            // `source_cell` holds the attacker at effect-start.
+            let attacker_id: Option<String> =
+                board.cells[source_cell].as_ref().map(|s| s.id.clone());
+            let has_on_hit_mod = WeaponMod::of(a).is_some();
             for &c in cells {
                 if board.cells[c].is_some() {
                     apply_damage(c, *amount, source_cell, a, board, content);
+                    // On-hit weapon mod (flak/incendiary/emp/targeting_laser/
+                    // precision_core). The target was present pre-hit (the
+                    // `is_some` gate above), so the shot CONNECTED — riders
+                    // land on contact even if the shield absorbed the hull
+                    // damage. `killed` = the cell is now empty.
+                    if has_on_hit_mod {
+                        let killed = board.cells[c].is_none();
+                        if let Some(ref atk_id) = attacker_id {
+                            apply_on_hit_mod(a, c, killed, source_cell, atk_id, board, content);
+                        }
+                    }
                 }
             }
         }
@@ -832,6 +899,182 @@ pub fn apply_effect(
             // `execute_queue` exactly like any other action.
             content.apply_board_effect(note, source_cell, board);
         }
+    }
+}
+
+/* =============================================================================
+ * Weapon mods (#50).
+ *
+ * A weapon mod attaches to ONE action via [`Action::r#mod`] (a single mod id;
+ * the catalog raises that action's cooldown to pay for it). Mods split into two
+ * timing classes:
+ *
+ *   - ACTION-LEVEL, applied in [`run_action`]:
+ *       * `twin_linked` — apply the action's effects TWICE (cost/heat/cooldown
+ *         paid once; targeting re-resolved between the two passes so the second
+ *         volley re-aims at the post-first-volley board).
+ *       * `autoloader`  — free-fire: the action does not advance the turn. This
+ *         is a TURN-DISPATCH concern (the SS turn model in `input.rs` reads
+ *         `ActionCost::advances_turn`); the resolver pipeline has no
+ *         turn-advance gate to flip, so the resolver does not act on autoloader
+ *         beyond recognising it. See [`WeaponMod::advances_turn_override`].
+ *
+ *   - ON-HIT, applied by [`apply_on_hit_mod`] right after a DAMAGE effect's
+ *     [`apply_damage`] resolves (NOT via a bus subscriber — the EventBus
+ *     "no resolver re-entry inside a callback" invariant forbids that):
+ *       * `flak_burst`     — 1 dmg to each lane-neighbour (target±1) of the hit
+ *         cell, through the full pipeline (dummy_weapon, falloff off,
+ *         shield-mediated), faction-blind, same precedent as ReactorBreach.
+ *       * `incendiary`     — APPLY_STATUS hullBreach 3 on the hit cell.
+ *       * `emp_charge`     — APPLY_STATUS systemsOffline 3 on the hit cell.
+ *       * `targeting_laser`— APPLY_STATUS targetLock on the hit cell.
+ *       * `precision_core` — if the hit killed the target, recharge this
+ *         action's cooldown to 0 (any-lethal; overkill counts).
+ *
+ * Content ruled the edge semantics (#50): on-hit riders land on CONTACT (the
+ * shot connected with an occupied target cell), even if the directional shield
+ * fully absorbs the hull damage — the shield stops hull, not the rider. They
+ * apply to enemy weapons identically (faction-agnostic; mods are properties of
+ * the `Action`). First pass is single-mod-only (`r#mod` is one id); the doc's
+ * "autoloader alongside another" combo is a deferred follow-up needing a
+ * `r#mod -> Vec` types change (architect), not wired here.
+ * ========================================================================== */
+
+/// A recognised weapon mod. Parsed from [`Action::r#mod`]'s id string. The
+/// exhaustive match in [`WeaponMod::from_id`] is the drift guard: an unknown
+/// id yields `None` and the action behaves as un-modded.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum WeaponMod {
+    FlakBurst,
+    PrecisionCore,
+    Incendiary,
+    EmpCharge,
+    TwinLinked,
+    TargetingLaser,
+    Autoloader,
+}
+
+impl WeaponMod {
+    /// Parse a catalog mod id. `None` for unknown ids — an action carrying an
+    /// unrecognised mod simply fires un-modded (forward-compatible with mods
+    /// the resolver doesn't implement yet).
+    fn from_id(id: &str) -> Option<WeaponMod> {
+        match id {
+            "flak_burst" => Some(WeaponMod::FlakBurst),
+            "precision_core" => Some(WeaponMod::PrecisionCore),
+            "incendiary" => Some(WeaponMod::Incendiary),
+            "emp_charge" => Some(WeaponMod::EmpCharge),
+            "twin_linked" => Some(WeaponMod::TwinLinked),
+            "targeting_laser" => Some(WeaponMod::TargetingLaser),
+            "autoloader" => Some(WeaponMod::Autoloader),
+            _ => None,
+        }
+    }
+
+    /// The mod parsed off an action, if any.
+    fn of(action: &Action) -> Option<WeaponMod> {
+        action.r#mod.as_deref().and_then(WeaponMod::from_id)
+    }
+
+    /// `twin_linked` runs the effect list twice.
+    fn applies_effects_twice(self) -> bool {
+        self == WeaponMod::TwinLinked
+    }
+
+    /// `autoloader` forces the action to not advance the turn. Returns
+    /// `Some(false)` to override `ActionCost::advances_turn`; `None` to leave
+    /// the action's declared value untouched. The TURN layer (`input.rs`)
+    /// consumes this; the resolver pipeline itself never branches on
+    /// turn-advance, so this is exposed for the dispatcher rather than acted on
+    /// inside [`run_action`].
+    fn advances_turn_override(self) -> Option<bool> {
+        match self {
+            WeaponMod::Autoloader => Some(false),
+            _ => None,
+        }
+    }
+}
+
+/// Whether `action`'s mod (if any) forces free-fire (no turn advance). Public
+/// seam for the turn dispatcher in `input.rs`: an autoloader-modded action is
+/// free-fire regardless of its declared `advances_turn`. Returns the effective
+/// advances-turn value (the override when a mod sets one, else the action's
+/// own `cost.advances_turn`). The resolver does not call this — turn
+/// advancement is decided in the SS dispatch layer.
+pub fn action_advances_turn(action: &Action) -> bool {
+    match WeaponMod::of(action).and_then(WeaponMod::advances_turn_override) {
+        Some(v) => v,
+        None => action.cost.advances_turn,
+    }
+}
+
+/// Apply `action`'s ON-HIT weapon mod against a target at `hit_cell` that an
+/// immediately-preceding [`apply_damage`] just struck. `killed` is whether that
+/// hit destroyed the target (its cell is now empty). `atk_cell` is the firing
+/// ship's cell — for `precision_core`'s cooldown recharge and as the splash
+/// origin.
+///
+/// Called from the DAMAGE arm of [`apply_effect`]; not a bus subscriber, so it
+/// never re-enters the resolver through the EventBus. Action-level mods
+/// (`twin_linked`, `autoloader`) are NOT handled here — see [`run_action`].
+fn apply_on_hit_mod(
+    action: &Action,
+    hit_cell: usize,
+    killed: bool,
+    atk_cell: usize,
+    attacker_id: &str,
+    board: &mut Board,
+    content: &dyn Content,
+) {
+    let Some(m) = WeaponMod::of(action) else {
+        return;
+    };
+    match m {
+        WeaponMod::FlakBurst => {
+            // 1 dmg to each lane-neighbour of the HIT cell, bounds-checked,
+            // through the full pipeline (shield-mediated, falloff off) via the
+            // dummy impact weapon — same precedent as ReactorBreach splash in
+            // `destroy`. Faction-blind: hits allies too (content ruling;
+            // pairs with the "Unfriendly Fire" design). The hit cell itself is
+            // NOT re-damaged. Splash origin is the hit cell so the directional
+            // shield reads the burst as arriving from the detonation.
+            let dummy = dummy_weapon();
+            for delta in [-1i32, 1] {
+                let nc = hit_cell as i32 + delta;
+                if nc < 0 || (nc as usize) >= board.size {
+                    continue;
+                }
+                let nc = nc as usize;
+                if board.cells[nc].is_some() {
+                    apply_damage(nc, 1, hit_cell, &dummy, board, content);
+                }
+            }
+        }
+        WeaponMod::Incendiary => {
+            // Rider lands on contact even if the shield ate the hull damage.
+            add_status(hit_cell, StatusKind::HullBreach, 3, board);
+        }
+        WeaponMod::EmpCharge => {
+            add_status(hit_cell, StatusKind::SystemsOffline, 3, board);
+        }
+        WeaponMod::TargetingLaser => {
+            // TargetLock has no inherent duration in the doc (it is consumed by
+            // the next hit). Use the same long-ish duration the demo uses so it
+            // persists until consumed or it times out; `add_status` coalesces.
+            add_status(hit_cell, StatusKind::TargetLock, 5, board);
+        }
+        WeaponMod::PrecisionCore => {
+            // precision_core's cooldown recharge is NOT applied here. run_action
+            // resets the action's cooldown to `cooldown_max` AFTER the effects
+            // loop (the canonical post-effect bookkeeping), which would clobber
+            // a recharge written during effects. So run_action handles the
+            // recharge itself, post-bookkeeping — see the
+            // `precision_core_killed` path there. This arm is a no-op; the
+            // params are accepted for a uniform on-hit signature.
+            let _ = (killed, atk_cell, attacker_id);
+        }
+        // Action-level mods are handled in run_action, not on-hit.
+        WeaponMod::TwinLinked | WeaponMod::Autoloader => {}
     }
 }
 
@@ -3551,5 +3794,202 @@ mod tests {
             1,
             "onDamageDealt fires unconditionally per action, even on self-destruct",
         );
+    }
+
+    /* =====================================================================
+     * Weapon mods (#50). One-action Content harness reused across the mod
+     * tests: serves a single modded weapon by id.
+     * ================================================================== */
+
+    struct ModContent(Action);
+    impl Content for ModContent {
+        fn action(&self, id: &str) -> Option<&Action> {
+            (id == self.0.id).then_some(&self.0)
+        }
+        fn spawn_projectile(&self, _: &str, _: &Ship) -> Projectile { unreachable!() }
+    }
+
+    /// A no-falloff pulse laser carrying mod `mod_id`, firing `amount` damage.
+    fn modded_weapon(id: &str, mod_id: &str, amount: i32) -> Action {
+        let mut a = pulse_laser();
+        a.id = id.into();
+        a.r#mod = Some(mod_id.into());
+        a.cost = ActionCost { heat: 0, cooldown_max: 3, advances_turn: true };
+        a.effects = vec![Effect::DAMAGE { amount, band_falloff: Some(false) }];
+        a
+    }
+
+    /// flak_burst: on hit, each lane-neighbour of the HIT cell takes 1 through
+    /// the pipeline — faction-blind (an adjacent ALLY of the attacker is hit
+    /// too). The hit cell itself is not re-damaged by the burst.
+    #[test]
+    fn mod_flak_burst_splashes_both_neighbours_faction_blind() {
+        // attacker p@1 (player) fires at enemy@2; neighbours of cell 2 are
+        // cell 1 (the attacker itself — an ally of nobody, but player faction)
+        // and cell 3 (another enemy). Both should take 1 splash. Use a
+        // shieldless setup so the 1 lands on hull.
+        let zero = ShieldProfile {
+            bow: crate::types::ShieldFace { armour: 0, charge: 0 },
+            stern: crate::types::ShieldFace { armour: 0, charge: 0 },
+            port: crate::types::ShieldFace { armour: 0, charge: 0 },
+            starboard: crate::types::ShieldFace { armour: 0, charge: 0 },
+        };
+        let mut p = make_ship("p", Faction::Player, 1, 5, LaneEnd::Fore);
+        p.shield_profile = zero.clone();
+        p.queue = vec!["flak".into()];
+        let mut t = make_ship("t", Faction::Enemy, 2, 5, LaneEnd::Fore);
+        t.shield_profile = zero.clone();
+        let mut n = make_ship("n", Faction::Enemy, 3, 5, LaneEnd::Fore);
+        n.shield_profile = zero.clone();
+        let mut board = make_board(7, vec![
+            None, Some(p), Some(t), Some(n), None, None, None,
+        ]);
+        fire_player_queue("p", &mut board, &ModContent(modded_weapon("flak", "flak_burst", 3)));
+
+        // Primary hit: enemy@2 takes the 3-dmg pulse (5 -> 2).
+        assert_eq!(board.cells[2].as_ref().unwrap().hull, 2, "primary pulse lands on target");
+        // Splash: both neighbours of cell 2 take 1. Cell 3 (enemy n) and
+        // cell 1 (player p) — faction-blind.
+        assert_eq!(board.cells[3].as_ref().unwrap().hull, 4, "fore neighbour takes 1 flak splash");
+        assert_eq!(board.cells[1].as_ref().unwrap().hull, 4, "aft neighbour (attacker's own faction) takes 1 — faction-blind");
+    }
+
+    /// incendiary: APPLY_STATUS hullBreach 3 on the hit cell.
+    #[test]
+    fn mod_incendiary_applies_hull_breach_on_hit() {
+        let mut p = make_ship("p", Faction::Player, 1, 5, LaneEnd::Fore);
+        p.queue = vec!["inc".into()];
+        let t = make_ship("t", Faction::Enemy, 2, 20, LaneEnd::Fore);
+        let mut board = make_board(7, vec![None, Some(p), Some(t), None, None, None, None]);
+        fire_player_queue("p", &mut board, &ModContent(modded_weapon("inc", "incendiary", 3)));
+        let st = &board.cells[2].as_ref().unwrap().statuses;
+        let breach = st.iter().find(|s| s.kind == StatusKind::HullBreach).expect("hullBreach applied");
+        assert_eq!(breach.duration, 3, "incendiary applies hullBreach for 3 turns");
+    }
+
+    /// emp_charge: APPLY_STATUS systemsOffline 3 on the hit cell.
+    #[test]
+    fn mod_emp_charge_applies_systems_offline_on_hit() {
+        let mut p = make_ship("p", Faction::Player, 1, 5, LaneEnd::Fore);
+        p.queue = vec!["emp".into()];
+        let t = make_ship("t", Faction::Enemy, 2, 20, LaneEnd::Fore);
+        let mut board = make_board(7, vec![None, Some(p), Some(t), None, None, None, None]);
+        fire_player_queue("p", &mut board, &ModContent(modded_weapon("emp", "emp_charge", 3)));
+        let st = &board.cells[2].as_ref().unwrap().statuses;
+        let off = st.iter().find(|s| s.kind == StatusKind::SystemsOffline).expect("systemsOffline applied");
+        assert_eq!(off.duration, 3, "emp_charge applies systemsOffline for 3 turns");
+    }
+
+    /// targeting_laser: APPLY_STATUS targetLock on hit — and it lands even when
+    /// the directional shield fully absorbs the hull damage (rider on contact).
+    #[test]
+    fn mod_targeting_laser_applies_target_lock_even_through_full_shield() {
+        let mut p = make_ship("p", Faction::Player, 1, 5, LaneEnd::Fore);
+        p.queue = vec!["tl".into()];
+        // Target with a big bow charge that eats the whole pulse; the rider
+        // must still apply. Bow faces the attacker (incoming from aft side?).
+        // Simplest: armour high enough to zero the hull damage.
+        let mut t = make_ship("t", Faction::Enemy, 2, 20, LaneEnd::Fore);
+        t.shield_profile = ShieldProfile {
+            bow: crate::types::ShieldFace { armour: 99, charge: 0 },
+            stern: crate::types::ShieldFace { armour: 99, charge: 0 },
+            port: crate::types::ShieldFace { armour: 99, charge: 0 },
+            starboard: crate::types::ShieldFace { armour: 99, charge: 0 },
+        };
+        let mut board = make_board(7, vec![None, Some(p), Some(t), None, None, None, None]);
+        fire_player_queue("p", &mut board, &ModContent(modded_weapon("tl", "targeting_laser", 3)));
+        let t_ref = board.cells[2].as_ref().unwrap();
+        assert_eq!(t_ref.hull, 20, "shield fully absorbed the hull damage");
+        assert!(
+            t_ref.statuses.iter().any(|s| s.kind == StatusKind::TargetLock),
+            "targeting_laser applies targetLock on contact even through full shield absorption",
+        );
+    }
+
+    /// precision_core: a lethal hit recharges THIS action's cooldown to 0; a
+    /// non-lethal hit does not.
+    #[test]
+    fn mod_precision_core_recharges_cooldown_only_on_kill() {
+        // Lethal: target hull 3, pulse 3, no shield -> dies. Attacker's
+        // cooldown for "pc" must be 0 afterward (not the cost's 3).
+        let zero = ShieldProfile {
+            bow: crate::types::ShieldFace { armour: 0, charge: 0 },
+            stern: crate::types::ShieldFace { armour: 0, charge: 0 },
+            port: crate::types::ShieldFace { armour: 0, charge: 0 },
+            starboard: crate::types::ShieldFace { armour: 0, charge: 0 },
+        };
+        let mut p = make_ship("p", Faction::Player, 1, 5, LaneEnd::Fore);
+        p.queue = vec!["pc".into()];
+        let mut t = make_ship("t", Faction::Enemy, 2, 3, LaneEnd::Fore);
+        t.shield_profile = zero.clone();
+        let mut board = make_board(7, vec![None, Some(p), Some(t), None, None, None, None]);
+        fire_player_queue("p", &mut board, &ModContent(modded_weapon("pc", "precision_core", 3)));
+        assert!(board.cells[2].is_none(), "lethal hit killed the target");
+        assert_eq!(
+            board.cells[1].as_ref().unwrap().cooldowns.get("pc").copied(),
+            Some(0),
+            "precision_core recharges cooldown to 0 on a clean kill",
+        );
+
+        // Non-lethal: target survives, cooldown stays at the cost (3).
+        let mut p2 = make_ship("p", Faction::Player, 1, 5, LaneEnd::Fore);
+        p2.queue = vec!["pc".into()];
+        let mut t2 = make_ship("t", Faction::Enemy, 2, 20, LaneEnd::Fore);
+        t2.shield_profile = zero;
+        let mut board2 = make_board(7, vec![None, Some(p2), Some(t2), None, None, None, None]);
+        fire_player_queue("p", &mut board2, &ModContent(modded_weapon("pc", "precision_core", 3)));
+        assert!(board2.cells[2].is_some(), "non-lethal hit left the target alive");
+        assert_eq!(
+            board2.cells[1].as_ref().unwrap().cooldowns.get("pc").copied(),
+            Some(3),
+            "precision_core does NOT recharge when the hit fails to kill",
+        );
+    }
+
+    /// twin_linked: the action's effects apply twice (cost paid once). A 3-dmg
+    /// no-falloff pulse on a 20-hull shieldless target lands 6 total.
+    #[test]
+    fn mod_twin_linked_applies_effects_twice() {
+        let zero = ShieldProfile {
+            bow: crate::types::ShieldFace { armour: 0, charge: 0 },
+            stern: crate::types::ShieldFace { armour: 0, charge: 0 },
+            port: crate::types::ShieldFace { armour: 0, charge: 0 },
+            starboard: crate::types::ShieldFace { armour: 0, charge: 0 },
+        };
+        let mut p = make_ship("p", Faction::Player, 1, 5, LaneEnd::Fore);
+        p.heat = 0;
+        p.queue = vec!["twin".into()];
+        let mut t = make_ship("t", Faction::Enemy, 2, 20, LaneEnd::Fore);
+        t.shield_profile = zero;
+        let weapon = {
+            let mut a = modded_weapon("twin", "twin_linked", 3);
+            a.cost = ActionCost { heat: 2, cooldown_max: 3, advances_turn: true };
+            a
+        };
+        let mut board = make_board(7, vec![None, Some(p), Some(t), None, None, None, None]);
+        fire_player_queue("p", &mut board, &ModContent(weapon));
+        assert_eq!(board.cells[2].as_ref().unwrap().hull, 14, "twin_linked lands 3 twice = 6 (20 -> 14)");
+        // Cost paid ONCE: heat went up by 2 (not 4).
+        assert_eq!(board.cells[1].as_ref().unwrap().heat, 2, "twin_linked pays heat once, not per volley");
+    }
+
+    /// autoloader: the turn-dispatch seam reports the action as free-fire
+    /// (advances_turn = false) regardless of the action's declared value.
+    #[test]
+    fn mod_autoloader_overrides_advances_turn_for_dispatch() {
+        let mut a = pulse_laser();
+        a.id = "auto".into();
+        a.cost = ActionCost { heat: 1, cooldown_max: 3, advances_turn: true };
+        a.r#mod = Some("autoloader".into());
+        assert!(!action_advances_turn(&a), "autoloader forces free-fire (no turn advance)");
+
+        // A plain action with no mod keeps its declared advances_turn.
+        let plain = pulse_laser();
+        assert!(action_advances_turn(&plain), "un-modded action keeps its declared advances_turn");
+
+        // A non-autoloader mod does not change advances_turn.
+        let mut flak = pulse_laser();
+        flak.r#mod = Some("flak_burst".into());
+        assert!(action_advances_turn(&flak), "flak_burst leaves advances_turn alone");
     }
 }
