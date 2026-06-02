@@ -43,6 +43,7 @@ glance what is documented vs. what is pending.*
 - [`src/hud.rs`](#srchudrs) — scene compositor (DrawCommand list)
 - [`src/subsystems.rs`](#srcsubsystemsrs) — runtime subsystem behavior: install registry, attacker-side damage modifier, end-of-turn heat
 - [`src/cards.rs`](#srccardsrs) — field-kit Cards: catalog, per-ship inventory, BOARD-note dispatch, play validation
+- [`src/classes.rs`](#srcclassesrs) — canonical 5-class roster + Signature actions (+ provisional Aegis "Sweep")
 - [`src/sprites.rs`](#srcspritesrs) — PNG loader for ship sprites, `SpriteRegistry` trait
 - [`src/input.rs`](#srcinputrs) — framework-agnostic key→Intent mapping, synthetic actions, `DemoContent`
 - [`src/audio.rs`](#srcaudiors) — EventBus-driven sound via kira (feature-gated), procedural placeholder samples
@@ -4771,6 +4772,67 @@ card-resource bookkeeping leaks into the resolver; the caller pushes the synthet
 [`broadside.rs::apply_intent`](#srcbinbroadsidesrs)'s `PlayCard` arm. **Worked examples:**
 `try_play_success_decrements_charges` (src/cards.rs:426),
 `try_play_insufficient_charges_rejected` (src/cards.rs:415).
+
+---
+
+## `src/classes.rs`
+
+*The canonical player-class roster + the Signature [`Action`](#srctypesrs)s each class
+references. [`ClassDef`](#srctypesrs) is the wire shape; this is the content half — the
+roster the demo seeds and the signature actions that must exist in `Content::action(id)` for
+the resolver to dispatch them (registered by `DemoContent::register_class_signatures` in
+[`input.rs`](#srcinputrs)). Kept in lockstep with [`catalog_canonical.rs`](#srccatalog_canonicalrs)
+so the hand-built demo registry and the catalog load path produce identical class behaviour.
+Full companion at [`docs/MODULES/classes.md`](MODULES/classes.md).*
+
+**Mirrors:** the analysis doc's CLASSES table (`broadside-analysis.html:1143-1165`),
+transcribed verbatim for the five canonical classes.
+
+**The roster (#50):** five canonical classes + Aegis —
+`wanderer` (Frigate "Drifter", Flexible, Slip, default), `ronin` (Destroyer "Ronin", BowOn,
+Ram), `shadow` (Phantom "Shade", Broadside, Phase + the only passive), `jujitsuka` (Monitor
+"Anvil", BowOn, Throw), `chainmaster` (Carrier "Tessen", Broadside, Swap Toss), plus
+**`aegis`** (Broadside, Broadside Sweep). Retires the Phase-2 Vanguard/Wraith/Bulwark
+placeholders.
+
+> **PROVISIONAL — Aegis.** Aegis is NOT in the canonical doc roster — an additive 6th class
+> built around bruce's hand-painted art (the bin sets `player.klass = "aegis"`), documented
+> as currently built. **Bruce hasn't ruled whether it's a true 6th class or a reskin of a
+> canonical broadside class** (chainmaster/shadow); if reskin, `aegis()` +
+> `synthetic_broadside_sweep()` retire cheaply. Treat the Aegis bits as pending his call.
+
+### Roster builders (src/classes.rs:107–260)
+
+`canonical_classes()` (src/classes.rs:113) returns the six `ClassDef`s; `placeholder_classes()`
+(src/classes.rs:107) is a **stability alias** returning the same (the bin + input.rs
+coverage test consume it by that name — no longer placeholders). Each builder transcribes
+its doc CLASSES row (affinity, set1/set2, signature id, optional passive, desc). `aegis()`
+(src/classes.rs:243, **provisional**) is content's "Option A: Sweep" identity — the offensive
+inverse of the enemy AI's "maximise distinct threatened lane-ends" directive. **Worked
+examples:** `canonical_roster_has_six_distinct_classes` (src/classes.rs:417),
+`every_signature_id_is_synthesized` (src/classes.rs:440, no class points at an unbuilt
+signature), `affinities_cover_all_three_variants` (src/classes.rs:469).
+
+### Signature actions (src/classes.rs:275–406)
+
+The five canonical signatures are **self-relative maneuvers** (#84/#97 — `SELF` pattern,
+resolve as `DISPLACE_SELF` not `DISPLACE_TARGET`). `self_move_signature` (src/classes.rs:275)
+is the shared free-fire shell; the builders supply the mode: `slip`/`swap_toss` →
+`TRACTOR_SWAP`, `ram` → `BURN` forward, `throw` → `BURN` aft (`direction: Aft`), `phase` →
+`SLIP`. These **mirror catalog_canonical's `inflate_effect` exactly**
+([`catalog_canonical.rs`](#srccatalog_canonicalrs)), so demo and catalog paths agree.
+`synthetic_broadside_sweep` (src/classes.rs:385, **provisional**, Aegis) is the exception —
+`BROADSIDE` pattern, two effects: `DAMAGE 3` (both flanks) **then** `REORIENT { Flip }` (the
+pivot), heat 4 / cd 5, advances the turn (a weapon, not a free maneuver). **Worked
+examples:** `slip_and_swap_toss_are_tractor_swaps` (src/classes.rs:480),
+`ram_burns_forward_throw_burns_aft` (src/classes.rs:491), `phase_is_slip_movement`
+(src/classes.rs:503), `broadside_sweep_fires_both_flanks_then_flips` (src/classes.rs:524).
+
+**Cross-references:** `ClassDef`s land in `Catalog::classes` (same five produced by
+[`catalog_canonical`](#srccatalog_canonicalrs)); signatures registered by
+[`input.rs`](#srcinputrs)'s `register_class_signatures`, dispatched by the resolver
+([`resolve.rs`](#srcresolvers)) — `DISPLACE_SELF` modes via `resolve_self_move`, the Sweep's
+`DAMAGE`+`REORIENT` via normal effect dispatch.
 
 ---
 
