@@ -152,8 +152,9 @@ The richest section.
 
 ### 8. Catalog (lines 727–803)
 
-- **`Catalog`** — top-level JSON payload. Five `unknown[]` placeholders mapped to
-  `Vec<serde_json::Value>` with `#[serde(default)]`.
+- **`Catalog`** — top-level JSON payload. The remaining `unknown[]` placeholders map to
+  `Vec<serde_json::Value>` with `#[serde(default)]`; **`sectors` is now typed
+  `Vec<SectorDef>`** (#149 — see §9 below), no longer a loose placeholder.
 - **`CatalogMeta`** — schema, lane sizes, new-axes tracker, declared bands.
 - **`ModDef`, `StatusDef`, `PatrolDef`, `EnemyDef`** — straight ports of the TS
   catalog sub-records. (`ModDef` is the *catalog record* for a weapon mod; the
@@ -161,6 +162,23 @@ The richest section.
   `flak_burst` / `incendiary` / `emp_charge` / `targeting_laser` / `precision_core` —
   is dispatched off `Action::r#mod` in the resolver: see the weapon-mod section of
   [`resolve.md`](resolve.md).)
+
+### 9. Run-loop / campaign types
+
+- **`Run`, `Sector`, `EncounterDef`, `ShipSpawn`, `BoardSnapshot`, `SaveState`** — the
+  Phase-3 run-loop shapes (the *runtime* campaign vocabulary). Documented in depth in
+  [`runs.md`](runs.md) / [`save.md`](save.md); they're the materialized-board side.
+- **`SectorDef`** (#56) — the **catalog** shape of one campaign sector, deliberately
+  distinct from the runtime `Sector`. Per the canonical dynamic-spawn-pool model
+  (§XI / §VIII), a sector does **not** carry a static encounter list: `name`, `node`
+  (a *string* graph id like `"4.2"` encoding the branching map — branch siblings share
+  a major number), `lane` (board size 5/7/9), `intro` (display names of enemy types
+  **first introduced** here — they seed the global spawn pool on arrival, NOT a
+  per-encounter list), and `capital` (the end-of-sector boss display name; the catalog's
+  `"—"`/`""` "no capital" sentinels deserialize to `None` via `deserialize_capital`).
+  The pool→encounter generator that turns `SectorDef` into runtime `Sector`s is
+  [`runs::generate_campaign`](runs.md) (#60). `Catalog::sectors` is now typed
+  `Vec<SectorDef>` (#149 — it was a `Vec<serde_json::Value>` placeholder).
 
 ---
 

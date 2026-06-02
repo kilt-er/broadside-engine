@@ -4477,9 +4477,42 @@ constructors.
 **Worked examples** (src/runs.rs:785-843): three sectors, ascending patrol tiers; every
 sector has ≥1 encounter; exactly one boss, at the very end; loose density progression.
 
-**Drift — placeholder data.** The sectors are Rust literals standing in until
-`Catalog::sectors` (currently `Vec<serde_json::Value>`) is typed. `ShipSpawn::class_id` has
-a deferred `→ template_id` rename noted in types.rs.
+**Status — now the FALLBACK.** Since #60 (below), `placeholder_sectors` is the no-catalog
+fallback; `generate_campaign` is the real catalog-driven path, on track to retire the
+placeholders. `ShipSpawn::class_id` has a deferred `→ template_id` rename noted in types.rs.
+
+### Spawn-pool encounter generator (#60, src/runs.rs:614-861)
+
+**Intent:** Generate sectors at runtime from the canonical [`SectorDef`](#srctypesrs) catalog
+data — the design doc's **dynamic-spawn-pool** model (§XI/§VIII). Each sector's `intro[]`
+enemy types **enter a global run pool on arrival** and persist; encounters are **sampled**
+from the accumulated pool (scaled by lane + patrol tier); each sector **ends in its `capital`
+boss**. **Deterministic (#111)** — pure function of `(node, patrol_tier)` via a local
+`wang_hash`, no global RNG.
+
+- **`SpawnPool` + `accumulate`** (src/runs.rs:637, 648) — the pool at sector N is the union
+  of `intro[]` over sectors `0..=N` (display-name→enemy-id via the catalog; unknown names
+  skipped + logged). Derived from the route, not a mutable run field.
+- **`generate_sector`** (src/runs.rs:714) — `ENCOUNTERS_PER_SECTOR` (=2, flagged balance
+  knob) pool-sampled encounters then the capital boss (if any); empty pool → boss-only;
+  neither → passthrough. Helpers: `encounter_enemy_count` (lane→2/3/4),
+  `sample_encounter_spawns` (distinct cells from the far edge, bow facing Aft),
+  `capital_spawn` (confirms the capital in the loose `capitals[]`, spawns a boss-class ship
+  at mid-lane carrying the capital name as `class_id` — routes through `boss_ship_for_spawn`
+  until a typed `CapitalDef` lands; unknown capital → boss-less, not a crash).
+- **`generate_campaign(catalog, patrol_tier)`** (src/runs.rs:851) — one runtime `Sector` per
+  `SectorDef`, pool accumulated along the route; the data-driven replacement for
+  `placeholder_sectors`.
+
+**Worked examples:** `spawn_pool_accumulates_intro_along_the_route` (src/runs.rs:1301),
+`generate_sector_produces_encounters_then_boss` (src/runs.rs:1319),
+`generate_sector_is_deterministic` (src/runs.rs:1352),
+`staging_sector_has_no_encounters_and_no_boss` (src/runs.rs:1365),
+`generate_campaign_covers_every_catalog_sector` (src/runs.rs:1377),
+`unknown_capital_yields_bossless_sector_not_a_crash` (src/runs.rs:1388).
+**Cross-references:** consumes [`SectorDef`](#srctypesrs) from the now-typed
+`Catalog::sectors` (#149); produces the same runtime `Sector`/`EncounterDef`/`ShipSpawn`
+shapes (rest of runs.rs unchanged). Full detail in [`docs/MODULES/runs.md`](MODULES/runs.md).
 
 ---
 

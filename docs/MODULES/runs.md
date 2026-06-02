@@ -231,11 +231,85 @@ density loosely increases across sectors.
 
 ---
 
+## Spawn-pool encounter generator (#60 — the data-driven campaign)
+
+*This is the runtime generator that **replaces** `placeholder_sectors` with sectors
+generated from the canonical [`SectorDef`](types.md) catalog data (the bin uses it when
+a catalog is loaded, falling back to the placeholders otherwise). It implements the
+design doc's **dynamic-spawn-pool** campaign model (analysis HTML §XI 788-796, §VIII
+699).*
+
+The model (module banner, src/runs.rs:588-612):
+- Each sector's `intro[]` lists the enemy ship **types first introduced** there. They
+  **enter a global run pool on arrival** and persist for the rest of the run ("seen
+  once → can appear in any later sector").
+- Encounters are **not authored per-sector** — they're **sampled** from the
+  accumulated pool, scaled by the sector `lane` (board size) + the run's patrol tier.
+- Each sector **ends in its `capital` boss** engagement (no waves, just the boss).
+
+**Determinism (#111):** generation is a pure function of `(node, patrol_tier)` via a
+local `wang_hash` PRNG (src/runs.rs:622) — no global RNG, so a run-state always
+regenerates the identical sector. The generator owns no I/O; the bin feeds it the
+loaded `Catalog`.
+
+### `struct SpawnPool` + `fn accumulate` (src/runs.rs:637, 648)
+
+The run's accumulated pool: enemy `class_ids` in first-seen order (stable → deterministic).
+**Derived from the route, not a mutable run field** — the pool at sector N is the union
+of `intro[]` over sectors `0..=N`, mapped from catalog display names to enemy ids
+(`resolve_enemy_id`, src/runs.rs:682 — snake_case ids pass through, display names look
+up via the catalog `enemies[]`). Unknown intro names are skipped + logged (no dangling
+ids). `spawn_pool_accumulates_intro_along_the_route` (src/runs.rs:1301) pins the union.
+
+### `fn generate_sector(sector_def, pool, patrol_tier, catalog) -> Sector` (src/runs.rs:714)
+
+**Intent:** Materialize one runtime `Sector` from a `SectorDef`. Seeds from the node
+string + patrol tier. Emits `ENCOUNTERS_PER_SECTOR` (src/runs.rs:617, **=2**, a doc-silent
+balance knob flagged for bruce) pool-sampled non-boss encounters, then the capital boss
+encounter (if the sector has a `capital`). An **empty pool** (e.g. the run-start Staging
+sector introduces nothing and nothing prior seeded it) → only the boss (if any); a sector
+with neither is a passthrough (empty `encounters`, which `encounter_outcome` treats as
+already-won). Helpers: `encounter_enemy_count` (src/runs.rs:695, lane→count 5→2/7→3/9→4,
+another balance knob), `sample_encounter_spawns` (src/runs.rs:778, deterministic
+pool-pick at distinct cells packed from the far edge, bow facing Aft toward the player),
+`capital_spawn` (src/runs.rs:819, confirms the capital exists in the loose `capitals[]`,
+spawns a boss-class ship at mid-lane carrying the capital's name as `class_id` — the
+bin's spawn callback routes capitals to `boss_ship_for_spawn` until a typed `CapitalDef`
+lands; an unknown capital yields a boss-less sector, not a crash).
+
+**Worked examples:** `generate_sector_produces_encounters_then_boss` (src/runs.rs:1319),
+`generate_sector_is_deterministic` (src/runs.rs:1352),
+`staging_sector_has_no_encounters_and_no_boss` (src/runs.rs:1365),
+`unknown_capital_yields_bossless_sector_not_a_crash` (src/runs.rs:1388).
+
+### `fn generate_campaign(catalog, patrol_tier) -> Vec<Sector>` (src/runs.rs:851)
+
+The full campaign: one runtime `Sector` per catalog `SectorDef`, accumulating the pool
+along the route (sector N sees intro from `0..=N`, so earlier sectors field smaller pools
+— the "ships unlock as you progress" model). The data-driven replacement for
+`placeholder_sectors`. `generate_campaign_covers_every_catalog_sector` (src/runs.rs:1377).
+
+**Cross-references:** consumes [`SectorDef`](types.md) from `Catalog::sectors` (now typed
+— #149); produces the same runtime `Sector`/`EncounterDef`/`ShipSpawn` shapes the rest of
+this module already uses, so `build_encounter_board` / `advance_after_win` /
+`encounter_outcome` are unchanged. Capitals route through
+[`boss_ship_for_spawn`](#fn-boss_ship_for_spawnspawn-shipspawn---ship-srcrunsrs315) via
+the bin's spawn callback.
+
+---
+
 ## Drift / notes
 
-- **JSON sectors are placeholder.** `placeholder_sectors()` is Rust-literal data
-  standing in until `Catalog::sectors` (currently `Vec<serde_json::Value>`) is
-  typed. The module is structured so swapping the data source is mechanical.
+- **`placeholder_sectors` is now the FALLBACK, not the default.** Since #60,
+  `generate_campaign` is the real path (catalog-driven); `placeholder_sectors` is the
+  no-catalog fallback and is on track to retire once the generator is the only campaign
+  source. `Catalog::sectors` is now typed `Vec<SectorDef>` (#149, was
+  `Vec<serde_json::Value>`).
+- **Balance knobs flagged for bruce:** `ENCOUNTERS_PER_SECTOR` (2), `encounter_enemy_count`
+  (lane→2/3/4), and uniform pool sampling are doc-silent playtest dials, not pinned values.
+- **Capitals share one synthesizer for now:** all capitals materialize via
+  `boss_ship_for_spawn` (hull 14, ReactorBreach) until a typed `CapitalDef` gives per-boss
+  stats — a future content+architect follow-up.
 - **`ShipSpawn::class_id` rename pending.** types.rs notes a deferred
   `class_id → template_id` rename (it refers to either a `ClassDef::id` or an
   `EnemyDef::id`); when it lands, this module's spawn helpers update with it.
