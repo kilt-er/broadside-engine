@@ -47,28 +47,31 @@ const DEFAULT_HULL_ALBEDO: [f32; 3] = [0.706, 0.776, 0.878];
 const LOW_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
-/// Fixed ¾ look-down pitch (degrees) — matches the POC `DEFAULT_PITCH_DEG`.
-/// This is the ONLY fixed camera angle; the per-stance yaw below is fed to the
-/// SAME camera the POC uses, exactly as the POC does it.
-pub const CAMERA_PITCH_DEG: f32 = 26.0;
+/// Fixed look-down pitch (degrees). #47 raises this from the POC's 26° toward a
+/// more top-down "tactical-map" ¾: with the bow-on ships now PARALLEL to the
+/// lane (see the stance yaws below), the ¾ read comes from THIS pitch, not from
+/// yawing the ships to show a front/side. Higher = more overhead. 48° gives a
+/// clear top-down ¾ without flattening the hull to a plan view; bruce dials the
+/// exact amount on the angle-check.
+pub const CAMERA_PITCH_DEG: f32 = 48.0;
 
-/// The canonical stance yaws (degrees), keyed by [`Orientation`] — the POC's
-/// four stance snaps (loft_poc.rs `STANCE_YAWS_DEG`): right 28 / left 152 /
-/// broadside 118. These are fed straight to [`camera_view_proj`] as the CAMERA
-/// yaw with the model left at IDENTITY — i.e. the engine does EXACTLY what the
-/// POC does (orbit the camera to the stance over a fixed hull), so each stance
-/// reads bit-for-bit as the approved reference. No model rotation (that was the
-/// #36/#37 divergence: rotating the model about a near-camera axis collapsed
-/// bow-on to a plank and made broadside read wrong). The only thing that varies
-/// per ship is which static yaw its camera uses; idle roll + reorient tween
-/// nudge that yaw, never tipping it off the vertical axis.
-const STANCE_YAW_FORE: f32 = 28.0;
-const STANCE_YAW_AFT: f32 = 152.0;
-const STANCE_YAW_BROADSIDE: f32 = 118.0;
+/// The canonical stance yaws (degrees), keyed by [`Orientation`], fed to
+/// [`camera_view_proj`] as the CAMERA yaw with the model at IDENTITY.
+///
+/// #47 — a DELIBERATE override of the POC stance snaps (28/152/118). bruce wants
+/// the non-broadside ships PARALLEL to the lane, with the ¾ coming from the
+/// top-down [`CAMERA_PITCH_DEG`] pitch rather than from yawing them to show a
+/// front/side:
+///   BowOn{Fore} = 0   — hull length along the lane, camera square to it,
+///   BowOn{Aft}  = 180 — parallel too, bow pointing the other way,
+///   Broadside   = 90  — perpendicular, camera looks down the hull's length
+///                       (kept exactly as it reads now).
+const STANCE_YAW_FORE: f32 = 0.0;
+const STANCE_YAW_AFT: f32 = 180.0;
+const STANCE_YAW_BROADSIDE: f32 = 90.0;
 
-/// Base stance yaw (degrees) a ship at `orientation` rests at — the POC camera
-/// yaw for that stance. The reorient tween interpolates between two of these;
-/// the idle roll is added on top.
+/// Base stance yaw (degrees) a ship at `orientation` rests at. The reorient
+/// tween interpolates between two of these; the idle roll is added on top.
 pub fn orientation_yaw_deg(orientation: Orientation) -> f32 {
     match orientation {
         Orientation::BowOn { bow: LaneEnd::Fore } => STANCE_YAW_FORE,
@@ -971,12 +974,11 @@ mod tests {
         assert!((broad - STANCE_YAW_BROADSIDE).abs() < 1e-6);
         assert_ne!(fore, aft);
         assert_ne!(fore, broad);
-        // The stance yaws ARE the POC's camera-yaw snaps (loft_poc.rs
-        // STANCE_YAWS_DEG): right 28 / left 152 / broadside 118 — fed to the
-        // camera with model=identity, so each stance is bit-for-bit the POC.
-        assert_eq!(fore, 28.0);
-        assert_eq!(aft, 152.0);
-        assert_eq!(broad, 118.0);
+        // #47 stance mapping: bow-on PARALLEL to the lane (Fore 0 / Aft 180),
+        // broadside perpendicular (90). The ¾ comes from the top-down pitch.
+        assert_eq!(fore, 0.0);
+        assert_eq!(aft, 180.0);
+        assert_eq!(broad, 90.0);
     }
 
     #[test]
