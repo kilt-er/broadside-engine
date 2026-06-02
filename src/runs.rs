@@ -49,8 +49,8 @@
 //! rather than embedding a Ship.
 
 use crate::types::{
-    Arc as TArc, Board, EncounterDef, EventBus, Faction, HullZone, LaneEnd, Mount, Orientation,
-    Run, Sector, ShieldFace, ShieldProfile, Ship, ShipSpawn, Trait,
+    Arc as TArc, Board, Catalog, EncounterDef, EventBus, Faction, HullZone, LaneEnd, Mount,
+    Orientation, Run, Sector, SectorDef, ShieldFace, ShieldProfile, Ship, ShipSpawn, Trait,
 };
 use std::collections::HashMap;
 
@@ -585,6 +585,282 @@ const _: fn() = || {
 };
 
 /* =========================================================================
+ * #60 — spawn-pool encounter generator (data-driven campaign).
+ *
+ * Replaces the hand-authored [`placeholder_sectors`] with runtime
+ * generation from the canonical [`SectorDef`] catalog data, per the design
+ * doc's dynamic-spawn-pool model (broadside-analysis.html §XI, 788-796):
+ *
+ *   - Each sector's `intro[]` lists the enemy ship TYPES first introduced
+ *     there; they ENTER a global run pool on arrival and persist for the
+ *     rest of the run ("seen once → can appear in any later sector").
+ *   - Encounters are NOT authored per-sector — they're SAMPLED from the
+ *     accumulated pool, scaled by the sector `lane` (board size) and the
+ *     run's patrol tier.
+ *   - Each sector ENDS in its `capital` boss engagement (§VIII 699: "each
+ *     sector ends in a capital-ship engagement — no waves, just the boss").
+ *
+ * Determinism (#111): generation is a pure function of
+ * (route, sector node, patrol_tier) via a wang-hash PRNG — no global RNG,
+ * so a given run-state always produces the same sector. The generator owns
+ * no I/O; the bin feeds it the loaded [`Catalog`].
+ *
+ * BALANCE KNOBS (flagged for bruce — sensible doc-aligned defaults here,
+ * tune later): [`ENCOUNTERS_PER_SECTOR`], enemies-per-encounter
+ * ([`encounter_enemy_count`]), and uniform pool sampling. None of these are
+ * pinned by the doc; they're the playtest dials.
+ * ====================================================================== */
+
+/// Default non-boss encounters generated per sector before the capital
+/// fight. Doc-silent balance knob — start at 2 (a short sector reads well;
+/// the boss is the third beat). Flagged for bruce.
+pub const ENCOUNTERS_PER_SECTOR: u32 = 2;
+
+/// Deterministic hash PRNG (mirrors the `wang_hash` used render-side in
+/// hud.rs; kept local so runs.rs doesn't reach across the render boundary).
+/// Pure: same seed → same value, so generation is reproducible (#111).
+fn wang_hash(mut x: u32) -> u32 {
+    x = (x ^ 61).wrapping_mul(0x27D4_EB2D);
+    x ^= x >> 16;
+    x = x.wrapping_mul(0x85EB_CA6B);
+    x ^= x >> 13;
+    x = x.wrapping_mul(0xC2B2_AE35);
+    x ^= x >> 16;
+    x
+}
+
+/// The run's accumulated spawn pool: enemy `class_id`s unlocked by every
+/// sector visited so far. Derived from the route (no mutable run-state
+/// field needed) — the pool at sector N is the union of `intro[]` over
+/// sectors 0..=N, mapped from catalog display names to enemy ids.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SpawnPool {
+    /// Enemy class ids available to sample, in first-seen order (stable so
+    /// generation is deterministic).
+    pub class_ids: Vec<String>,
+}
+
+impl SpawnPool {
+    /// Build the pool visible AT sector index `up_to_idx` (inclusive):
+    /// union of `intro[]` from sectors[0..=up_to_idx], display-name →
+    /// enemy-id via the catalog's `enemies[]`. Unknown intro names are
+    /// skipped (logged) rather than poisoning the pool with a dangling id.
+    pub fn accumulate(sectors: &[SectorDef], up_to_idx: usize, catalog: &Catalog) -> Self {
+        // Display-name (lowercased) → enemy id map from the catalog.
+        let name_to_id: HashMap<String, String> = catalog
+            .enemies
+            .iter()
+            .map(|e| (e.name.to_lowercase(), e.id.clone()))
+            .collect();
+
+        let mut class_ids: Vec<String> = Vec::new();
+        let end = up_to_idx.min(sectors.len().saturating_sub(1));
+        for sector in &sectors[..=end] {
+            for intro_name in &sector.intro {
+                let id = resolve_enemy_id(intro_name, &name_to_id);
+                match id {
+                    Some(id) if !class_ids.contains(&id) => class_ids.push(id),
+                    Some(_) => {} // already pooled
+                    None => eprintln!(
+                        "[runs] sector `{}` intro `{intro_name}` has no matching enemy id; skipped",
+                        sector.name,
+                    ),
+                }
+            }
+        }
+        SpawnPool { class_ids }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.class_ids.is_empty()
+    }
+}
+
+/// Resolve an intro/capital display name to a catalog enemy id. Already-id
+/// (snake_case) forms pass through; otherwise looked up by lowercased
+/// display name.
+fn resolve_enemy_id(name: &str, name_to_id: &HashMap<String, String>) -> Option<String> {
+    if name
+        .chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+    {
+        return Some(name.to_string());
+    }
+    name_to_id.get(&name.to_lowercase()).cloned()
+}
+
+/// Enemies in a generated non-boss encounter, scaled by lane size. Doc-silent
+/// balance knob — wider lanes hold more ships. 5→2, 7→3, 9→4. Flagged for
+/// bruce.
+fn encounter_enemy_count(lane: u8) -> usize {
+    match lane {
+        0..=5 => 2,
+        6..=7 => 3,
+        _ => 4,
+    }
+}
+
+/// Generate the runtime [`Sector`] (encounters + boss) for `sector_def`,
+/// given the accumulated `pool`, the run's `patrol_tier`, and the
+/// `catalog` (for capital lookup). Deterministic in
+/// `(sector_def.node, patrol_tier)`.
+///
+/// Produces [`ENCOUNTERS_PER_SECTOR`] pool-sampled encounters followed by
+/// the capital boss encounter (if the sector has a `capital`). If the pool
+/// is empty (e.g. the run-start Staging sector introduces nothing and no
+/// prior sector seeded the pool), only the boss encounter — if any — is
+/// emitted; a sector with neither is a passthrough (empty `encounters`,
+/// which `encounter_outcome` treats as already-won).
+pub fn generate_sector(
+    sector_def: &SectorDef,
+    pool: &SpawnPool,
+    patrol_tier: u8,
+    catalog: &Catalog,
+) -> Sector {
+    // Seed from the node string + patrol tier so each sector's layout is
+    // stable per run-state but varies across sectors / difficulties.
+    let node_seed = sector_def
+        .node
+        .bytes()
+        .fold(0u32, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u32));
+    let base_seed = node_seed
+        .wrapping_mul(0x9E37_79B9)
+        .wrapping_add(patrol_tier as u32);
+
+    let mut encounters: Vec<EncounterDef> = Vec::new();
+
+    if !pool.is_empty() {
+        let count = encounter_enemy_count(sector_def.lane);
+        for e in 0..ENCOUNTERS_PER_SECTOR {
+            let enemy_ships = sample_encounter_spawns(
+                pool,
+                sector_def.lane,
+                count,
+                base_seed.wrapping_add(e.wrapping_mul(0x1000_0001)),
+            );
+            if enemy_ships.is_empty() {
+                continue;
+            }
+            encounters.push(EncounterDef {
+                id: format!("{}_e{e}", sector_def.node),
+                enemy_ships,
+                hazards: Vec::new(),
+                is_boss: false,
+            });
+        }
+    }
+
+    // Capital boss encounter at sector end (if this sector has a capital).
+    if let Some(boss) = sector_def
+        .capital
+        .as_ref()
+        .and_then(|cap| capital_spawn(cap, sector_def.lane, catalog))
+    {
+        encounters.push(EncounterDef {
+            id: format!("{}_boss", sector_def.node),
+            enemy_ships: vec![boss],
+            hazards: Vec::new(),
+            is_boss: true,
+        });
+    }
+
+    Sector {
+        id: sector_def.node.clone(),
+        name: sector_def.name.clone(),
+        patrol_tier,
+        encounters,
+    }
+}
+
+/// Sample `count` enemy spawns for one encounter from the pool, placed at
+/// spread lane cells (never cell 0 — the player's mouth). Deterministic in
+/// `seed`. Bow faces Aft (toward the player at the lane mouth).
+fn sample_encounter_spawns(
+    pool: &SpawnPool,
+    lane: u8,
+    count: usize,
+    seed: u32,
+) -> Vec<ShipSpawn> {
+    let lane = lane as usize;
+    if lane < 2 || pool.is_empty() {
+        return Vec::new();
+    }
+    // Candidate cells: 1..lane (skip 0). Place enemies spread from the far
+    // end inward so they occupy distinct cells.
+    let usable = lane.saturating_sub(1); // cells 1..lane
+    let n = count.min(usable);
+    let mut spawns = Vec::with_capacity(n);
+    for i in 0..n {
+        // Cell: spread across the usable range, deterministic, distinct.
+        let cell = lane - 1 - i; // pack from the far edge inward (distinct)
+        let pick = wang_hash(seed.wrapping_add(i as u32)) as usize % pool.class_ids.len();
+        let class_id = pool.class_ids[pick].clone();
+        spawns.push(ShipSpawn {
+            class_id,
+            cell,
+            orientation: Orientation::BowOn { bow: LaneEnd::Aft },
+            hp_override: None,
+        });
+    }
+    spawns
+}
+
+/// Build the capital boss spawn for `capital_name` at the sector's lane.
+/// Looks the capital up in the catalog's (loosely-typed) `capitals[]` for
+/// existence; the boss ship itself is materialized by the bin's
+/// `boss_ship_for_spawn` via the `warlord` dispatch today (the capital
+/// roster's per-boss stats aren't a typed catalog section yet — that's a
+/// future `CapitalDef` from architect). For now the capital spawns as a
+/// boss-class ship at mid-lane, carrying the capital's display name as its
+/// class_id so the bin/renderer can label it.
+///
+/// Returns `None` if the capital name isn't in the catalog (defensive — a
+/// typo'd capital just yields a boss-less sector rather than crashing).
+fn capital_spawn(capital_name: &str, lane: u8, catalog: &Catalog) -> Option<ShipSpawn> {
+    // Confirm the capital exists in the catalog's capitals[] (loose Value).
+    let known = catalog.capitals.iter().any(|c| {
+        c.get("name").and_then(|v| v.as_str()).map(|s| s.eq_ignore_ascii_case(capital_name))
+            == Some(true)
+    });
+    if !known {
+        return None;
+    }
+    let mid = (lane as usize / 2).max(1);
+    Some(ShipSpawn {
+        // class_id carries the capital's canonical name; the bin's
+        // spawn callback maps capitals to boss_ship_for_spawn. Until a
+        // typed CapitalDef lands, all capitals share the boss synthesizer
+        // (hull 14, ReactorBreach) — distinct per-capital stats are a
+        // future content+architect follow-up.
+        class_id: capital_name.to_string(),
+        cell: mid,
+        orientation: Orientation::BowOn { bow: LaneEnd::Aft },
+        hp_override: None,
+    })
+}
+
+/// Generate the full campaign: a runtime [`Sector`] per catalog
+/// [`SectorDef`], with the spawn pool accumulated along the route. This is
+/// the data-driven replacement for [`placeholder_sectors`] — the bin uses
+/// it when a catalog is loaded, falling back to the placeholders otherwise.
+///
+/// Note the pool is accumulated PER sector index (sector N sees intro from
+/// 0..=N), so earlier sectors field smaller pools — matching the doc's
+/// "ships unlock as you progress" model. `patrol_tier` is the run's global
+/// difficulty tier (1-7).
+pub fn generate_campaign(catalog: &Catalog, patrol_tier: u8) -> Vec<Sector> {
+    let sectors = &catalog.sectors;
+    sectors
+        .iter()
+        .enumerate()
+        .map(|(idx, sd)| {
+            let pool = SpawnPool::accumulate(sectors, idx, catalog);
+            generate_sector(sd, &pool, patrol_tier, catalog)
+        })
+        .collect()
+}
+
+/* =========================================================================
  * Tests
  * ====================================================================== */
 
@@ -983,5 +1259,150 @@ mod tests {
         assert_eq!(canonical_lane_size(6), 7);
         assert_eq!(canonical_lane_size(7), 9);
         assert_eq!(canonical_lane_size(20), 9);
+    }
+
+    /* ---- #60 spawn-pool encounter generator ----------------------- */
+
+    /// Minimal catalog with 3 sectors (Staging→Drift Belt→Ion Reefs), the
+    /// enemies they introduce, and the two capitals — enough to exercise
+    /// pool accumulation + generation. Uses the canonical transformer so
+    /// the SectorDef capital deserializer + enemies shape are real.
+    fn gen_catalog() -> crate::types::Catalog {
+        let json = serde_json::json!({
+            "meta": { "schema": "x", "lane": [5,7,9], "newAxes": [], "bands": ["close"] },
+            "actions": [
+                { "id": "pulse_laser", "name": "Pulse Laser", "archetype": "beam",
+                  "heat": 1, "cd": 0, "band": "close", "pattern": "BEAM",
+                  "arc": "forward", "freeplay": false, "effects": ["DAMAGE"] },
+            ],
+            "mods": [], "subsystems": [], "statuses": [], "patrols": [],
+            "enemies": [
+                { "id": "skiff", "name": "Skiff", "hull": 3, "hull5": 4, "traits": [],
+                  "sector": "Drift Belt", "weapons": ["Pulse Laser"] },
+                { "id": "lancer", "name": "Lancer", "hull": 1, "hull5": 2, "traits": ["Burn-Hard"],
+                  "sector": "Drift Belt", "weapons": ["Pulse Laser"] },
+                { "id": "gunboat", "name": "Gunboat", "hull": 4, "hull5": 5, "traits": [],
+                  "sector": "Ion Reefs", "weapons": ["Pulse Laser"] },
+            ],
+            "capitals": [
+                { "id": "dasher", "name": "The Dasher", "sector": "Drift Belt" },
+                { "id": "impaler", "name": "The Impaler", "sector": "Ion Reefs" },
+            ],
+            "sectors": [
+                { "name": "Staging",    "node": "0",   "lane": 5, "intro": [],                  "capital": "—" },
+                { "name": "Drift Belt", "node": "1",   "lane": 5, "intro": ["Skiff","Lancer"], "capital": "The Dasher" },
+                { "name": "Ion Reefs",  "node": "2.1", "lane": 7, "intro": ["Gunboat"],         "capital": "The Impaler" },
+            ],
+        });
+        crate::catalog_canonical::from_canonical_value(json).expect("gen catalog parses")
+    }
+
+    #[test]
+    fn spawn_pool_accumulates_intro_along_the_route() {
+        let cat = gen_catalog();
+        // At Staging (idx 0): nothing introduced yet.
+        let p0 = SpawnPool::accumulate(&cat.sectors, 0, &cat);
+        assert!(p0.is_empty(), "Staging introduces nothing");
+        // At Drift Belt (idx 1): Skiff + Lancer, display-name → id.
+        let p1 = SpawnPool::accumulate(&cat.sectors, 1, &cat);
+        assert_eq!(p1.class_ids, vec!["skiff".to_string(), "lancer".to_string()]);
+        // At Ion Reefs (idx 2): pool carries forward + adds gunboat.
+        let p2 = SpawnPool::accumulate(&cat.sectors, 2, &cat);
+        assert_eq!(
+            p2.class_ids,
+            vec!["skiff".to_string(), "lancer".to_string(), "gunboat".to_string()],
+            "pool accumulates across the route",
+        );
+    }
+
+    #[test]
+    fn generate_sector_produces_encounters_then_boss() {
+        let cat = gen_catalog();
+        let pool = SpawnPool::accumulate(&cat.sectors, 1, &cat); // skiff+lancer
+        let sector = generate_sector(&cat.sectors[1], &pool, 1, &cat);
+        // ENCOUNTERS_PER_SECTOR non-boss + 1 boss.
+        assert_eq!(
+            sector.encounters.len(),
+            ENCOUNTERS_PER_SECTOR as usize + 1,
+            "N pool encounters + the capital boss",
+        );
+        // Last encounter is the boss; earlier ones are not.
+        let last = sector.encounters.last().unwrap();
+        assert!(last.is_boss, "sector ends in the capital boss");
+        assert_eq!(last.enemy_ships.len(), 1, "boss is a single capital ship");
+        assert_eq!(last.enemy_ships[0].class_id, "The Dasher");
+        for e in &sector.encounters[..sector.encounters.len() - 1] {
+            assert!(!e.is_boss);
+            // Non-boss encounters draw from the pool (skiff/lancer) at
+            // distinct non-zero cells.
+            assert!(!e.enemy_ships.is_empty());
+            for sp in &e.enemy_ships {
+                assert!(sp.cell >= 1, "enemies never spawn on the player mouth (cell 0)");
+                assert!(
+                    pool.class_ids.contains(&sp.class_id),
+                    "spawn {} drawn from the pool", sp.class_id,
+                );
+            }
+            // Lane 5 → 2 enemies per encounter (encounter_enemy_count).
+            assert_eq!(e.enemy_ships.len(), 2);
+        }
+    }
+
+    #[test]
+    fn generate_sector_is_deterministic() {
+        let cat = gen_catalog();
+        let pool = SpawnPool::accumulate(&cat.sectors, 2, &cat);
+        let a = generate_sector(&cat.sectors[2], &pool, 3, &cat);
+        let b = generate_sector(&cat.sectors[2], &pool, 3, &cat);
+        assert_eq!(a, b, "same (node, tier, pool) → identical sector (#111 determinism)");
+        // Different patrol tier → (potentially) different layout seed; at
+        // minimum it must still be self-consistent and boss-terminated.
+        let c = generate_sector(&cat.sectors[2], &pool, 5, &cat);
+        assert!(c.encounters.last().unwrap().is_boss);
+    }
+
+    #[test]
+    fn staging_sector_has_no_encounters_and_no_boss() {
+        // Staging: empty intro (pool empty at idx 0) + capital "—" → None.
+        let cat = gen_catalog();
+        let pool = SpawnPool::accumulate(&cat.sectors, 0, &cat);
+        let sector = generate_sector(&cat.sectors[0], &pool, 1, &cat);
+        assert!(
+            sector.encounters.is_empty(),
+            "Staging is a passthrough: no pool enemies, no capital",
+        );
+    }
+
+    #[test]
+    fn generate_campaign_covers_every_catalog_sector() {
+        let cat = gen_catalog();
+        let campaign = generate_campaign(&cat, 1);
+        assert_eq!(campaign.len(), cat.sectors.len(), "one runtime Sector per SectorDef");
+        // Lane sizes carry through (Ion Reefs is lane 7 → 3 enemies/encounter).
+        let ion = &campaign[2];
+        let non_boss = ion.encounters.iter().find(|e| !e.is_boss).unwrap();
+        assert_eq!(non_boss.enemy_ships.len(), 3, "lane 7 → 3 enemies per encounter");
+    }
+
+    #[test]
+    fn unknown_capital_yields_bossless_sector_not_a_crash() {
+        let cat = gen_catalog();
+        let pool = SpawnPool::accumulate(&cat.sectors, 1, &cat);
+        // A SectorDef naming a capital absent from catalog.capitals[].
+        let bogus = SectorDef {
+            name: "Nowhere".into(),
+            node: "9".into(),
+            lane: 5,
+            intro: vec![],
+            capital: Some("The Phantom Menace".into()),
+        };
+        let sector = generate_sector(&bogus, &pool, 1, &cat);
+        // No pool enemies queued here (intro empty for THIS sector but pool
+        // is non-empty from the route) → encounters generate; but the
+        // unknown capital adds NO boss.
+        assert!(
+            sector.encounters.iter().all(|e| !e.is_boss),
+            "unknown capital → no boss encounter, no panic",
+        );
     }
 }
