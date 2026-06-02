@@ -375,6 +375,8 @@ impl DemoContent {
         self.insert(crate::classes::synthetic_overcharge());
         self.insert(crate::classes::synthetic_phase_drift());
         self.insert(crate::classes::synthetic_broadside_volley());
+        // Aegis (first broadside-native player class, #50) signature.
+        self.insert(crate::classes::synthetic_broadside_sweep());
     }
 
     /// Install a subsystem on a ship by id. Phase 2 convenience for the

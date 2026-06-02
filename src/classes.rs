@@ -57,7 +57,7 @@
 
 use crate::types::{
     Action, ActionCost, Arc as TArc, ClassAffinity, ClassDef, Effect, MovementMode, RangeBand,
-    StatusKind, Targeting, TargetingPattern, WeaponArchetype,
+    ReorientTo, StatusKind, Targeting, TargetingPattern, WeaponArchetype,
 };
 
 /* =========================================================================
@@ -72,9 +72,23 @@ pub const CLASS_VANGUARD: &str = "vanguard";
 pub const CLASS_WRAITH: &str = "wraith";
 pub const CLASS_BULWARK: &str = "bulwark";
 
+/// Aegis — the first broadside-native PLAYER class (bruce's hand-painted
+/// `aegis_*.png` art; the bin already sets `player.klass = "aegis"`). NOT
+/// in the canonical analysis-doc roster (which is the five Shogun-derived
+/// classes wanderer/ronin/shadow/jujitsuka/chainmaster) — Aegis is an
+/// additive 6th class built on the art. Identity is content's
+/// doc-grounded "Option A: Sweep" (the lead approved proceeding on the rec
+/// since the doc is silent on Aegis): an aggressive both-flanks broadside
+/// bruiser whose signature fires both lane-ends then sweeps the hull
+/// around. If bruce later rules Aegis is a RESKIN of a canonical broadside
+/// class (chainmaster/shadow) rather than a new one, this entry is cheap to
+/// retire — it's one ClassDef + one synthetic action.
+pub const CLASS_AEGIS: &str = "aegis";
+
 pub const SIG_OVERCHARGE: &str = "overcharge";
 pub const SIG_PHASE_DRIFT: &str = "phase_drift";
 pub const SIG_BROADSIDE_VOLLEY: &str = "broadside_volley";
+pub const SIG_BROADSIDE_SWEEP: &str = "broadside_sweep";
 
 /// All three placeholder Signature action ids, in class order
 /// (Vanguard → Wraith → Bulwark).
@@ -170,6 +184,41 @@ pub fn bulwark() -> ClassDef {
                in both lane directions when the hull bears — the answer to \
                being flanked is to flank back. Strong with bow-shield armour \
                left for chip damage; weak on heat economy."
+            .into(),
+    }
+}
+
+/// Aegis — Broadside affinity, Broadside Sweep signature. The first
+/// broadside-native PLAYER class (bruce's hand-painted art), content's
+/// doc-grounded "Option A: Sweep" identity.
+///
+/// The aggressive both-flanks bruiser. Where the placeholder Bulwark just
+/// fires both lane-ends, Aegis's Sweep fires both flanks AND sweeps the
+/// hull around (REORIENT flip) — turning the defensive stance-flip the
+/// player is otherwise forced into by enemy lane-end pressure into an
+/// OFFENSIVE identity. It's the mechanical inverse of the enemy AI's job
+/// ("maximise distinct threatened lane-ends"): when pincered, you turn
+/// broadside and punish both sides at once, then re-present.
+///
+/// Loadouts reuse the canonical broadside actions: set1 close two-way
+/// pressure (broadside_battery + flak_battery), set2 range + pull-into-line
+/// (railgun_broadside + grav_snare). Affinity Broadside so the directional
+/// shield favours the committed stance.
+pub fn aegis() -> ClassDef {
+    ClassDef {
+        id: CLASS_AEGIS.into(),
+        name: "Aegis".into(),
+        affinity: ClassAffinity::Broadside,
+        unlock: Some("Unlocked by default".into()),
+        set1: vec!["broadside_battery".into(), "flak_battery".into()],
+        set2: vec!["railgun_broadside".into(), "grav_snare".into()],
+        signature: SIG_BROADSIDE_SWEEP.into(),
+        passive: None,
+        desc: "Broadside-native bruiser. Broadside Sweep fires both lane-ends \
+               at once, then sweeps the hull around to re-present the guns — \
+               the answer to being flanked is to flank back and keep flanking. \
+               Strong port/starboard armour rewards committing to the turn; \
+               the bow points off-lane at nothing while you do."
             .into(),
     }
 }
@@ -295,6 +344,48 @@ pub fn synthetic_broadside_volley() -> Action {
     }
 }
 
+/// Broadside Sweep — Aegis's signature. The both-flanks-then-pivot move.
+///
+/// Two effects in declaration order:
+/// 1. `DAMAGE 3` through the `BROADSIDE` pattern — fires the first occupant
+///    in BOTH lane directions when the broadside arc bears, so up to two
+///    ships (one per flank) eat 3.
+/// 2. `REORIENT { to: Flip }` — after the volley the hull flips
+///    stance-preserving (bow↔stern), re-presenting the broadside the other
+///    way for next round. This is the "sweep": it both keeps Aegis
+///    committed broadside (rather than drifting back to bow-on) AND is the
+///    visible telegraph that distinguishes Aegis from a plain
+///    `broadside_volley` reskin.
+///
+/// Heat 4 / cooldown 5 — a heavy commit like the other signatures, not a
+/// per-turn option. Requires the BroadsideArc to bear (broadside stance).
+/// The DAMAGE resolves BEFORE the reorient, so the hit lands on whoever was
+/// in the broadside line at fire time, then the flip happens.
+pub fn synthetic_broadside_sweep() -> Action {
+    Action {
+        id: SIG_BROADSIDE_SWEEP.into(),
+        name: "Broadside Sweep".into(),
+        archetype: WeaponArchetype::Broadside,
+        cost: ActionCost { heat: 4, cooldown_max: 5, advances_turn: true },
+        targeting: Targeting {
+            pattern: TargetingPattern::BROADSIDE,
+            band: vec![RangeBand::Close, RangeBand::Mid],
+            optimal_band: RangeBand::Close,
+            requires_arc: Some(TArc::BroadsideArc),
+            facing_relative: false,
+            hits_all: false,
+        },
+        effects: vec![
+            // Fire both flanks first...
+            Effect::DAMAGE { amount: 3, band_falloff: None },
+            // ...then sweep the hull around to re-present the guns.
+            Effect::REORIENT { to: ReorientTo::Flip },
+        ],
+        r#mod: None,
+        icon: None,
+    }
+}
+
 /* =========================================================================
  * Tests
  * ====================================================================== */
@@ -412,5 +503,41 @@ mod tests {
         assert_eq!(a.targeting.requires_arc, Some(TArc::BroadsideArc));
         // BROADSIDE pattern fires both lane directions when bearing.
         assert_eq!(a.targeting.pattern, TargetingPattern::BROADSIDE);
+    }
+
+    /* ---- Aegis (#50, first broadside-native player class) ---------- */
+
+    #[test]
+    fn aegis_is_a_broadside_class_with_the_sweep_signature() {
+        let a = aegis();
+        assert_eq!(a.id, CLASS_AEGIS);
+        assert_eq!(a.affinity, ClassAffinity::Broadside);
+        assert_eq!(a.signature, SIG_BROADSIDE_SWEEP);
+        // Loadouts reference the canonical broadside actions (the same ids
+        // the catalog ships); both sets are 2 actions like every class.
+        assert_eq!(a.set1.len(), 2);
+        assert_eq!(a.set2.len(), 2);
+        assert!(a.set1.contains(&"broadside_battery".to_string()));
+    }
+
+    #[test]
+    fn broadside_sweep_fires_both_flanks_then_flips() {
+        let a = synthetic_broadside_sweep();
+        assert_eq!(a.id, SIG_BROADSIDE_SWEEP);
+        // BROADSIDE pattern + BroadsideArc → fires both lane-ends when the
+        // hull bears.
+        assert_eq!(a.targeting.pattern, TargetingPattern::BROADSIDE);
+        assert_eq!(a.targeting.requires_arc, Some(TArc::BroadsideArc));
+        // Effects in order: DAMAGE first (lands on who's in the line at fire
+        // time), then the stance-preserving flip — the "sweep" that
+        // distinguishes Aegis from a plain broadside_volley.
+        assert!(matches!(a.effects[0], Effect::DAMAGE { .. }));
+        assert!(matches!(
+            a.effects[1],
+            Effect::REORIENT { to: ReorientTo::Flip }
+        ));
+        assert_eq!(a.effects.len(), 2, "Sweep is exactly DAMAGE then flip");
+        // A heavy commit, not a per-turn option.
+        assert!(a.cost.heat >= 4 && a.cost.cooldown_max >= 4);
     }
 }
