@@ -312,40 +312,46 @@ taken.
 
 ---
 
-## Ability tiles (Shogun-style, #53)
+## Ability tiles (square icon tiles, #53 → #64 redesign)
 
-> **SUPERSEDED-PENDING (#64, renderer-2).** bruce is redesigning these: the name/blurb
-> **text** tiles below are being replaced by **square ICON tiles** (placeholder generated
-> symbols per archetype + damage + cooldown indicators) with **queue-driven motion** — the
-> player's tiles sit in an always-visible below-lane row, and a *queued* ability's tile
-> tweens UP into a vertical stack above the ship (back down on dequeue); enemies get an
-> above-ship telegraph stack only (hidden while on cooldown). The `AbilityTile` *struct*
-> likely survives; the layout fns (`push_ability_tiles` text row / `push_cooldown_row`) are
-> the parts being reworked. This section will be rewritten when #64 lands — treat the
-> text-tile description below as the **current, about-to-change** state, not the target.
+bruce's #64 (commit dd8d357) replaced the original #53 name/blurb **text** tiles with
+**square ICON tiles** and queue-driven motion. The shape now:
 
-Added at commit bd6e47e: the player's abilities surfaced Shogun-Showdown-style —
-**(a)** name/blurb tiles above the player ship, **(b)** a compact cooldown row below
-the lane. The **bin assembles the `AbilityTile` list** (it has the `Content` registry
-for names + cooldown maxima and the player `Ship` for live cooldown state); hud just
-lays them out.
+- **`enum AbilityIcon`** (src/hud.rs:1466) — a **placeholder archetype glyph** (Beam /
+  Ordnance / Broadside / Displacement / Control / Movement / Defensive) mapping to an
+  atlas `GLYPH_*` cell (`atlas_cell`, src/hud.rs:1477). Kept an enum (not a raw cell) so
+  the real-per-ability-art swap is one spot.
+- **`struct AbilityTile`** (src/hud.rs:1494) — `slot` (trigger key, drawn small in a
+  corner), `icon`, `damage` (drives the damage-pip count, 0 = non-damage), `cooldown` /
+  `cooldown_max`, and **`queued_index: Option<usize>`** — `Some(i)` when queued at
+  position `i`, the field that drives the below↔above animation target. The **bin
+  assembles the list** (Content for icon/damage/cooldown-max, the ship for live cooldown +
+  queue order); hud lays out + animates.
 
-- **`struct AbilityTile`** (src/hud.rs:1458) — one player ability flattened for
-  display: `slot` (the trigger key `'1'`..`'3'` / `'5'`..`'7'`), `name`, `blurb`
-  (first-pass synthesized from archetype/effect by the bin; swaps to a real
-  `Action::description` if content adds one), `cooldown` (turns remaining, 0 = ready),
-  `cooldown_max` (the "n/N" readout length).
-- **`push_ability_tiles(out, tiles, anchor_x, top_y)`** (src/hud.rs:1481) — a centered
-  row of name/blurb tiles ABOVE the ship (96×26 each), key-coloured teal when ready /
-  dim violet on cooldown, "`<slot> NAME`" header + blurb below, left-aligned.
-- **`push_cooldown_row(out, tiles, lane)`** (src/hud.rs:1538) — a compact chip row
-  BELOW the lane: one chip per ability, teal when ready, dim with a remaining-turns
-  number when on cooldown.
+**PLAYER tiles** are stateful via **`struct AbilityHud`** (src/hud.rs:1528) — a per-slot
+`phase` lerp (`0.0` = resting below the lane, `1.0` = docked in the above-ship queue
+stack). `advance(tiles, dt)` (src/hud.rs:1541) eases each slot toward its target (queued →
+1, resting → 0) over `TILE_TWEEN_SECS` (0.18, snappy), returning `true` while any tile is
+mid-transition (redraw-keepalive). `emit_player` (src/hud.rs:1567) draws each tile
+interpolated between its **resting below-lane slot** (centered row at `center_y + 80`) and
+its **above-ship queue-stack slot** (vertical column climbing from `center_y − 120` in
+queue order) by that phase. So queueing an ability slides its tile up into the stack;
+dequeuing slides it back down — the always-visible below-lane row never hides.
 
-First-pass look (bruce iterates). The hud/bin split mirrors the rest of the
-compositor: hud is data-driven layout, the bin owns the state assembly (same shape as
-the overlay-decision split since #77). Tile colours: `TILE_READY`/`TILE_COOLDOWN`/
-`TILE_BG`/`TILE_TEXT` consts (src/hud.rs:1473).
+**ENEMY tiles** are **stateless** — `push_enemy_telegraph` (src/hud.rs:1598) draws a
+vertical column ABOVE the enemy of just the abilities it's **readying**
+(`queued_index.is_some()`) and **not on cooldown** (cooldown tiles are hidden — they appear
+only when telegraphed), straight from the enemy's current queue, no animation. The
+red `TILE_ENEMY` frame distinguishes enemy intent from the teal player frame.
+
+**`emit_tile`** (src/hud.rs:1620) draws one 30px square: frame (teal ready / dim-violet
+cooldown / red enemy) + inner bg, the archetype icon (dimmed on cooldown), damage pips
+along the bottom (capped at 5), the slot key top-left, and a cooldown overlay when cooling.
+
+First-pass look (placeholder glyphs; real ability art later). The hud/bin split is the
+usual one: hud is data-driven layout + animation, the bin owns the state assembly (the
+`AbilityTile` list from the queue/cooldowns). Tile colours: `TILE_READY` / `TILE_COOLDOWN`
+/ `TILE_BG` / `TILE_DAMAGE` / `TILE_ICON` / `TILE_ENEMY` consts (src/hud.rs:1510).
 
 ---
 

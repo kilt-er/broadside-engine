@@ -3066,16 +3066,24 @@ The in-game top-right counter. A single row of inline 5×7 glyphs showing
 `"SALVAGE: {n}"` ~16px from the top-right edge. Always visible during
 `Playing` state so the player sees the counter tick up on encounter wins.
 
-#### Ability tiles — `struct AbilityTile` (line 1458) + `push_ability_tiles` (1481) / `push_cooldown_row` (1538)
+#### Ability tiles — square icon tiles (#53 → #64 redesign, src/hud.rs:1462-1700)
 
-Shogun-style ability surfacing added at #53 (commit bd6e47e). `AbilityTile { slot, name,
-blurb, cooldown, cooldown_max }` is one player ability flattened for display; the **bin
-assembles the list** (it holds the `Content` registry for names/cooldown-maxima + the player
-`Ship` for live cooldown state), hud just lays it out — same data-driven-layout/bin-owns-state
-split as the overlay decision (#77). `push_ability_tiles` draws a centered row of name/blurb
-tiles ABOVE the ship (teal when ready, dim violet on cooldown); `push_cooldown_row` draws a
-compact chip row BELOW the lane (teal ready / dim with remaining-turns number). First-pass
-look; bruce iterates. Full detail in [`docs/MODULES/hud.md`](MODULES/hud.md).
+Square ICON tiles (bruce's #64 redesign, commit dd8d357, replacing the original #53
+name/blurb text tiles). `AbilityIcon` (src/hud.rs:1466) is a placeholder archetype glyph
+(→ atlas `GLYPH_*`). `AbilityTile { slot, icon, damage, cooldown, cooldown_max,
+queued_index: Option<usize> }` (src/hud.rs:1494) — the bin assembles it from the ship's
+queue + cooldowns (same data-driven-layout/bin-owns-state split as the overlay decision).
+**Player tiles** are stateful via `AbilityHud` (src/hud.rs:1528): a per-slot phase lerp
+(0 = resting below-lane row, 1 = above-ship queue stack); `advance` eases toward the target
+(queued→1, resting→0) over `TILE_TWEEN_SECS` 0.18 (returns true while animating);
+`emit_player` interpolates each tile between its below-lane slot and its queue-stack slot —
+queueing slides it up, dequeuing slides it back, the below-lane row never hides. **Enemy
+tiles** are stateless: `push_enemy_telegraph` (src/hud.rs:1598) draws a vertical above-enemy
+column of just the abilities it's readying (`queued_index.is_some()`, not on cooldown — CD
+tiles hidden), red-framed. `emit_tile` (src/hud.rs:1620) draws one 30px square: frame +
+bg + archetype icon (dimmed on CD) + damage pips (cap 5) + slot key + CD overlay. First-pass
+placeholder glyphs; real ability art later. Full detail in
+[`docs/MODULES/hud.md`](MODULES/hud.md).
 
 #### `enum BetweenEncounterChoice` (line 1103) + `fn push_between_encounter_overlay` (line 1129)
 
