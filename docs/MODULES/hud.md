@@ -314,6 +314,16 @@ taken.
 
 ## Ability tiles (Shogun-style, #53)
 
+> **SUPERSEDED-PENDING (#64, renderer-2).** bruce is redesigning these: the name/blurb
+> **text** tiles below are being replaced by **square ICON tiles** (placeholder generated
+> symbols per archetype + damage + cooldown indicators) with **queue-driven motion** — the
+> player's tiles sit in an always-visible below-lane row, and a *queued* ability's tile
+> tweens UP into a vertical stack above the ship (back down on dequeue); enemies get an
+> above-ship telegraph stack only (hidden while on cooldown). The `AbilityTile` *struct*
+> likely survives; the layout fns (`push_ability_tiles` text row / `push_cooldown_row`) are
+> the parts being reworked. This section will be rewritten when #64 lands — treat the
+> text-tile description below as the **current, about-to-change** state, not the target.
+
 Added at commit bd6e47e: the player's abilities surfaced Shogun-Showdown-style —
 **(a)** name/blurb tiles above the player ship, **(b)** a compact cooldown row below
 the lane. The **bin assembles the `AbilityTile` list** (it has the `Content` registry
