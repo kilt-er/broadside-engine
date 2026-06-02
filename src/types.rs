@@ -798,8 +798,10 @@ pub struct Catalog {
     pub subsystems: Vec<SubsystemDef>,
     pub statuses: Vec<StatusDef>,
     pub enemies: Vec<EnemyDef>,
+    /// Boss capital ships, one per sector. Canonical catalog data — see
+    /// [`CapitalDef`].
     #[serde(default)]
-    pub capitals: Vec<serde_json::Value>,
+    pub capitals: Vec<CapitalDef>,
     #[serde(default)]
     pub classes: Vec<ClassDef>,
     #[serde(default)]
@@ -876,6 +878,56 @@ where
         Some(s) if s == "\u{2014}" || s.trim().is_empty() => None,
         Some(s) => Some(s),
     })
+}
+
+/// A boss **capital ship** as it appears in the **catalog** (`capitals[]`).
+/// One per sector — the fixed end-of-sector engagement ([`SectorDef::capital`]
+/// names it). This is the typed catalog representation that replaces the
+/// per-boss fallback to the warlord synthesizer, so each capital ("The
+/// Dasher", "The Impaler", …) carries its own stats.
+///
+/// Like [`SectorDef`], this is **catalog data** distinct from the **runtime**
+/// Ship a capital materializes into on the board; the capital → Ship builder
+/// (mounts, shield profile, behavior hooks) is runtime/content's lane.
+///
+/// ## Tier scaling
+///
+/// `sp1` / `sp7` are the capital's strength at Patrol tier 1 vs tier 7 — the
+/// scaling endpoints, mirroring [`EnemyDef`]'s `hull` / `hull5` convention.
+/// `sp1` is `Option` because the catalog stores `null` for some entries
+/// (the run-start tier where that capital isn't yet reachable).
+///
+/// ## Extensibility
+///
+/// The current catalog carries only `{id, name, sector, corrupt, sP1, sP7}`.
+/// Richer per-capital design data the doc may specify (hull / shield profile /
+/// mounts / behavior hooks) lands here as **additive `Option` / defaulted
+/// fields** so the existing catalog keeps parsing and content can fill them
+/// without reopening this type.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CapitalDef {
+    /// Internal id (e.g. `"dasher"`).
+    pub id: String,
+    /// Display name (e.g. `"The Dasher"`).
+    pub name: String,
+    /// Display name of the sector this capital ends (matches
+    /// [`SectorDef::name`], e.g. `"Drift Belt"`).
+    pub sector: String,
+    /// Corrupted (Voidtouched) variant flag. Drives the corrupted-capital
+    /// behavior/visuals; precise effect is content's to define.
+    #[serde(default)]
+    pub corrupt: bool,
+    /// Strength at Patrol tier 1. `null` in the catalog → `None` (capital not
+    /// reachable at that tier). Catalog key `sP1`.
+    #[serde(rename = "sP1", default)]
+    pub sp1: Option<i32>,
+    /// Strength at Patrol tier 7 (the scaling ceiling). Catalog key `sP7`.
+    /// `#[serde(default)]` (→ 0) so minimal capital entries that omit the
+    /// stat — fixtures, or a forward catalog that lists a capital before its
+    /// balance numbers land — still parse; the canonical catalog always
+    /// supplies it.
+    #[serde(rename = "sP7", default)]
+    pub sp7: i32,
 }
 
 /// A weapon mod (`Action.mod` is its id). The TS shape is `{ id, name, cd, desc }`.
@@ -1169,6 +1221,50 @@ mod tests {
         )
         .unwrap();
         assert_eq!(s.capital.as_deref(), Some("Citadel Warlord"));
+    }
+
+    #[test]
+    fn capital_def_parses_canonical_catalog_shape() {
+        // Exact catalog.capitals[] shape (broadside.catalog.json): sP1/sP7
+        // rename + the null-sP1 case.
+        let dasher = r#"{"id":"dasher","name":"The Dasher","sector":"Drift Belt","corrupt":true,"sP1":2,"sP7":7}"#;
+        let c: CapitalDef = serde_json::from_str(dasher).unwrap();
+        assert_eq!(c.id, "dasher");
+        assert_eq!(c.name, "The Dasher");
+        assert_eq!(c.sector, "Drift Belt");
+        assert!(c.corrupt);
+        assert_eq!(c.sp1, Some(2));
+        assert_eq!(c.sp7, 7);
+
+        // sP1 null -> None.
+        let null_sp1 = r#"{"id":"x","name":"X","sector":"S","corrupt":false,"sP1":null,"sP7":9}"#;
+        let c2: CapitalDef = serde_json::from_str(null_sp1).unwrap();
+        assert_eq!(c2.sp1, None);
+        assert!(!c2.corrupt);
+
+        // sP1 absent also -> None (serde default); corrupt absent -> false.
+        let minimal = r#"{"id":"y","name":"Y","sector":"S","sP7":8}"#;
+        let c3: CapitalDef = serde_json::from_str(minimal).unwrap();
+        assert_eq!(c3.sp1, None);
+        assert!(!c3.corrupt);
+        assert_eq!(c3.sp7, 8);
+    }
+
+    #[test]
+    fn catalog_capitals_field_deserializes_a_vec_of_capital_defs() {
+        let cat_json = r#"{
+            "meta": {"schema":"v","lane":[5,7,9],"newAxes":[],"bands":["pointBlank","close","mid","long","extreme"]},
+            "actions": [], "mods": [], "subsystems": [], "statuses": [], "enemies": [],
+            "capitals": [
+                {"id":"dasher","name":"The Dasher","sector":"Drift Belt","corrupt":true,"sP1":2,"sP7":7},
+                {"id":"impaler","name":"The Impaler","sector":"Ion Reefs","corrupt":true,"sP1":3,"sP7":8}
+            ],
+            "patrols": []
+        }"#;
+        let cat: Catalog = serde_json::from_str(cat_json).unwrap();
+        assert_eq!(cat.capitals.len(), 2);
+        assert_eq!(cat.capitals[0].id, "dasher");
+        assert_eq!(cat.capitals[1].sp7, 8);
     }
 
     #[test]

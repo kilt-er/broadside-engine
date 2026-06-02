@@ -817,11 +817,12 @@ fn sample_encounter_spawns(
 /// Returns `None` if the capital name isn't in the catalog (defensive — a
 /// typo'd capital just yields a boss-less sector rather than crashing).
 fn capital_spawn(capital_name: &str, lane: u8, catalog: &Catalog) -> Option<ShipSpawn> {
-    // Confirm the capital exists in the catalog's capitals[] (loose Value).
-    let known = catalog.capitals.iter().any(|c| {
-        c.get("name").and_then(|v| v.as_str()).map(|s| s.eq_ignore_ascii_case(capital_name))
-            == Some(true)
-    });
+    // Confirm the capital exists in the catalog's typed capitals[]
+    // (architect's CapitalDef, #63 — was a loose Value before).
+    let known = catalog
+        .capitals
+        .iter()
+        .any(|c| c.name.eq_ignore_ascii_case(capital_name));
     if !known {
         return None;
     }
