@@ -90,6 +90,16 @@ const VICTORY_TINT: [f32; 4] = [1.00, 0.80, 0.20, 0.45];
 /// the lane-cell-count option flagged to the lead, needs his ruling).
 const SHIP_SCALE: f32 = 2.0;
 
+/// Whether to draw the placeholder per-ship overlay HUD (heat bar, shield pips,
+/// queue glyphs, status badges) and the range-band ruler. OFF for the #45/#46
+/// ship-showcase: these are crude placeholder glyphs anchored to the 2D
+/// `ship_bbox`, which the #44 loft seating decoupled from — so they float off
+/// the 3D ships and read as artifacts (the dark-blue side-bands + teal specks
+/// in bruce's screenshot). The #46 HUD pass rebuilds them loft-anchored + clean
+/// and flips this back on. Kept as a single gate so nothing is deleted — the
+/// emitters and compose structure stay intact, just suppressed for now.
+const SHOW_PLACEHOLDER_HUD: bool = false;
+
 /// Scaled `(width, total_h)` of a ship silhouette at the current view angle.
 /// Single source of truth for both the silhouette draw (`push_ship`) and the
 /// HUD overlay anchors (`ship_bbox`) so heat bars / pips / glyphs track the
@@ -217,7 +227,9 @@ pub fn compose_scene_tweened(
 
     push_parallax(&mut out, lane, view_angle_rad);
     push_lane(&mut out, lane);
-    push_range_band_ticks(&mut out, board, lane);
+    if SHOW_PLACEHOLDER_HUD {
+        push_range_band_ticks(&mut out, board, lane);
+    }
     push_hazards(&mut out, board, lane);
 
     for ship in board.cells.iter().flatten() {
@@ -229,15 +241,22 @@ pub fn compose_scene_tweened(
         push_projectile(&mut out, proj, lane);
     }
 
-    for ship in board.cells.iter().flatten() {
-        let visual_cell = tween.cell_for(ship);
-        push_heat_bar(&mut out, ship, visual_cell, lane, view_angle_rad);
-        push_shield_pips(&mut out, ship, visual_cell, lane, view_angle_rad);
-        push_queue_glyphs(&mut out, ship, visual_cell, lane, view_angle_rad);
-        push_status_badges(&mut out, ship, visual_cell, lane, view_angle_rad);
+    // Per-ship overlay HUD (heat bar / shield pips / queue glyphs / status
+    // badges). GATED OFF for the ship-showcase (#45): these are placeholder
+    // glyphs anchored to the 2D `ship_bbox`, which the loft seating (#44)
+    // decoupled from — so they float off the 3D ships and read as artifacts
+    // (the dark-blue side-bands + teal specks bruce flagged). They return as
+    // real, loft-anchored HUD in the #46 HUD pass; the structure stays here.
+    if SHOW_PLACEHOLDER_HUD {
+        for ship in board.cells.iter().flatten() {
+            let visual_cell = tween.cell_for(ship);
+            push_heat_bar(&mut out, ship, visual_cell, lane, view_angle_rad);
+            push_shield_pips(&mut out, ship, visual_cell, lane, view_angle_rad);
+            push_queue_glyphs(&mut out, ship, visual_cell, lane, view_angle_rad);
+            push_status_badges(&mut out, ship, visual_cell, lane, view_angle_rad);
+        }
+        push_view_angle_overlay(&mut out, view_angle_rad);
     }
-
-    push_view_angle_overlay(&mut out, view_angle_rad);
 
     // NOTE: the end-state / between-encounter overlays are NOT pushed
     // here. The bin (or any other compose-caller) is responsible for
@@ -2128,7 +2147,6 @@ mod tests {
 
     #[test]
     fn ship_with_shield_charges_draws_pips() {
-        let mut board_with = empty_board(7);
         let mut ship = frigate_at(
             0,
             Faction::Player,
@@ -2152,42 +2170,53 @@ mod tests {
                 charge: 0,
             },
         };
-        board_with.cells[0] = Some(ship);
-        let scene_with = compose_scene(&board_with, &DEFAULT_LANE, std::f32::consts::FRAC_PI_4);
-
-        let mut bare_board = empty_board(7);
-        bare_board.cells[0] = Some(frigate_at(
-            0,
-            Faction::Player,
-            Orientation::BowOn { bow: LaneEnd::Fore },
-        ));
-        let scene_without = compose_scene(&bare_board, &DEFAULT_LANE, std::f32::consts::FRAC_PI_4);
-
-        // 2 bow pips + 1 port pip = 3 extra sprites.
-        assert_eq!(scene_with.len() - scene_without.len(), 3);
+        // Test the emitter directly: `compose_scene` gates the per-ship overlay
+        // HUD off for the #45/#46 showcase (SHOW_PLACEHOLDER_HUD = false), so
+        // assert against `push_shield_pips` rather than the compose delta.
+        let mut with = Vec::new();
+        push_shield_pips(
+            &mut with,
+            &ship,
+            0.0,
+            &DEFAULT_LANE,
+            std::f32::consts::FRAC_PI_4,
+        );
+        // 2 bow pips + 1 port pip = 3 sprites.
+        assert_eq!(with.len(), 3);
     }
 
     #[test]
     fn ship_with_heat_draws_a_filled_bar() {
-        let mut board = empty_board(7);
         let mut ship = frigate_at(
             0,
             Faction::Player,
             Orientation::BowOn { bow: LaneEnd::Fore },
         );
         ship.heat = 3;
-        board.cells[0] = Some(ship);
-        let scene_with = compose_scene(&board, &DEFAULT_LANE, std::f32::consts::FRAC_PI_4);
-
-        let mut bare_board = empty_board(7);
-        bare_board.cells[0] = Some(frigate_at(
+        // Emitter-direct (compose gates the overlay HUD off for the showcase).
+        let mut with = Vec::new();
+        push_heat_bar(
+            &mut with,
+            &ship,
+            0.0,
+            &DEFAULT_LANE,
+            std::f32::consts::FRAC_PI_4,
+        );
+        let mut bare = Vec::new();
+        let bare_ship = frigate_at(
             0,
             Faction::Player,
             Orientation::BowOn { bow: LaneEnd::Fore },
-        ));
-        let scene_without = compose_scene(&bare_board, &DEFAULT_LANE, std::f32::consts::FRAC_PI_4);
-
-        assert_eq!(scene_with.len() - scene_without.len(), 1);
+        );
+        push_heat_bar(
+            &mut bare,
+            &bare_ship,
+            0.0,
+            &DEFAULT_LANE,
+            std::f32::consts::FRAC_PI_4,
+        );
+        // Heated ship draws the bar BG + a fill quad; cold ship draws only BG.
+        assert_eq!(with.len() - bare.len(), 1);
     }
 
     #[test]
