@@ -1437,6 +1437,169 @@ pub fn push_salvage_hud(out: &mut Vec<DrawCommand>, salvage: u32) {
     }
 }
 
+/* =============================================================================
+ * Ability tiles (#53) — Shogun-Showdown-style.
+ *
+ * (a) Above the player ship: a row of tiles, one per ability (mounts 1/2/3 +
+ *     field-kit cards 5/6/7), each showing its slot key, display NAME, and a
+ *     short blurb of what it does.
+ * (b) Below the lane: a compact cooldown row — the same tiles, dimmed + showing
+ *     remaining turns for any ability currently on cooldown.
+ *
+ * The bin assembles the [`AbilityTile`] list (it has the Content registry for
+ * names + cooldown maxima, and the player ship for live cooldown state); hud
+ * just lays them out. First-pass look — bruce iterates.
+ * ============================================================================= */
+
+/// One player ability, flattened for display. The bin fills this from the
+/// player's mounts + field-kit cards (name/cooldown-max via the catalog action
+/// defs, `cooldown` via `Ship::cooldowns`).
+#[derive(Clone, Debug)]
+pub struct AbilityTile {
+    /// Input key that triggers it (`'1'`..`'3'`, `'5'`..`'7'`).
+    pub slot: char,
+    /// Display name from the action def.
+    pub name: String,
+    /// Short "what it does" line (first-pass: synthesized from the archetype /
+    /// effect by the bin; swaps to a real `Action::description` if content adds
+    /// one).
+    pub blurb: String,
+    /// Turns remaining on cooldown (`0` = ready).
+    pub cooldown: i32,
+    /// Cooldown length when fired (for the "n/N" readout); `0` = no cooldown.
+    pub cooldown_max: i32,
+}
+
+const TILE_READY: [f32; 4] = [0.329, 0.812, 0.788, 1.0]; // teal = available
+const TILE_COOLDOWN: [f32; 4] = [0.55, 0.50, 0.58, 1.0]; // dim violet = on CD
+const TILE_BG: [f32; 4] = [0.094, 0.110, 0.149, 0.85];
+const TILE_TEXT: [f32; 4] = [0.92, 0.94, 0.98, 1.0];
+
+/// (a) Ability name/blurb tiles, laid out in a centered row ABOVE the player
+/// ship. `anchor_x` is the player's screen x (lane centre of its cell);
+/// `top_y` is where the tile row's bottom sits (just above the ship).
+pub fn push_ability_tiles(
+    out: &mut Vec<DrawCommand>,
+    tiles: &[AbilityTile],
+    anchor_x: f32,
+    top_y: f32,
+) {
+    if tiles.is_empty() {
+        return;
+    }
+    let tile_w = 96.0;
+    let tile_h = 26.0;
+    let gap = 6.0;
+    let row_w = tiles.len() as f32 * tile_w + (tiles.len() as f32 - 1.0) * gap;
+    let mut x = anchor_x - row_w / 2.0;
+    for t in tiles {
+        let cx = x + tile_w / 2.0;
+        let cy = top_y - tile_h / 2.0;
+        // Tile background.
+        push_sprite(
+            out,
+            SpriteInstance::axis_aligned(
+                [cx, cy],
+                [tile_w / 2.0, tile_h / 2.0],
+                TILE_BG,
+                atlas::cell_uvs(atlas::SOLID_WHITE),
+            ),
+        );
+        let key_color = if t.cooldown > 0 {
+            TILE_COOLDOWN
+        } else {
+            TILE_READY
+        };
+        // "<slot> NAME" on the top line, blurb below — left-aligned in the tile.
+        let pad = 4.0;
+        let header = format!("{} {}", t.slot, t.name.to_uppercase());
+        push_text_left(
+            out,
+            &header,
+            x + pad,
+            cy - tile_h / 2.0 + 3.0,
+            1.4,
+            key_color,
+        );
+        push_text_left(
+            out,
+            &t.blurb.to_uppercase(),
+            x + pad,
+            cy + 2.0,
+            1.0,
+            TILE_TEXT,
+        );
+        x += tile_w + gap;
+    }
+}
+
+/// (b) Compact cooldown row BELOW the lane: one small chip per ability, teal
+/// when ready, dim with a remaining-turns number when on cooldown.
+pub fn push_cooldown_row(out: &mut Vec<DrawCommand>, tiles: &[AbilityTile], lane: &LaneGeometry) {
+    use crate::gfx::VIRTUAL_W;
+    if tiles.is_empty() {
+        return;
+    }
+    let chip = 22.0;
+    let gap = 8.0;
+    let row_w = tiles.len() as f32 * chip + (tiles.len() as f32 - 1.0) * gap;
+    let mut x = (VIRTUAL_W as f32 - row_w) / 2.0;
+    // Sit below the lane line, clear of the floor parallax band.
+    let y = lane.center_y + 70.0;
+    for t in tiles {
+        let cx = x + chip / 2.0;
+        let ready = t.cooldown <= 0;
+        let color = if ready { TILE_READY } else { TILE_COOLDOWN };
+        // Chip background.
+        push_sprite(
+            out,
+            SpriteInstance::axis_aligned(
+                [cx, y],
+                [chip / 2.0, chip / 2.0],
+                TILE_BG,
+                atlas::cell_uvs(atlas::SOLID_WHITE),
+            ),
+        );
+        // Slot key, centred-ish in the chip.
+        push_text_left(
+            out,
+            &t.slot.to_string(),
+            x + 3.0,
+            y - chip / 2.0 + 3.0,
+            1.6,
+            color,
+        );
+        // Remaining-turns number when on cooldown.
+        if !ready {
+            push_text_left(
+                out,
+                &t.cooldown.to_string(),
+                x + 3.0,
+                y + 1.0,
+                1.6,
+                TILE_COOLDOWN,
+            );
+        }
+        x += chip + gap;
+    }
+}
+
+/// Left-aligned single-line text using the inline 5×7 font, starting at
+/// `(x, y)` (top-left). Unsupported glyphs render blank (advance preserved).
+fn push_text_left(
+    out: &mut Vec<DrawCommand>,
+    text: &str,
+    x: f32,
+    y: f32,
+    pixel: f32,
+    color: [f32; 4],
+) {
+    let advance = 5.0 * pixel + pixel;
+    for (i, ch) in text.chars().enumerate() {
+        push_glyph_5x7(out, ch, x + i as f32 * advance, y, pixel, color);
+    }
+}
+
 /// Centered single-line banner using the inline 5×7 font. `pixel` is
 /// the size of one font "pixel" in virtual pixels (typically 4 for
 /// title-style banners, 2 for body text). `y` is the vertical center

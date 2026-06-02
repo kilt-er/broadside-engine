@@ -57,14 +57,14 @@ use broadside_engine::input::{
     intent_to_action_id, key_to_intent, synthetic_card_action_id, DemoContent, Intent, Key,
 };
 use broadside_engine::catalog::{enemy_ship_from_catalog_at_tier, load_from_path};
-use broadside_engine::perspective::{LaneGeometry, DEFAULT_LANE};
+use broadside_engine::perspective::{fractional_cell_to_screen, LaneGeometry, DEFAULT_LANE};
 use broadside_engine::resolve::{
     apply_instant_action, find_player_id, fire_player_queue, run_world_phase, Content,
 };
 use broadside_engine::subsystems::{HEAT_SINK, POINT_BLANK_DOCTRINE};
 use broadside_engine::types::{
     Arc as TArc, Board, Effect, EventBus, Faction, LaneEnd, Mount, Orientation, ReorientTo, Run,
-    Sector, ShieldFace, ShieldProfile, Ship,
+    Sector, ShieldFace, ShieldProfile, Ship, WeaponArchetype,
 };
 
 /* =============================================================================
@@ -286,6 +286,91 @@ fn load_catalog() -> Option<broadside_engine::types::Catalog> {
             None
         }
     }
+}
+
+/* =============================================================================
+ * Ability-tile assembly (#53).
+ *
+ * The renderer (hud) lays out tiles, but only the bin has the Content registry
+ * to resolve action names / cooldown maxima, so we flatten the player's
+ * abilities into `hud::AbilityTile`s here: mounts 1/2/3 (weapon action ids) +
+ * field-kit cards 5/6/7. Live cooldown comes from `Ship::cooldowns`.
+ * ============================================================================= */
+
+/// Screen-x of the player's lane cell, or `None` if there's no player.
+fn player_lane_x(board: &Board, lane: &LaneGeometry) -> Option<f32> {
+    board
+        .cells
+        .iter()
+        .flatten()
+        .find(|s| s.faction == Faction::Player)
+        .map(|s| fractional_cell_to_screen(s.cell as f32, lane).x)
+}
+
+/// Flatten the player's abilities into display tiles. Mounts (slots 1/2/3) read
+/// their weapon action def; cards (slots 5/6/7) read the synthetic
+/// `__card_<id>` action def. Name + cooldown-max come from the action; live
+/// cooldown from the ship. First-pass blurb is synthesized from the action's
+/// archetype/effects (Action carries no description field yet — see #53 note).
+fn build_ability_tiles(board: &Board, content: &dyn Content) -> Vec<hud::AbilityTile> {
+    let Some(player) = board.cells.iter().flatten().find(|s| s.faction == Faction::Player) else {
+        return Vec::new();
+    };
+    let mut tiles = Vec::new();
+    // Mounts → slots '1'..'3'.
+    for (i, mount) in player.mounts.iter().take(3).enumerate() {
+        if let Some(action) = content.action(&mount.weapon) {
+            tiles.push(hud::AbilityTile {
+                slot: (b'1' + i as u8) as char,
+                name: action.name.clone(),
+                blurb: ability_blurb(action),
+                cooldown: player.cooldowns.get(&mount.weapon).copied().unwrap_or(0).max(0),
+                cooldown_max: action.cost.cooldown_max.max(0),
+            });
+        }
+    }
+    // Field-kit cards → slots '5'..'7'. Cards gate on charges, not cooldown.
+    for (i, slot) in ['5', '6', '7'].iter().enumerate() {
+        if let Some(card_id) = content.card_at(&player.id, i) {
+            let synth = synthetic_card_action_id(&card_id);
+            if let Some(action) = content.action(&synth) {
+                tiles.push(hud::AbilityTile {
+                    slot: *slot,
+                    name: action.name.clone(),
+                    blurb: ability_blurb(action),
+                    cooldown: 0,
+                    cooldown_max: 0,
+                });
+            }
+        }
+    }
+    tiles
+}
+
+/// First-pass "what it does" line for an ability tile, synthesized from the
+/// action's archetype (Action has no description field yet; swap to
+/// `action.description` once content adds one — #53). Kept to glyph-font-safe
+/// uppercase words.
+fn ability_blurb(action: &broadside_engine::types::Action) -> String {
+    let kind = match action.archetype {
+        WeaponArchetype::Beam => "BEAM",
+        WeaponArchetype::Ordnance => "ORDNANCE",
+        WeaponArchetype::Broadside => "BROADSIDE",
+        WeaponArchetype::Displacement => "DISPLACE",
+        WeaponArchetype::Control => "CONTROL",
+        WeaponArchetype::Movement => "MOVE",
+        WeaponArchetype::Defensive => "DEFENSE",
+    };
+    // Pull the first damage/heat figure out of the effects for a touch of
+    // detail; otherwise just the archetype word.
+    for e in &action.effects {
+        match e {
+            Effect::DAMAGE { amount, .. } => return format!("{kind} DMG {amount}"),
+            Effect::VENT_HEAT { amount, .. } => return format!("{kind} VENT {amount}"),
+            _ => {}
+        }
+    }
+    kind.to_string()
 }
 
 /// Mirrors the board state hard-coded in `render-example.ts`. Used as both
@@ -924,6 +1009,17 @@ impl ApplicationHandler for App {
                 // salvage in their own banners.
                 if matches!(demo_state, DemoState::Playing) {
                     push_salvage_hud(&mut instances, salvage);
+                    // Ability tiles (#53): name/blurb tiles above the player +
+                    // a cooldown row below the lane. Assembled from the player's
+                    // mounts + field-kit cards (names/cooldown-max via content,
+                    // live cooldown via ship state).
+                    let tiles = build_ability_tiles(&self.board, &self.content);
+                    if let Some(px) = player_lane_x(&self.board, &self.lane) {
+                        // Tile row bottom sits above the loft ship silhouette.
+                        let top_y = self.lane.center_y - 110.0;
+                        hud::push_ability_tiles(&mut instances, &tiles, px, top_y);
+                    }
+                    hud::push_cooldown_row(&mut instances, &tiles, &self.lane);
                 }
                 // Push the appropriate demo-state overlay on top.
                 // Compose no longer auto-pushes — the bin owns the
