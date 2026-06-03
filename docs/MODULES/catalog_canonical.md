@@ -272,7 +272,10 @@ field; on success the derived id replaces it.
 **Worked example** (`canonical_class_normalizes_set_refs_and_signature`,
 src/catalog_canonical.rs:995): the `wanderer` class with display-name sets and a
 prose signature decodes to `set1 == ["broadside_battery", "pulse_laser"]`,
-`set2 == ["railgun_broadside", "grav_snare"]`, and `signature == "slip"`.
+`set2 == ["railgun_broadside", "grav_snare"]`, and `signature == "slip"`. (`wanderer` is
+the test's own `#[cfg(test)]` fixture id — a build-safe arbitrary input that exercises the
+transformer, **not** the canonical roster. The #66 reflavor renamed the live roster
+`wanderer → corvette`; this test fixture is deliberately left untouched.)
 
 ---
 

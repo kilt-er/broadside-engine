@@ -4306,7 +4306,10 @@ Line 251-259: `set1`/`set2` display-names→ids via `normalize_action_ref`. Line
 
 **Worked example** (`canonical_class_normalizes_set_refs_and_signature`,
 src/catalog_canonical.rs:995): `wanderer` → `set1=["broadside_battery","pulse_laser"]`,
-`set2=["railgun_broadside","grav_snare"]`, `signature="slip"`.
+`set2=["railgun_broadside","grav_snare"]`, `signature="slip"`. (The `wanderer` id here is
+the test's own `#[cfg(test)]` fixture — a build-safe arbitrary input, **not** the canonical
+roster, which the #66 reflavor renamed to `corvette`. The test exercises the transformer,
+not the roster, so the fixture id is left as-is.)
 
 ### `fn normalize_action_ref(...) -> Value` (src/catalog_canonical.rs:281)
 
@@ -4987,48 +4990,52 @@ the resolver to dispatch them (registered by `DemoContent::register_class_signat
 so the hand-built demo registry and the catalog load path produce identical class behaviour.
 Full companion at [`docs/MODULES/classes.md`](MODULES/classes.md).*
 
-**Mirrors:** the analysis doc's CLASSES table (`broadside-analysis.html:1143-1165`),
-transcribed verbatim for the five canonical classes.
+**Mirrors:** the analysis doc's CLASSES table (`broadside-analysis.html:1143-1165`) for the
+five canonical classes' **mechanics** — the #66 reflavor renamed the classes (ids + display
+names) but left affinity/set1/set2/signature/passive untouched.
 
-**The roster (#50):** five canonical classes + Aegis —
-`wanderer` (Frigate "Drifter", Flexible, Slip, default), `ronin` (Destroyer "Ronin", BowOn,
-Ram), `shadow` (Phantom "Shade", Broadside, Phase + the only passive), `jujitsuka` (Monitor
-"Anvil", BowOn, Throw), `chainmaster` (Carrier "Tessen", Broadside, Swap Toss), plus
-**`aegis`** (Broadside, Broadside Sweep). Retires the Phase-2 Vanguard/Wraith/Bulwark
-placeholders.
+**The roster (#50; #66 ship-archetype reflavor):** five canonical classes + Aegis —
+`corvette` (Corvette "Slipstream", Flexible, Slip, default), `prowship` (Ram "Ironprow",
+BowOn, Ram), `runner` (Blockade Runner "Wraith", Broadside, Phase + the only passive),
+`tug` (Salvage Tug "Capstan", BowOn, Throw), `carrier` (Carrier "Broadside Bay", Broadside,
+Swap Toss), plus **`aegis`** (Battleship "Aegis", Broadside, Broadside Sweep). Retires the
+Phase-2 Vanguard/Wraith/Bulwark placeholders.
 
-> **PROVISIONAL — Aegis.** Aegis is NOT in the canonical doc roster — an additive 6th class
-> built around bruce's hand-painted art (the bin sets `player.klass = "aegis"`), documented
-> as currently built. **Bruce hasn't ruled whether it's a true 6th class or a reskin of a
-> canonical broadside class** (chainmaster/shadow); if reskin, `aegis()` +
-> `synthetic_broadside_sweep()` retire cheaply. Treat the Aegis bits as pending his call.
+> **#66 reflavor (bruce-approved 2026-06-02).** The roster was reflavored off the
+> Shogun-Showdown hero corollaries (old ids `wanderer`/`ronin`/`shadow`/`jujitsuka`/
+> `chainmaster`, nicknames Drifter/Ronin/Shade/Anvil/Tessen) onto naval-combat ship
+> archetypes. **Mechanics are unchanged** (a pure identity/naming layer) and the
+> **signature-ability ids stay** (slip/ram/phase/throw/swap_toss/broadside_sweep) — they
+> name maneuvers, not heroes. The reflavor also folds Aegis into the canonical roster as
+> the broadside-native 6th ship class ("Battleship Aegis"), resolving the earlier
+> new-vs-reskin question: it's a peer broadside ship.
 
-### Roster builders (src/classes.rs:107–260)
+### Roster builders (src/classes.rs:125–286)
 
-`canonical_classes()` (src/classes.rs:113) returns the six `ClassDef`s; `placeholder_classes()`
-(src/classes.rs:107) is a **stability alias** returning the same (the bin + input.rs
+`canonical_classes()` (src/classes.rs:130) returns the six `ClassDef`s; `placeholder_classes()`
+(src/classes.rs:125) is a **stability alias** returning the same (the bin + input.rs
 coverage test consume it by that name — no longer placeholders). Each builder transcribes
 its doc CLASSES row (affinity, set1/set2, signature id, optional passive, desc). `aegis()`
-(src/classes.rs:243, **provisional**) is content's "Option A: Sweep" identity — the offensive
-inverse of the enemy AI's "maximise distinct threatened lane-ends" directive. **Worked
-examples:** `canonical_roster_has_six_distinct_classes` (src/classes.rs:417),
-`every_signature_id_is_synthesized` (src/classes.rs:440, no class points at an unbuilt
-signature), `affinities_cover_all_three_variants` (src/classes.rs:469).
+(src/classes.rs:260) is content's "Option A: Sweep" identity — the offensive inverse of the
+enemy AI's "maximise distinct threatened lane-ends" directive, folded in as the 6th ship
+class by #66. **Worked examples:** `canonical_roster_has_six_distinct_classes`
+(src/classes.rs:435), `every_signature_id_is_synthesized` (src/classes.rs:458, no class
+points at an unbuilt signature), `affinities_cover_all_three_variants` (src/classes.rs:487).
 
-### Signature actions (src/classes.rs:275–406)
+### Signature actions (src/classes.rs:292–423)
 
 The five canonical signatures are **self-relative maneuvers** (#84/#97 — `SELF` pattern,
-resolve as `DISPLACE_SELF` not `DISPLACE_TARGET`). `self_move_signature` (src/classes.rs:275)
+resolve as `DISPLACE_SELF` not `DISPLACE_TARGET`). `self_move_signature` (src/classes.rs:292)
 is the shared free-fire shell; the builders supply the mode: `slip`/`swap_toss` →
 `TRACTOR_SWAP`, `ram` → `BURN` forward, `throw` → `BURN` aft (`direction: Aft`), `phase` →
 `SLIP`. These **mirror catalog_canonical's `inflate_effect` exactly**
 ([`catalog_canonical.rs`](#srccatalog_canonicalrs)), so demo and catalog paths agree.
-`synthetic_broadside_sweep` (src/classes.rs:385, **provisional**, Aegis) is the exception —
-`BROADSIDE` pattern, two effects: `DAMAGE 3` (both flanks) **then** `REORIENT { Flip }` (the
-pivot), heat 4 / cd 5, advances the turn (a weapon, not a free maneuver). **Worked
-examples:** `slip_and_swap_toss_are_tractor_swaps` (src/classes.rs:480),
-`ram_burns_forward_throw_burns_aft` (src/classes.rs:491), `phase_is_slip_movement`
-(src/classes.rs:503), `broadside_sweep_fires_both_flanks_then_flips` (src/classes.rs:524).
+`synthetic_broadside_sweep` (src/classes.rs:402, Aegis) is the exception — `BROADSIDE`
+pattern, two effects: `DAMAGE 3` (both flanks) **then** `REORIENT { Flip }` (the pivot),
+heat 4 / cd 5, advances the turn (a weapon, not a free maneuver). **Worked examples:**
+`slip_and_swap_toss_are_tractor_swaps` (src/classes.rs:498),
+`ram_burns_forward_throw_burns_aft` (src/classes.rs:509), `phase_is_slip_movement`
+(src/classes.rs:521), `broadside_sweep_fires_both_flanks_then_flips` (src/classes.rs:542).
 
 **Cross-references:** `ClassDef`s land in `Catalog::classes` (same five produced by
 [`catalog_canonical`](#srccatalog_canonicalrs)); signatures registered by
