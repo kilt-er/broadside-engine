@@ -529,7 +529,7 @@
       "effects": [
         "DISPLACE_TARGET"
       ],
-      "desc": "Signature (Frigate \"Drifter\"). Trade places with the ship directly ahead — slip past a blocker without spending the turn. Free-fire."
+      "desc": "Signature (Corvette \"Slipstream\"). Trade places with the ship directly ahead — slip past a blocker without spending the turn. Free-fire."
     },
     {
       "id": "ram",
@@ -545,7 +545,7 @@
         "DISPLACE_TARGET",
         "DAMAGE"
       ],
-      "desc": "Signature (Destroyer \"Ronin\"). Shove the ship ahead, dealing collision damage on impact. Pairs with bow-on stance + Chikara-style collision perks."
+      "desc": "Signature (Ram \"Ironprow\"). Shove the ship ahead, dealing collision damage on impact. Pairs with bow-on stance + collision perks."
     },
     {
       "id": "phase",
@@ -560,7 +560,7 @@
       "effects": [
         "DISPLACE_SELF"
       ],
-      "desc": "Signature (Phantom \"Shade\"). Pass through the ship directly ahead — SLIP-style movement that ignores occupants and lands in the first free cell. Free-fire."
+      "desc": "Signature (Blockade Runner \"Wraith\"). Pass through the ship directly ahead — SLIP-style movement that ignores occupants and lands in the first free cell. Free-fire."
     },
     {
       "id": "throw",
@@ -576,7 +576,7 @@
         "DISPLACE_TARGET",
         "DAMAGE"
       ],
-      "desc": "Signature (Monitor \"Anvil\"). Hurl the ship behind you, dealing collision damage on impact. The reversed-stance brawler's stern-arc tool."
+      "desc": "Signature (Salvage Tug \"Capstan\"). Hurl the ship behind you, dealing collision damage on impact. The reversed-stance brawler's stern-arc tool."
     },
     {
       "id": "swap_toss",
@@ -591,7 +591,7 @@
       "effects": [
         "DISPLACE_TARGET"
       ],
-      "desc": "Signature (Carrier \"Tessen\"). Swap the cells directly fore and aft — multi-target reposition that reliably triggers chain subsystems."
+      "desc": "Signature (Carrier \"Broadside Bay\"). Swap the cells directly fore and aft — multi-target reposition that reliably triggers chain subsystems."
     }
   ],
   "mods": [
@@ -1216,8 +1216,8 @@
   ],
   "classes": [
     {
-      "id": "wanderer",
-      "name": "Frigate \"Drifter\"",
+      "id": "corvette",
+      "name": "Corvette \"Slipstream\"",
       "unlock": "Unlocked by default",
       "affinity": "flexible",
       "set1": [
@@ -1233,8 +1233,8 @@
       "desc": "The starting hull; a balanced beam + broadside opener with no strong stance bias."
     },
     {
-      "id": "ronin",
-      "name": "Destroyer \"Ronin\"",
+      "id": "prowship",
+      "name": "Ram \"Ironprow\"",
       "unlock": "Defeat The Twins",
       "affinity": "bow-on",
       "set1": [
@@ -1250,8 +1250,8 @@
       "desc": "Bow-on bruiser built around its strong front and collision damage; Chikara-style collision perks shine."
     },
     {
-      "id": "shadow",
-      "name": "Phantom \"Shade\"",
+      "id": "runner",
+      "name": "Blockade Runner \"Wraith\"",
       "unlock": "Defeat The Warlord",
       "affinity": "broadside",
       "set1": [
@@ -1263,12 +1263,12 @@
         "Blink Drive"
       ],
       "signature": "phase",
-      "passive": "When moving, the Phantom advances as far as possible in the chosen direction.",
-      "desc": "The only class with a passive layered on the signature; a broadside skirmisher that slips between threats."
+      "passive": "When moving, the Blockade Runner advances as far as possible in the chosen direction.",
+      "desc": "The only class with a passive layered on the signature; a broadside skirmisher that refuses to be pinned."
     },
     {
-      "id": "jujitsuka",
-      "name": "Monitor \"Anvil\"",
+      "id": "tug",
+      "name": "Salvage Tug \"Capstan\"",
       "unlock": "Defeat the Flagship on Patrol 2",
       "affinity": "bow-on",
       "set1": [
@@ -1284,8 +1284,8 @@
       "desc": "A reversed-stance brawler that fights over its stern, turning displacement into kills."
     },
     {
-      "id": "chainmaster",
-      "name": "Carrier \"Tessen\"",
+      "id": "carrier",
+      "name": "Carrier \"Broadside Bay\"",
       "unlock": "Defeat the Flagship on Patrol 3",
       "affinity": "broadside",
       "set1": [

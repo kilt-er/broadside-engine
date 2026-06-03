@@ -7,19 +7,35 @@
 //!
 //! ## The roster (#50 — replaces the Phase-2 placeholders)
 //!
-//! The canonical roster is the five classes specified in the analysis doc
-//! (`broadside-analysis.html` CLASSES, lines 1143-1165), transcribed
-//! verbatim (set1/set2/signature/affinity/passive):
+//! The canonical roster is six ship classes — the five from the analysis
+//! doc (`broadside-analysis.html` CLASSES, lines 1143-1165, transcribed
+//! verbatim for set1/set2/signature/affinity/passive) plus the
+//! broadside-native Aegis:
 //!
-//! - **wanderer** Frigate "Drifter" (Flexible)  — Slip
-//! - **ronin**    Destroyer "Ronin" (BowOn)      — Ram
-//! - **shadow**   Phantom "Shade" (Broadside)    — Phase (+passive)
-//! - **jujitsuka** Monitor "Anvil" (BowOn)       — Throw
-//! - **chainmaster** Carrier "Tessen" (Broadside) — Swap Toss
+//! - **corvette** Corvette "Slipstream" (Flexible)     — Slip
+//! - **prowship** Ram "Ironprow" (BowOn)               — Ram
+//! - **runner**   Blockade Runner "Wraith" (Broadside) — Phase (+passive)
+//! - **tug**      Salvage Tug "Capstan" (BowOn)        — Throw
+//! - **carrier**  Carrier "Broadside Bay" (Broadside)  — Swap Toss
+//! - **aegis**    Battleship "Aegis" (Broadside)       — Broadside Sweep
 //!
-//! Plus **aegis** — the broadside-native 6th class from bruce's
-//! hand-painted art (NOT in the doc; content's "Option A: Sweep"
-//! identity). See [`aegis`].
+//! ## Naming (#66 — ship-archetype reflavor, bruce-approved 2026-06-02)
+//!
+//! The roster was reflavored OFF the Shogun-Showdown hero corollaries
+//! (the old ids wanderer/ronin/shadow/jujitsuka/chainmaster, with quoted
+//! SS nicknames Drifter/Ronin/Shade/Anvil/Tessen) ONTO naval-combat ship
+//! archetypes whose identity reads from each class's mechanical signature.
+//! **Mechanics are unchanged** — affinity, set1/set2 loadouts, signature,
+//! passive, heat/cd are all identical; this was a pure identity/naming layer.
+//!
+//! Aegis (bruce's hand-painted art) folds in as the broadside-native 6th
+//! ship class rather than a standalone new-vs-reskin question — the
+//! offensive inverse of the enemy AI's "maximise threatened lane-ends"
+//! directive (fire both flanks, then come about and present them again).
+//!
+//! The signature-ability ids (slip/ram/phase/throw/swap_toss/broadside_sweep)
+//! were deliberately LEFT as-is: they name maneuvers, not heroes, and the
+//! resolver dispatches by them.
 //!
 //! The earlier Phase-2 placeholders (Vanguard/Wraith/Bulwark, task #62)
 //! are retired by this roster.
@@ -68,11 +84,13 @@ use crate::types::{
  * register it in `DemoContent::register_class_signatures` (input.rs).
  * ====================================================================== */
 
-pub const CLASS_WANDERER: &str = "wanderer";
-pub const CLASS_RONIN: &str = "ronin";
-pub const CLASS_SHADOW: &str = "shadow";
-pub const CLASS_JUJITSUKA: &str = "jujitsuka";
-pub const CLASS_CHAINMASTER: &str = "chainmaster";
+// #66 ship-archetype ids (the SS-hero corollaries — wanderer/ronin/shadow/
+// jujitsuka/chainmaster — were retired here). aegis is unchanged.
+pub const CLASS_CORVETTE: &str = "corvette";
+pub const CLASS_PROWSHIP: &str = "prowship";
+pub const CLASS_RUNNER: &str = "runner";
+pub const CLASS_TUG: &str = "tug";
+pub const CLASS_CARRIER: &str = "carrier";
 /// Aegis — broadside-native 6th class (bruce's art); see [`aegis`].
 pub const CLASS_AEGIS: &str = "aegis";
 
@@ -108,109 +126,111 @@ pub fn placeholder_classes() -> Vec<ClassDef> {
     canonical_classes()
 }
 
-/// The canonical roster: wanderer, ronin, shadow, jujitsuka, chainmaster,
-/// aegis.
+/// The canonical roster: corvette, prowship, runner, tug, carrier, aegis.
 pub fn canonical_classes() -> Vec<ClassDef> {
     vec![
-        wanderer(),
-        ronin(),
-        shadow(),
-        jujitsuka(),
-        chainmaster(),
+        corvette(),
+        prowship(),
+        runner(),
+        tug(),
+        carrier(),
         aegis(),
     ]
 }
 
-/// Frigate "Drifter" (`wanderer`) — Flexible, Slip. The default-unlocked
-/// starter: a balanced beam + broadside opener with no strong stance bias.
-/// Doc CLASSES line 1144-1147.
-pub fn wanderer() -> ClassDef {
+/// Corvette "Slipstream" (`corvette`) — Flexible, Slip. The default-unlocked
+/// starter: a light, agile picket hull with no strong stance bias — a balanced
+/// beam + broadside opener. Doc CLASSES line 1144-1147 (reflavored #66 from
+/// Frigate "Drifter" / `wanderer`).
+pub fn corvette() -> ClassDef {
     ClassDef {
-        id: CLASS_WANDERER.into(),
-        name: "Frigate \"Drifter\"".into(),
+        id: CLASS_CORVETTE.into(),
+        name: "Corvette \"Slipstream\"".into(),
         affinity: ClassAffinity::Flexible,
         unlock: Some("Unlocked by default".into()),
         set1: vec!["broadside_battery".into(), "pulse_laser".into()],
         set2: vec!["railgun_broadside".into(), "grav_snare".into()],
         signature: SIG_SLIP.into(),
         passive: None,
-        desc: "The starting hull; a balanced beam + broadside opener with no \
-               strong stance bias. Slip trades places with the ship directly \
-               ahead — slip past a blocker without spending the turn."
+        desc: "A light, agile picket hull with no strong stance bias; a \
+               balanced beam + broadside opener. Slip trades places with the \
+               ship directly ahead — thread the line without spending the turn."
             .into(),
     }
 }
 
-/// Destroyer "Ronin" (`ronin`) — BowOn, Ram. A bow-on bruiser built around
-/// its strong front and collision damage. Doc line 1148-1151.
-pub fn ronin() -> ClassDef {
+/// Ram "Ironprow" (`prowship`) — BowOn, Ram. A reinforced bow-on hull built to
+/// collide; its strong front IS the weapon. Doc line 1148-1151 (reflavored #66
+/// from Destroyer "Ronin" / `ronin`).
+pub fn prowship() -> ClassDef {
     ClassDef {
-        id: CLASS_RONIN.into(),
-        name: "Destroyer \"Ronin\"".into(),
+        id: CLASS_PROWSHIP.into(),
+        name: "Ram \"Ironprow\"".into(),
         affinity: ClassAffinity::BowOn,
         unlock: Some("Defeat The Twins".into()),
         set1: vec!["particle_lance".into(), "blink_drive".into()],
         set2: vec!["railgun_broadside".into(), "tractor_toss".into()],
         signature: SIG_RAM.into(),
         passive: None,
-        desc: "Bow-on bruiser built around its strong front and collision \
-               damage. Ram shoves the ship ahead, dealing collision damage \
+        desc: "A reinforced bow-on hull built to collide — the strong front is \
+               the weapon. Ram shoves the ship ahead, dealing collision damage \
                on impact; collision perks shine."
             .into(),
     }
 }
 
-/// Phantom "Shade" (`shadow`) — Broadside, Phase, + passive. The only class
-/// with a passive layered on the signature; a broadside skirmisher that
-/// slips between threats. Doc line 1152-1156.
-pub fn shadow() -> ClassDef {
+/// Blockade Runner "Wraith" (`runner`) — Broadside, Phase, + passive. The only
+/// class with a passive layered on the signature; a broadside skirmisher that
+/// refuses to be pinned. Doc line 1152-1156 (reflavored #66 from Phantom
+/// "Shade" / `shadow`).
+pub fn runner() -> ClassDef {
     ClassDef {
-        id: CLASS_SHADOW.into(),
-        name: "Phantom \"Shade\"".into(),
+        id: CLASS_RUNNER.into(),
+        name: "Blockade Runner \"Wraith\"".into(),
         affinity: ClassAffinity::Broadside,
         unlock: Some("Defeat The Warlord".into()),
         set1: vec!["broadside_battery".into(), "tractor_beam".into()],
         set2: vec!["particle_lance".into(), "blink_drive".into()],
         signature: SIG_PHASE.into(),
         passive: Some(
-            "When moving, the Phantom advances as far as possible in the \
-             chosen direction."
+            "When moving, the Blockade Runner advances as far as possible in \
+             the chosen direction."
                 .into(),
         ),
-        desc: "A broadside skirmisher that slips between threats — the only \
+        desc: "A broadside skirmisher that refuses to be pinned — the only \
                class with a passive layered on its signature. Phase passes \
                through the ship directly ahead."
             .into(),
     }
 }
 
-/// Monitor "Anvil" (`jujitsuka`) — BowOn, Throw. A reversed-stance brawler
-/// that fights over its stern, turning displacement into kills. Doc line
-/// 1157-1160.
-pub fn jujitsuka() -> ClassDef {
+/// Salvage Tug "Capstan" (`tug`) — BowOn, Throw. A reversed-stance brawler that
+/// fights over its stern, hauling and heaving mass into kills. Doc line
+/// 1157-1160 (reflavored #66 from Monitor "Anvil" / `jujitsuka`).
+pub fn tug() -> ClassDef {
     ClassDef {
-        id: CLASS_JUJITSUKA.into(),
-        name: "Monitor \"Anvil\"".into(),
+        id: CLASS_TUG.into(),
+        name: "Salvage Tug \"Capstan\"".into(),
         affinity: ClassAffinity::BowOn,
         unlock: Some("Defeat the Flagship on Patrol 2".into()),
         set1: vec!["repulsor".into(), "scatter_laser".into()],
         set2: vec!["beam_cannon".into(), "grav_snare".into()],
         signature: SIG_THROW.into(),
         passive: None,
-        desc: "A reversed-stance brawler that fights over its stern, turning \
-               displacement into kills. Throw hurls the ship behind you, \
+        desc: "A reversed-stance brawler that fights over its stern, hauling \
+               and heaving mass into kills. Throw hurls the ship behind you, \
                dealing collision damage."
             .into(),
     }
 }
 
-/// Carrier "Tessen" (`chainmaster`) — Broadside, Swap Toss. Ordnance-heavy
+/// Carrier "Broadside Bay" (`carrier`) — Broadside, Swap Toss. Ordnance-heavy
 /// broadside hull; multi-target launches reliably trigger chain subsystems.
-/// Doc line 1161-1164.
-pub fn chainmaster() -> ClassDef {
+/// Doc line 1161-1164 (reflavored #66 — dropped the "Tessen" SS nickname).
+pub fn carrier() -> ClassDef {
     ClassDef {
-        id: CLASS_CHAINMASTER.into(),
-        name: "Carrier \"Tessen\"".into(),
+        id: CLASS_CARRIER.into(),
+        name: "Carrier \"Broadside Bay\"".into(),
         affinity: ClassAffinity::Broadside,
         unlock: Some("Defeat the Flagship on Patrol 3".into()),
         set1: vec!["heavy_torpedo".into(), "afterburner".into()],
@@ -219,31 +239,28 @@ pub fn chainmaster() -> ClassDef {
         passive: None,
         desc: "Ordnance-heavy broadside hull; multi-target launches reliably \
                trigger chain subsystems. Swap Toss swaps the cells directly \
-               fore and aft."
+               fore and aft to open a new firing lane for the next salvo."
             .into(),
     }
 }
 
-/// Aegis (`aegis`) — Broadside, Broadside Sweep. The first broadside-native
-/// PLAYER class (bruce's hand-painted art; the bin sets
-/// `player.klass = "aegis"`). NOT in the canonical doc roster — an additive
-/// 6th class, content's doc-grounded "Option A: Sweep" identity (the lead
-/// approved proceeding on the rec since the doc is silent on Aegis).
+/// Battleship "Aegis" (`aegis`) — Broadside, Broadside Sweep. The
+/// broadside-native PLAYER class (bruce's hand-painted art; the bin sets
+/// `player.klass = "aegis"`). Folded into the canonical roster as the 6th
+/// ship class by #66 (bruce-approved), resolving the earlier new-vs-reskin
+/// question: it's neither — a peer broadside ship, content's "Option A: Sweep"
+/// identity.
 ///
 /// The aggressive both-flanks bruiser: where a plain broadside battery just
-/// fires both lane-ends, Aegis's Sweep fires both flanks AND sweeps the hull
-/// around (REORIENT flip) — turning the defensive stance-flip the player is
-/// otherwise forced into by enemy lane-end pressure into an OFFENSIVE
-/// identity. Mechanical inverse of the enemy AI's "maximise distinct
-/// threatened lane-ends" directive.
-///
-/// If bruce later rules Aegis is a reskin of a canonical broadside class
-/// (chainmaster/shadow) rather than new, this entry + [`synthetic_broadside_sweep`]
-/// are cheap to retire.
+/// fires both lane-ends, Aegis's Sweep fires both flanks AND comes about
+/// (REORIENT flip) to re-present the guns — a battleship's rolling broadside.
+/// Turns the defensive stance-flip the player is otherwise forced into by
+/// enemy lane-end pressure into an OFFENSIVE identity: the mechanical inverse
+/// of the enemy AI's "maximise distinct threatened lane-ends" directive.
 pub fn aegis() -> ClassDef {
     ClassDef {
         id: CLASS_AEGIS.into(),
-        name: "Aegis".into(),
+        name: "Battleship \"Aegis\"".into(),
         affinity: ClassAffinity::Broadside,
         unlock: Some("Unlocked by default".into()),
         set1: vec!["broadside_battery".into(), "flak_battery".into()],
@@ -298,7 +315,7 @@ fn self_move_signature(
     }
 }
 
-/// Slip (wanderer) — trade places with the ship directly ahead.
+/// Slip (corvette) — trade places with the ship directly ahead.
 /// DISPLACE_SELF TRACTOR_SWAP. Doc heat 1 / cd 5, free-fire.
 pub fn synthetic_slip() -> Action {
     self_move_signature(
@@ -310,7 +327,7 @@ pub fn synthetic_slip() -> Action {
     )
 }
 
-/// Ram (ronin) — shove the ship ahead, collision damage on impact.
+/// Ram (prowship) — shove the ship ahead, collision damage on impact.
 /// DISPLACE_SELF BURN forward; `resolve_self_move` bills the collision when
 /// the burn is blocked by the ship ahead. Doc heat 2 / cd 6.
 pub fn synthetic_ram() -> Action {
@@ -323,7 +340,7 @@ pub fn synthetic_ram() -> Action {
     )
 }
 
-/// Phase (shadow) — pass through the ship directly ahead. DISPLACE_SELF
+/// Phase (runner) — pass through the ship directly ahead. DISPLACE_SELF
 /// SLIP (skip occupants, land in the first free cell beyond). Doc heat 1 /
 /// cd 5.
 pub fn synthetic_phase() -> Action {
@@ -336,7 +353,7 @@ pub fn synthetic_phase() -> Action {
     )
 }
 
-/// Throw (jujitsuka) — hurl the ship behind you, collision damage.
+/// Throw (tug) — hurl the ship behind you, collision damage.
 /// DISPLACE_SELF BURN toward the stern (`direction: Aft` overrides the
 /// bow-relative step). Doc heat 2 / cd 6.
 pub fn synthetic_throw() -> Action {
@@ -353,7 +370,7 @@ pub fn synthetic_throw() -> Action {
     )
 }
 
-/// Swap Toss (chainmaster) — swap the cells directly fore and aft.
+/// Swap Toss (carrier) — swap the cells directly fore and aft.
 /// DISPLACE_SELF TRACTOR_SWAP (the faithful single bow-side swap subset; the
 /// two-sided fore-AND-aft swap has no single-effect representation today).
 /// Doc heat 2 / cd 7.
@@ -420,8 +437,8 @@ mod tests {
         assert_eq!(cs.len(), 6);
         let ids: HashSet<&str> = cs.iter().map(|c| c.id.as_str()).collect();
         for id in [
-            CLASS_WANDERER, CLASS_RONIN, CLASS_SHADOW, CLASS_JUJITSUKA,
-            CLASS_CHAINMASTER, CLASS_AEGIS,
+            CLASS_CORVETTE, CLASS_PROWSHIP, CLASS_RUNNER, CLASS_TUG,
+            CLASS_CARRIER, CLASS_AEGIS,
         ] {
             assert!(ids.contains(id), "roster missing `{id}`");
         }
