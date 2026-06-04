@@ -2033,28 +2033,36 @@ fn decide_enemy_action(
     //     valid mount weapon should never reach this branch.
 }
 
-/// Queue a PURPOSEFUL maneuver toward an optimal firing position on the
-/// player (#41 O1 "optimal position"), if one is available. Returns `true`
-/// and pushes an action id onto the enemy's queue if it found a useful move;
-/// `false` if no move helps (caller falls through to reorient / vent).
+/// Queue a PURPOSEFUL maneuver that CLOSES the enemy toward the player (#41
+/// O1 "optimal position" / #68 anti-camp). Returns `true` and pushes an
+/// action id onto the enemy's queue if it found a closing move; `false`
+/// otherwise (caller falls through to reorient / vent).
 ///
-/// # What "purposeful" means under the id-based queue
+/// # Why this prefers the SYNTHETIC lane-relative move
 ///
-/// The action queue holds action *ids*, not parameterized actions, and a
-/// `DISPLACE_SELF` with `direction: None` (the canonical AI form) derives its
-/// step from the ship's ORIENTATION. So the AI cannot dial a move's direction
-/// per-decision — its only levers are *which* action to queue and whether to
-/// reorient first. "Purposeful" therefore means: queue a move only when the
-/// enemy's current orientation makes that move CLOSE the gap to the player
-/// (step toward the player's cell). If the enemy's bow points away from the
-/// player, a move would *open* the range — not purposeful — so we decline and
-/// let the caller's reorient fallback flip the enemy to face the player
-/// first; next turn, facing the player, the move closes.
+/// Live enemies carry NO movement action in their mounts — catalog enemies'
+/// mounts are built purely from `def.weapons` (combat weapons), and the
+/// fallback ship has a single `pulse_laser`. So an AI that only queued
+/// *mounted* DISPLACE_SELF actions could never move (this was the "enemies
+/// never move" bug bruce hit — the prior version of this helper scanned
+/// mounts for a DISPLACE_SELF that simply isn't there).
 ///
-/// This upgrades the old "queue the first DISPLACE_SELF found" (which drifted
-/// in whatever direction the bow happened to point) into directed pursuit,
-/// without needing a per-decision move-direction parameter (a `r#mod`-style
-/// types change that's out of scope here).
+/// The PLAYER moves via SYNTHETIC lane-relative actions (`__move_left` /
+/// `__move_right`, [`crate::input::synthetic_move_left`] /
+/// `synthetic_move_right`) that the live `Content` serves regardless of
+/// mounts. Those carry `direction: Some(LaneEnd::…)`, so `resolve_self_move`
+/// steps in the ABSOLUTE lane direction independent of orientation — the
+/// enemy closes whichever way its bow points, with no reorient dance and no
+/// "decline forever" trap. The AI now issues the same synthetic move:
+///   - player AFT of the enemy (lower cell)  -> `__move_left`  (step aft)
+///   - player FORE of the enemy (higher cell) -> `__move_right` (step fore)
+///
+/// Gated on `content.action(id).is_some()` so it only fires when the running
+/// `Content` actually serves the synthetic move (the live bin's
+/// `DemoContent` does; minimal test `Content`s that don't simply fall through
+/// to the mounted-DISPLACE_SELF path below, preserving old behavior). As a
+/// secondary path it still honors a mounted `DISPLACE_SELF` if a future
+/// enemy carries one.
 fn queue_purposeful_maneuver(
     enemy_cell: usize,
     player_cell: usize,
@@ -2064,15 +2072,29 @@ fn queue_purposeful_maneuver(
     content: &dyn Content,
     board: &mut Board,
 ) -> bool {
-    // The lane direction from the enemy toward the player. A move "closes"
-    // iff the enemy's orientation-derived step points this way.
-    let toward_player = crate::geometry::direction_to(enemy_cell, player_cell);
     if enemy_cell == player_cell {
         return false; // degenerate; nothing to close
     }
+    // The lane direction from the enemy toward the player.
+    let toward_player = crate::geometry::direction_to(enemy_cell, player_cell);
 
-    // The enemy's orientation-derived move step (mirrors resolve_self_move's
-    // `direction: None` branch: BowOn{Aft} -> aft, else fore).
+    // PRIMARY: the synthetic lane-relative closing move, if the running
+    // Content serves it. Lane-relative => closes regardless of orientation.
+    let synth_id = match toward_player {
+        LaneEnd::Aft => crate::input::SYNTHETIC_MOVE_LEFT,
+        LaneEnd::Fore => crate::input::SYNTHETIC_MOVE_RIGHT,
+    };
+    if content.action(synth_id).is_some() {
+        if let Some(s) = board.cells[enemy_cell].as_mut() {
+            s.queue.push(synth_id.to_string());
+        }
+        return true;
+    }
+
+    // SECONDARY (legacy / future): a MOUNTED DISPLACE_SELF, only when the
+    // enemy's orientation-derived step happens to close toward the player.
+    // No live enemy carries one today; kept so a future movement-mounted
+    // enemy still maneuvers.
     let Some(enemy) = board.cells[enemy_cell].as_ref() else {
         return false;
     };
@@ -2080,11 +2102,9 @@ fn queue_purposeful_maneuver(
         Orientation::BowOn { bow: LaneEnd::Aft } => LaneEnd::Aft,
         _ => LaneEnd::Fore,
     };
-    // Only a move that steps toward the player is purposeful.
     if move_end != toward_player {
         return false;
     }
-
     for weapon_id in mount_weapons {
         let Some(action) = content.action(weapon_id) else {
             continue;
@@ -2095,8 +2115,6 @@ fn queue_purposeful_maneuver(
         if locked_out && action.cost.heat > 0 {
             continue;
         }
-        // A DISPLACE_SELF with no explicit direction (the AI form) moves along
-        // `move_end`, which we've confirmed closes toward the player.
         let closes = action.effects.iter().any(|e| {
             matches!(e, Effect::DISPLACE_SELF { direction: None, .. })
         });
@@ -3402,6 +3420,49 @@ mod tests {
             queue,
             vec!["afterburner".to_string()],
             "O1: with the aft end already covered, B repositions (closes) instead of redundant fire; got {queue:?}",
+        );
+    }
+
+    /// #68: an enemy with NO movement mount still CLOSES on the player when
+    /// the running Content serves the synthetic lane-relative move (the live
+    /// bin's case). This is the fix for "enemies never move" — live enemies
+    /// carry only weapon mounts, so the AI must reach for the same synthetic
+    /// __move_* actions the player uses.
+    #[test]
+    fn ai_closes_via_synthetic_move_when_cannot_fire() {
+        // Enemy at cell 6 (far fore), bow=Aft so its forward gun points
+        // down-lane at the player at cell 0 — but distance 6 = Long, and
+        // pulse_laser's band is PB/Close/Mid, so it canNOT fire. With no
+        // movement mount, the only way to close is the synthetic move. Player
+        // is AFT of the enemy (cell 0 < 6) => __move_left (steps aft, toward
+        // the player). The enemy has ONLY a pulse_laser mount — no
+        // DISPLACE_SELF anywhere.
+        let player = make_ship("p", Faction::Player, 0, 10, LaneEnd::Fore);
+        let enemy = enemy_with_weapon("e", 6, "pulse_laser", Arc::Forward, LaneEnd::Aft);
+        let mut board = make_board(7, vec![
+            Some(player), None, None, None, None, None, Some(enemy),
+        ]);
+        // Content serves pulse_laser AND the synthetic move (as the live bin
+        // does). Reuse the real synthetic action so the id/effect match prod.
+        let content = AiContent {
+            actions: HashMap::from([
+                ("pulse_laser".into(), pulse_laser()),
+                (
+                    crate::input::SYNTHETIC_MOVE_LEFT.to_string(),
+                    crate::input::synthetic_move_left(),
+                ),
+                (
+                    crate::input::SYNTHETIC_MOVE_RIGHT.to_string(),
+                    crate::input::synthetic_move_right(),
+                ),
+            ]),
+        };
+        super::decide_enemy_action(6, &mut board, &content);
+        let queue = board.cells[6].as_ref().unwrap().queue.clone();
+        assert_eq!(
+            queue,
+            vec![crate::input::SYNTHETIC_MOVE_LEFT.to_string()],
+            "#68: a mountless-of-movement enemy closes via the synthetic lane-relative move (toward the player); got {queue:?}",
         );
     }
 
