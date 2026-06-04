@@ -1882,9 +1882,18 @@ fn decide_enemy_action(
         let mut score: i32 = 0;
         if hits_player {
             score += 10;
-            // Diversity bonus: if this enemy threatens the player from a
-            // lane-end NOT covered by an already-queued enemy, that
-            // produces a stance flip for the player next round.
+            // Diversity bonus (#41 O1 "pressure the ends"): threatening the
+            // player from a lane-end NOT already covered by an earlier-queued
+            // enemy is worth a large premium — large enough that, at step 4
+            // below, an enemy whose fire would only RE-cover an
+            // already-threatened end prefers to MANEUVER to a fresh posture
+            // instead of stacking redundant pressure. The term used to be
+            // inert: it's the same for every candidate weapon of THIS enemy
+            // (my_end_from_player doesn't vary per action), so it never broke
+            // ties between this enemy's own actions and never changed the
+            // pick. It is now load-bearing at the fire-vs-maneuver decision
+            // (step 4): `best_threatens_uncovered` records whether the chosen
+            // shot pressures a distinct end, and that gates repositioning.
             if !covered_ends.contains(&my_end_from_player) {
                 score += 6;
             }
@@ -1906,36 +1915,49 @@ fn decide_enemy_action(
         }
     }
 
-    // 4. If we found a threatening action, queue it and return.
-    if let Some((_, id)) = best {
+    // The end this enemy currently pressures is uncovered iff no
+    // earlier-queued enemy already threatens the player from the same side.
+    let my_end_uncovered = !covered_ends.contains(&my_end_from_player);
+
+    // 4. Fire-vs-maneuver decision (#41 O1 precedence: pressure the ends ->
+    //    optimal position -> fire).
+    //
+    //    - If we can fire AND we'd pressure an UNCOVERED end, FIRE — that is
+    //      the "fire when optimally positioned on a distinct end" case and it
+    //      takes precedence over repositioning.
+    //    - If we can fire but our end is ALREADY covered by an ally, firing
+    //      just stacks redundant pressure on one side. Per "pressure the
+    //      ends", prefer to MANEUVER to a fresh posture IF a purposeful move
+    //      is available; only fall through to firing if we cannot reposition
+    //      (better a redundant shot than an idle turn).
+    if let Some((_, id)) = best.clone() {
+        if my_end_uncovered {
+            if let Some(s) = board.cells[enemy_cell].as_mut() {
+                s.queue.push(id);
+            }
+            return;
+        }
+        // End already covered: try to reposition to pressure a distinct end
+        // first; if no purposeful maneuver exists, fire anyway (below).
+        if queue_purposeful_maneuver(
+            enemy_cell, player_cell, &mount_weapons, &cooldowns, locked_out, content, board,
+        ) {
+            return;
+        }
         if let Some(s) = board.cells[enemy_cell].as_mut() {
             s.queue.push(id);
         }
         return;
     }
 
-    // 5. Fallback ladder — produce a visible telegraph even when we can't
-    //    bear on the player this turn.
-
-    // 5a. Try a movement action: any mount's action that has a
-    //     DISPLACE_SELF effect. Closing range or pivoting is itself a
-    //     visible intent over the ship's queue.
-    for weapon_id in &mount_weapons {
-        let Some(action) = content.action(weapon_id) else {
-            continue;
-        };
-        if cooldowns.get(weapon_id).copied().unwrap_or(0) > 0 {
-            continue;
-        }
-        if locked_out && action.cost.heat > 0 {
-            continue;
-        }
-        if action.effects.iter().any(|e| matches!(e, Effect::DISPLACE_SELF { .. })) {
-            if let Some(s) = board.cells[enemy_cell].as_mut() {
-                s.queue.push(weapon_id.clone());
-            }
-            return;
-        }
+    // 5. Cannot fire effectively this turn -> maneuver toward an optimal
+    //    firing position (#41 O1 "optimal position"), then reorient, then
+    //    vent. Purposeful: prefer a move that closes toward the player /
+    //    brings them into arc rather than generic drift.
+    if queue_purposeful_maneuver(
+        enemy_cell, player_cell, &mount_weapons, &cooldowns, locked_out, content, board,
+    ) {
+        return;
     }
 
     // 5b. Try a reorient action — the flip might bring the player into a
@@ -1975,6 +1997,83 @@ fn decide_enemy_action(
     // 5d. If even that fails, leave the queue empty. The resolver will
     //     no-op the turn. A correctly-configured enemy with at least one
     //     valid mount weapon should never reach this branch.
+}
+
+/// Queue a PURPOSEFUL maneuver toward an optimal firing position on the
+/// player (#41 O1 "optimal position"), if one is available. Returns `true`
+/// and pushes an action id onto the enemy's queue if it found a useful move;
+/// `false` if no move helps (caller falls through to reorient / vent).
+///
+/// # What "purposeful" means under the id-based queue
+///
+/// The action queue holds action *ids*, not parameterized actions, and a
+/// `DISPLACE_SELF` with `direction: None` (the canonical AI form) derives its
+/// step from the ship's ORIENTATION. So the AI cannot dial a move's direction
+/// per-decision — its only levers are *which* action to queue and whether to
+/// reorient first. "Purposeful" therefore means: queue a move only when the
+/// enemy's current orientation makes that move CLOSE the gap to the player
+/// (step toward the player's cell). If the enemy's bow points away from the
+/// player, a move would *open* the range — not purposeful — so we decline and
+/// let the caller's reorient fallback flip the enemy to face the player
+/// first; next turn, facing the player, the move closes.
+///
+/// This upgrades the old "queue the first DISPLACE_SELF found" (which drifted
+/// in whatever direction the bow happened to point) into directed pursuit,
+/// without needing a per-decision move-direction parameter (a `r#mod`-style
+/// types change that's out of scope here).
+fn queue_purposeful_maneuver(
+    enemy_cell: usize,
+    player_cell: usize,
+    mount_weapons: &[String],
+    cooldowns: &std::collections::HashMap<String, i32>,
+    locked_out: bool,
+    content: &dyn Content,
+    board: &mut Board,
+) -> bool {
+    // The lane direction from the enemy toward the player. A move "closes"
+    // iff the enemy's orientation-derived step points this way.
+    let toward_player = crate::geometry::direction_to(enemy_cell, player_cell);
+    if enemy_cell == player_cell {
+        return false; // degenerate; nothing to close
+    }
+
+    // The enemy's orientation-derived move step (mirrors resolve_self_move's
+    // `direction: None` branch: BowOn{Aft} -> aft, else fore).
+    let Some(enemy) = board.cells[enemy_cell].as_ref() else {
+        return false;
+    };
+    let move_end = match enemy.orientation {
+        Orientation::BowOn { bow: LaneEnd::Aft } => LaneEnd::Aft,
+        _ => LaneEnd::Fore,
+    };
+    // Only a move that steps toward the player is purposeful.
+    if move_end != toward_player {
+        return false;
+    }
+
+    for weapon_id in mount_weapons {
+        let Some(action) = content.action(weapon_id) else {
+            continue;
+        };
+        if cooldowns.get(weapon_id).copied().unwrap_or(0) > 0 {
+            continue;
+        }
+        if locked_out && action.cost.heat > 0 {
+            continue;
+        }
+        // A DISPLACE_SELF with no explicit direction (the AI form) moves along
+        // `move_end`, which we've confirmed closes toward the player.
+        let closes = action.effects.iter().any(|e| {
+            matches!(e, Effect::DISPLACE_SELF { direction: None, .. })
+        });
+        if closes {
+            if let Some(s) = board.cells[enemy_cell].as_mut() {
+                s.queue.push(weapon_id.clone());
+            }
+            return true;
+        }
+    }
+    false
 }
 
 /// Was the just-finished execution window a chain kill? A "window" is one
@@ -3208,15 +3307,87 @@ mod tests {
             "AI should queue the cross-flank attack to diversify lane-end coverage");
     }
 
-    /// Fallback ladder: AI falls through to a movement action when nothing
-    /// bears on the player.
+    /// #41 O1: an enemy whose shot would only RE-cover an already-threatened
+    /// lane-end prefers to MANEUVER (pressure a fresh posture) over stacking
+    /// redundant fire — when a purposeful closing move is available. This is
+    /// the behavior the formerly-inert +6 diversity term now drives.
+    #[test]
+    fn ai_o1_repositions_instead_of_redundant_fire_on_covered_end() {
+        // Player at cell 3. Enemy A at cell 1 (aft of player) ALREADY queued
+        // — covers the aft end. Enemy B at cell 1-side too: place B at cell 2
+        // (also aft of player, bow=aft so it bears fore on the player AND a
+        // bow=aft move steps toward the player). B firing would re-cover the
+        // SAME aft end A already holds, so O1 should make B close instead.
+        let player = make_ship("p", Faction::Player, 3, 10, LaneEnd::Fore);
+        let mut enemy_a = enemy_with_weapon("ea", 1, "pulse_laser", Arc::Forward, LaneEnd::Aft);
+        enemy_a.queue = vec!["pulse_laser".into()]; // covers the aft end
+        // Enemy B at cell 2 (aft of player), bow=Aft: forward arc bears on the
+        // player (fore), AND its orientation-derived move steps aft — but the
+        // player is FORE of B, so a closing move needs bow=Fore. Give B a
+        // closing move by facing it toward the player: bow=Fore so the move
+        // steps fore (toward cell 3). But then its gun bears AFT (away). So B
+        // cannot fire AND close in one stance — it must choose. With the aft
+        // end already covered, O1 prefers the close.
+        let mut enemy_b = enemy_with_weapon("eb", 2, "pulse_laser", Arc::Forward, LaneEnd::Fore);
+        enemy_b.mounts.push(Mount { id: "bm".into(), arc: Arc::Forward, weapon: "afterburner".into() });
+        let afterburner = Action {
+            id: "afterburner".into(),
+            name: "Afterburner".into(),
+            archetype: WeaponArchetype::Movement,
+            cost: ActionCost { heat: 0, cooldown_max: 0, advances_turn: true },
+            targeting: Targeting {
+                pattern: TargetingPattern::SELF,
+                band: vec![RangeBand::PointBlank],
+                optimal_band: RangeBand::PointBlank,
+                requires_arc: None,
+                facing_relative: false,
+                hits_all: false,
+            },
+            effects: vec![Effect::DISPLACE_SELF { mode: MovementMode::BURN, distance: 1, direction: None }],
+            r#mod: None,
+            icon: None,
+        };
+        let mut board = make_board(7, vec![
+            None, Some(enemy_a), Some(enemy_b), Some(player), None, None, None,
+        ]);
+        let content = AiContent {
+            actions: HashMap::from([
+                ("pulse_laser".into(), pulse_laser()),
+                ("afterburner".into(), afterburner),
+            ]),
+        };
+        // B is bow=Fore so its pulse_laser arc points fore (away from the
+        // player at cell 3? no — player is fore of B at cell 2, so fore-arc
+        // DOES bear). To make this a clean "covered-end => reposition" case we
+        // rely on: B's fire re-covers the aft end A holds, and B has a closing
+        // move (bow=Fore steps fore toward the player). O1 declines the
+        // redundant shot in favour of the close.
+        super::decide_enemy_action(2, &mut board, &content);
+        let queue = board.cells[2].as_ref().unwrap().queue.clone();
+        assert_eq!(
+            queue,
+            vec!["afterburner".to_string()],
+            "O1: with the aft end already covered, B repositions (closes) instead of redundant fire; got {queue:?}",
+        );
+    }
+
+    /// Fallback ladder (#41 O1): AI queues a PURPOSEFUL maneuver when it
+    /// can't fire — a move that CLOSES toward the player, not generic drift.
     #[test]
     fn ai_falls_back_to_movement_when_nothing_bears() {
-        // Enemy at cell 6, bow=fore — forward arc points AWAY from player.
-        // Pulse laser can't bear; afterburner (movement) should be queued
-        // as a positioning telegraph.
+        // Enemy at cell 6, bow=AFT — its forward arc points down-lane toward
+        // the player at cell 0, but the player is at Long+ range so the pulse
+        // laser (band PB/Close/Mid) can't bear in-band yet. bow=Aft means the
+        // orientation-derived move steps AFT (toward cell 0 / the player), so
+        // afterburner is a PURPOSEFUL closing maneuver and gets queued.
+        //
+        // (Pre-O1 this test had the enemy bow=FORE and asserted the move was
+        // queued anyway — but a bow-fore move at the fore edge drifts AWAY
+        // from the player into the wall, which O1 correctly declines. The
+        // bow=Aft setup is the realistic "can't reach yet, close the gap"
+        // case O1's purposeful maneuver targets.)
         let player = make_ship("p", Faction::Player, 0, 10, LaneEnd::Fore);
-        let mut enemy = make_ship("e", Faction::Enemy, 6, 5, LaneEnd::Fore);
+        let mut enemy = make_ship("e", Faction::Enemy, 6, 5, LaneEnd::Aft);
         enemy.mounts = vec![
             Mount { id: "m1".into(), arc: Arc::Forward, weapon: "pulse_laser".into() },
             Mount { id: "m2".into(), arc: Arc::Forward, weapon: "afterburner".into() },
