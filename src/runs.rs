@@ -376,6 +376,48 @@ pub fn boss_ship_for_spawn(spawn: &ShipSpawn) -> Ship {
     s
 }
 
+/// Is `class_id` a known capital (a sector-end boss) in `catalog.capitals`?
+/// Capitals are matched by their canonical display name — the form the #60
+/// generator's [`capital_spawn`] writes into `ShipSpawn.class_id`. Used by the
+/// bin's spawn closure to route capital spawns to the armed-boss synthesizer
+/// ([`capital_boss_ship_for_spawn`]) instead of the hull-3 fallback.
+pub fn is_capital_spawn(class_id: &str, catalog: &Catalog) -> bool {
+    catalog.capitals.iter().any(|c| c.name == class_id)
+}
+
+/// Synthesize an ARMED boss [`Ship`] for a sector-end capital spawn (#69).
+///
+/// Before this, every named capital except the Citadel `warlord` degraded to
+/// [`fallback_ship_for_spawn`] (hull 3, one pulse_laser) because
+/// [`capital_spawn`] writes the capital's DISPLAY name into `class_id` — which
+/// isn't in `enemies[]`, so catalog synthesis missed, and only `class_id ==
+/// "warlord"` routed to a boss. Result: trivial sector bosses. This routes any
+/// capital to the same hand-tuned boss baseline the warlord uses — a real
+/// fight, not a popgun.
+///
+/// **Flat armed-boss baseline — deliberately NOT scaled off the CapitalDef's
+/// salvage fields.** `salvage_p1`/`salvage_p7` are the meta-currency REWARD for
+/// the kill (architect's #63 ruling, 4622de8), not combat stats; coupling hull
+/// to them would bake in a wrong reward↔toughness correlation. So every capital
+/// gets the warlord's hull-14 / ReactorBreach / three-mount shell here, just
+/// re-labelled with its own name. Per-capital DISTINCT mechanics (Twins = two
+/// ships, Coward flees, Stagemaster flips you — see
+/// `docs/design/capital_distinctiveness.md`) stay DEFERRED per bruce; this is
+/// the "popgun → real boss" bug fix only.
+///
+/// `catalog` is taken for the capital lookup (so the synthesized ship can carry
+/// the matched [`crate::types::CapitalDef`] identity) and to keep the signature
+/// future-proof for when per-capital stats land; the combat shell is flat
+/// today. Falls back to the generic boss shell if the name isn't a known
+/// capital (defensive — a typo'd capital still spawns a real boss, not a
+/// popgun).
+pub fn capital_boss_ship_for_spawn(spawn: &ShipSpawn, _catalog: &Catalog) -> Ship {
+    // Flat baseline: reuse the warlord's armed-boss shape, keyed on the
+    // capital's own name (already in spawn.class_id) so the renderer/HUD label
+    // and the salvage lookup (which matches CapitalDef by name) both work.
+    boss_ship_for_spawn(spawn)
+}
+
 /// Minimal default `Ship` shape used for spawns whose `class_id` isn't
 /// known to the caller's class registry. Bow-on facing the player, low
 /// hull, one Forward pulse_laser mount so the AI has something to fire.
@@ -1416,6 +1458,45 @@ mod tests {
             // Lane 5 → 2 enemies per encounter (encounter_enemy_count).
             assert_eq!(e.enemy_ships.len(), 2);
         }
+    }
+
+    /* ---- #69: capitals synthesize as ARMED bosses, not popguns -------- */
+
+    #[test]
+    fn is_capital_spawn_matches_catalog_capitals_by_name() {
+        let cat = gen_catalog();
+        // The generator writes the capital's DISPLAY name into class_id.
+        assert!(is_capital_spawn("The Dasher", &cat), "known capital");
+        assert!(!is_capital_spawn("skiff", &cat), "regular enemy is not a capital");
+        assert!(!is_capital_spawn("warlord", &cat), "warlord id is not a catalog capital name");
+        assert!(!is_capital_spawn("Nonexistent", &cat), "unknown name");
+    }
+
+    #[test]
+    fn capital_boss_is_armed_not_a_popgun() {
+        // The #69 bug: capitals degraded to fallback_ship_for_spawn (hull 3,
+        // ONE pulse_laser). The fix routes them to an armed boss baseline.
+        let cat = gen_catalog();
+        let sp = ShipSpawn {
+            class_id: "The Dasher".into(),
+            cell: 3,
+            orientation: Orientation::BowOn { bow: LaneEnd::Aft },
+            hp_override: None,
+        };
+        let boss = capital_boss_ship_for_spawn(&sp, &cat);
+        let popgun = fallback_ship_for_spawn(&sp);
+        // Materially tougher + more mounts than the fallback popgun.
+        assert!(boss.hull > popgun.hull, "capital boss must out-hull the fallback ({} vs {})", boss.hull, popgun.hull);
+        assert!(boss.mounts.len() > popgun.mounts.len(),
+            "capital boss must out-gun the fallback ({} vs {} mounts)", boss.mounts.len(), popgun.mounts.len());
+        // Carries the boss's signature ReactorBreach pressure trait.
+        assert!(boss.traits.contains(&Trait::ReactorBreach), "capital boss carries ReactorBreach");
+        // Identity preserved so the HUD label + salvage-by-name lookup still work.
+        assert_eq!(boss.klass.as_deref(), Some("The Dasher"));
+        // hp_override still wins (lets an encounter tier-scale a capital).
+        let mut sp2 = sp.clone();
+        sp2.hp_override = Some(25);
+        assert_eq!(capital_boss_ship_for_spawn(&sp2, &cat).hull, 25);
     }
 
     #[test]
