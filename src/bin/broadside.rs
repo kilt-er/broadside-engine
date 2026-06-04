@@ -50,8 +50,9 @@ use broadside_engine::hud::{
     win_state, BetweenEncounterChoice, TweenState, WinState,
 };
 use broadside_engine::runs::{
-    advance_after_win, boss_ship_for_spawn, build_encounter_board, current_encounter, encounter_outcome, fallback_ship_for_spawn,
-    generate_campaign, mark_defeated, placeholder_sectors, AdvanceResult, EncounterOutcome,
+    advance_after_win, boss_ship_for_spawn, build_encounter_board, capital_boss_ship_for_spawn,
+    current_encounter, encounter_outcome, fallback_ship_for_spawn, generate_campaign,
+    is_capital_spawn, mark_defeated, placeholder_sectors, AdvanceResult, EncounterOutcome,
 };
 use broadside_engine::input::{
     intent_to_action_id, key_to_intent, synthetic_card_action_id, DemoContent, Intent, Key,
@@ -487,6 +488,44 @@ fn player_ship(cell: usize) -> Ship {
     player
 }
 
+/// Materialize an enemy [`Ship`] from a `ShipSpawn`, in dispatch priority:
+///
+/// 1. **Final boss** (`class_id == "warlord"`, task #83) → the hand-tuned
+///    [`boss_ship_for_spawn`] (hull 14, ReactorBreach, 3 mounts).
+/// 2. **Sector-end capitals** (#69) → [`capital_boss_ship_for_spawn`]: an armed
+///    boss baseline, NOT the hull-3 fallback. Before this, every named capital
+///    except the warlord degraded to a popgun because `capital_spawn` writes
+///    the capital's DISPLAY name into `class_id` (not in `enemies[]`) and only
+///    `"warlord"` routed to a boss. [`is_capital_spawn`] matches the spawn's
+///    `class_id` against `catalog.capitals` by name.
+/// 3. **Regular enemies** → catalog synthesis via
+///    [`enemy_ship_from_catalog_at_tier`] (real hull, mounts, traits).
+/// 4. **Fallback** → [`fallback_ship_for_spawn`] when the catalog is absent or
+///    the id isn't a known enemy/capital (graceful degrade, no crash).
+///
+/// Shared by `build_current_board` (the live board) and
+/// `award_encounter_salvage` (the reward path) so both agree on what a spawn
+/// becomes — a capital that's a real boss on the board must also be a real
+/// boss when its salvage is computed.
+fn synth_enemy_for_spawn(
+    spawn: &broadside_engine::types::ShipSpawn,
+    catalog: Option<&broadside_engine::types::Catalog>,
+    patrol_tier: u8,
+) -> Ship {
+    if spawn.class_id == "warlord" {
+        return boss_ship_for_spawn(spawn);
+    }
+    if let Some(cat) = catalog {
+        if is_capital_spawn(&spawn.class_id, cat) {
+            return capital_boss_ship_for_spawn(spawn, cat);
+        }
+        if let Some(ship) = enemy_ship_from_catalog_at_tier(cat, spawn, patrol_tier) {
+            return ship;
+        }
+    }
+    fallback_ship_for_spawn(spawn)
+}
+
 /// Enemy frigate: one Forward pulse_laser so the AI can actually queue an
 /// action. Without a mount, decide_enemy_action returns nothing and the
 /// enemy looks inert.
@@ -687,18 +726,10 @@ impl App {
     /// the run has no current encounter (defeated, victorious, or sector
     /// index past the end of `self.sectors`).
     ///
-    /// Spawn → ship dispatch, in priority order:
-    /// 1. The final boss (`warlord`, task #83) keeps its hand-tuned
-    ///    [`boss_ship_for_spawn`] loadout (hull 14, ReactorBreach,
-    ///    multi-mount) — richer than the catalog's plain `warlord`
-    ///    EnemyDef, so the climax stays climactic.
-    /// 2. Every other spawn is synthesized from the canonical catalog via
-    ///    [`enemy_ship_from_catalog`] — real hull, mounts (display-name →
-    ///    action-id), and **traits**, so the AI's Pursuit / BurnHard /
-    ///    Agile nudges in `decide_enemy_action` actually fire.
-    /// 3. If the catalog is absent or the class_id isn't in `enemies[]`,
-    ///    fall back to [`fallback_ship_for_spawn`] so a missing asset or a
-    ///    typo'd class degrades gracefully instead of crashing.
+    /// Spawn → ship dispatch is handled by [`synth_enemy_for_spawn`]
+    /// (warlord → hand-tuned boss; capital → armed boss #69; regular →
+    /// catalog synthesis; else → fallback). The salvage path
+    /// (`award_encounter_salvage`) uses the same fn so board + reward agree.
     fn build_current_board(&self) -> Option<Board> {
         let enc = current_encounter(&self.run, &self.sectors)?;
         // The current sector's patrol tier feeds the catalog synthesizer's
@@ -710,14 +741,9 @@ impl App {
             .map(|s| s.patrol_tier)
             .unwrap_or(1);
         let player = Self::fresh_player_ship();
+        let catalog = self.catalog.as_ref();
         Some(build_encounter_board(enc, player, |spawn| {
-            if spawn.class_id == "warlord" {
-                return Some(boss_ship_for_spawn(spawn));
-            }
-            self.catalog
-                .as_ref()
-                .and_then(|cat| enemy_ship_from_catalog_at_tier(cat, spawn, patrol_tier))
-                .or_else(|| Some(fallback_ship_for_spawn(spawn)))
+            Some(synth_enemy_for_spawn(spawn, catalog, patrol_tier))
         }))
     }
 
@@ -748,13 +774,11 @@ impl App {
         // avoids borrowing self.catalog and self.run simultaneously.
         let earned = salvage_for_capital_encounter(enc, catalog, patrol_tier).unwrap_or_else(|| {
             // Non-capital fallback: per-enemy salvage via the same
-            // spawn→Ship builder build_current_board uses.
+            // spawn→Ship builder build_current_board uses (shared
+            // synth_enemy_for_spawn so board + reward agree on what each
+            // spawn becomes — incl. the #69 armed-capital route).
             salvage_for_encounter_win(enc, |spawn| {
-                if spawn.class_id == "warlord" {
-                    return Some(boss_ship_for_spawn(spawn));
-                }
-                enemy_ship_from_catalog_at_tier(catalog, spawn, patrol_tier)
-                    .or_else(|| Some(fallback_ship_for_spawn(spawn)))
+                Some(synth_enemy_for_spawn(spawn, Some(catalog), patrol_tier))
             })
         });
         self.run.salvage = self.run.salvage.saturating_add(earned);
