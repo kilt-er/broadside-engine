@@ -1389,11 +1389,109 @@ pub fn push_end_state_overlay(out: &mut Vec<DrawCommand>, state: WinState) {
     push_centered_banner(out, banner, VIRTUAL_H as f32 / 2.0, 4.0);
 }
 
+/* =============================================================================
+ * Player danger legibility (#67) — hull readout + hit flash.
+ *
+ * The player needs to read their own peril at a glance: a prominent hull bar
+ * (not just the tiny per-ship heat strip) plus a brief full-screen damage
+ * flash when they take a hit, so a loss never comes out of nowhere.
+ * ============================================================================= */
+
+const PLAYER_HULL_BAR_BG: [f32; 4] = [0.08, 0.10, 0.14, 0.9];
+const PLAYER_HULL_OK: [f32; 4] = [0.33, 0.81, 0.79, 1.0]; // teal, healthy
+const PLAYER_HULL_HURT: [f32; 4] = [0.95, 0.62, 0.30, 1.0]; // amber, wounded
+const PLAYER_HULL_CRIT: [f32; 4] = [0.95, 0.24, 0.22, 1.0]; // red, critical
+
+/// A prominent player hull bar anchored bottom-left of the canvas. Reads
+/// teal when healthy, amber under half, red at/under one-third, so the player
+/// always knows how close to death they are. `hull`/`max_hull` come straight
+/// off the player ship.
+pub fn push_player_hull_bar(out: &mut Vec<DrawCommand>, hull: i32, max_hull: i32) {
+    use crate::gfx::VIRTUAL_H;
+    let max = max_hull.max(1) as f32;
+    let cur = hull.clamp(0, max_hull) as f32;
+    let ratio = (cur / max).clamp(0.0, 1.0);
+    let bar_w = 140.0;
+    let bar_h = 12.0;
+    let x_left = 20.0;
+    let y = VIRTUAL_H as f32 - 28.0;
+    // Track.
+    push_sprite(
+        out,
+        SpriteInstance::axis_aligned(
+            [x_left + bar_w / 2.0, y],
+            [bar_w / 2.0, bar_h / 2.0],
+            PLAYER_HULL_BAR_BG,
+            atlas::cell_uvs(atlas::SOLID_WHITE),
+        ),
+    );
+    let color = if ratio <= 0.34 {
+        PLAYER_HULL_CRIT
+    } else if ratio <= 0.5 {
+        PLAYER_HULL_HURT
+    } else {
+        PLAYER_HULL_OK
+    };
+    let fill_w = bar_w * ratio;
+    if fill_w > 0.5 {
+        push_sprite(
+            out,
+            SpriteInstance::axis_aligned(
+                [x_left + fill_w / 2.0, y],
+                [fill_w / 2.0, bar_h / 2.0],
+                color,
+                atlas::cell_uvs(atlas::SOLID_WHITE),
+            ),
+        );
+    }
+    // "HULL N/M" label above the bar.
+    push_text_left(
+        out,
+        &format!("HULL {}/{}", hull.max(0), max_hull),
+        x_left,
+        y - bar_h / 2.0 - 12.0,
+        1.5,
+        WHITE,
+    );
+}
+
+/// A brief full-canvas red flash when the player takes a hit. `intensity`
+/// (0..1) is driven by the bin's hit-flash timer (decays after a hull drop).
+/// No-op at zero so it costs nothing on quiet frames.
+pub fn push_player_hit_flash(out: &mut Vec<DrawCommand>, intensity: f32) {
+    use crate::gfx::{VIRTUAL_H, VIRTUAL_W};
+    if intensity <= 0.01 {
+        return;
+    }
+    let alpha = 0.45 * intensity.clamp(0.0, 1.0);
+    push_sprite(
+        out,
+        SpriteInstance::axis_aligned(
+            [VIRTUAL_W as f32 / 2.0, VIRTUAL_H as f32 / 2.0],
+            [VIRTUAL_W as f32 / 2.0, VIRTUAL_H as f32 / 2.0],
+            [0.95, 0.18, 0.16, alpha],
+            atlas::cell_uvs(atlas::SOLID_WHITE),
+        ),
+    );
+}
+
 /// Run-end overlay used by the bin's `DemoState::RunDefeated` arm.
 /// Like the Phase-1 [`push_end_state_overlay`] `Defeat` variant but
 /// also surfaces the run's earned-salvage total so the player sees
 /// what their meta-progression contribution was before dying.
 pub fn push_run_defeated_overlay(out: &mut Vec<DrawCommand>, salvage: u32) {
+    push_run_defeated_overlay_with_cause(out, salvage, None)
+}
+
+/// Like [`push_run_defeated_overlay`] but surfaces WHAT killed the player —
+/// e.g. "DESTROYED BY GUNBOAT" — so a defeat reads as a comprehensible event
+/// rather than just a red screen. `cause` is a short upper-case phrase the bin
+/// derives from the killing blow (or `None` to omit the line).
+pub fn push_run_defeated_overlay_with_cause(
+    out: &mut Vec<DrawCommand>,
+    salvage: u32,
+    cause: Option<&str>,
+) {
     use crate::gfx::{VIRTUAL_H, VIRTUAL_W};
     let center_x = VIRTUAL_W as f32 / 2.0;
     let center_y = VIRTUAL_H as f32 / 2.0;
@@ -1407,6 +1505,10 @@ pub fn push_run_defeated_overlay(out: &mut Vec<DrawCommand>, salvage: u32) {
         ),
     );
     push_centered_banner(out, "DEFEATED", center_y - 60.0, 5.0);
+    // What killed you — so a loss is a readable event, not just a red screen.
+    if let Some(cause) = cause {
+        push_centered_banner(out, cause, center_y - 22.0, 2.5);
+    }
     push_centered_banner(
         out,
         &format!("TOTAL SALVAGE: {}", salvage),
@@ -1860,6 +1962,240 @@ fn emit_turn_glyph(out: &mut Vec<DrawCommand>, pos: [f32; 2], r: f32, color: [f3
             [pos[0] + r * 0.5, pos[1] - r * 0.3],
             [1.5, r * 0.6],
             color,
+            atlas::cell_uvs(atlas::SOLID_WHITE),
+        ),
+    );
+}
+
+/* =============================================================================
+ * Enemy telegraph — bruce's refined spec (#67):
+ *
+ *   1. QUEUED ABILITY ICONS stacked above the enemy, in queue order. The
+ *      persistent `enemy.queue` (resolver telegraph, b9268c4) feeds this.
+ *   2. A SPINNY "pending" placeholder in the slot where the NEXT ability will
+ *      land — a pre-resolution cue that an action is being readied THERE,
+ *      which then resolves into the real ability icon.
+ *   3. A MOVEMENT ARROW encircling the ship pointing the way it will move,
+ *      rather than an icon in the stack.
+ *
+ * `push_telegraph_cue` above is the single-badge form; these are the richer
+ * stacked / encircling forms bruce asked for. The bin categorises each queued
+ * action id into a [`TelegraphKind`] and feeds the list here.
+ * ============================================================================= */
+
+/// One readied entry in an enemy's telegraph stack. `Pending` is the spinny
+/// "winding up" placeholder occupying the slot where the next action will
+/// resolve; the others are the resolved cues (ability icon / move arrow / turn).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum TelegraphSlot {
+    /// The next-to-resolve slot, not yet committed to a concrete cue. Drawn as
+    /// the animated spinner so the player sees the enemy "winding up".
+    Pending,
+    /// A resolved, readied cue (its kind is known from the queued action id).
+    Ready(TelegraphKind),
+}
+
+/// Draw an enemy's full telegraph above it at `enemy_x`, bottom-of-stack first.
+/// ABILITY/REORIENT slots render as stacked red badges; the `Pending` slot
+/// renders as the spinny placeholder. A `Move` slot is NOT stacked — it is
+/// drawn as an arrow encircling the ship (see [`push_move_arrow_around`]), so
+/// the caller should pull moves out and route them there; any `Move` that
+/// reaches here still draws its in-badge arrow as a fallback.
+///
+/// `spin` is a free-running phase (radians) the bin advances each frame; it
+/// drives the pending-slot animation.
+pub fn push_enemy_telegraph_stack(
+    out: &mut Vec<DrawCommand>,
+    slots: &[TelegraphSlot],
+    enemy_x: f32,
+    lane: &LaneGeometry,
+    spin: f32,
+) {
+    let stack_base = lane.center_y - 96.0;
+    for (i, slot) in slots.iter().enumerate() {
+        let pos = [enemy_x, stack_base - i as f32 * (TILE_SIZE + TILE_GAP)];
+        match slot {
+            TelegraphSlot::Pending => emit_pending_spinner(out, pos, spin),
+            TelegraphSlot::Ready(kind) => emit_telegraph_badge(out, *kind, pos),
+        }
+    }
+}
+
+/// Draw one resolved telegraph badge centred at `pos`: red frame + dark inner,
+/// then the kind's cue (ability icon + damage / direction arrow / turn glyph).
+/// Factored out of [`push_telegraph_cue`] so the stack and the single-badge
+/// form share one look.
+fn emit_telegraph_badge(out: &mut Vec<DrawCommand>, kind: TelegraphKind, pos: [f32; 2]) {
+    let half = TILE_SIZE / 2.0;
+    push_sprite(
+        out,
+        SpriteInstance::axis_aligned(
+            pos,
+            [half + 1.5, half + 1.5],
+            TELEGRAPH_FRAME,
+            atlas::cell_uvs(atlas::SOLID_WHITE),
+        ),
+    );
+    push_sprite(
+        out,
+        SpriteInstance::axis_aligned(
+            pos,
+            [half, half],
+            TELEGRAPH_DIM,
+            atlas::cell_uvs(atlas::SOLID_WHITE),
+        ),
+    );
+    match kind {
+        TelegraphKind::Ability { icon, damage } => {
+            push_sprite(
+                out,
+                SpriteInstance::axis_aligned(
+                    [pos[0], pos[1] - 2.0],
+                    [half * 0.7, half * 0.7],
+                    TILE_ICON,
+                    atlas::cell_uvs(icon.atlas_cell()),
+                ),
+            );
+            if damage > 0 {
+                push_text_left(
+                    out,
+                    &damage.to_string(),
+                    pos[0] - 3.0,
+                    pos[1] + half - 8.0,
+                    1.4,
+                    TILE_DAMAGE,
+                );
+            }
+        }
+        TelegraphKind::Move { dir } => emit_arrow(out, pos, dir, half * 0.6, TELEGRAPH_INK),
+        TelegraphKind::Reorient => emit_turn_glyph(out, pos, half * 0.55, TELEGRAPH_INK),
+    }
+}
+
+/// The "pending" / winding-up placeholder: a dim badge with a rotating
+/// four-spoke mark and an orbiting tick, so the slot reads as "an action is
+/// being readied here" before it resolves into a concrete cue. `spin` is the
+/// running phase (radians).
+fn emit_pending_spinner(out: &mut Vec<DrawCommand>, pos: [f32; 2], spin: f32) {
+    let half = TILE_SIZE / 2.0;
+    // Dimmer frame than a resolved badge — it's not committed yet.
+    let pending_frame = [
+        TELEGRAPH_FRAME[0],
+        TELEGRAPH_FRAME[1],
+        TELEGRAPH_FRAME[2],
+        0.6,
+    ];
+    push_sprite(
+        out,
+        SpriteInstance::axis_aligned(
+            pos,
+            [half + 1.5, half + 1.5],
+            pending_frame,
+            atlas::cell_uvs(atlas::SOLID_WHITE),
+        ),
+    );
+    push_sprite(
+        out,
+        SpriteInstance::axis_aligned(
+            pos,
+            [half, half],
+            TELEGRAPH_DIM,
+            atlas::cell_uvs(atlas::SOLID_WHITE),
+        ),
+    );
+    // Two crossed bars rotating around the badge centre = a spinner. Brightness
+    // pulses with the phase so it visibly "churns".
+    let arm = half * 0.6;
+    let glow = 0.55 + 0.45 * (spin * 1.7).sin().abs();
+    let ink = [TELEGRAPH_INK[0], TELEGRAPH_INK[1], TELEGRAPH_INK[2], glow];
+    for k in 0..2 {
+        let rot = spin + k as f32 * std::f32::consts::FRAC_PI_2;
+        push_sprite(
+            out,
+            SpriteInstance {
+                pos,
+                half_size: [arm, 1.5],
+                color: ink,
+                uv_min: atlas::cell_uvs(atlas::SOLID_WHITE).0,
+                uv_max: atlas::cell_uvs(atlas::SOLID_WHITE).1,
+                rotation_rad: rot,
+                _pad: [0.0; 3],
+            },
+        );
+    }
+    // An orbiting tick that circles the centre — a clear "still spinning" cue.
+    let orbit_r = half * 0.7;
+    let tick = [pos[0] + spin.cos() * orbit_r, pos[1] + spin.sin() * orbit_r];
+    push_sprite(
+        out,
+        SpriteInstance::axis_aligned(
+            tick,
+            [2.0, 2.0],
+            TELEGRAPH_INK,
+            atlas::cell_uvs(atlas::SOLID_WHITE),
+        ),
+    );
+}
+
+/// A directional arrow drawn ENCIRCLING the enemy ship (bruce's #67 move cue):
+/// a curved band of segments arcing over the hull plus a chunky arrowhead at
+/// the leading end, pointing the way the ship will move (Fore = +x / right).
+/// `enemy_x` is the ship's screen x; the arc rides just above the lane-seated
+/// hull. `pulse` (0..1) animates the arrowhead brightness so it reads as
+/// imminent-but-not-yet.
+pub fn push_move_arrow_around(
+    out: &mut Vec<DrawCommand>,
+    enemy_x: f32,
+    dir: LaneEnd,
+    lane: &LaneGeometry,
+    pulse: f32,
+) {
+    let sign = match dir {
+        LaneEnd::Fore => 1.0,
+        LaneEnd::Aft => -1.0,
+    };
+    // The arc sits centred on the hull and sweeps from behind-the-stern up over
+    // the top and down toward the bow-side, so it visibly "wraps" the ship.
+    let cx = enemy_x;
+    let cy = lane.center_y;
+    let radius = LOFT_SHIP_HEIGHT_PX * 0.42; // just outside the lofted hull
+    let bright = 0.55 + 0.45 * pulse;
+    let ink = [0.96, 0.74, 0.30, bright];
+    // Sweep the upper half-arc, from the trailing side (−sign) to the leading
+    // side (+sign). Angles measured from +x, going over the top (negative y).
+    let start = if sign > 0.0 {
+        std::f32::consts::PI // left side
+    } else {
+        0.0 // right side
+    };
+    let end = if sign > 0.0 {
+        std::f32::consts::TAU // back to right, over the top
+    } else {
+        std::f32::consts::PI // over the top to the left
+    };
+    let segs = 14;
+    let mut prev: Option<Point2> = None;
+    for i in 0..=segs {
+        let t = i as f32 / segs as f32;
+        let ang = start + (end - start) * t;
+        // Upper arc only: force the y-component upward (over the hull).
+        let px = cx + ang.cos() * radius;
+        let py = cy - ang.sin().abs() * radius;
+        let cur = Point2 { x: px, y: py };
+        if let Some(p) = prev {
+            push_line(out, p, cur, 2.0, ink);
+        }
+        prev = Some(cur);
+    }
+    // Arrowhead at the leading end (bow-side, on the lane), pointing the way.
+    let head_x = cx + sign * radius;
+    let head_y = cy;
+    push_sprite(
+        out,
+        SpriteInstance::axis_aligned(
+            [head_x + sign * 4.0, head_y],
+            [6.0, 5.0],
+            ink,
             atlas::cell_uvs(atlas::SOLID_WHITE),
         ),
     );
@@ -2561,6 +2897,117 @@ mod tests {
             "run-defeated overlay should emit tint + banner + salvage + restart glyphs, got {}",
             out.len()
         );
+    }
+
+    #[test]
+    fn run_defeated_overlay_with_cause_adds_a_line() {
+        // The cause variant should emit MORE draws than the bare overlay
+        // (the extra "DESTROYED BY …" banner), and None should match the bare.
+        let mut bare: Vec<DrawCommand> = Vec::new();
+        push_run_defeated_overlay_with_cause(&mut bare, 5, None);
+        let mut with_cause: Vec<DrawCommand> = Vec::new();
+        push_run_defeated_overlay_with_cause(&mut with_cause, 5, Some("DESTROYED BY GUNBOAT"));
+        assert!(
+            with_cause.len() > bare.len(),
+            "cause line should add glyph draws: bare={} with={}",
+            bare.len(),
+            with_cause.len()
+        );
+    }
+
+    #[test]
+    fn telegraph_stack_emits_pending_spinner_and_badges() {
+        // A stack of [Pending, Ability, Reorient] should produce draws for
+        // each slot. We don't pin exact counts — just that it's non-trivial
+        // and scales with slot count vs a single pending slot.
+        let mut one: Vec<DrawCommand> = Vec::new();
+        push_enemy_telegraph_stack(
+            &mut one,
+            &[TelegraphSlot::Pending],
+            100.0,
+            &DEFAULT_LANE,
+            0.3,
+        );
+        let mut many: Vec<DrawCommand> = Vec::new();
+        push_enemy_telegraph_stack(
+            &mut many,
+            &[
+                TelegraphSlot::Pending,
+                TelegraphSlot::Ready(TelegraphKind::Ability {
+                    icon: AbilityIcon::Beam,
+                    damage: 3,
+                }),
+                TelegraphSlot::Ready(TelegraphKind::Reorient),
+            ],
+            100.0,
+            &DEFAULT_LANE,
+            0.3,
+        );
+        assert!(!one.is_empty(), "a pending slot must draw the spinner");
+        assert!(
+            many.len() > one.len(),
+            "more slots should draw more: one={} many={}",
+            one.len(),
+            many.len()
+        );
+    }
+
+    #[test]
+    fn move_arrow_around_emits_for_both_directions() {
+        let mut fore: Vec<DrawCommand> = Vec::new();
+        push_move_arrow_around(&mut fore, 100.0, LaneEnd::Fore, &DEFAULT_LANE, 0.5);
+        let mut aft: Vec<DrawCommand> = Vec::new();
+        push_move_arrow_around(&mut aft, 100.0, LaneEnd::Aft, &DEFAULT_LANE, 0.5);
+        assert!(!fore.is_empty(), "fore move arrow must draw arc + head");
+        assert!(!aft.is_empty(), "aft move arrow must draw arc + head");
+        // The leading arrowhead sits on opposite sides of the ship x for the
+        // two directions, so the rightmost sprite x differs.
+        let max_x = |v: &[DrawCommand]| {
+            v.iter()
+                .filter_map(|c| match c {
+                    DrawCommand::Sprite(s) => Some(s.pos[0]),
+                    _ => None,
+                })
+                .fold(f32::MIN, f32::max)
+        };
+        assert!(
+            max_x(&fore) > max_x(&aft),
+            "fore arrowhead should reach further right than aft"
+        );
+    }
+
+    #[test]
+    fn player_hull_bar_fill_color_tracks_health() {
+        // The fill quad's colour should switch from teal (healthy) to red
+        // (critical). Pull the widest fill-coloured sprite (the bar fill) and
+        // check its tint flips. The track BG is a distinct dark colour.
+        let fill_color = |hull: i32| -> Option<[f32; 4]> {
+            let mut out: Vec<DrawCommand> = Vec::new();
+            push_player_hull_bar(&mut out, hull, 6);
+            // The fill quad is the one matching one of the three health tints.
+            out.iter().find_map(|c| match c {
+                DrawCommand::Sprite(s)
+                    if s.color == PLAYER_HULL_OK
+                        || s.color == PLAYER_HULL_HURT
+                        || s.color == PLAYER_HULL_CRIT =>
+                {
+                    Some(s.color)
+                }
+                _ => None,
+            })
+        };
+        assert_eq!(fill_color(6), Some(PLAYER_HULL_OK), "full hull = teal");
+        assert_eq!(fill_color(2), Some(PLAYER_HULL_CRIT), "1/3 hull = red");
+        assert_eq!(fill_color(0), None, "zero hull draws no fill quad");
+    }
+
+    #[test]
+    fn hit_flash_is_noop_at_zero() {
+        let mut out: Vec<DrawCommand> = Vec::new();
+        push_player_hit_flash(&mut out, 0.0);
+        assert!(out.is_empty(), "zero-intensity flash must draw nothing");
+        push_player_hit_flash(&mut out, 1.0);
+        assert_eq!(out.len(), 1, "full flash draws one full-canvas quad");
     }
 
     #[test]

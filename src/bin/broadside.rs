@@ -46,7 +46,7 @@ use broadside_engine::cards::PlayResult;
 use broadside_engine::geometry::default_shield_profile;
 use broadside_engine::gfx::{Gfx, VIRTUAL_H, VIRTUAL_W};
 use broadside_engine::hud::{
-    self, push_between_encounter_overlay, push_run_defeated_overlay, push_salvage_hud,
+    self, push_between_encounter_overlay, push_salvage_hud,
     win_state, BetweenEncounterChoice, TweenState, WinState,
 };
 use broadside_engine::runs::{
@@ -380,6 +380,60 @@ fn build_ship_tiles(ship: &Ship, content: &dyn Content) -> Vec<hud::AbilityTile>
     tiles
 }
 
+/// Categorise an enemy's NEXT queued action (resolver telegraph, b9268c4) into
+/// a [`hud::TelegraphKind`] for the readout: a DAMAGE effect → an incoming
+/// `Ability` (icon + amount), a DISPLACE_SELF → a `Move` (its lane direction),
+/// a REORIENT → a turn cue. Returns `None` for actions with none of those
+/// (nothing worth telegraphing). Read-only over the ship + content.
+fn enemy_telegraph_kind(action_id: &str, content: &dyn Content) -> Option<hud::TelegraphKind> {
+    let action = content.action(action_id)?;
+    // Damage takes precedence (it's the threat the player most needs to read).
+    if let Some(amount) = action.effects.iter().find_map(|e| match e {
+        Effect::DAMAGE { amount, .. } => Some(*amount),
+        _ => None,
+    }) {
+        return Some(hud::TelegraphKind::Ability {
+            icon: archetype_icon(action.archetype),
+            damage: amount,
+        });
+    }
+    // A self-displacement → a directional move cue. `direction` is lane-relative
+    // (Some) when the AI queued a lane-relative close (#68); fall back to Fore.
+    if let Some(dir) = action.effects.iter().find_map(|e| match e {
+        Effect::DISPLACE_SELF { direction, .. } => Some(direction.unwrap_or(LaneEnd::Fore)),
+        _ => None,
+    }) {
+        return Some(hud::TelegraphKind::Move { dir });
+    }
+    if action
+        .effects
+        .iter()
+        .any(|e| matches!(e, Effect::REORIENT { .. }))
+    {
+        return Some(hud::TelegraphKind::Reorient);
+    }
+    None
+}
+
+/// Best-effort "what killed you" phrase for the defeat overlay. The player ship
+/// is already gone by the time defeat resolves, so we name the dominant
+/// surviving enemy (highest hull = the threat that finished the fight). Read
+/// from the board's enemy ships; `None` if there are none to name.
+fn defeat_cause(board: &Board) -> Option<String> {
+    let killer = board
+        .cells
+        .iter()
+        .flatten()
+        .filter(|s| s.faction == Faction::Enemy)
+        .max_by_key(|s| s.hull)?;
+    let name = killer
+        .klass
+        .as_deref()
+        .unwrap_or("ENEMY")
+        .to_ascii_uppercase();
+    Some(format!("DESTROYED BY {}", name))
+}
+
 /// Mirrors the board state hard-coded in `render-example.ts`. Used as both
 /// the startup scene and the Restart target.
 fn render_example_board() -> Board {
@@ -555,6 +609,15 @@ struct App {
     /// between its resting below-lane slot and its above-ship queue-stack slot
     /// as abilities are queued/dequeued.
     ability_hud: broadside_engine::hud::AbilityHud,
+    /// Free-running animation clock (seconds), advanced ~1/60 each redraw.
+    /// Drives the #67 telegraph spinner + move-arrow / incoming-attack pulse.
+    /// Wraps so it never loses precision over a long session.
+    frame_clock: f32,
+    /// Player danger legibility (#67): last observed player hull, and a
+    /// decaying hit-flash intensity (0..1). When the player's hull drops
+    /// between frames we bump the flash to 1.0; the redraw fades it.
+    player_hull_prev: Option<i32>,
+    hit_flash: f32,
     /// Shared audio state. `None` if the `audio` feature is off OR the
     /// audio backend failed to open on startup (headless CI, missing
     /// driver). When present, the bus is re-installed on every
@@ -592,6 +655,9 @@ impl App {
             demo_state: DemoState::Playing,
             vfx: broadside_engine::vfx::CombatVfx::new(),
             ability_hud: broadside_engine::hud::AbilityHud::new(),
+            frame_clock: 0.0,
+            player_hull_prev: None,
+            hit_flash: 0.0,
             #[cfg(feature = "audio")]
             audio: None,
         };
@@ -1065,6 +1131,30 @@ impl ApplicationHandler for App {
                 // safe — it only spawns on an actual state change.
                 self.vfx.observe(&self.board);
                 let vfx_active = self.vfx.advance(1.0 / 60.0);
+                // Free-running animation clock for the #67 telegraph spinner /
+                // move-arrow / incoming pulse. Wrap at TAU so it stays precise.
+                self.frame_clock = (self.frame_clock + 1.0 / 60.0) % std::f32::consts::TAU;
+                let spin = self.frame_clock * 3.0; // spinner angular speed
+                let pulse = 0.5 + 0.5 * (self.frame_clock * 4.0).sin(); // 0..1
+                // Player danger legibility (#67): read the player's current hull
+                // and flash the screen red when it drops. The flash decays ~2/s.
+                let player_hull = self
+                    .board
+                    .cells
+                    .iter()
+                    .flatten()
+                    .find(|s| s.faction == Faction::Player)
+                    .map(|s| (s.hull, s.max_hull));
+                if let Some((hull, _)) = player_hull {
+                    if let Some(prev) = self.player_hull_prev {
+                        if hull < prev {
+                            self.hit_flash = 1.0;
+                        }
+                    }
+                    self.player_hull_prev = Some(hull);
+                }
+                self.hit_flash = (self.hit_flash - (1.0 / 60.0) * 2.0).max(0.0);
+                let flash_active = self.hit_flash > 0.01;
                 // Ability tiles (#64): build the player's tiles and advance the
                 // below↔above queue animation (~60 Hz). Built before the gfx
                 // borrow (needs &board/&content); emitted into the draw list in
@@ -1100,8 +1190,16 @@ impl ApplicationHandler for App {
                         self.ability_hud
                             .emit_player(&mut instances, &player_tiles, px, &self.lane);
                     }
-                    // Enemy telegraph stacks: above each enemy, its readying
-                    // (queued, off-cooldown) abilities. Stateless per enemy.
+                    // Enemy telegraph (#67, bruce's refined spec): per enemy,
+                    // its persistent queue (resolver telegraph, b9268c4) →
+                    //   - ABILITY / REORIENT → a stacked red badge above the
+                    //     ship, with a SPINNY "pending" slot at the head so the
+                    //     player sees it winding up;
+                    //   - MOVE → a directional arrow ENCIRCLING the ship instead
+                    //     of an icon, pointing the way it will go;
+                    //   - an ABILITY aimed at the player also draws an
+                    //     incoming-attack line so the threat reads.
+                    let player_x = player_lane_x(&self.board, &self.lane);
                     for enemy in self
                         .board
                         .cells
@@ -1109,10 +1207,55 @@ impl ApplicationHandler for App {
                         .flatten()
                         .filter(|s| s.faction == Faction::Enemy)
                     {
-                        let etiles = build_ship_tiles(enemy, &self.content);
                         let ex = fractional_cell_to_screen(enemy.cell as f32, &self.lane).x;
-                        hud::push_enemy_telegraph(&mut instances, &etiles, ex, &self.lane);
+                        // Categorise each queued action; route moves to the
+                        // encircling arrow, everything else to the badge stack.
+                        let mut slots: Vec<hud::TelegraphSlot> = Vec::new();
+                        // The head slot is the "winding up" pending cue.
+                        slots.push(hud::TelegraphSlot::Pending);
+                        for action_id in &enemy.queue {
+                            match enemy_telegraph_kind(action_id, &self.content) {
+                                Some(hud::TelegraphKind::Move { dir }) => {
+                                    hud::push_move_arrow_around(
+                                        &mut instances,
+                                        ex,
+                                        dir,
+                                        &self.lane,
+                                        pulse,
+                                    );
+                                }
+                                Some(kind) => {
+                                    slots.push(hud::TelegraphSlot::Ready(kind));
+                                    // Incoming-attack line for a damaging action.
+                                    if let (hud::TelegraphKind::Ability { .. }, Some(px)) =
+                                        (kind, player_x)
+                                    {
+                                        hud::push_incoming_attack(
+                                            &mut instances,
+                                            ex,
+                                            px,
+                                            &self.lane,
+                                            pulse,
+                                        );
+                                    }
+                                }
+                                None => {}
+                            }
+                        }
+                        hud::push_enemy_telegraph_stack(
+                            &mut instances,
+                            &slots,
+                            ex,
+                            &self.lane,
+                            spin,
+                        );
                     }
+                    // Player danger legibility (#67): prominent hull bar +
+                    // hit-flash on damage.
+                    if let Some((hull, max_hull)) = player_hull {
+                        hud::push_player_hull_bar(&mut instances, hull, max_hull);
+                    }
+                    hud::push_player_hit_flash(&mut instances, self.hit_flash);
                 }
                 // Push the appropriate demo-state overlay on top.
                 // Compose no longer auto-pushes — the bin owns the
@@ -1132,7 +1275,14 @@ impl ApplicationHandler for App {
                         );
                     }
                     DemoState::RunDefeated => {
-                        push_run_defeated_overlay(&mut instances, salvage);
+                        // Surface WHAT killed the player so a loss reads as an
+                        // event, not just a red screen (#67).
+                        let cause = defeat_cause(&self.board);
+                        hud::push_run_defeated_overlay_with_cause(
+                            &mut instances,
+                            salvage,
+                            cause.as_deref(),
+                        );
                     }
                 }
                 match gfx.render(&instances) {
@@ -1150,7 +1300,16 @@ impl ApplicationHandler for App {
                 // is animating (idle breathing + reorient tweens), combat juice
                 // is still playing, OR an ability tile is mid-queue-animation —
                 // so all animate to completion. Otherwise sleep until next input.
-                if active_tween || loft_animating || vfx_active || ability_active {
+                // During Playing we keep redrawing so the #67 telegraph spinner /
+                // move-arrow / incoming-attack pulse + hit-flash animate
+                // continuously; otherwise sleep until the next input.
+                let telegraph_animating = matches!(demo_state, DemoState::Playing) || flash_active;
+                if active_tween
+                    || loft_animating
+                    || vfx_active
+                    || ability_active
+                    || telegraph_animating
+                {
                     if let Some(w) = self.window.as_ref() {
                         w.request_redraw();
                     }
