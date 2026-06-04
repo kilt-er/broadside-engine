@@ -310,3 +310,60 @@ fn combat_loop_keeps_board_consistent_across_rounds() {
         }
     }
 }
+
+/* =========================================================================
+ * 5. Telegraph-one-turn-ahead (#67): an enemy's NEXT action is visible in
+ *    its queue between player inputs, and it's what fires next phase.
+ * ====================================================================== */
+
+#[test]
+fn telegraph_persists_in_enemy_queue_between_world_phases() {
+    use broadside_engine::resolve::run_world_phase;
+
+    // One armed enemy that bears on the player (bow=Aft, forward gun points
+    // down-lane at the player at cell 0). High hull on both so nobody dies
+    // and we can observe the telegraph across multiple phases.
+    let mut player = ship("player", Faction::Player, 0, 99, LaneEnd::Fore, "pc_beam");
+    player.shield_profile = naked_shields(); // so the 3-dmg telegraph lands on hull, not armour
+    let e = ship("e", Faction::Enemy, 2, 99, LaneEnd::Aft, "ai_beam");
+    let mut b = board(7, vec![
+        Some(player), None, Some(e), None, None, None, None,
+    ]);
+    let content = CombatContent { player_beam: beam("pc_beam", 1), ai_beam: beam("ai_beam", 3) };
+
+    // Before any phase, the enemy has telegraphed nothing.
+    assert!(
+        b.cells[2].as_ref().unwrap().queue.is_empty(),
+        "enemy starts with an empty (un-telegraphed) queue",
+    );
+
+    // One world phase: fire-then-decide. The enemy fires its (empty) queue —
+    // a no-op — then DECIDES and telegraphs its next action, left un-fired.
+    run_world_phase(&mut b, &content);
+
+    let q1 = b.cells[2].as_ref().unwrap().queue.clone();
+    assert_eq!(
+        q1,
+        vec!["ai_beam".to_string()],
+        "#67: after a world phase the enemy's NEXT action is telegraphed (visible) in its queue, not fired-and-cleared",
+    );
+    // The player took no damage yet — the telegraphed shot has NOT fired.
+    assert_eq!(
+        b.cells[0].as_ref().unwrap().hull,
+        99,
+        "the telegraphed shot is intent only — it has not dealt damage this phase",
+    );
+
+    // Next world phase: the telegraphed ai_beam FIRES (player loses hull),
+    // then the enemy re-telegraphs for the following phase.
+    run_world_phase(&mut b, &content);
+    assert!(
+        b.cells[0].as_ref().unwrap().hull < 99,
+        "#67: the previously-telegraphed action fires on the NEXT world phase",
+    );
+    assert_eq!(
+        b.cells[2].as_ref().unwrap().queue,
+        vec!["ai_beam".to_string()],
+        "the enemy re-telegraphs its next action after firing — the queue stays populated",
+    );
+}

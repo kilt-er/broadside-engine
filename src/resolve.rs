@@ -259,9 +259,15 @@ pub fn fire_player_queue(ship_id: &str, board: &mut Board, content: &dyn Content
  * ========================================================================== */
 
 /// Phases 2-4 of a round: advance every live projectile, run each enemy
-/// (AI fills queue, then queue fires), then end-of-turn bookkeeping. Every
-/// player input in the SS turn model runs this after its instant /
-/// queue-mutation effect lands, so a single keystroke always advances time.
+/// (FIRE its previously-telegraphed queue, THEN decide + telegraph its next
+/// action), then end-of-turn bookkeeping. Every player input in the SS turn
+/// model runs this after its instant / queue-mutation effect lands, so a
+/// single keystroke always advances time.
+///
+/// The enemy step is **fire-then-decide** (telegraph-one-turn-ahead, #67):
+/// each enemy resolves the action it telegraphed last phase, then chooses
+/// and *displays* its next action without firing it. This is what makes the
+/// enemy's intent visible to the player before it lands.
 pub fn run_world_phase(board: &mut Board, content: &dyn Content) {
     // 2 - advance every live projectile by its speed, resolve impacts. This
     // is its own chain-kill window — reset the counter so kills caused by
@@ -284,6 +290,29 @@ pub fn run_world_phase(board: &mut Board, content: &dyn Content) {
     // front so movement / destroys during one enemy's queue can't reshuffle
     // the remaining enemies' identification. An enemy that gets destroyed
     // before its turn just no-ops via the lookup below.
+    //
+    // TELEGRAPH-ONE-TURN-AHEAD (#67). The order is FIRE-THEN-DECIDE, NOT
+    // decide-then-fire. Per enemy:
+    //   a. FIRE the queue it telegraphed on the PREVIOUS world phase —
+    //      `fire_player_queue` runs and CLEARS it. (On the very first world
+    //      phase the queue is empty, so this is a no-op.)
+    //   b. DECIDE its next action and leave it queued, UN-fired, so it is
+    //      visible in `enemy.queue` until the next world phase resolves it.
+    //
+    // Net: between player inputs, `enemy.queue` persistently holds the
+    // enemy's NEXT intended action, which the renderer's per-enemy telegraph
+    // stack draws above the sprite ("here's what's coming"). Moves and
+    // reorients (the #41 maneuvers) are queued actions too, so a pending
+    // MOVE telegraphs as intent and executes next phase rather than
+    // instantly — exactly the Shogun-Showdown readability the design doc
+    // calls for. Pre-#67 this was decide-then-fire in the same phase, so the
+    // queue was emptied the instant it was filled and the telegraph never
+    // rendered.
+    //
+    // `skips_turn` (SystemsOffline) gates the FIRE step but NOT the decide:
+    // a stunned enemy still shows what it WOULD do, it just doesn't fire this
+    // phase. (Its telegraphed action waits; next phase, if no longer
+    // stunned, it fires.)
     let enemy_ids: Vec<String> = enemy_initiative(board)
         .into_iter()
         .filter_map(|c| board.cells[c].as_ref().map(|s| s.id.clone()))
@@ -292,11 +321,16 @@ pub fn run_world_phase(board: &mut Board, content: &dyn Content) {
         let Some(enemy_cell) = find_cell_by_id(board, enemy_id) else {
             continue; // destroyed earlier in the phase
         };
-        if skips_turn(board, enemy_cell) {
-            continue;
+        // a. Fire the previously-telegraphed queue (skipped while stunned).
+        if !skips_turn(board, enemy_cell) {
+            fire_player_queue(enemy_id, board, content);
         }
-        decide_enemy_action(enemy_cell, board, content); // TODO(broadside-content): AI fills the queue
-        fire_player_queue(enemy_id, board, content);
+        // b. Re-locate (firing may have moved/destroyed the enemy) and decide
+        //    the NEXT telegraph, left un-fired for the renderer to show.
+        let Some(enemy_cell) = find_cell_by_id(board, enemy_id) else {
+            continue; // destroyed by its own action (e.g. ReactorBreach splash)
+        };
+        decide_enemy_action(enemy_cell, board, content);
     }
 
     // 4 - end of turn.
