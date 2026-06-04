@@ -81,7 +81,7 @@
       "id": "pulse_laser",
       "name": "Pulse Laser",
       "archetype": "beam",
-      "heat": 1,
+      "heat": 2,
       "cd": 0,
       "band": "close",
       "pattern": "BEAM",
@@ -90,7 +90,7 @@
       "effects": [
         "DAMAGE"
       ],
-      "desc": "The baseline shot — first target in the forward arc, near-zero heat and cooldown. Strong up close, falls off at range. The unit of comparison for every weapon."
+      "desc": "The baseline shot — first target in the forward arc, cooldown-free so it's always available, but each shot adds heat. Sustained fire overheats; a short burst is free. Strong up close, falls off at range. The unit of comparison for every weapon."
     },
     {
       "id": "beam_cannon",
