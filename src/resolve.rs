@@ -230,7 +230,18 @@ pub fn fire_player_queue(ship_id: &str, board: &mut Board, content: &dyn Content
         // mutate the board.
         let action = match content.action(action_id) {
             Some(a) => a.clone(),
-            None => continue, // TS: `if (!a) continue` — unknown action ids are skipped silently.
+            // RESOLVER-SERVED FALLBACK (#68): the AI's closing maneuver queues
+            // the synthetic lane-relative move ids (`__move_left` /
+            // `__move_right`). The live bin's `Content` serves them, but the
+            // resolver must NOT depend on that — a loader / test `Content`
+            // that doesn't register them would otherwise leave enemies unable
+            // to close (the original "enemies never move" failure mode). So we
+            // fall back to a resolver-owned move action for those ids. Any
+            // OTHER unknown id is skipped silently (TS `if (!a) continue`).
+            None => match resolver_ai_move(action_id) {
+                Some(a) => a,
+                None => continue,
+            },
         };
         // The action is identified by its id so heat / cooldown bookkeeping
         // can look it up in `ship.cooldowns`.
@@ -1328,6 +1339,44 @@ fn flip_orientation(o: Orientation) -> Orientation {
     }
 }
 
+/// Resolver-owned fallback for the AI's synthetic lane-relative close-move
+/// (#68). Returns a 1-cell lane-relative THRUST for the `__move_left` /
+/// `__move_right` ids, `None` for anything else. Mirrors
+/// [`crate::input::synthetic_move_left`] / `synthetic_move_right` (same ids,
+/// same `direction: Some(LaneEnd::…)` lane-relative THRUST) so AI movement
+/// resolves IDENTICALLY whether or not the running `Content` registers those
+/// actions — the resolver does not depend on the demo/content layer to make
+/// enemies close. Used by [`fire_player_queue`] when `content.action()`
+/// returns `None` for one of these ids.
+fn resolver_ai_move(action_id: &str) -> Option<Action> {
+    let direction = match action_id {
+        crate::input::SYNTHETIC_MOVE_LEFT => LaneEnd::Aft,
+        crate::input::SYNTHETIC_MOVE_RIGHT => LaneEnd::Fore,
+        _ => return None,
+    };
+    Some(Action {
+        id: action_id.to_string(),
+        name: "Move".into(),
+        archetype: WeaponArchetype::Movement,
+        cost: ActionCost { heat: 0, cooldown_max: 0, advances_turn: true },
+        targeting: Targeting {
+            pattern: TargetingPattern::SELF,
+            band: vec![RangeBand::PointBlank],
+            optimal_band: RangeBand::PointBlank,
+            requires_arc: None,
+            facing_relative: false,
+            hits_all: false,
+        },
+        effects: vec![Effect::DISPLACE_SELF {
+            mode: MovementMode::THRUST,
+            distance: 1,
+            direction: Some(direction),
+        }],
+        r#mod: None,
+        icon: None,
+    })
+}
+
 /// A throwaway weapon used by the resolver for unattributed damage (projectile
 /// impact, ReactorBreach splash). Falloff is disabled via `bandFalloff: false`
 /// so the projectile's payload `amount` lands as-is. Mirrors `dummyWeapon`.
@@ -1973,9 +2022,7 @@ fn decide_enemy_action(
         }
         // End already covered: try to reposition to pressure a distinct end
         // first; if no purposeful maneuver exists, fire anyway (below).
-        if queue_purposeful_maneuver(
-            enemy_cell, player_cell, &mount_weapons, &cooldowns, locked_out, content, board,
-        ) {
+        if queue_purposeful_maneuver(enemy_cell, player_cell, board) {
             return;
         }
         if let Some(s) = board.cells[enemy_cell].as_mut() {
@@ -1985,12 +2032,14 @@ fn decide_enemy_action(
     }
 
     // 5. Cannot fire effectively this turn -> maneuver toward an optimal
-    //    firing position (#41 O1 "optimal position"), then reorient, then
-    //    vent. Purposeful: prefer a move that closes toward the player /
-    //    brings them into arc rather than generic drift.
-    if queue_purposeful_maneuver(
-        enemy_cell, player_cell, &mount_weapons, &cooldowns, locked_out, content, board,
-    ) {
+    //    firing position (#41 O1 "optimal position" / #68 anti-camp), then
+    //    reorient, then vent. The close is a zero-heat synthetic move, so it
+    //    is always "affordable" — but an OVERHEATED enemy must not mindlessly
+    //    advance while it can't shoot; a locked-out ship prefers to VENT
+    //    (handled below) so it can fire again. So only close when NOT locked
+    //    out. (A heat-locked enemy that's also out of range will vent now and
+    //    close once cool — still progresses, just not into a useless overheat.)
+    if !locked_out && queue_purposeful_maneuver(enemy_cell, player_cell, board) {
         return;
     }
 
@@ -2034,96 +2083,47 @@ fn decide_enemy_action(
 }
 
 /// Queue a PURPOSEFUL maneuver that CLOSES the enemy toward the player (#41
-/// O1 "optimal position" / #68 anti-camp). Returns `true` and pushes an
-/// action id onto the enemy's queue if it found a closing move; `false`
-/// otherwise (caller falls through to reorient / vent).
+/// O1 "optimal position" / #68 anti-camp). Returns `true` and pushes the
+/// closing-move id onto the enemy's queue; `false` only in the degenerate
+/// case where the enemy is already on the player's cell.
 ///
-/// # Why this prefers the SYNTHETIC lane-relative move
+/// # Why the SYNTHETIC lane-relative move
 ///
 /// Live enemies carry NO movement action in their mounts — catalog enemies'
-/// mounts are built purely from `def.weapons` (combat weapons), and the
+/// mounts are built purely from `def.weapons` (combat weapons) and the
 /// fallback ship has a single `pulse_laser`. So an AI that only queued
-/// *mounted* DISPLACE_SELF actions could never move (this was the "enemies
-/// never move" bug bruce hit — the prior version of this helper scanned
-/// mounts for a DISPLACE_SELF that simply isn't there).
+/// *mounted* DISPLACE_SELF actions could never move — that was bruce's
+/// "enemies never move" bug (the prior helper scanned mounts for a
+/// DISPLACE_SELF that simply isn't there).
 ///
 /// The PLAYER moves via SYNTHETIC lane-relative actions (`__move_left` /
-/// `__move_right`, [`crate::input::synthetic_move_left`] /
-/// `synthetic_move_right`) that the live `Content` serves regardless of
-/// mounts. Those carry `direction: Some(LaneEnd::…)`, so `resolve_self_move`
-/// steps in the ABSOLUTE lane direction independent of orientation — the
-/// enemy closes whichever way its bow points, with no reorient dance and no
-/// "decline forever" trap. The AI now issues the same synthetic move:
-///   - player AFT of the enemy (lower cell)  -> `__move_left`  (step aft)
-///   - player FORE of the enemy (higher cell) -> `__move_right` (step fore)
+/// `__move_right`); the AI now issues the SAME ids toward the player —
+/// `__move_left` when the player is AFT of the enemy (lower cell),
+/// `__move_right` when the player is FORE (higher cell). These carry
+/// `direction: Some(LaneEnd::…)`, so `resolve_self_move` steps in the ABSOLUTE
+/// lane direction independent of orientation — the enemy closes whichever way
+/// its bow points, with no reorient dance and no "decline forever" trap.
 ///
-/// Gated on `content.action(id).is_some()` so it only fires when the running
-/// `Content` actually serves the synthetic move (the live bin's
-/// `DemoContent` does; minimal test `Content`s that don't simply fall through
-/// to the mounted-DISPLACE_SELF path below, preserving old behavior). As a
-/// secondary path it still honors a mounted `DISPLACE_SELF` if a future
-/// enemy carries one.
+/// The id is queued UNCONDITIONALLY (no `content.action` check): the resolver
+/// serves these ids itself via [`resolver_ai_move`] (used by
+/// [`fire_player_queue`] when `content.action()` returns `None`), so the
+/// enemy closes even when the running `Content` doesn't register the
+/// synthetic moves — no DemoContent dependency.
 fn queue_purposeful_maneuver(
     enemy_cell: usize,
     player_cell: usize,
-    mount_weapons: &[String],
-    cooldowns: &std::collections::HashMap<String, i32>,
-    locked_out: bool,
-    content: &dyn Content,
     board: &mut Board,
 ) -> bool {
     if enemy_cell == player_cell {
         return false; // degenerate; nothing to close
     }
-    // The lane direction from the enemy toward the player.
-    let toward_player = crate::geometry::direction_to(enemy_cell, player_cell);
-
-    // PRIMARY: the synthetic lane-relative closing move, if the running
-    // Content serves it. Lane-relative => closes regardless of orientation.
-    let synth_id = match toward_player {
+    let synth_id = match crate::geometry::direction_to(enemy_cell, player_cell) {
         LaneEnd::Aft => crate::input::SYNTHETIC_MOVE_LEFT,
         LaneEnd::Fore => crate::input::SYNTHETIC_MOVE_RIGHT,
     };
-    if content.action(synth_id).is_some() {
-        if let Some(s) = board.cells[enemy_cell].as_mut() {
-            s.queue.push(synth_id.to_string());
-        }
+    if let Some(s) = board.cells[enemy_cell].as_mut() {
+        s.queue.push(synth_id.to_string());
         return true;
-    }
-
-    // SECONDARY (legacy / future): a MOUNTED DISPLACE_SELF, only when the
-    // enemy's orientation-derived step happens to close toward the player.
-    // No live enemy carries one today; kept so a future movement-mounted
-    // enemy still maneuvers.
-    let Some(enemy) = board.cells[enemy_cell].as_ref() else {
-        return false;
-    };
-    let move_end = match enemy.orientation {
-        Orientation::BowOn { bow: LaneEnd::Aft } => LaneEnd::Aft,
-        _ => LaneEnd::Fore,
-    };
-    if move_end != toward_player {
-        return false;
-    }
-    for weapon_id in mount_weapons {
-        let Some(action) = content.action(weapon_id) else {
-            continue;
-        };
-        if cooldowns.get(weapon_id).copied().unwrap_or(0) > 0 {
-            continue;
-        }
-        if locked_out && action.cost.heat > 0 {
-            continue;
-        }
-        let closes = action.effects.iter().any(|e| {
-            matches!(e, Effect::DISPLACE_SELF { direction: None, .. })
-        });
-        if closes {
-            if let Some(s) = board.cells[enemy_cell].as_mut() {
-                s.queue.push(weapon_id.clone());
-            }
-            return true;
-        }
     }
     false
 }
@@ -3326,8 +3326,13 @@ mod tests {
         };
         super::decide_enemy_action(6, &mut board, &content);
         let queue = board.cells[6].as_ref().unwrap().queue.clone();
-        assert!(queue.is_empty(),
-            "AI should not queue an out-of-band attack; expected empty fallback, got {queue:?}");
+        // It must NOT queue the out-of-band weapon; instead (#68) it CLOSES
+        // toward the player (cell 0 is aft of cell 6 => __move_left) so it can
+        // get into band next turns. Old behavior was an empty/camp queue.
+        assert!(!queue.contains(&"pulse_laser".to_string()),
+            "AI must not queue the out-of-band attack; got {queue:?}");
+        assert_eq!(queue, vec![crate::input::SYNTHETIC_MOVE_LEFT.to_string()],
+            "#68: out of band => close toward the player instead of camping; got {queue:?}");
     }
 
     /// AI prefers a diversifying threat over a redundant one. With two
@@ -3366,60 +3371,34 @@ mod tests {
     #[test]
     fn ai_o1_repositions_instead_of_redundant_fire_on_covered_end() {
         // Player at cell 3. Enemy A at cell 1 (aft of player) ALREADY queued
-        // — covers the aft end. Enemy B at cell 1-side too: place B at cell 2
-        // (also aft of player, bow=aft so it bears fore on the player AND a
-        // bow=aft move steps toward the player). B firing would re-cover the
-        // SAME aft end A already holds, so O1 should make B close instead.
+        // — covers the aft end. Enemy B at cell 2 is ALSO aft of the player
+        // (direction_to(player=3, B=2) = Aft), so B's shot would only RE-cover
+        // the aft end A already holds. Per O1, B repositions instead of firing
+        // redundantly. B is bow=Aft so its forward arc DOES bear on the player
+        // (fore) and it COULD fire — the point is it chooses not to, because
+        // the end is covered. The reposition is the universal synthetic move
+        // toward the player: player is FORE of B (3 > 2) => __move_right.
         let player = make_ship("p", Faction::Player, 3, 10, LaneEnd::Fore);
         let mut enemy_a = enemy_with_weapon("ea", 1, "pulse_laser", Arc::Forward, LaneEnd::Aft);
         enemy_a.queue = vec!["pulse_laser".into()]; // covers the aft end
-        // Enemy B at cell 2 (aft of player), bow=Aft: forward arc bears on the
-        // player (fore), AND its orientation-derived move steps aft — but the
-        // player is FORE of B, so a closing move needs bow=Fore. Give B a
-        // closing move by facing it toward the player: bow=Fore so the move
-        // steps fore (toward cell 3). But then its gun bears AFT (away). So B
-        // cannot fire AND close in one stance — it must choose. With the aft
-        // end already covered, O1 prefers the close.
-        let mut enemy_b = enemy_with_weapon("eb", 2, "pulse_laser", Arc::Forward, LaneEnd::Fore);
-        enemy_b.mounts.push(Mount { id: "bm".into(), arc: Arc::Forward, weapon: "afterburner".into() });
-        let afterburner = Action {
-            id: "afterburner".into(),
-            name: "Afterburner".into(),
-            archetype: WeaponArchetype::Movement,
-            cost: ActionCost { heat: 0, cooldown_max: 0, advances_turn: true },
-            targeting: Targeting {
-                pattern: TargetingPattern::SELF,
-                band: vec![RangeBand::PointBlank],
-                optimal_band: RangeBand::PointBlank,
-                requires_arc: None,
-                facing_relative: false,
-                hits_all: false,
-            },
-            effects: vec![Effect::DISPLACE_SELF { mode: MovementMode::BURN, distance: 1, direction: None }],
-            r#mod: None,
-            icon: None,
-        };
+        let enemy_b = enemy_with_weapon("eb", 2, "pulse_laser", Arc::Forward, LaneEnd::Aft);
         let mut board = make_board(7, vec![
             None, Some(enemy_a), Some(enemy_b), Some(player), None, None, None,
         ]);
         let content = AiContent {
-            actions: HashMap::from([
-                ("pulse_laser".into(), pulse_laser()),
-                ("afterburner".into(), afterburner),
-            ]),
+            actions: HashMap::from([("pulse_laser".into(), pulse_laser())]),
         };
         // B is bow=Fore so its pulse_laser arc points fore (away from the
         // player at cell 3? no — player is fore of B at cell 2, so fore-arc
         // DOES bear). To make this a clean "covered-end => reposition" case we
         // rely on: B's fire re-covers the aft end A holds, and B has a closing
         // move (bow=Fore steps fore toward the player). O1 declines the
-        // redundant shot in favour of the close.
         super::decide_enemy_action(2, &mut board, &content);
         let queue = board.cells[2].as_ref().unwrap().queue.clone();
         assert_eq!(
             queue,
-            vec!["afterburner".to_string()],
-            "O1: with the aft end already covered, B repositions (closes) instead of redundant fire; got {queue:?}",
+            vec![crate::input::SYNTHETIC_MOVE_RIGHT.to_string()],
+            "O1: aft end already covered => B repositions (closes via synthetic move toward the player) instead of redundant fire; got {queue:?}",
         );
     }
 
@@ -3466,61 +3445,27 @@ mod tests {
         );
     }
 
-    /// Fallback ladder (#41 O1): AI queues a PURPOSEFUL maneuver when it
-    /// can't fire — a move that CLOSES toward the player, not generic drift.
+    /// Fallback ladder (#41 O1 / #68): when it can't fire, the AI queues a
+    /// PURPOSEFUL CLOSE toward the player via the universal synthetic move —
+    /// it does NOT need (or use) a mounted movement action. Enemy at cell 6,
+    /// player at cell 0 (Long range, pulse_laser out of band) => closes via
+    /// __move_left (player is aft of the enemy).
     #[test]
     fn ai_falls_back_to_movement_when_nothing_bears() {
-        // Enemy at cell 6, bow=AFT — its forward arc points down-lane toward
-        // the player at cell 0, but the player is at Long+ range so the pulse
-        // laser (band PB/Close/Mid) can't bear in-band yet. bow=Aft means the
-        // orientation-derived move steps AFT (toward cell 0 / the player), so
-        // afterburner is a PURPOSEFUL closing maneuver and gets queued.
-        //
-        // (Pre-O1 this test had the enemy bow=FORE and asserted the move was
-        // queued anyway — but a bow-fore move at the fore edge drifts AWAY
-        // from the player into the wall, which O1 correctly declines. The
-        // bow=Aft setup is the realistic "can't reach yet, close the gap"
-        // case O1's purposeful maneuver targets.)
         let player = make_ship("p", Faction::Player, 0, 10, LaneEnd::Fore);
-        let mut enemy = make_ship("e", Faction::Enemy, 6, 5, LaneEnd::Aft);
-        enemy.mounts = vec![
-            Mount { id: "m1".into(), arc: Arc::Forward, weapon: "pulse_laser".into() },
-            Mount { id: "m2".into(), arc: Arc::Forward, weapon: "afterburner".into() },
-        ];
+        // A plain weapon-only enemy — NO movement mount. The synthetic close
+        // is what carries it (the live-game shape).
+        let enemy = enemy_with_weapon("e", 6, "pulse_laser", Arc::Forward, LaneEnd::Aft);
         let mut board = make_board(7, vec![
             Some(player), None, None, None, None, None, Some(enemy),
         ]);
-        let afterburner = Action {
-            id: "afterburner".into(),
-            name: "Afterburner".into(),
-            archetype: WeaponArchetype::Movement,
-            cost: ActionCost { heat: 0, cooldown_max: 0, advances_turn: true },
-            targeting: Targeting {
-                pattern: TargetingPattern::SELF,
-                band: vec![RangeBand::PointBlank],
-                optimal_band: RangeBand::PointBlank,
-                requires_arc: None,
-                facing_relative: false,
-                hits_all: false,
-            },
-            effects: vec![Effect::DISPLACE_SELF {
-                mode: MovementMode::BURN,
-                distance: 3,
-                direction: None,
-            }],
-            r#mod: None,
-            icon: None,
-        };
         let content = AiContent {
-            actions: HashMap::from([
-                ("pulse_laser".into(), pulse_laser()),
-                ("afterburner".into(), afterburner),
-            ]),
+            actions: HashMap::from([("pulse_laser".into(), pulse_laser())]),
         };
         super::decide_enemy_action(6, &mut board, &content);
         let queue = board.cells[6].as_ref().unwrap().queue.clone();
-        assert_eq!(queue, vec!["afterburner".to_string()],
-            "AI should fall back to a movement telegraph; got {queue:?}");
+        assert_eq!(queue, vec![crate::input::SYNTHETIC_MOVE_LEFT.to_string()],
+            "#68: can't-fire enemy closes via the synthetic move toward the player; got {queue:?}");
     }
 
     /// AI respects cooldowns: a charging weapon is skipped even when it
@@ -3538,8 +3483,13 @@ mod tests {
         };
         super::decide_enemy_action(2, &mut board, &content);
         let queue = board.cells[2].as_ref().unwrap().queue.clone();
-        assert!(queue.is_empty(),
-            "AI should skip the cooldown'd weapon and have no fallback to queue");
+        // The cooldown'd weapon must NOT be queued; instead (#68) the enemy
+        // closes toward the player while the gun recharges (cell 0 aft of
+        // cell 2 => __move_left).
+        assert!(!queue.contains(&"pulse_laser".to_string()),
+            "AI must skip the cooldown'd weapon; got {queue:?}");
+        assert_eq!(queue, vec![crate::input::SYNTHETIC_MOVE_LEFT.to_string()],
+            "#68: cooldown'd enemy closes toward the player instead of camping; got {queue:?}");
     }
 
     /// Friendly-fire filter (task #49): an enemy whose arc bears only on
@@ -3576,13 +3526,14 @@ mod tests {
         };
         super::decide_enemy_action(4, &mut board, &content);
         let queue = board.cells[4].as_ref().unwrap().queue.clone();
-        // Gunboat's only forward target is the scout (same faction).
-        // No fallback should queue pulse_laser; the BEAM resolves to a
-        // friendly-only cell set and gets rejected. With no other action
-        // available, the queue stays empty.
-        assert!(queue.is_empty(),
-            "AI must skip an action whose only target is a same-faction ship; \
-             got queue={queue:?}");
+        // Gunboat's only forward target is the scout (same faction) -> the
+        // friendly-fire filter rejects firing pulse_laser. It must NOT queue
+        // the friendly-only shot; instead (#68) it CLOSES toward the player
+        // (cell 0 is aft of cell 4 => __move_left).
+        assert!(!queue.contains(&"pulse_laser".to_string()),
+            "AI must skip an action whose only target is a same-faction ship; got {queue:?}");
+        assert_eq!(queue, vec![crate::input::SYNTHETIC_MOVE_LEFT.to_string()],
+            "#68: friendly-fire-blocked enemy closes toward the player instead of camping; got {queue:?}");
     }
 
     /// The friendly-fire filter must NOT block firing through an ally to
@@ -3740,8 +3691,14 @@ mod tests {
         };
         super::decide_enemy_action(2, &mut board, &content);
         let queue = board.cells[2].as_ref().unwrap().queue.clone();
-        assert!(queue.is_empty(),
-            "AI skips an action that would push heat more than 1 past heat_max; got {queue:?}");
+        // The over-budget weapon must NOT be queued. The enemy is NOT locked
+        // out (it can still act), so per #68 it CLOSES toward the player
+        // rather than over-committing heat (cell 0 aft of cell 2 =>
+        // __move_left).
+        assert!(!queue.contains(&"overcharged".to_string()),
+            "AI must skip the over-heat-budget action; got {queue:?}");
+        assert_eq!(queue, vec![crate::input::SYNTHETIC_MOVE_LEFT.to_string()],
+            "#68: heat-constrained (not locked) enemy closes instead of over-committing; got {queue:?}");
     }
 
     /// B4-heat boundary: an action that lands EXACTLY at heat_max + 1 is still
