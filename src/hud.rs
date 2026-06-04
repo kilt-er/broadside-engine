@@ -1703,6 +1703,168 @@ fn emit_tile(out: &mut Vec<DrawCommand>, t: &AbilityTile, pos: [f32; 2], enemy: 
     }
 }
 
+/* =============================================================================
+ * Enemy telegraph cue + incoming-attack viz (#67).
+ *
+ * Now that resolver persists each enemy's NEXT action in `enemy.queue`
+ * (b9268c4), render a CLEAR per-enemy cue of what it's about to do, so the
+ * player can read the threat and plan. The bin categorises the queued action
+ * id (via Content → effects) into a [`TelegraphKind`]; hud draws it above the
+ * enemy. An ABILITY aimed at the player also gets an incoming-attack line.
+ * ============================================================================= */
+
+/// What an enemy's next queued action is, for the telegraph cue. The bin maps
+/// the queued action id → effects → this.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum TelegraphKind {
+    /// A weapon/ability that will deal `damage` (an incoming attack).
+    Ability { icon: AbilityIcon, damage: i32 },
+    /// A self-move along the lane in `dir` (Fore = +x / right).
+    Move { dir: LaneEnd },
+    /// A reorient (turn).
+    Reorient,
+}
+
+const TELEGRAPH_FRAME: [f32; 4] = [0.90, 0.34, 0.30, 1.0]; // enemy-intent red
+const TELEGRAPH_DIM: [f32; 4] = [0.094, 0.110, 0.149, 0.92];
+const TELEGRAPH_INK: [f32; 4] = [0.96, 0.84, 0.40, 1.0]; // amber cue mark
+
+/// Draw the telegraph cue for one enemy directly above it at `enemy_x`. Square
+/// red-framed badge: ABILITY → icon + damage pips, MOVE → a direction arrow,
+/// REORIENT → a turn glyph. Stateless — straight from the enemy's next action.
+pub fn push_telegraph_cue(
+    out: &mut Vec<DrawCommand>,
+    kind: TelegraphKind,
+    enemy_x: f32,
+    lane: &LaneGeometry,
+) {
+    let half = TILE_SIZE / 2.0;
+    let pos = [enemy_x, lane.center_y - 96.0];
+    // Red frame + dark inner (the "this ship will act" badge).
+    push_sprite(
+        out,
+        SpriteInstance::axis_aligned(
+            pos,
+            [half + 1.5, half + 1.5],
+            TELEGRAPH_FRAME,
+            atlas::cell_uvs(atlas::SOLID_WHITE),
+        ),
+    );
+    push_sprite(
+        out,
+        SpriteInstance::axis_aligned(
+            pos,
+            [half, half],
+            TELEGRAPH_DIM,
+            atlas::cell_uvs(atlas::SOLID_WHITE),
+        ),
+    );
+    match kind {
+        TelegraphKind::Ability { icon, damage } => {
+            push_sprite(
+                out,
+                SpriteInstance::axis_aligned(
+                    [pos[0], pos[1] - 2.0],
+                    [half * 0.7, half * 0.7],
+                    TILE_ICON,
+                    atlas::cell_uvs(icon.atlas_cell()),
+                ),
+            );
+            // Damage as "N" centred near the bottom so the threat magnitude reads.
+            if damage > 0 {
+                push_text_left(
+                    out,
+                    &damage.to_string(),
+                    pos[0] - 3.0,
+                    pos[1] + half - 8.0,
+                    1.4,
+                    TILE_DAMAGE,
+                );
+            }
+        }
+        TelegraphKind::Move { dir } => emit_arrow(out, pos, dir, half * 0.6, TELEGRAPH_INK),
+        TelegraphKind::Reorient => emit_turn_glyph(out, pos, half * 0.55, TELEGRAPH_INK),
+    }
+}
+
+/// A line from a telegraphing enemy toward the player — the shot that's aimed at
+/// you this turn. Pulses (alpha by `pulse` 0..1) so it reads as "incoming, not
+/// yet fired". Drawn along the lane between the two cells.
+pub fn push_incoming_attack(
+    out: &mut Vec<DrawCommand>,
+    enemy_x: f32,
+    player_x: f32,
+    lane: &LaneGeometry,
+    pulse: f32,
+) {
+    let y = lane.center_y;
+    let dx = player_x - enemy_x;
+    let len = dx.abs().max(1.0);
+    let cx = (enemy_x + player_x) / 2.0;
+    let alpha = 0.30 + 0.45 * pulse;
+    out.push(DrawCommand::Sprite(SpriteInstance {
+        pos: [cx, y],
+        half_size: [len / 2.0, 1.5],
+        color: [0.95, 0.30, 0.28, alpha],
+        uv_min: atlas::cell_uvs(atlas::SOLID_WHITE).0,
+        uv_max: atlas::cell_uvs(atlas::SOLID_WHITE).1,
+        rotation_rad: 0.0,
+        _pad: [0.0; 3],
+    }));
+}
+
+/// A small direction arrow (triangle-ish) centred at `pos`, pointing Fore
+/// (+x/right) or Aft (−x/left), size `r`.
+fn emit_arrow(out: &mut Vec<DrawCommand>, pos: [f32; 2], dir: LaneEnd, r: f32, color: [f32; 4]) {
+    let sign = match dir {
+        LaneEnd::Fore => 1.0,
+        LaneEnd::Aft => -1.0,
+    };
+    // Shaft + a chunky tip block — readable at tile scale without a custom mesh.
+    push_sprite(
+        out,
+        SpriteInstance::axis_aligned(
+            [pos[0], pos[1]],
+            [r, 1.5],
+            color,
+            atlas::cell_uvs(atlas::SOLID_WHITE),
+        ),
+    );
+    push_sprite(
+        out,
+        SpriteInstance::axis_aligned(
+            [pos[0] + sign * r, pos[1]],
+            [r * 0.4, r * 0.5],
+            color,
+            atlas::cell_uvs(atlas::SOLID_WHITE),
+        ),
+    );
+}
+
+/// A turn cue glyph centred at `pos` (two offset arcs-ish blocks suggesting
+/// rotation), size `r`.
+fn emit_turn_glyph(out: &mut Vec<DrawCommand>, pos: [f32; 2], r: f32, color: [f32; 4]) {
+    // Two short bars at right angles — a minimal "rotate" mark.
+    push_sprite(
+        out,
+        SpriteInstance::axis_aligned(
+            [pos[0] - r * 0.3, pos[1]],
+            [r, 1.5],
+            color,
+            atlas::cell_uvs(atlas::SOLID_WHITE),
+        ),
+    );
+    push_sprite(
+        out,
+        SpriteInstance::axis_aligned(
+            [pos[0] + r * 0.5, pos[1] - r * 0.3],
+            [1.5, r * 0.6],
+            color,
+            atlas::cell_uvs(atlas::SOLID_WHITE),
+        ),
+    );
+}
+
 /// Linear interpolation, `t` in 0..1.
 fn lerp(a: f32, b: f32, t: f32) -> f32 {
     a + (b - a) * t
