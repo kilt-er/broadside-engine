@@ -36,6 +36,7 @@ const BEAM_SECS: f32 = 0.22;
 const HIT_FLASH_SECS: f32 = 0.30;
 const EXPLOSION_SECS: f32 = 0.55;
 const TRAIL_SECS: f32 = 0.35;
+const TELEGRAPH_FIRE_SECS: f32 = 0.32;
 // The telegraph cue is not event-transient — it pulses while the intent is
 // queued — so it has no lifetime; it's emitted live from the current board.
 
@@ -65,6 +66,10 @@ enum EffectKind {
         to_cell: f32,
         color: [f32; 3],
     },
+    /// A telegraph icon "spending" as its enemy fires (#70): a quick expanding
+    /// red pop at the telegraph slot above `cell`, so the player sees the
+    /// readied action discharge rather than silently becoming the next intent.
+    TelegraphFire { cell: f32 },
 }
 
 impl Effect {
@@ -85,19 +90,36 @@ struct Snapshot {
     ships: HashMap<String, (i32, usize, Faction)>,
     /// projectile id → cell.
     ordnance: HashMap<String, usize>,
+    /// enemy ship id → its telegraphed (queue head) action id, if any. Used to
+    /// detect a FIRE: with the resolver's fire-then-decide model (#67/#162), an
+    /// enemy's queue head changes the instant it spends its telegraphed action,
+    /// so a head change = "this enemy just fired" — the signal for the
+    /// shot-beam + telegraph-pop (#70), independent of whether the player's
+    /// hull actually dropped (a shielded/missed shot still visibly fires).
+    enemy_intent: HashMap<String, String>,
 }
 
 impl Snapshot {
     fn of(board: &Board) -> Self {
         let mut ships = HashMap::new();
+        let mut enemy_intent = HashMap::new();
         for s in board.cells.iter().flatten() {
             ships.insert(s.id.clone(), (s.hull, s.cell, s.faction));
+            if s.faction == Faction::Enemy {
+                if let Some(head) = s.queue.first() {
+                    enemy_intent.insert(s.id.clone(), head.clone());
+                }
+            }
         }
         let mut ordnance = HashMap::new();
         for p in &board.ordnance {
             ordnance.insert(p.id.clone(), p.cell);
         }
-        Self { ships, ordnance }
+        Self {
+            ships,
+            ordnance,
+            enemy_intent,
+        }
     }
 }
 
@@ -161,6 +183,43 @@ impl CombatVfx {
                             cell: prev_cell as f32,
                         },
                         EXPLOSION_SECS,
+                    );
+                }
+            }
+        }
+        // Telegraphed enemy FIRE (#70): an enemy whose queue head CHANGED since
+        // last frame just spent its telegraphed action (fire-then-decide). Show
+        // the shot — a beam from the enemy toward the player — and a pop at the
+        // telegraph slot so the player connects telegraph → shot → damage. This
+        // fires on the intent change itself, so a shot still reads even when the
+        // player's shield eats it (no hull drop to trigger the hull-drop beam).
+        let player_cell = board
+            .cells
+            .iter()
+            .flatten()
+            .find(|s| s.faction == Faction::Player)
+            .map(|s| s.cell as f32);
+        for (id, prev_head) in &prev.enemy_intent {
+            // Enemy must still be alive this frame (a destroyed enemy is an
+            // explosion, not a fire).
+            let Some(&(_, cur_cell, _)) = cur.ships.get(id) else {
+                continue;
+            };
+            let fired = match cur.enemy_intent.get(id) {
+                Some(cur_head) => cur_head != prev_head, // swapped to next intent
+                None => true,                            // queue emptied → spent
+            };
+            if fired {
+                let cell = cur_cell as f32;
+                self.spawn(EffectKind::TelegraphFire { cell }, TELEGRAPH_FIRE_SECS);
+                if let Some(pc) = player_cell {
+                    self.spawn(
+                        EffectKind::Beam {
+                            from_cell: cell,
+                            to_cell: pc,
+                            color: BEAM_COLOR,
+                        },
+                        BEAM_SECS,
                     );
                 }
             }
@@ -229,6 +288,7 @@ impl CombatVfx {
                     to_cell,
                     color,
                 } => emit_beam(out, lane, from_cell, to_cell, color, e.t()),
+                EffectKind::TelegraphFire { cell } => emit_telegraph_fire(out, lane, cell, e.t()),
             }
         }
         // Telegraph: live cue above any enemy holding a queued action.
@@ -300,6 +360,24 @@ fn emit_flash(
         [p.x, p.y],
         [size / 2.0, size / 2.0],
         [color[0], color[1], color[2], alpha],
+        atlas::cell_uvs(atlas::SOLID_WHITE),
+    )));
+}
+
+/// Telegraph FIRE pop (#70): a quick expanding red flash at the telegraph slot
+/// above the enemy (`lane.center_y - 96`, matching the hud telegraph stack), so
+/// the readied action visibly DISCHARGES as the enemy fires rather than silently
+/// rolling to the next intent. Grows + fades over its short life.
+fn emit_telegraph_fire(out: &mut Vec<DrawCommand>, lane: &LaneGeometry, cell: f32, t: f32) {
+    let p = fractional_cell_to_screen(cell, lane);
+    let y = lane.center_y - 96.0;
+    // Bright expanding ring-ish pop: a fast-growing, fast-fading square.
+    let size = 18.0 * (0.4 + 1.1 * t);
+    let alpha = (1.0 - t) * 0.95;
+    out.push(DrawCommand::Sprite(SpriteInstance::axis_aligned(
+        [p.x, y],
+        [size / 2.0, size / 2.0],
+        [1.0, 0.42, 0.38, alpha],
         atlas::cell_uvs(atlas::SOLID_WHITE),
     )));
 }
@@ -447,6 +525,45 @@ mod tests {
         let still = vfx.advance(EXPLOSION_SECS + 0.01);
         assert!(!still);
         assert!(!vfx.is_active());
+    }
+
+    #[test]
+    fn enemy_intent_change_spawns_fire_pop_and_beam() {
+        // With fire-then-decide, an enemy's queue head changes when it fires.
+        // That should spawn a TelegraphFire pop + a beam toward the player,
+        // independent of any hull drop (a shielded shot still visibly fires).
+        let mut vfx = CombatVfx::new();
+        let mut board = empty_board(7);
+        board.cells[0] = Some(ship("player", Faction::Player, 0, 5));
+        let mut e = ship("enemy", Faction::Enemy, 4, 5);
+        e.queue.push("beam_a".into());
+        board.cells[4] = Some(e);
+        vfx.observe(&board); // baseline: intent = beam_a
+                             // Enemy fires → queue head rolls to its NEXT intent.
+        board.cells[4].as_mut().unwrap().queue = vec!["beam_b".into()];
+        vfx.observe(&board);
+        // Fire pop + beam (no hull drop this frame, so exactly those two).
+        assert_eq!(
+            vfx.effects.len(),
+            2,
+            "intent change should spawn a fire pop + a beam"
+        );
+    }
+
+    #[test]
+    fn enemy_intent_unchanged_spawns_nothing() {
+        let mut vfx = CombatVfx::new();
+        let mut board = empty_board(7);
+        board.cells[0] = Some(ship("player", Faction::Player, 0, 5));
+        let mut e = ship("enemy", Faction::Enemy, 4, 5);
+        e.queue.push("beam_a".into());
+        board.cells[4] = Some(e);
+        vfx.observe(&board);
+        vfx.observe(&board); // same intent, no change
+        assert!(
+            !vfx.is_active(),
+            "a steady telegraph must not spawn a fire effect"
+        );
     }
 
     #[test]

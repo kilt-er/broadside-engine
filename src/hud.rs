@@ -1998,9 +1998,10 @@ pub enum TelegraphSlot {
 /// Draw an enemy's full telegraph above it at `enemy_x`, bottom-of-stack first.
 /// ABILITY/REORIENT slots render as stacked red badges; the `Pending` slot
 /// renders as the spinny placeholder. A `Move` slot is NOT stacked — it is
-/// drawn as an arrow encircling the ship (see [`push_move_arrow_around`]), so
-/// the caller should pull moves out and route them there; any `Move` that
-/// reaches here still draws its in-badge arrow as a fallback.
+/// drawn as a lane-direction arrow ahead of the ship (see
+/// [`push_move_arrow_around`]), so the caller should pull moves out and route
+/// them there; any `Move` that reaches here still draws its in-badge arrow as a
+/// fallback.
 ///
 /// `spin` is a free-running phase (radians) the bin advances each frame; it
 /// drives the pending-slot animation.
@@ -2137,12 +2138,12 @@ fn emit_pending_spinner(out: &mut Vec<DrawCommand>, pos: [f32; 2], spin: f32) {
     );
 }
 
-/// A directional arrow drawn ENCIRCLING the enemy ship (bruce's #67 move cue):
-/// a curved band of segments arcing over the hull plus a chunky arrowhead at
-/// the leading end, pointing the way the ship will move (Fore = +x / right).
-/// `enemy_x` is the ship's screen x; the arc rides just above the lane-seated
-/// hull. `pulse` (0..1) animates the arrowhead brightness so it reads as
-/// imminent-but-not-yet.
+/// A LEGIBLE lane-direction move cue (#70 — bruce: "what does the arc signify?").
+/// A bold horizontal arrow on the lane just AHEAD of the enemy in the direction
+/// it will step (Fore = +x / right): a thick shaft + a big chevron head.
+/// Unmistakably "this ship moves THIS way" — green to read as movement (vs the
+/// red attack telegraph), brighter as `pulse` rises so it reads as imminent.
+/// Replaces the old encircling-hull arc, which didn't read as motion.
 pub fn push_move_arrow_around(
     out: &mut Vec<DrawCommand>,
     enemy_x: f32,
@@ -2154,50 +2155,46 @@ pub fn push_move_arrow_around(
         LaneEnd::Fore => 1.0,
         LaneEnd::Aft => -1.0,
     };
-    // The arc sits centred on the hull and sweeps from behind-the-stern up over
-    // the top and down toward the bow-side, so it visibly "wraps" the ship.
-    let cx = enemy_x;
-    let cy = lane.center_y;
-    let radius = LOFT_SHIP_HEIGHT_PX * 0.42; // just outside the lofted hull
-    let bright = 0.55 + 0.45 * pulse;
-    let ink = [0.96, 0.74, 0.30, bright];
-    // Sweep the upper half-arc, from the trailing side (−sign) to the leading
-    // side (+sign). Angles measured from +x, going over the top (negative y).
-    let start = if sign > 0.0 {
-        std::f32::consts::PI // left side
-    } else {
-        0.0 // right side
-    };
-    let end = if sign > 0.0 {
-        std::f32::consts::TAU // back to right, over the top
-    } else {
-        std::f32::consts::PI // over the top to the left
-    };
-    let segs = 14;
-    let mut prev: Option<Point2> = None;
-    for i in 0..=segs {
-        let t = i as f32 / segs as f32;
-        let ang = start + (end - start) * t;
-        // Upper arc only: force the y-component upward (over the hull).
-        let px = cx + ang.cos() * radius;
-        let py = cy - ang.sin().abs() * radius;
-        let cur = Point2 { x: px, y: py };
-        if let Some(p) = prev {
-            push_line(out, p, cur, 2.0, ink);
-        }
-        prev = Some(cur);
-    }
-    // Arrowhead at the leading end (bow-side, on the lane), pointing the way.
-    let head_x = cx + sign * radius;
-    let head_y = cy;
+    let bright = 0.6 + 0.4 * pulse;
+    // Green ink reads as movement, distinct from the red attack telegraph.
+    let ink = [0.40, 0.92, 0.55, bright];
+    // Sit just above the lane line so it clears the hull + lane ticks, offset
+    // toward the move direction so the arrow LEADS the ship.
+    let y = lane.center_y - 26.0;
+    let gap = 40.0; // start clear of the hull
+    let shaft_len = 34.0;
+    let head = 11.0;
+    let shaft_near_x = enemy_x + sign * gap;
+    let shaft_far_x = shaft_near_x + sign * shaft_len;
+    let shaft_cx = (shaft_near_x + shaft_far_x) / 2.0;
+    // Shaft.
     push_sprite(
         out,
         SpriteInstance::axis_aligned(
-            [head_x + sign * 4.0, head_y],
-            [6.0, 5.0],
+            [shaft_cx, y],
+            [shaft_len / 2.0, 3.0],
             ink,
             atlas::cell_uvs(atlas::SOLID_WHITE),
         ),
+    );
+    // Chevron head, rotated to point along the lane (0 = +x/right, PI = left).
+    let head_x = shaft_far_x + sign * head * 0.6;
+    let rot = if sign > 0.0 {
+        0.0
+    } else {
+        std::f32::consts::PI
+    };
+    push_sprite(
+        out,
+        SpriteInstance {
+            pos: [head_x, y],
+            half_size: [head, head],
+            color: ink,
+            uv_min: atlas::cell_uvs(atlas::BOW_CHEVRON).0,
+            uv_max: atlas::cell_uvs(atlas::BOW_CHEVRON).1,
+            rotation_rad: rot,
+            _pad: [0.0; 3],
+        },
     );
 }
 
