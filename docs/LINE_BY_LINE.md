@@ -3450,8 +3450,11 @@ application, factored out of the queue loop. Returns whether it fired.
 > bore" check above (and the arc check only bites when the action has `requires_arc`; a
 > `requires_arc: None` action with no mount fires unconditionally). This is **not a bug**:
 > in real play the player's queue is built only from actions they have mounts for, and the
-> **AI never hits this edge** because `decide_enemy_action` enumerates *from the enemy's
-> mounts* and gates on arc/band/range via `resolve_targeting` before queuing anything. The
+> **AI never hits this edge** because `decide_enemy_action`'s *weapon* picks enumerate
+> *from the enemy's mounts* and gate on arc/band/range via `resolve_targeting` before
+> queuing. (The one non-mount id the AI ever queues is the synthetic close-move
+> `__move_left`/`__move_right` from `queue_purposeful_maneuver`, served by `resolver_ai_move`
+> — not the `run_action` mount path — so it doesn't reach this edge either.) The
 > sharp edge is exclusively the **direct queue-injection path** (player input, or a
 > test/fixture that pushes an id onto `ship.queue` directly). Tester surfaced this while
 > writing `tests/run_loop.rs`. If a future change wants mounts to be a hard prerequisite,
@@ -3920,45 +3923,70 @@ override the trait method.
 
 ---
 
-### `fn decide_enemy_action(enemy_cell, board, content)` (line 1303)
+### `fn decide_enemy_action(enemy_cell, board, content)` (line 1857)
 
-**Mirrors:** `resolve.ts:395` (stub). Filled in per task #6 / commit `da243be`.
+**Mirrors:** `resolve.ts:395` (stub). Filled in per task #6 / commit `da243be`; the
+fire-vs-maneuver rewrite is #71 (`2182aa3`) + #74 (`f401ede`).
 **Design anchor:** HTML Part IV closing paragraph — the AI maximises lane-end
-diversity to force player stance flips.
+diversity to force player stance flips. **Note (#74):** that diversity *intent* is now
+served by the maneuver step (geometry-emergent), NOT by any scoring term.
 **Intent:** Pick one action for this enemy and push it onto `ship.queue`. The
 resolver runs the queue through `execute_queue` unchanged — the AI never bypasses
 the pipeline.
 
-The doc comment at lines 1255–1302 is the canonical algorithm description. Summary:
+The current rule (#71): **if any in-band, bearing, affordable, hostile-targeting
+action exists, FIRE it; otherwise CLOSE toward the player** (then reorient, then
+vent). The doc comment at lines 1804–1856 is the algorithm description (note: that
+comment's score-list still mentions the removed `+6` — see the Drift note below; the
+*body* no longer adds it). Summary against the body:
 
-1. **Find the player** (lines 1310–1314). No player → return.
-2. **Snapshot gating state** (lines 1318–1326). The scoring loop borrows the board
+1. **Find the player** (lines 1864–1868). No player → return.
+2. **Snapshot gating state** (lines 1872–1884). The scoring loop borrows the board
    read-only for `resolve_targeting`, so we copy out heat / cooldowns / mounts /
    traits up front.
-3. **Compute covered ends** (lines 1338–1352). For each *already-queued* enemy (the
-   AI runs in initiative order, so enemies 0..N-1 are decided by the time we run
-   for enemy N), record which lane-end they threaten the player from.
-   `direction_to(player_cell, enemy_cell)` is the lane end the shot arrives from.
-4. **Enumerate + score threatening actions** (lines 1359–1417). For each mount's
-   weapon: gate by cooldown, lockout, heat-budget (skip if firing would push more
-   than 1 above heat_max), and arc/band via `resolve_targeting`. Score:
-   - `+10` per cell hit that contains the player.
-   - `+6` if the enemy threatens the player from a lane-end *not yet covered* by
-     an already-queued enemy.
+3. **Enumerate + score available actions** (lines 1905–1979). For each mount's
+   weapon: gate by cooldown, lockout (locked-out → zero-heat only), heat-budget
+   (skip if firing would push more than 1 above `heat_max`), arc/band via
+   `resolve_targeting`, and a friendly-fire filter (#49 — drop actions whose target
+   set is all-empty/all-ally). Score (selects WHICH weapon, not WHETHER to fire):
+   - `+10` if a hit cell contains the player.
    - `+raw_damage` (sum of `Effect::DAMAGE` amounts).
    - `-heat` cost (halved for `BurnHard` ships).
-   - `+2` for `Pursuit` ships that hit the player.
-5. **Queue the best** (lines 1420–1424). If a threatening action scored, push it
-   and return.
-6. **Fallback ladder** (lines 1430–1483): when no action threatens the player, try
-   in order: any DISPLACE_SELF action (movement intent), any REORIENT action
-   (might bring the player into arc next turn), any VENT_HEAT action (at least
-   clears heat). If even those fail, leave the queue empty.
+   - `+2` for `Pursuit` ships that hit the player (line ~1972 — live but currently
+     unreachable; see Drift note).
+4. **FIRE the best** (lines 1998–2003). If any action scored, push it and return —
+   **unconditionally** (the #71 change: no covered-end fire-suppression).
+5. **Maneuver → reorient → vent** (lines 2005–2054). When nothing can fire:
+   - **Close** via `queue_purposeful_maneuver` (line 2083) — queues a synthetic
+     lane-relative move (`__move_left`/`__move_right`) toward the player; skipped when
+     locked out (vent first). #68 anti-camp / #41 "optimal position".
+   - **Reorient** — any `REORIENT` action (flip may bring the player into arc next).
+   - **Vent** — any `VENT_HEAT` action (clears heat for next round).
+   - Else leave the queue empty (unreachable for a well-configured enemy).
 
-**Drift note: visible-threat invariant.** Every successful AI turn produces a queued
-action — the resolver renders queue contents over each ship, so pushing any action
-id is enough to make the AI's intent legible to the player. The fallback ladder
-exists precisely to ensure visibility even in degenerate setups.
+**Drift note (#71/#74) — the doc comment and a removed scoring term.**
+- **#71 dropped the covered-end fire-suppression.** An earlier design (#41) made an
+  enemy *reposition instead of firing* if its lane-end was already covered by an ally.
+  With the live spawn shape (all enemies one side of the player) every enemy after the
+  first saw "covered", so all marched in a line and died without firing — bruce's
+  "they never shoot" bug. Fire-when-in-position now wins unconditionally.
+- **#74 removed the `+6` lane-end-diversity bonus** as vestigial: `my_end_from_player`
+  is constant across one enemy's own candidates, so the bonus never changed that
+  enemy's argmax (the queued pick); with #71's suppression gone it had zero behavioral
+  effect. **True cross-enemy coordination (an initiative pass assigning enemies to
+  distinct ends) was never built — lane-end diversity is emergent from geometry.** The
+  source body no longer adds `+6`; the function's own `///` score-list comment
+  (lines ~1837-1838) still lists it and is mildly stale — that's the resolver's doc
+  comment to fix, flagged to them, not edited here.
+- **`Pursuit` +2 is live but currently unreachable.** It's real in the math and CAN
+  flip a pick, but it's conditional on `hits_player`, so it only races a candidate
+  that does NOT hit the player — which never arises on a single-player board (every
+  fireable candidate hits the same lone player). Document as live-but-unreachable, not
+  inert.
+
+**Visible-threat invariant.** Every successful AI turn produces a queued action — fire
+OR a fallback (close / reorient / vent), each itself a visible telegraph. The renderer
+draws queue contents over each ship, so any pushed id makes the intent legible.
 
 ---
 

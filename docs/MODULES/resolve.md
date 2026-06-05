@@ -296,34 +296,76 @@ when the surrounding `execute_queue` completes.
 the enemy's queue. The resolver then runs the queue through `execute_queue`
 unchanged — **the AI never bypasses the pipeline**.
 
-### Objective: lane-end diversity
+### Objective: fire when in position, else close (#71/#74)
 
-Per the analysis doc: "the enemy controls which situation you are in (its AI
-maximises the number of distinct lane-ends it threatens), the player keeps flipping
-between the two." Enemies stacked on one side of the player let the player tank with
-the bow; enemies on opposite sides force a stance flip.
+The design intent (analysis doc) is still "the enemy controls which situation you are
+in — it maximises the distinct lane-ends it threatens, so the player keeps flipping
+stance." **But that intent is now served by the maneuver step, not by a scoring
+term.** The current rule is blunt and correct: **if this enemy has any in-band,
+bearing, affordable, hostile-targeting action, it FIRES — full stop; otherwise it
+CLOSES toward the player** (then reorients, then vents). Firing from a good position
+is the whole point of the AI, so it must actually happen.
+
+> **Drift / history (#41 → #71 → #74).** An earlier design (#41 "diversify-or-fire")
+> scored a `+6` bonus for threatening the player from a lane-end no already-queued
+> ally covered, and would **suppress firing** (reposition instead) when this enemy's
+> end was already covered. Two problems, both now fixed:
+> - **#71 dropped the covered-end fire-suppression.** With the live spawn shape (all
+>   enemies on one side of the player) every enemy after the first saw its end
+>   "covered", so every one maneuvered instead of firing; since they were all on the
+>   same side none ever reached an "uncovered" end, so they marched into the player
+>   and died without firing — bruce's "they line up and never shoot" bug. On a 1-D
+>   lane, repositioning to a fresh end is rarely achievable, so "fire when in
+>   position" must win over "hold fire to maybe pressure a different end".
+> - **#74 removed the `+6` term entirely** as vestigial. `my_end_from_player` is
+>   constant across one enemy's own candidates, so the bonus was added to all of an
+>   enemy's options or none — it never changed that enemy's argmax (the queued pick).
+>   With the suppression gone (#71) it had no behavioral effect at all. **True
+>   cross-enemy threat coordination — an initiative pass assigning enemies to
+>   distinct lane-ends — was never built; lane-end diversity today is emergent from
+>   geometry, not directed.** The term was deleted rather than left to mislead; if
+>   explicit coordination is wanted later it's a real resolver feature, not a dead
+>   scoring constant.
 
 ### Algorithm
 
 1. **Locate the player**. If absent, return.
-2. **Compute covered ends**: lane-ends that already-queued enemies threaten the
-   player from. The AI runs in initiative order, so enemies 0..N-1 are decided by
-   the time we run for enemy N.
-3. **Enumerate available actions**: every mount's weapon, gated by cooldown, heat,
+2. **Enumerate available actions**: every mount's weapon, gated by cooldown, heat,
    lockout, arc, band. Heat-budget gate skips actions that would push more than 1
-   above heat_max.
-4. **Score**:
-   - `+10` per cell hit that contains the player
-   - `+6` if the threatened lane-end is not yet covered (diversity bonus)
+   above `heat_max` (happy to overheat exactly once; a 2+ overshoot wastes a whole
+   vent turn). A locked-out enemy may only fire zero-heat actions. Arc/band is
+   checked by `resolve_targeting` against the real board, so "available" means "would
+   actually resolve to a non-empty cell set." A **friendly-fire filter** (#49) drops
+   any action whose target cells are all empty or all same-faction.
+3. **Score** each available action (selects WHICH weapon, no longer WHETHER to fire):
+   - `+10` if a hit cell contains the player (the visible threat)
    - `+raw_damage` (sum of `DAMAGE` effect amounts)
-   - `-heat` cost (halved for `BurnHard` ships)
-   - `+2` for `Pursuit` ships that hit the player
-5. **Pick the highest-scoring action** and queue it.
-6. **Fallback ladder** when nothing threatens the player:
-   - Any DISPLACE_SELF action (closes range)
-   - Any REORIENT action (might bring the player into arc next turn)
-   - Any VENT_HEAT action (at least clears heat)
-   - If even that fails, leave the queue empty.
+   - `-heat` cost (halved for `BurnHard` ships — they're less heat-averse)
+   - `+2` for `Pursuit` ships when the action hits the player
+4. **FIRE the best-scoring action if there is one** — unconditionally queue it and
+   return. (This is the #71 change: no covered-end detour.)
+5. **Else maneuver, then reorient, then vent** (fallback ladder, all visible
+   telegraphs):
+   - **Close** — `queue_purposeful_maneuver` queues a SYNTHETIC lane-relative move
+     (`__move_left`/`__move_right`) toward the player. Live enemies carry no movement
+     action in their mounts (mounts are built from `def.weapons`), so the AI issues
+     the same synthetic move ids the player uses; `resolver_ai_move` serves them even
+     when the running `Content` doesn't register them (no DemoContent dependency).
+     Skipped when **locked out** (an overheated enemy vents first rather than crawl
+     forward unable to shoot) — #68 anti-camp / #41 "optimal position".
+   - **Reorient** — any REORIENT action, in case a flip brings the player into arc
+     next turn.
+   - **Vent** — any VENT_HEAT action, to clear heat for next round.
+   - If even that fails, leave the queue empty (a correctly-configured enemy with one
+     valid mount should never reach here).
+
+> **`Pursuit` +2 — live but currently unreachable.** The `Pursuit` nudge (resolve.rs
+> ~:1972) IS live in the score math and CAN flip the pick: it's conditional on
+> `hits_player`, so it races a candidate that does NOT hit the player. On real
+> single-player boards, though, every candidate that an in-position enemy can fire
+> hits the same lone player, so the +2 is added uniformly and never breaks a tie —
+> it only races on a hypothetical board with a second player-faction ship. Documented
+> as "live but currently unreachable," not inert.
 
 ### Visible-threat invariant
 
