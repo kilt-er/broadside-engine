@@ -406,3 +406,175 @@ fn enemy_fires_and_holds_when_in_band_does_not_march() {
         "#71: an in-band bearing enemy actually FIRES (player hull drops); got {hull_after:?} from {hull_before}",
     );
 }
+
+/* =========================================================================
+ * 6. #73 heat-gate — sustained pulse_laser fire overheats; a burst is free.
+ *
+ * Bruce's spam fix (Option B): pulse_laser keeps cd 0 (always available) but
+ * heat 1 → 2, so with the resolver's -1/turn dissipation and heat_max 6,
+ * sustained single-fire climbs into lockout while a short burst stays free.
+ * This drives the REAL catalog pulse_laser through the REAL resolver, so it
+ * locks BOTH the catalog value (a future export can't silently drop heat back
+ * to 1) AND the resolver's accumulate→lockout→cool curve. Content's lane: the
+ * catalog asset + the playability of the value it sets.
+ * ====================================================================== */
+
+/// Content serving exactly one weapon by id (the real catalog pulse_laser).
+struct OneWeapon {
+    id: String,
+    action: Action,
+}
+impl Content for OneWeapon {
+    fn action(&self, id: &str) -> Option<&Action> {
+        (id == self.id).then_some(&self.action)
+    }
+    fn spawn_projectile(&self, _: &str, _: &Ship) -> Projectile {
+        panic!("heat-gate scenario fires a beam, not ordnance");
+    }
+}
+
+/// Load the live `pulse_laser` Action from the committed catalog asset.
+/// Returns `None` if the asset is absent (some CI checkouts) so the test can
+/// skip rather than fail.
+fn live_pulse_laser() -> Option<Action> {
+    let path = std::path::Path::new("assets/broadside.catalog.json");
+    if !path.exists() {
+        return None;
+    }
+    let cat = broadside_engine::catalog::load_from_path(path).expect("catalog loads");
+    cat.actions.into_iter().find(|a| a.id == "pulse_laser")
+}
+
+/// Fire the player's pulse_laser once, then apply end-of-turn heat dissipation
+/// — the player's per-turn heat cycle. Returns the player's (heat, locked_out)
+/// after the turn.
+///
+/// We fire via the REAL resolver (`fire_player_queue` → run_action does the
+/// heat += cost.heat + lockout-at-heat_max bookkeeping) so the accumulate side
+/// is genuine, then apply the canonical -1/turn dissipation DIRECTLY to the
+/// player (mirroring resolve.rs:611 `heat = (heat-1).max(0)` + unlock when
+/// `heat < heat_max`). We deliberately do NOT call `run_world_phase`: that
+/// would also run the dummy's enemy AI, whose close-move slides the target out
+/// of the pulse_laser's [Close] band (distance 2) so the player can no longer
+/// bear — which would silently stop the fire and defeat the heat test. Pinning
+/// the target stationary isolates the heat curve, which is what we're verifying.
+fn fire_once_then_cool(b: &mut Board, content: &dyn OneWeaponLike) -> (i32, bool) {
+    let pid = find_player_id(b).expect("player present");
+    let pcell = b.cells.iter().position(|c| c.as_ref().map(|s| s.id == pid).unwrap_or(false)).unwrap();
+    // Queue the shot only if not locked out (a locked ship can't fire — the
+    // resolver's lockout gate at resolve.rs:407 would no-op it anyway).
+    if !b.cells[pcell].as_ref().unwrap().locked_out {
+        b.cells[pcell].as_mut().unwrap().queue.push("pulse_laser".into());
+    }
+    broadside_engine::resolve::fire_player_queue(&pid, b, content.as_content());
+    // Capture lockout at PEAK (post-fire, pre-dissipation): firing is what
+    // trips it, and the canonical -1 EOT cooling immediately drops heat back
+    // below heat_max and clears the flag (resolve.rs:611-613). The peak is the
+    // "did this shot overheat me" signal the test cares about.
+    let locked_at_peak = b.cells.iter().flatten().find(|s| s.id == pid).map(|s| s.locked_out).unwrap_or(false);
+    // Canonical end-of-turn dissipation, applied only to the player (no world
+    // phase → the target never maneuvers out of band).
+    if let Some(c) = b.cells.iter().position(|c| c.as_ref().map(|s| s.id == pid).unwrap_or(false)) {
+        if let Some(s) = b.cells[c].as_mut() {
+            s.heat = (s.heat - 1).max(0);
+            if s.heat < s.heat_max {
+                s.locked_out = false;
+            }
+        }
+    }
+    let heat = b.cells.iter().flatten().find(|s| s.id == pid).map(|s| s.heat).unwrap_or(0);
+    (heat, locked_at_peak)
+}
+
+/// Tiny trait so the helper can take the concrete OneWeapon by reference while
+/// still handing the resolver a `&dyn Content`.
+trait OneWeaponLike {
+    fn as_content(&self) -> &dyn Content;
+}
+impl OneWeaponLike for OneWeapon {
+    fn as_content(&self) -> &dyn Content {
+        self
+    }
+}
+
+#[test]
+fn pulse_laser_sustained_fire_overheats_into_lockout() {
+    let Some(pulse) = live_pulse_laser() else {
+        eprintln!("[heat-gate test] catalog asset absent; skipping");
+        return;
+    };
+    // Sanity: the catalog value the spam-fix depends on. If a future export
+    // drops this back to 1, THIS is the assertion that catches it.
+    assert_eq!(pulse.cost.heat, 2, "#73: pulse_laser heat must be 2 (the spam-gate value)");
+    assert_eq!(pulse.cost.cooldown_max, 0, "#73: pulse_laser stays cd 0 (bruce's baseline-shot constraint)");
+
+    // Player fires pulse_laser each turn at a hull-99 dummy that never dies,
+    // so we observe the heat curve, not a kill. heat_max 6 (the canonical
+    // ship default). Player bow=Fore so its forward gun bears up-lane.
+    // Catalog pulse_laser resolves to band [Close] (distance 2). Put the
+    // dummy at cell 2 so the player's forward beam BEARS (in-band) and the
+    // shot actually fires and spends heat.
+    let mut player = ship("p", Faction::Player, 0, 99, LaneEnd::Fore, "pulse_laser");
+    player.heat_max = 6;
+    player.heat = 0;
+    // Anchored + weaponless dummy: it can't fire and won't maneuver, so it
+    // stays at cell 2 (in Close band) every turn — a stable firing target.
+    let mut dummy = ship("d", Faction::Enemy, 2, 99, LaneEnd::Aft, "noop");
+    dummy.traits = vec![broadside_engine::types::Trait::Anchored];
+    let mut b = board(7, vec![Some(player), None, Some(dummy), None, None, None, None]);
+    let content = OneWeapon { id: "pulse_laser".into(), action: pulse };
+
+    // Per-turn: +2 heat on fire, -1 on EOT → net +1/turn. Heat after turn N:
+    // T1=1, T2=2, T3=3, T4=4, T5 fires at 4→6 = LOCKOUT (then EOT →5).
+    let mut locked_turn = None;
+    for turn in 1..=5 {
+        let (_heat, locked) = fire_once_then_cool(&mut b, &content);
+        if locked && locked_turn.is_none() {
+            locked_turn = Some(turn);
+        }
+    }
+    // Sustained fire is NOT infinite — it overheats. With heat 2 / max 6 the
+    // 5th sustained shot trips lockout (it pushed heat to 6 before EOT cooled
+    // it to 5). "~5-6 shots then forced vent," as bruce asked.
+    assert_eq!(
+        locked_turn,
+        Some(5),
+        "#73: sustained pulse_laser fire overheats into lockout on the 5th shot (not infinite spam)",
+    );
+
+    // After lockout, the ship can't fire; passive cooling (-1/turn) brings
+    // heat back below max and clears the lock so firing resumes — the
+    // "vent then resume" loop. Idle a few turns (no fire) and confirm.
+    for _ in 0..6 {
+        run_world_phase(&mut b, content.as_content());
+    }
+    let p = b.cells.iter().flatten().find(|s| s.id == "p").unwrap();
+    assert!(!p.locked_out, "#73: passive cooling clears the lockout so the ship can fire again");
+    assert_eq!(p.heat, 0, "idle cooling drains heat back to 0");
+}
+
+#[test]
+fn pulse_laser_three_shot_alpha_locks_out_instantly() {
+    let Some(pulse) = live_pulse_laser() else {
+        eprintln!("[heat-gate test] catalog asset absent; skipping");
+        return;
+    };
+    // Three pulse_laser shots queued in ONE turn = 3 × heat 2 = +6 = heat_max,
+    // which trips lockout immediately (a 3-laser broadside alpha overheats on
+    // the spot, before any dissipation). Hull-99 dummy so nobody dies.
+    let mut player = ship("p", Faction::Player, 0, 99, LaneEnd::Fore, "pulse_laser");
+    player.heat_max = 6;
+    player.heat = 0;
+    player.queue = vec!["pulse_laser".into(), "pulse_laser".into(), "pulse_laser".into()];
+    // Dummy at cell 2 = Close band (distance 2), so each pulse_laser bears and
+    // spends heat. fire_player_queue fires the whole 3-shot queue in one call.
+    let dummy = ship("d", Faction::Enemy, 2, 99, LaneEnd::Aft, "noop");
+    let mut b = board(7, vec![Some(player), None, Some(dummy), None, None, None, None]);
+    let content = OneWeapon { id: "pulse_laser".into(), action: pulse };
+
+    broadside_engine::resolve::fire_player_queue("p", &mut b, &content);
+
+    let p = b.cells.iter().flatten().find(|s| s.id == "p").unwrap();
+    assert!(p.heat >= p.heat_max, "3 × heat-2 alpha reaches heat_max ({} >= {})", p.heat, p.heat_max);
+    assert!(p.locked_out, "#73: a 3-laser alpha (+6) locks out instantly");
+}
