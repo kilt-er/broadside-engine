@@ -3306,34 +3306,15 @@ mod tests {
             "#68: out of band => close toward the player instead of camping; got {queue:?}");
     }
 
-    /// AI prefers a diversifying threat over a redundant one. With two
-    /// enemies, the second enemy should pick a threat from the OPPOSITE
-    /// lane-end if its score is comparable.
-    #[test]
-    fn ai_prefers_diversifying_threat() {
-        // Construct: player at cell 3 (middle). Enemy A at cell 1 (aft of
-        // player) has already queued an attack from the aft end. Enemy B
-        // is at cell 5 (fore of player); from B's perspective, threatening
-        // the player threatens the fore end — diverse, should score higher
-        // than backing off.
-        let player = make_ship("p", Faction::Player, 3, 10, LaneEnd::Fore);
-        // Enemy A already has a queued action — covers the aft end.
-        let mut enemy_a = enemy_with_weapon("ea", 1, "pulse_laser", Arc::Forward, LaneEnd::Fore);
-        enemy_a.queue = vec!["pulse_laser".into()];
-        // Enemy B is bow=aft so its forward arc points back toward the
-        // player at cell 3.
-        let enemy_b = enemy_with_weapon("eb", 5, "pulse_laser", Arc::Forward, LaneEnd::Aft);
-        let mut board = make_board(7, vec![
-            None, Some(enemy_a), None, Some(player), None, Some(enemy_b), None,
-        ]);
-        let content = AiContent {
-            actions: HashMap::from([("pulse_laser".into(), pulse_laser())]),
-        };
-        super::decide_enemy_action(5, &mut board, &content);
-        let queue = board.cells[5].as_ref().unwrap().queue.clone();
-        assert_eq!(queue, vec!["pulse_laser".to_string()],
-            "AI should queue the cross-flank attack to diversify lane-end coverage");
-    }
+    // (#76 audit) `ai_prefers_diversifying_threat` was DELETED here. It
+    // claimed to lock "the AI prefers a diversifying (uncovered-end) threat,"
+    // but its premise was the +6 lane-end-diversity bonus, which #74 proved
+    // VESTIGIAL and removed (see the scoring-section note). With the bonus
+    // gone the test was a pure duplicate of
+    // `ai_queues_threatening_action_when_bears` — "a bearing enemy fires" —
+    // passing for a different reason than its name claimed. Deleted rather
+    // than relabelled because the honest behavior it would assert is already
+    // locked by that test. (lead call, #76.)
 
     /// #71: an enemy whose arc BEARS on the player FIRES even when its
     /// lane-end is already covered by an ally — the covered-end "reposition
@@ -3581,41 +3562,30 @@ mod tests {
      * and are deliberately not duplicated here.
      * ------------------------------------------------------------------- */
 
-    /// B2-strong: lane-end diversity must beat raw damage. An enemy with two
-    /// equal-cost mounts — a high-damage one that threatens an
-    /// ALREADY-COVERED lane-end and a lower-damage one that threatens the
-    /// UNCOVERED end — must pick the uncovered-end action, because the +6
-    /// diversity bonus outweighs the raw-damage edge. This is the mechanical
-    /// heart of "the AI maximises distinct threatened lane-ends."
+    /// Raw-damage selection: among several mounts that all bear on the player,
+    /// the AI picks the highest-raw-damage one. (#76 relabel — this was
+    /// `ai_diversity_bonus_outweighs_higher_raw_on_a_covered_end`, whose name
+    /// claimed the +6 lane-end bonus beats raw damage. But its own setup gave
+    /// BOTH candidates the same threatened end, so the +6 — now removed as
+    /// vestigial, #74 — applied equally and CANCELLED; the test only ever
+    /// proved raw-selection. Renamed to the behavior it actually locks:
+    /// among bearing options the strongest raw wins.)
     #[test]
-    fn ai_diversity_bonus_outweighs_higher_raw_on_a_covered_end() {
-        // Player in the middle at cell 3. Enemy A (already decided) covers the
-        // AFT end. Enemy B at cell 5 can threaten the player from the FORE end
-        // (uncovered). Give B two Forward mounts: a big "heavy" (raw 8) and a
-        // small "light" (raw 2) — but B is bow=Aft so its Forward arc bears
-        // toward the player at cell 3, i.e. the FORE end relative to the
-        // player. Both of B's mounts therefore threaten the same (uncovered)
-        // end; to make the test about the bonus we instead place a SECOND
-        // option that would threaten the covered end. Simplest faithful
-        // isolation: B has the heavy weapon, and the diversity comparison is
-        // between firing (uncovered end, +6) vs not — but to prove the bonus
-        // OUTWEIGHS raw we compare two enemies' picks. Concretely:
-        //   - Without the bonus, score = 10(hit) + raw - heat.
-        //   - With B threatening the uncovered fore end, +6 applies.
-        // We assert B fires the heavy (its best player-hitting action); the
-        // covered-end alternative is represented by enemy A having already
-        // taken the aft end, so B's fore shot earns the +6 that a redundant
-        // aft shot would not.
-        let player = make_ship("p", Faction::Player, 3, 10, LaneEnd::Fore);
-        let mut enemy_a = enemy_with_weapon("ea", 1, "light", Arc::Forward, LaneEnd::Fore);
-        enemy_a.queue = vec!["light".into()]; // A covers the aft end already
-        let mut enemy_b = make_ship("eb", Faction::Enemy, 5, 5, LaneEnd::Aft);
-        enemy_b.mounts = vec![
+    fn ai_picks_highest_raw_bearing_weapon() {
+        // Enemy at cell 2, bow=Aft so its Forward arc bears down-lane on the
+        // player at cell 0 (distance 2 = Close, in band). Two equal-cost
+        // Forward mounts both bear on the player: "light" (raw 2) and "heavy"
+        // (raw 8). Score = 10(hit) + raw - heat for both, so the heavy wins on
+        // raw alone. (Delete-the-+6 leaves this green — it never depended on
+        // the bonus; that's the whole point of the relabel.)
+        let player = make_ship("p", Faction::Player, 0, 10, LaneEnd::Fore);
+        let mut enemy = make_ship("e", Faction::Enemy, 2, 5, LaneEnd::Aft);
+        enemy.mounts = vec![
             Mount { id: "m1".into(), arc: Arc::Forward, weapon: "light".into() },
             Mount { id: "m2".into(), arc: Arc::Forward, weapon: "heavy".into() },
         ];
         let mut board = make_board(7, vec![
-            None, Some(enemy_a), None, Some(player), None, Some(enemy_b), None,
+            Some(player), None, Some(enemy), None, None, None, None,
         ]);
         let light = {
             let mut a = pulse_laser();
@@ -3632,14 +3602,10 @@ mod tests {
         let content = AiContent {
             actions: HashMap::from([("light".into(), light), ("heavy".into(), heavy)]),
         };
-        super::decide_enemy_action(5, &mut board, &content);
-        let queue = board.cells[5].as_ref().unwrap().queue.clone();
-        // Both of B's options hit the player from the uncovered fore end, so
-        // both earn +6; among them the higher raw (heavy) wins. The lock is
-        // that B fires a player-threatening action from the uncovered end at
-        // all (diversity-positive), and picks its strongest such option.
+        super::decide_enemy_action(2, &mut board, &content);
+        let queue = board.cells[2].as_ref().unwrap().queue.clone();
         assert_eq!(queue, vec!["heavy".to_string()],
-            "AI threatens the uncovered lane-end and picks its highest-raw option there");
+            "among bearing options the AI picks the highest raw damage");
     }
 
     /// B4-heat: the heat-budget gate. An action whose heat would push the
@@ -3704,28 +3670,74 @@ mod tests {
             "AI tolerates overheating by exactly 1 (heat_max + 1 is allowed)");
     }
 
-    /// B7-Pursuit: between two player-hitting actions of otherwise-equal
-    /// score, the `Pursuit` trait nudges the AI toward firing. Concretely a
-    /// Pursuit enemy with a hitting weapon and an equal-cost non-hitting
-    /// movement alt prefers the weapon. (Without Pursuit the AI would still
-    /// prefer the hit for the +10, so to isolate the trait we give the two
-    /// options the SAME hit profile and assert the trait doesn't break the
-    /// pick — the trait's +2 only ever reinforces a hit, never inverts it.)
+    /// B7-Pursuit (#76 strengthen): the `Pursuit` +2 is LIVE — it can flip the
+    /// argmax. Unlike the removed +6 lane-end bonus (which was added to ALL of
+    /// one enemy's candidates identically, preserving the argmax), Pursuit's +2
+    /// is CONDITIONAL on `hits_player`, so it races a candidate that does NOT
+    /// hit the player. This constructs the flip and asserts deleting the branch
+    /// would redden it — modeled on the BurnHard test below.
+    ///
+    /// Setup: enemy at cell 3, bow=Fore. The board holds TWO player-faction
+    /// ships (the resolver finds the FIRST one as `player_cell`):
+    ///   - the real player at cell 0 (aft of the enemy),
+    ///   - an allied player-faction ship at cell 6 (fore of the enemy).
+    ///
+    /// The enemy has two opposed mounts so each beam bears a different way:
+    ///   - a REAR-arc "weak" gun (raw 2) bears down-lane and hits the player at
+    ///     cell 0 -> score = 10(hit) + 2 - 0 (+2 Pursuit) ;
+    ///   - a FORWARD-arc "strong" gun (raw 13) bears up-lane and hits the ALLY
+    ///     at cell 6 (NOT player_cell) -> score = 13 (no +10, no +2).
+    ///
+    /// Without Pursuit: weak = 12, strong = 13 -> the AI picks the strong
+    /// ally-shot. With Pursuit: weak = 14 > 13 -> it picks the weak
+    /// player-shot. So the +2 is decisive. (This is a contrived isolation to
+    /// race the term — the raw gap is deliberately tuned the way the BurnHard
+    /// test tunes its gap; it is not a claim that shooting a 13-dmg ally over a
+    /// 2-dmg player is good play. Deleting `if pursuit && hits_player` flips
+    /// the pick back to "strong" and reddens the assert.)
     #[test]
-    fn ai_pursuit_trait_reinforces_a_player_hitting_action() {
+    fn ai_pursuit_bonus_flips_pick_toward_the_player_hitting_action() {
         let player = make_ship("p", Faction::Player, 0, 10, LaneEnd::Fore);
-        let mut enemy = enemy_with_weapon("e", 2, "pulse_laser", Arc::Forward, LaneEnd::Aft);
+        let ally = make_ship("ally", Faction::Player, 6, 10, LaneEnd::Fore);
+        let mut enemy = make_ship("e", Faction::Enemy, 3, 5, LaneEnd::Fore);
+        enemy.heat_max = 10; // generous so neither action trips the heat gate
         enemy.traits = vec![crate::types::Trait::Pursuit];
+        enemy.mounts = vec![
+            // Rear-arc gun -> bears toward lower cells (opposite the bow) ->
+            // hits the player at 0.
+            Mount { id: "m1".into(), arc: Arc::Rear, weapon: "weak".into() },
+            // Forward-arc gun -> bears toward higher cells (the bow) -> hits
+            // the ally at 6.
+            Mount { id: "m2".into(), arc: Arc::Forward, weapon: "strong".into() },
+        ];
         let mut board = make_board(7, vec![
-            Some(player), None, Some(enemy), None, None, None, None,
+            Some(player), None, None, Some(enemy), None, None, Some(ally),
         ]);
-        let content = AiContent {
-            actions: HashMap::from([("pulse_laser".into(), pulse_laser())]),
+        // Both shots are distance 3 = Mid, in pulse_laser's PB/Close/Mid band.
+        let weak = {
+            let mut a = pulse_laser();
+            a.id = "weak".into();
+            a.cost = ActionCost { heat: 0, cooldown_max: 0, advances_turn: true };
+            a.targeting.requires_arc = Some(Arc::Rear);
+            a.effects = vec![Effect::DAMAGE { amount: 2, band_falloff: None }];
+            a
         };
-        super::decide_enemy_action(2, &mut board, &content);
-        let queue = board.cells[2].as_ref().unwrap().queue.clone();
-        assert_eq!(queue, vec!["pulse_laser".to_string()],
-            "Pursuit reinforces firing on the player");
+        let strong = {
+            let mut a = pulse_laser();
+            a.id = "strong".into();
+            a.cost = ActionCost { heat: 0, cooldown_max: 0, advances_turn: true };
+            a.targeting.requires_arc = Some(Arc::Forward);
+            a.effects = vec![Effect::DAMAGE { amount: 13, band_falloff: None }];
+            a
+        };
+        let content = AiContent {
+            actions: HashMap::from([("weak".into(), weak), ("strong".into(), strong)]),
+        };
+        super::decide_enemy_action(3, &mut board, &content);
+        let queue = board.cells[3].as_ref().unwrap().queue.clone();
+        assert_eq!(queue, vec!["weak".to_string()],
+            "Pursuit's +2 flips the pick to the player-hitting shot over a higher-raw \
+             non-player shot; got {queue:?}");
     }
 
     /// B7-BurnHard: the `BurnHard` trait halves the heat penalty in scoring,
