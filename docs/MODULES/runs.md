@@ -120,23 +120,33 @@ the end-of-run overlay in that case. Otherwise indexes
 
 ## Encounter → Board materialization
 
-### `fn build_encounter_board<F>(encounter, player, class_to_ship) -> Board` (src/runs.rs:206)
+### `fn build_encounter_board<F>(encounter, player, class_to_ship) -> Board` (src/runs.rs:228)
 
 **Intent:** Instantiate a fresh `Board` for an encounter. The player's
 **current** ship (carrying hull/heat/cooldown/status from the prior encounter) is
-placed at cell 0 with its `cell` field normalized to 0 — "you start a new
-encounter at the lane mouth" regardless of where you ended the last one. Enemy
-spawns populate the rest via the `class_to_ship` builder closure; hazards drop
-into their cells.
+placed at the **MIDDLE** of the lane (#72) with its `cell` field set to
+`player_start_cell(size)`. Enemy spawns populate the rest via the `class_to_ship`
+builder closure; hazards drop into their cells.
 
-Line 216-223: lane size — take the max of all spawn cells and the player cell,
-then round up to a canonical 5/7/9 via `canonical_lane_size`. Line 225-226:
-allocate empty cell and hazard vectors. Line 229-230: normalize the player to
-cell 0 and place. Line 233-252: place each enemy spawn, **skipping** any spawn
-off-board or at cell 0 (player collision) or onto an occupied cell; the builder
-closure produces the `Ship`, then `orientation` and `hp_override` are applied.
-Line 255-259: drop hazards. Line 261-269: assemble the `Board` with a fresh
-`EventBus::default()`, patrol 1, and `destroys_this_window: 0`.
+> **#72 mid-lane start (anti-camp).** The player no longer starts at cell 0
+> ("lane mouth"). A mid-lane player can be threatened from BOTH lane-ends and must
+> rotate to keep their armoured face toward whichever side is closing, instead of
+> edge-camping one direction and torpedo-spamming the single approach (bruce's
+> "sit at cell 0, 100% win" degenerate strategy). This pairs with two other
+> landed changes: the resolver's #68 close-move pulls enemies in from either side,
+> and `sample_encounter_spawns` distributes enemies in a **pincer** around the
+> mid cell, each bowed toward the player. Mid-start + pincer + close together make
+> the fight directional.
+
+Line 238-245: lane size — take the max of all spawn cells and the player cell,
+then round up to a canonical 5/7/9 via `canonical_lane_size`. Line 247-248:
+allocate empty cell and hazard vectors. Line 256-258: compute the mid cell via
+`player_start_cell`, set `player.cell`, and place. Line 261-280: place each enemy
+spawn, **skipping** any spawn off-board, on the **player's mid cell** (collision),
+or onto an occupied cell; the builder closure produces the `Ship`, then
+`orientation` and `hp_override` are applied. Line 283-287: drop hazards. Line
+289-297: assemble the `Board` with a fresh `EventBus::default()`, patrol 1, and
+`destroys_this_window: 0`.
 
 The closure parameter is the key flexibility: the bin passes a catalog-aware
 builder; tests pass `|spawn| Some(fallback_ship_for_spawn(spawn))`. The same
@@ -158,11 +168,19 @@ board builder works with placeholder and real data.
 resume, rebuilding around `run.player.clone()`). Uses `canonical_lane_size`;
 takes a closure typically wrapping `boss_ship_for_spawn` / `fallback_ship_for_spawn`.
 
-**Worked examples** (src/runs.rs:847-920): player lands at cell 0 with hull
-preserved; enemies appear at their cells with `orientation`/`hp_override`
-applied; a spawn at cell 0 is dropped to protect the player.
+**Worked examples** (src/runs.rs:1280+): player lands at the **mid cell**
+(`player_start_cell(size)`) with hull preserved; enemies appear at their cells with
+`orientation`/`hp_override` applied; a spawn on the player's mid cell is dropped to
+protect the player.
 
-### `fn canonical_lane_size(max_cell: usize) -> usize` (src/runs.rs:275)
+### `fn player_start_cell(size: usize) -> usize` (src/runs.rs:317)
+
+The player's starting cell: the **middle** of the lane, `size / 2` (lane 5 → 2,
+7 → 3, 9 → 4) — the #72 anti-camp change above. Shared by `build_encounter_board`
+(placement) and `sample_encounter_spawns` (pincer distribution + facing) so both
+agree on where the player is.
+
+### `fn canonical_lane_size(max_cell: usize) -> usize` (src/runs.rs:303)
 
 Maps the highest occupied cell to the smallest canonical lane that fits:
 `0..=4 → 5`, `5..=6 → 7`, `_ → 9` (the analysis doc's early/mid/late lane
@@ -270,9 +288,11 @@ encounter (if the sector has a `capital`). An **empty pool** (e.g. the run-start
 sector introduces nothing and nothing prior seeded it) → only the boss (if any); a sector
 with neither is a passthrough (empty `encounters`, which `encounter_outcome` treats as
 already-won). Helpers: `encounter_enemy_count` (src/runs.rs:695, lane→count 5→2/7→3/9→4,
-another balance knob), `sample_encounter_spawns` (src/runs.rs:778, deterministic
-pool-pick at distinct cells packed from the far edge, bow facing Aft toward the player),
-`capital_spawn` (src/runs.rs:819, confirms the capital exists in the loose `capitals[]`,
+another balance knob), `sample_encounter_spawns` (src/runs.rs:872, deterministic
+pool-pick **pincering the mid-lane player** (#72) — cells fan outward from the mid
+cell, alternating aft (mid−k) / fore (mid+k), each enemy bowed toward the player
+(aft-of-player → `Fore`, fore-of-player → `Aft`) so the player is threatened from
+both ends), `capital_spawn` (src/runs.rs:919, confirms the capital exists in the loose `capitals[]`,
 spawns a boss-class ship at mid-lane carrying the capital's name as `class_id` — the
 bin's spawn callback routes capitals to `boss_ship_for_spawn` until a typed `CapitalDef`
 lands; an unknown capital yields a boss-less sector, not a crash).

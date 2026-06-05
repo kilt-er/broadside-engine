@@ -211,7 +211,11 @@ Produces objects decoded into [`Action`](types.md) (with nested `ActionCost` and
 **Worked example** (`canonical_pulse_laser_parses`, src/catalog_canonical.rs:617):
 the flat `pulse_laser` above decodes to `cost.heat == 1`, `cost.cooldown_max == 0`,
 `cost.advances_turn == true` (because `freeplay: false`), and a single
-`Effect::DAMAGE { amount: 3 }` — the `beam + heat 1 → heat + 2 = 3` inflation rule.
+`Effect::DAMAGE { amount: 3 }` — the `beam + DAMAGE` inflation produces amount 3.
+(The `heat: 1` here is this **test's inline fixture input**, demonstrating the
+transformer shape — it is *not* the live runtime balance. The shipped
+`assets/broadside.catalog.json` sets `pulse_laser` `heat: 2, cd: 0` since #73, so
+sustained fire overheats: the spam-limiter is HEAT → overheat → vent, not cooldown.)
 
 ---
 
