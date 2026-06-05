@@ -1998,33 +1998,24 @@ fn decide_enemy_action(
         }
     }
 
-    // The end this enemy currently pressures is uncovered iff no
-    // earlier-queued enemy already threatens the player from the same side.
-    let my_end_uncovered = !covered_ends.contains(&my_end_from_player);
-
-    // 4. Fire-vs-maneuver decision (#41 O1 precedence: pressure the ends ->
-    //    optimal position -> fire).
+    // 4. FIRE when we can (#71). If the scoring loop found ANY in-band,
+    //    bearing, affordable, hostile-targeting action, FIRE it — full stop.
+    //    Firing from a good position is the point of the AI; it must actually
+    //    happen.
     //
-    //    - If we can fire AND we'd pressure an UNCOVERED end, FIRE — that is
-    //      the "fire when optimally positioned on a distinct end" case and it
-    //      takes precedence over repositioning.
-    //    - If we can fire but our end is ALREADY covered by an ally, firing
-    //      just stacks redundant pressure on one side. Per "pressure the
-    //      ends", prefer to MANEUVER to a fresh posture IF a purposeful move
-    //      is available; only fall through to firing if we cannot reposition
-    //      (better a redundant shot than an idle turn).
+    //    This deliberately DROPS the old "if my end is already covered by an
+    //    ally, reposition instead of firing" detour (#41 O1). That detour
+    //    caused bruce's "march in a line, never shoot, die": with the live
+    //    spawn shape (all enemies on ONE side of the player) every enemy but
+    //    the first sees its end "covered", so every one of them maneuvered
+    //    instead of firing — and since they're all on the same side, none
+    //    ever reached an "uncovered" end, so they marched into the player and
+    //    died without firing a shot. Repositioning to a fresh lane-end is
+    //    rarely achievable on a 1-D lane, and "fire when in position" must
+    //    win over "hold fire to maybe pressure a different end". The +6
+    //    diversity term still shapes WHICH weapon an enemy picks (in the
+    //    score above), it just no longer SUPPRESSES firing.
     if let Some((_, id)) = best.clone() {
-        if my_end_uncovered {
-            if let Some(s) = board.cells[enemy_cell].as_mut() {
-                s.queue.push(id);
-            }
-            return;
-        }
-        // End already covered: try to reposition to pressure a distinct end
-        // first; if no purposeful maneuver exists, fire anyway (below).
-        if queue_purposeful_maneuver(enemy_cell, player_cell, board) {
-            return;
-        }
         if let Some(s) = board.cells[enemy_cell].as_mut() {
             s.queue.push(id);
         }

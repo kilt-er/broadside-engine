@@ -41,8 +41,8 @@ use broadside_engine::runs::{
 };
 use broadside_engine::types::{
     Action, ActionCost, Arc, Board, EncounterDef, Effect, Faction, LaneEnd, Mount, MovementMode,
-    Orientation, Projectile, RangeBand, Run, Sector, ShieldFace, ShieldProfile, Ship, ShipSpawn,
-    Targeting, TargetingPattern, WeaponArchetype,
+    Orientation, Projectile, RangeBand, ReorientTo, Run, Sector, ShieldFace, ShieldProfile, Ship,
+    ShipSpawn, Targeting, TargetingPattern, WeaponArchetype,
 };
 use std::collections::HashMap;
 
@@ -155,12 +155,72 @@ fn siege_beam() -> Action {
     }
 }
 
-/// Content with just the siege_beam. spawn_projectile panics — these
-/// scenarios fire beams, not ordnance.
-struct LoopContent(Action);
+/// A `flip` reorient: turn the ship 180° so its Forward arc points at the
+/// OTHER lane-end. Arc-less SELF so it always fires; costs the turn (the #72
+/// tension — facing the blind side means not firing this round).
+fn flip_facing() -> Action {
+    Action {
+        id: "flip".into(),
+        name: "Flip".into(),
+        archetype: WeaponArchetype::Movement,
+        cost: ActionCost { heat: 0, cooldown_max: 0, advances_turn: true },
+        targeting: Targeting {
+            pattern: TargetingPattern::SELF,
+            band: vec![RangeBand::PointBlank],
+            optimal_band: RangeBand::PointBlank,
+            requires_arc: None,
+            facing_relative: false,
+            hits_all: false,
+        },
+        effects: vec![Effect::REORIENT { to: ReorientTo::Flip }],
+        r#mod: None,
+        icon: None,
+    }
+}
+
+/// A one-cell THRUST to close range on an out-of-band enemy (bow-relative;
+/// steps toward whichever end the player currently faces).
+fn step_forward() -> Action {
+    Action {
+        id: "step".into(),
+        name: "Step".into(),
+        archetype: WeaponArchetype::Movement,
+        cost: ActionCost { heat: 0, cooldown_max: 0, advances_turn: true },
+        targeting: Targeting {
+            pattern: TargetingPattern::SELF,
+            band: vec![RangeBand::PointBlank],
+            optimal_band: RangeBand::PointBlank,
+            requires_arc: None,
+            facing_relative: false,
+            hits_all: false,
+        },
+        effects: vec![Effect::DISPLACE_SELF {
+            mode: MovementMode::THRUST,
+            distance: 1,
+            direction: None,
+        }],
+        r#mod: None,
+        icon: None,
+    }
+}
+
+/// Content serving the player's run-loop kit: the siege_beam plus the `flip`
+/// reorient and `step` thrust the harness uses to face + close on pincering,
+/// dynamic (#71) enemies. spawn_projectile panics — these scenarios fire
+/// beams, not ordnance. Constructed via `LoopContent::new()`.
+struct LoopContent(HashMap<String, Action>);
+impl LoopContent {
+    fn new() -> Self {
+        let mut m = HashMap::new();
+        for a in [siege_beam(), flip_facing(), step_forward()] {
+            m.insert(a.id.clone(), a);
+        }
+        LoopContent(m)
+    }
+}
 impl Content for LoopContent {
     fn action(&self, id: &str) -> Option<&Action> {
-        (id == "siege_beam").then_some(&self.0)
+        self.0.get(id)
     }
     fn spawn_projectile(&self, _: &str, _: &Ship) -> Projectile {
         panic!("run-loop scenarios don't fire ordnance");
@@ -263,15 +323,7 @@ fn fight_to_completion(
 ) -> FightResult {
     for round in 1..=cap {
         if arm_player {
-            // Re-arm the player. The bin does this from the input queue;
-            // here we just always fire the one weapon.
-            if let Some(slot) = board.cells.iter_mut().find(|c| {
-                c.as_ref().map(|s| s.faction == Faction::Player).unwrap_or(false)
-            }) {
-                if let Some(p) = slot.as_mut() {
-                    p.queue = vec!["siege_beam".into()];
-                }
-            }
+            queue_player_combat_action(board);
         }
 
         resolve_round(board, content);
@@ -285,6 +337,73 @@ fn fight_to_completion(
     panic!("fight did not terminate within {cap} rounds — outcome logic likely regressed");
 }
 
+/// Choose + queue the player's action for one round, modelling a real
+/// playstyle against the #72 mid-lane pincer + #71's now-firing/moving
+/// enemies. Targets the nearest live enemy and:
+///   - out of the siege_beam's band (distance > 4 = past Mid) → `step` to
+///     close range;
+///   - in band but the Forward arc doesn't bear that lane-end → `flip` to
+///     face it (costs the turn — the #72 reorient tension);
+///   - in band and bearing → `siege_beam`.
+///
+/// A mountless/idle player (no siege_beam) is left alone (defeat path).
+fn queue_player_combat_action(board: &mut Board) {
+    // Snapshot player cell + facing and the nearest enemy's cell.
+    let Some((pcell, pbow)) = board.cells.iter().flatten().find_map(|s| {
+        if s.faction != Faction::Player {
+            return None;
+        }
+        match s.orientation {
+            Orientation::BowOn { bow } => Some((s.cell, bow)),
+            // Broadside fires both ends; treat as already-bearing.
+            Orientation::Broadside => Some((s.cell, bow_facing_nearest(board, s.cell))),
+        }
+    }) else {
+        return;
+    };
+    let Some(enemy_cell) = board
+        .cells
+        .iter()
+        .flatten()
+        .filter(|s| s.faction == Faction::Enemy)
+        .map(|s| s.cell)
+        .min_by_key(|&e| e.abs_diff(pcell))
+    else {
+        return;
+    };
+
+    let dist = enemy_cell.abs_diff(pcell);
+    // Lane-end the enemy lies toward, relative to the player.
+    let toward = if enemy_cell >= pcell { LaneEnd::Fore } else { LaneEnd::Aft };
+
+    let action = if dist > 4 {
+        "step" // out of siege_beam band → close
+    } else if pbow != toward {
+        "flip" // in band but facing the wrong way → reorient to face it
+    } else {
+        "siege_beam" // in band and bearing → fire
+    };
+
+    if let Some(p) = board.cells[pcell].as_mut() {
+        p.queue = vec![action.to_string()];
+    }
+}
+
+/// Helper for a Broadside-stance player: which lane-end the nearest enemy
+/// lies toward (Broadside bears both, so this just picks a valid `bow` value
+/// for the bearing check — never triggers a needless flip).
+fn bow_facing_nearest(board: &Board, pcell: usize) -> LaneEnd {
+    board
+        .cells
+        .iter()
+        .flatten()
+        .filter(|s| s.faction == Faction::Enemy)
+        .map(|s| s.cell)
+        .min_by_key(|&e| e.abs_diff(pcell))
+        .map(|e| if e >= pcell { LaneEnd::Fore } else { LaneEnd::Aft })
+        .unwrap_or(LaneEnd::Fore)
+}
+
 /* =========================================================================
  * 1. Played-through victory across the whole campaign.
  * ====================================================================== */
@@ -292,7 +411,7 @@ fn fight_to_completion(
 #[test]
 fn full_campaign_played_to_victory_sets_victorious() {
     let sectors = two_sector_campaign();
-    let content = LoopContent(siege_beam());
+    let content = LoopContent::new();
     let mut run = Run::new(player_frigate(0, 30));
 
     // Track the advance discriminators we walk through; the campaign shape
@@ -307,7 +426,10 @@ fn full_campaign_played_to_victory_sets_victorious() {
         };
 
         let mut board = build_encounter_board(&enc, run.player.clone(), build_ship);
-        let result = fight_to_completion(&mut board, &content, true, 16);
+        // Cap 64: #71 enemies move + fire and the player spends turns
+        // reorienting/closing against the #72 pincer, so a clear takes more
+        // rounds than the old stationary-fire harness.
+        let result = fight_to_completion(&mut board, &content, true, 64);
         assert!(
             matches!(result, FightResult::Won { .. }),
             "player should clear {} — got {result:?}",
@@ -345,17 +467,20 @@ fn full_campaign_played_to_victory_sets_victorious() {
 
 #[test]
 fn losing_an_encounter_on_a_real_board_marks_run_defeated() {
-    let content = LoopContent(siege_beam());
+    let content = LoopContent::new();
     // A near-dead player (hull 1) versus a high-hull brute that shoots
     // back, and we DON'T arm the player (`arm_player: false`) — so the
     // player sits idle and the board outcome is decided entirely by the
     // brute's return fire. This is the "the board killed me" path the
     // run-loop must handle.
-    // Brute at cell 2 (one gap from the player at cell 0), bow=Aft so its
-    // forward arc bears down-lane on the player — the exact geometry the
-    // resolver's `ai_queues_threatening_action_when_bears` test proves the
-    // AI fires from.
-    let enc = encounter("ambush", vec![spawn("brute", 2, 20, LaneEnd::Aft)], false);
+    // #72: build_encounter_board now forces the player to the MID cell
+    // (size/2), ignoring the passed cell. The encounter's max spawn cell sets
+    // the lane size; brute@4 → canonical_lane_size(4) = 5 → mid = 2. So the
+    // player lands at cell 2 and the brute at cell 4 (no collision — a brute
+    // at cell 2 would now be skipped as colliding with the mid-lane player).
+    // Brute bow=Aft so its forward arc bears down-lane (toward lower cells) on
+    // the player at 2; distance 2 = Close.
+    let enc = encounter("ambush", vec![spawn("brute", 4, 20, LaneEnd::Aft)], false);
     let mut run = Run::new(player_frigate(0, 1));
     // Route the brute's fire onto the player's soft stern. The hit arrives
     // FROM the Fore direction (brute sits at the higher cell), so the player
@@ -389,7 +514,7 @@ fn losing_an_encounter_on_a_real_board_marks_run_defeated() {
 
 #[test]
 fn winning_an_encounter_accrues_salvage_into_the_run() {
-    let content = LoopContent(siege_beam());
+    let content = LoopContent::new();
     // Three weak targets — each worth 1 salvage (max_hull 3 → tier 1).
     let enc = encounter(
         "haul",
@@ -403,7 +528,7 @@ fn winning_an_encounter_accrues_salvage_into_the_run() {
     let mut run = Run::new(player_frigate(0, 30));
 
     let mut board = build_encounter_board(&enc, run.player.clone(), build_ship);
-    let result = fight_to_completion(&mut board, &content, true, 24);
+    let result = fight_to_completion(&mut board, &content, true, 48);
     assert!(matches!(result, FightResult::Won { .. }), "player clears the haul — got {result:?}");
 
     // The bin awards salvage off the encounter's spawn list once the
@@ -427,13 +552,13 @@ fn winning_an_encounter_accrues_salvage_into_the_run() {
 /// no CapitalDefs), so it must NOT be read as "capitals pay ×2 in the game."
 #[test]
 fn catalogless_boss_fallback_doubles_salvage_on_a_real_win() {
-    let content = LoopContent(siege_beam());
+    let content = LoopContent::new();
     let enc = encounter("boss", vec![spawn("target", 1, 3, LaneEnd::Fore)], true);
     let mut run = Run::new(player_frigate(0, 30));
 
     let mut board = build_encounter_board(&enc, run.player.clone(), build_ship);
     assert!(matches!(
-        fight_to_completion(&mut board, &content, true, 8),
+        fight_to_completion(&mut board, &content, true, 48),
         FightResult::Won { .. }
     ));
 
@@ -479,11 +604,11 @@ fn capital_boss_win_accrues_tier_scaled_salvage_into_the_run() {
         true,
     );
     let mut run = Run::new(player_frigate(0, 30));
-    let content = LoopContent(siege_beam());
+    let content = LoopContent::new();
 
     let mut board = build_encounter_board(&enc, run.player.clone(), build_capital_ship);
     assert!(matches!(
-        fight_to_completion(&mut board, &content, true, 8),
+        fight_to_completion(&mut board, &content, true, 48),
         FightResult::Won { .. }
     ));
 
@@ -553,7 +678,7 @@ fn build_board_and_first_resolve_round_does_not_panic() {
     // change makes board materialization or the first round panic (the
     // class of failure the render path hit), this fails in CI with no GPU.
     let sectors = two_sector_campaign();
-    let content = LoopContent(siege_beam());
+    let content = LoopContent::new();
     let run = Run::new(player_frigate(0, 30));
 
     let enc = broadside_engine::runs::current_encounter(&run, &sectors)
@@ -644,103 +769,14 @@ fn build_generated_ship(spawn: &ShipSpawn) -> Option<Ship> {
     ))
 }
 
-/// A one-cell forward thrust the player uses to CLOSE RANGE on far enemies.
-/// Arc-less SELF so it always fires; bow-relative THRUST steps +1 (the
-/// player is bow=Fore, facing up-lane toward the enemies).
-fn close_in() -> Action {
-    Action {
-        id: "close_in".into(),
-        name: "Close In".into(),
-        archetype: WeaponArchetype::Movement,
-        cost: ActionCost { heat: 0, cooldown_max: 0, advances_turn: true },
-        targeting: Targeting {
-            pattern: TargetingPattern::SELF,
-            band: vec![RangeBand::PointBlank],
-            optimal_band: RangeBand::PointBlank,
-            requires_arc: None,
-            facing_relative: false,
-            hits_all: false,
-        },
-        effects: vec![Effect::DISPLACE_SELF {
-            mode: MovementMode::THRUST,
-            distance: 1,
-            direction: None,
-        }],
-        r#mod: None,
-        icon: None,
-    }
-}
-
-/// Content serving both the siege_beam and the close_in thrust, for the
-/// moving-player generated-campaign playthrough.
-struct MovingContent {
-    beam: Action,
-    thrust: Action,
-}
-impl Content for MovingContent {
-    fn action(&self, id: &str) -> Option<&Action> {
-        match id {
-            "siege_beam" => Some(&self.beam),
-            "close_in" => Some(&self.thrust),
-            _ => None,
-        }
-    }
-    fn spawn_projectile(&self, _: &str, _: &Ship) -> Projectile {
-        panic!("run-loop scenarios don't fire ordnance");
-    }
-}
-
-/// Drive an encounter board to completion with a MOVING player: each round,
-/// if the nearest enemy is out of the siege_beam's band (distance > 4 = past
-/// Mid), queue `close_in` to advance one cell; otherwise queue `siege_beam`.
-/// Models a real playstyle (you close on distant ships) rather than firing
-/// from a fixed mouth — the #65 fix, since lane-7 sectors spawn enemies at
-/// Long range that a stationary Mid-band weapon can never reach.
-fn fight_moving(board: &mut Board, content: &dyn Content, cap: usize) -> FightResult {
-    for round in 1..=cap {
-        // Locate the player and the nearest enemy distance.
-        let player_cell = board
-            .cells
-            .iter()
-            .flatten()
-            .find(|s| s.faction == Faction::Player)
-            .map(|s| s.cell);
-        let nearest_enemy_dist = board
-            .cells
-            .iter()
-            .flatten()
-            .filter(|s| s.faction == Faction::Enemy)
-            .map(|s| s.cell)
-            .zip(std::iter::repeat(player_cell.unwrap_or(0)))
-            .map(|(e, p)| e.abs_diff(p))
-            .min();
-
-        if let Some(pc) = player_cell {
-            if let Some(slot) = board.cells[pc].as_mut() {
-                // siege_beam covers PB/Close/Mid = distance <= 4. Closer than
-                // that → fire; farther → thrust to close.
-                slot.queue = match nearest_enemy_dist {
-                    Some(d) if d > 4 => vec!["close_in".into()],
-                    _ => vec!["siege_beam".into()],
-                };
-            }
-        }
-
-        resolve_round(board, content);
-
-        match encounter_outcome(board) {
-            EncounterOutcome::Won => return FightResult::Won { rounds: round },
-            EncounterOutcome::Lost => return FightResult::Lost { rounds: round },
-            EncounterOutcome::InProgress => continue,
-        }
-    }
-    panic!("moving fight did not terminate within {cap} rounds");
-}
-
 #[test]
 fn generated_spawn_pool_campaign_plays_through_to_victory() {
     let catalog = generated_campaign_catalog();
-    let content = MovingContent { beam: siege_beam(), thrust: close_in() };
+    // The shared LoopContent (siege_beam + flip + step) drives the moving,
+    // reorienting player via fight_to_completion — handles both the lane-7
+    // Long-range spawns (close with `step`) and the #72 pincer (face each
+    // side with `flip`).
+    let content = LoopContent::new();
     let sectors = generate_campaign(&catalog, 1);
 
     // Sanity: the generated campaign has the expected shape before we play
@@ -769,9 +805,9 @@ fn generated_spawn_pool_campaign_plays_through_to_victory() {
         };
 
         let mut board = build_encounter_board(&enc, run.player.clone(), build_generated_ship);
-        // Moving player: close range on far enemies, then fire (the #65 fix —
-        // a stationary Mid-band weapon can't reach Long-range spawns).
-        let result = fight_moving(&mut board, &content, 64);
+        // Moving, reorienting player (the #65 + #72 fix): close range on far
+        // spawns and flip to face whichever side is pincering, then fire.
+        let result = fight_to_completion(&mut board, &content, true, 64);
         assert!(
             matches!(result, FightResult::Won { .. }),
             "player clears generated encounter {} — got {result:?}",

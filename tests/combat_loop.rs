@@ -367,3 +367,42 @@ fn telegraph_persists_in_enemy_queue_between_world_phases() {
         "the enemy re-telegraphs its next action after firing — the queue stays populated",
     );
 }
+
+/// #71: an in-band, bearing enemy FIRES and HOLDS position instead of
+/// marching past its firing range. Regression for bruce's "enemies march in
+/// a line, never shoot, die" — the #68 close-move had over-corrected so that
+/// covered-end enemies maneuvered forever instead of firing.
+#[test]
+fn enemy_fires_and_holds_when_in_band_does_not_march() {
+    use broadside_engine::resolve::run_world_phase;
+    // Narrow-band ai weapon (PB/Close/Mid, like the live pulse_laser).
+    let mut narrow = beam("ai_beam", 2);
+    narrow.targeting.band = vec![RangeBand::PointBlank, RangeBand::Close, RangeBand::Mid];
+    narrow.targeting.optimal_band = RangeBand::Close;
+    let mut player = ship("player", Faction::Player, 1, 99, LaneEnd::Fore, "pc_beam");
+    player.shield_profile = naked_shields(); // so hits land on hull (observable)
+    // TWO enemies on the SAME side of the player — the live spawn shape that
+    // exposed the bug (all "covered" the same lane-end, so all but one used
+    // to maneuver forever and never fire).
+    let e1 = ship("e1", Faction::Enemy, 5, 99, LaneEnd::Aft, "ai_beam"); // dist 4 = Mid, IN band
+    let e2 = ship("e2", Faction::Enemy, 6, 99, LaneEnd::Aft, "ai_beam");
+    let mut b = board(9, vec![
+        None, Some(player), None, None, None, Some(e1), Some(e2), None, None,
+    ]);
+    let content = CombatContent { player_beam: beam("pc_beam", 1), ai_beam: narrow };
+
+    let hull_before = b.cells.iter().flatten().find(|s| s.id == "player").unwrap().hull;
+    for _ in 0..6 {
+        run_world_phase(&mut b, &content);
+    }
+    let e1_cell = b.cells.iter().position(|c| c.as_ref().map(|s| s.id == "e1").unwrap_or(false));
+    let hull_after = b.cells.iter().flatten().find(|s| s.id == "player").map(|s| s.hull);
+
+    // e1 was in band at cell 5 from the start: it must HOLD there and FIRE,
+    // not march toward/into the player.
+    assert_eq!(e1_cell, Some(5), "an in-band enemy holds its firing position, it does not march");
+    assert!(
+        hull_after.unwrap() < hull_before,
+        "#71: an in-band bearing enemy actually FIRES (player hull drops); got {hull_after:?} from {hull_before}",
+    );
+}

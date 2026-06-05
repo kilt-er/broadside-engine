@@ -247,16 +247,22 @@ where
     let mut cells: Vec<Option<Ship>> = (0..size).map(|_| None).collect();
     let mut hazards: Vec<Vec<crate::types::Hazard>> = (0..size).map(|_| Vec::new()).collect();
 
-    // Place the player at cell 0 with a clean cell field.
-    player.cell = 0;
-    cells[0] = Some(player);
+    // #72: place the player at the MIDDLE of the lane, not the edge. A
+    // mid-lane player can be threatened from BOTH ends — they must rotate to
+    // keep their armoured face toward whichever side is closing, instead of
+    // edge-camping one direction. resolver's #68 close-move already pulls
+    // enemies in from both sides, so the spawn distribution (pincer) +
+    // mid-start together make the fight directional.
+    let player_cell = player_start_cell(size);
+    player.cell = player_cell;
+    cells[player_cell] = Some(player);
 
     // Place each enemy spawn.
     for spawn in &encounter.enemy_ships {
-        if spawn.cell >= size || spawn.cell == 0 {
-            // Off-board or colliding with player — skip. The placeholder
-            // sectors below are correct by construction; a buggy custom
-            // sector won't crash the demo.
+        if spawn.cell >= size || spawn.cell == player_cell {
+            // Off-board or colliding with the (mid-lane) player — skip. The
+            // placeholder sectors below are correct by construction; a buggy
+            // custom sector won't crash the demo.
             continue;
         }
         if cells[spawn.cell].is_some() {
@@ -300,6 +306,16 @@ pub fn canonical_lane_size(max_cell: usize) -> usize {
         5..=6 => 7,
         _ => 9,
     }
+}
+
+/// The player's starting cell for a lane of `size`: the MIDDLE cell (#72).
+/// Lane 5 → 2, 7 → 3, 9 → 4 (integer `size / 2`). A mid-lane start means the
+/// player can be threatened from both ends and must rotate to face whichever
+/// side is closing — bruce's "start in the middle, much more challenging."
+/// Used by [`build_encounter_board`] (placement) and [`sample_encounter_spawns`]
+/// (pincer distribution + facing) so both agree on where the player is.
+pub fn player_start_cell(size: usize) -> usize {
+    size / 2
 }
 
 /* =========================================================================
@@ -838,9 +854,21 @@ pub fn generate_sector(
     }
 }
 
-/// Sample `count` enemy spawns for one encounter from the pool, placed at
-/// spread lane cells (never cell 0 — the player's mouth). Deterministic in
-/// `seed`. Bow faces Aft (toward the player at the lane mouth).
+/// Sample `count` enemy spawns for one encounter from the pool, PINCERING the
+/// mid-lane player (#72): enemies are distributed on BOTH sides of the player's
+/// middle cell and each bows toward the player, so the player is threatened
+/// fore AND aft and must rotate to face whichever side is closing. Deterministic
+/// in `seed`; never spawns on the player's cell.
+///
+/// Facing: an enemy AFT of the player (lower cell) bows `Fore` (toward higher
+/// cells → toward the player); an enemy FORE of the player (higher cell) bows
+/// `Aft` (toward the player). Combined with resolver's #68 close-move (which
+/// closes toward the player from either side), this makes the approach
+/// directional from both ends.
+///
+/// Distribution: walk outward from the mid cell, alternating aft / fore
+/// (mid-1, mid+1, mid-2, mid+2, …) so the first two enemies straddle the
+/// player and additional enemies fan out symmetrically.
 fn sample_encounter_spawns(
     pool: &SpawnPool,
     lane: u8,
@@ -851,20 +879,37 @@ fn sample_encounter_spawns(
     if lane < 2 || pool.is_empty() {
         return Vec::new();
     }
-    // Candidate cells: 1..lane (skip 0). Place enemies spread from the far
-    // end inward so they occupy distinct cells.
-    let usable = lane.saturating_sub(1); // cells 1..lane
+    let mid = player_start_cell(lane);
+    // Build the pincer cell order: alternate aft (mid-k) / fore (mid+k),
+    // k = 1, 2, 3, …, keeping cells in [0, lane) and skipping the player cell.
+    let usable = lane.saturating_sub(1); // every cell except the player's
     let n = count.min(usable);
-    let mut spawns = Vec::with_capacity(n);
-    for i in 0..n {
-        // Cell: spread across the usable range, deterministic, distinct.
-        let cell = lane - 1 - i; // pack from the far edge inward (distinct)
+    let mut cells: Vec<usize> = Vec::with_capacity(n);
+    let mut k = 1usize;
+    while cells.len() < n && k <= lane {
+        // Aft side first (mid - k), then fore side (mid + k).
+        if mid >= k {
+            cells.push(mid - k);
+            if cells.len() == n {
+                break;
+            }
+        }
+        if mid + k < lane {
+            cells.push(mid + k);
+        }
+        k += 1;
+    }
+
+    let mut spawns = Vec::with_capacity(cells.len());
+    for (i, &cell) in cells.iter().enumerate() {
         let pick = wang_hash(seed.wrapping_add(i as u32)) as usize % pool.class_ids.len();
         let class_id = pool.class_ids[pick].clone();
+        // Bow toward the player: aft-of-player faces Fore, fore-of-player faces Aft.
+        let bow = if cell < mid { LaneEnd::Fore } else { LaneEnd::Aft };
         spawns.push(ShipSpawn {
             class_id,
             cell,
-            orientation: Orientation::BowOn { bow: LaneEnd::Aft },
+            orientation: Orientation::BowOn { bow },
             hp_override: None,
         });
     }
@@ -1231,12 +1276,14 @@ mod tests {
     /* ---- build_encounter_board ------------------------------------- */
 
     #[test]
-    fn build_board_places_player_at_cell_0() {
+    fn build_board_places_player_mid_lane() {
+        // #72: the player starts at the MIDDLE cell, not the edge. Enemy at
+        // cell 4 keeps the lane at size 5 → player mid cell = 2.
         let enc = EncounterDef {
             id: "test".into(),
             enemy_ships: vec![ShipSpawn {
                 class_id: "skiff".into(),
-                cell: 2,
+                cell: 4,
                 orientation: Orientation::BowOn { bow: LaneEnd::Aft },
                 hp_override: None,
             }],
@@ -1245,24 +1292,30 @@ mod tests {
         };
         let player = make_player(3, 8); // pre-board cell shouldn't matter
         let board = build_encounter_board(&enc, player, |spawn| Some(fallback_ship_for_spawn(spawn)));
-        // Player ends up at cell 0 regardless of their pre-board cell.
-        let at_0 = board.cells[0].as_ref().unwrap();
-        assert_eq!(at_0.faction, Faction::Player);
-        assert_eq!(at_0.cell, 0);
+        // Player ends up at the middle cell (size 5 → cell 2) regardless of
+        // their pre-board cell.
+        let mid = player_start_cell(board.size);
+        assert_eq!(mid, 2, "size-5 lane → mid cell 2");
+        let at_mid = board.cells[mid].as_ref().unwrap();
+        assert_eq!(at_mid.faction, Faction::Player);
+        assert_eq!(at_mid.cell, mid);
         // Hull state carries over (proof that the prior-encounter ship
         // is preserved, not reset).
-        assert_eq!(at_0.hull, 8);
+        assert_eq!(at_mid.hull, 8);
+        // Cell 0 is now empty (player no longer edge-parked).
+        assert!(board.cells[0].is_none(), "player vacated the lane edge");
     }
 
     #[test]
     fn build_board_spawns_enemies_at_their_cells() {
+        // Cells 1 and 4 (size-5 lane, player mid = cell 2 stays clear).
         let enc = EncounterDef {
             id: "test".into(),
             enemy_ships: vec![
                 ShipSpawn {
                     class_id: "skiff".into(),
-                    cell: 2,
-                    orientation: Orientation::BowOn { bow: LaneEnd::Aft },
+                    cell: 1,
+                    orientation: Orientation::BowOn { bow: LaneEnd::Fore },
                     hp_override: None,
                 },
                 ShipSpawn {
@@ -1277,8 +1330,8 @@ mod tests {
         };
         let board = build_encounter_board(&enc, make_player(0, 10),
             |spawn| Some(fallback_ship_for_spawn(spawn)));
-        let e2 = board.cells[2].as_ref().unwrap();
-        assert_eq!(e2.faction, Faction::Enemy);
+        let e1 = board.cells[1].as_ref().unwrap();
+        assert_eq!(e1.faction, Faction::Enemy);
         let e4 = board.cells[4].as_ref().unwrap();
         assert_eq!(e4.faction, Faction::Enemy);
         assert_eq!(e4.orientation, Orientation::Broadside);
@@ -1286,23 +1339,38 @@ mod tests {
     }
 
     #[test]
-    fn build_board_skips_cell_0_spawn_to_avoid_player_collision() {
+    fn build_board_skips_player_cell_spawn_to_avoid_collision() {
+        // #72: the player now sits mid-lane, so a spawn ON the mid cell (not
+        // cell 0) is the collision case. cells 0 and 4 keep the lane size 5
+        // → mid cell 2; the cell-2 spawn must be dropped.
         let enc = EncounterDef {
             id: "test".into(),
-            enemy_ships: vec![ShipSpawn {
-                class_id: "skiff".into(),
-                cell: 0, // tries to spawn ON the player
-                orientation: Orientation::BowOn { bow: LaneEnd::Aft },
-                hp_override: None,
-            }],
+            enemy_ships: vec![
+                ShipSpawn {
+                    class_id: "skiff".into(),
+                    cell: 2, // tries to spawn ON the mid-lane player
+                    orientation: Orientation::BowOn { bow: LaneEnd::Aft },
+                    hp_override: None,
+                },
+                ShipSpawn {
+                    class_id: "skiff".into(),
+                    cell: 4, // keeps lane size at 5
+                    orientation: Orientation::BowOn { bow: LaneEnd::Aft },
+                    hp_override: None,
+                },
+            ],
             hazards: vec![],
             is_boss: false,
         };
         let board = build_encounter_board(&enc, make_player(0, 10),
             |spawn| Some(fallback_ship_for_spawn(spawn)));
-        let at_0 = board.cells[0].as_ref().unwrap();
-        // Player kept cell 0; enemy spawn at 0 was dropped.
-        assert_eq!(at_0.faction, Faction::Player);
+        let mid = player_start_cell(board.size);
+        let at_mid = board.cells[mid].as_ref().unwrap();
+        // Player kept the mid cell; the colliding enemy spawn was dropped.
+        assert_eq!(at_mid.faction, Faction::Player);
+        // A cell-0 spawn would now be VALID (player vacated the edge) — confirm
+        // the non-colliding enemy at cell 4 still placed.
+        assert_eq!(board.cells[4].as_ref().unwrap().faction, Faction::Enemy);
     }
 
     #[test]
@@ -1443,20 +1511,29 @@ mod tests {
         assert!(last.is_boss, "sector ends in the capital boss");
         assert_eq!(last.enemy_ships.len(), 1, "boss is a single capital ship");
         assert_eq!(last.enemy_ships[0].class_id, "The Dasher");
+        // #72: player starts mid-lane (lane 5 → cell 2); enemies pincer
+        // around it and must never spawn ON the player cell.
+        let mid = player_start_cell(cat.sectors[1].lane as usize);
         for e in &sector.encounters[..sector.encounters.len() - 1] {
             assert!(!e.is_boss);
             // Non-boss encounters draw from the pool (skiff/lancer) at
-            // distinct non-zero cells.
+            // distinct cells straddling the mid-lane player.
             assert!(!e.enemy_ships.is_empty());
+            let mut saw_aft = false;
+            let mut saw_fore = false;
             for sp in &e.enemy_ships {
-                assert!(sp.cell >= 1, "enemies never spawn on the player mouth (cell 0)");
+                assert_ne!(sp.cell, mid, "enemies never spawn on the player's mid cell");
+                if sp.cell < mid { saw_aft = true; }
+                if sp.cell > mid { saw_fore = true; }
                 assert!(
                     pool.class_ids.contains(&sp.class_id),
                     "spawn {} drawn from the pool", sp.class_id,
                 );
             }
-            // Lane 5 → 2 enemies per encounter (encounter_enemy_count).
+            // Lane 5 → 2 enemies per encounter (encounter_enemy_count), and
+            // the pincer puts one on each side of the player.
             assert_eq!(e.enemy_ships.len(), 2);
+            assert!(saw_aft && saw_fore, "the two enemies pincer the mid player (one each side)");
         }
     }
 
