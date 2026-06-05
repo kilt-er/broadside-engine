@@ -3355,41 +3355,46 @@ mod tests {
             "AI should queue the cross-flank attack to diversify lane-end coverage");
     }
 
-    /// #41 O1: an enemy whose shot would only RE-cover an already-threatened
-    /// lane-end prefers to MANEUVER (pressure a fresh posture) over stacking
-    /// redundant fire — when a purposeful closing move is available. This is
-    /// the behavior the formerly-inert +6 diversity term now drives.
+    /// #71: an enemy whose arc BEARS on the player FIRES even when its
+    /// lane-end is already covered by an ally — the covered-end "reposition
+    /// instead of fire" suppression was DROPPED in #71 (it caused the
+    /// "march in a line, never shoot, die" bug). The +6 diversity term still
+    /// scores into the pick but no longer SUPPRESSES firing. This locks the
+    /// fire-when-you-can behavior against the suppression detour creeping back.
+    ///
+    /// (Supersedes the former ai_o1_repositions_instead_of_redundant_fire_on
+    /// _covered_end, which #71 made stale: that test asserted the dropped
+    /// suppression but passed only coincidentally — its enemy's arc didn't
+    /// bear, so it fell through to a maneuver. reviewer-2 flagged the
+    /// mislabel; this is the corrected, behavior-true lock.)
     #[test]
-    fn ai_o1_repositions_instead_of_redundant_fire_on_covered_end() {
-        // Player at cell 3. Enemy A at cell 1 (aft of player) ALREADY queued
-        // — covers the aft end. Enemy B at cell 2 is ALSO aft of the player
-        // (direction_to(player=3, B=2) = Aft), so B's shot would only RE-cover
-        // the aft end A already holds. Per O1, B repositions instead of firing
-        // redundantly. B is bow=Aft so its forward arc DOES bear on the player
-        // (fore) and it COULD fire — the point is it chooses not to, because
-        // the end is covered. The reposition is the universal synthetic move
-        // toward the player: player is FORE of B (3 > 2) => __move_right.
+    fn ai_fires_on_a_covered_end_when_it_bears_post71() {
+        // Player at cell 3. Enemy A at cell 1 (aft of the player) ALREADY
+        // queued — so the AFT end is covered (direction_to(player=3, A=1) =
+        // Aft). Enemy B at cell 2 is ALSO aft of the player
+        // (direction_to(3, 2) = Aft), so B's shot only RE-covers the aft end.
+        // B is bow=Fore so its Forward arc points toward higher cells → it
+        // genuinely BEARS on the player at cell 3 (distance 1 = PointBlank,
+        // in band). Pre-#71 B would have repositioned (covered end); post-#71
+        // it FIRES, because firing-when-in-position beats holding fire to
+        // maybe pressure a different end.
         let player = make_ship("p", Faction::Player, 3, 10, LaneEnd::Fore);
-        let mut enemy_a = enemy_with_weapon("ea", 1, "pulse_laser", Arc::Forward, LaneEnd::Aft);
+        let mut enemy_a = enemy_with_weapon("ea", 1, "pulse_laser", Arc::Forward, LaneEnd::Fore);
         enemy_a.queue = vec!["pulse_laser".into()]; // covers the aft end
-        let enemy_b = enemy_with_weapon("eb", 2, "pulse_laser", Arc::Forward, LaneEnd::Aft);
+        let enemy_b = enemy_with_weapon("eb", 2, "pulse_laser", Arc::Forward, LaneEnd::Fore);
         let mut board = make_board(7, vec![
             None, Some(enemy_a), Some(enemy_b), Some(player), None, None, None,
         ]);
         let content = AiContent {
             actions: HashMap::from([("pulse_laser".into(), pulse_laser())]),
         };
-        // B is bow=Fore so its pulse_laser arc points fore (away from the
-        // player at cell 3? no — player is fore of B at cell 2, so fore-arc
-        // DOES bear). To make this a clean "covered-end => reposition" case we
-        // rely on: B's fire re-covers the aft end A holds, and B has a closing
-        // move (bow=Fore steps fore toward the player). O1 declines the
         super::decide_enemy_action(2, &mut board, &content);
         let queue = board.cells[2].as_ref().unwrap().queue.clone();
         assert_eq!(
             queue,
-            vec![crate::input::SYNTHETIC_MOVE_RIGHT.to_string()],
-            "O1: aft end already covered => B repositions (closes via synthetic move toward the player) instead of redundant fire; got {queue:?}",
+            vec!["pulse_laser".to_string()],
+            "#71: B's arc bears on the player, so it FIRES even though the aft end is \
+             already covered — the covered-end suppression was dropped; got {queue:?}",
         );
     }
 
