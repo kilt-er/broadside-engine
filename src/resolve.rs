@@ -1883,32 +1883,24 @@ fn decide_enemy_action(
     let burn_hard = has_trait(crate::types::Trait::BurnHard);
     let pursuit = has_trait(crate::types::Trait::Pursuit);
 
-    // Which lane-ends are already covered by other enemies that have queued
-    // an action this round? We approximate "threatens the player from end X"
-    // by direction_to(player, enemy) — the lane-end the shot arrives from.
-    // Enemies whose queues are still empty (haven't been decided yet) don't
-    // count; the resolver iterates enemies in initiative order so when
-    // we're called for enemy N, enemies 0..N have already been decided.
-    let mut covered_ends: std::collections::HashSet<LaneEnd> =
-        std::collections::HashSet::new();
-    for (idx, slot) in board.cells.iter().enumerate() {
-        let Some(other) = slot else { continue };
-        if other.faction != Faction::Enemy {
-            continue;
-        }
-        if idx == enemy_cell {
-            continue;
-        }
-        if other.queue.is_empty() {
-            continue;
-        }
-        covered_ends.insert(crate::geometry::direction_to(player_cell, idx));
-    }
-
     // 2. Enumerate this enemy's available threatening actions and score
     //    them. We collect (score, action_id) tuples; the best wins.
+    //
+    // NOTE (#74): there used to be a per-enemy "lane-end diversity" pass here
+    // — a `covered_ends` set + a `+6` score bonus for threatening the player
+    // from an end no earlier-queued ally already covered. It was removed as
+    // VESTIGIAL: the +6 was provably a no-op on the QUEUED pick
+    // (`my_end_from_player` is constant across one enemy's candidates, so the
+    // bonus is added to all of them or none — argmax-preserving), and #71
+    // dropped the only thing that ever made it behavioral (the
+    // covered-end -> reposition-instead-of-fire suppression, which caused the
+    // "march in a line, don't shoot, die" bug). True cross-enemy threat
+    // coordination (an enemyInitiative pass assigning enemies to distinct
+    // lane-ends) was never built; current lane-end diversity is emergent from
+    // geometry. If explicit coordination is wanted later, it's a real
+    // resolver feature, not a dead scoring term — so the term is gone rather
+    // than left to mislead.
     let mut best: Option<(i32, String)> = None;
-    let my_end_from_player = crate::geometry::direction_to(player_cell, enemy_cell);
 
     for weapon_id in &mount_weapons {
         let Some(action) = content.action(weapon_id) else {
@@ -1965,21 +1957,9 @@ fn decide_enemy_action(
         let mut score: i32 = 0;
         if hits_player {
             score += 10;
-            // Diversity bonus (#41 O1 "pressure the ends"): threatening the
-            // player from a lane-end NOT already covered by an earlier-queued
-            // enemy is worth a large premium — large enough that, at step 4
-            // below, an enemy whose fire would only RE-cover an
-            // already-threatened end prefers to MANEUVER to a fresh posture
-            // instead of stacking redundant pressure. The term used to be
-            // inert: it's the same for every candidate weapon of THIS enemy
-            // (my_end_from_player doesn't vary per action), so it never broke
-            // ties between this enemy's own actions and never changed the
-            // pick. It is now load-bearing at the fire-vs-maneuver decision
-            // (step 4): `best_threatens_uncovered` records whether the chosen
-            // shot pressures a distinct end, and that gates repositioning.
-            if !covered_ends.contains(&my_end_from_player) {
-                score += 6;
-            }
+            // (#74: the +6 lane-end-diversity bonus that used to live here was
+            // removed as vestigial — see the note at the top of the scoring
+            // section.)
         }
         score += raw_damage;
         // Heat is the tempo brake; cheaper actions preferred at equal
