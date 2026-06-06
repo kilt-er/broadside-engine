@@ -292,8 +292,19 @@ is what manufactures the rotation pressure the orientation system depends on: if
 ends are threatened, neither bow-on nor broadside is correct, and the player must use
 displacement / movement / reorient to break the dilemma.
 
-The decision layer picks actions; the *same* `executeQueue` then runs them. No special
+The decision layer picks actions; the *same* queue-fire path then runs them. No special
 enemy code path. (TS source: `resolve.ts:395`; HTML Part IV closing paragraph.)
+
+> **Implementation note (#71/#74).** The lane-end-diversity objective above is the design
+> *intent*, but it is served by the AI's **maneuver** behavior (emergent from geometry),
+> NOT by a scoring term. The current rule is blunt: an enemy **fires** whenever any
+> in-band/bearing action is available, and only **closes** toward the player when it
+> cannot. An earlier `+6` "uncovered lane-end" scoring bonus and a covered-end
+> fire-suppression were removed (the latter caused enemies to march in a line and never
+> shoot). True cross-enemy lane-end coordination is a latent design gap, not built. The
+> enemy phase is also **fire-then-decide** (telegraph-one-turn-ahead, #67): an enemy fires
+> last phase's telegraphed action, then displays its next without firing it. See
+> [`MODULES/resolve.md`](MODULES/resolve.md) for the full walkthrough.
 
 ---
 
