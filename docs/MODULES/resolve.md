@@ -39,17 +39,33 @@ Three things to know up front:
 
 ## The four-phase round
 
-`resolve_round(board, content)` runs one full round:
+`resolve_round(board, content)` runs one full round, composed as
+`fire_player_queue` (phase 1) + `run_world_phase` (phases 2-4):
 
 | Phase | What                                                                          |
 |-------|-------------------------------------------------------------------------------|
-| 1     | Player phase — find the player by faction scan, call `execute_queue` on their cell. |
+| 1     | Player phase — find the player by faction scan, `fire_player_queue` on their cell. |
 | 2     | Ordnance phase — snapshot projectile ids; advance each by id-lookup. **Opens its own chain-kill window** (`destroys_this_window = 0`). |
-| 3     | Enemy phase — for each enemy in initiative order: `skips_turn` check, `decide_enemy_action` to fill the queue, `execute_queue`. |
+| 3     | Enemy phase — for each enemy in initiative order: **fire-then-decide** (see below). |
 | 4     | End of turn — tick cooldowns, dissipate heat, clear lockout, tick statuses, emit `OnTurnEnd`. |
 
+> **Phase 3 is FIRE-THEN-DECIDE (telegraph-one-turn-ahead, #67) — NOT
+> decide-then-fire.** Per enemy in telegraphed initiative order: (a) **FIRE** the
+> action it telegraphed on the *previous* world phase (`fire_player_queue`, which
+> clears the queue; gated by `skips_turn`/SystemsOffline; a no-op on the very first
+> phase when the queue is empty), then (b) **DECIDE** its next action via
+> `decide_enemy_action` and leave it queued **un-fired**. Net: between player inputs
+> `enemy.queue` persistently holds the enemy's NEXT intent, which the renderer's
+> per-enemy telegraph stack draws above the sprite ("here's what's coming"). Moves
+> and reorients are queued actions too, so a pending MOVE telegraphs this phase and
+> executes next — exactly the Shogun-Showdown readability the design doc calls for.
+> A stunned enemy still *decides* (shows intent) but skips the *fire*. Pre-#67 this
+> was decide-then-fire in one phase, so the queue emptied the instant it filled and
+> the telegraph never rendered. Every player input runs `run_world_phase` after its
+> instant/queue effect lands, so one keystroke always advances time.
+
 Phase 2 reuses the same `destroys_this_window` field as phase 1 — both reset to 0 on
-entry, both let `destroy()` accumulate kills, but only `execute_queue` emits
+entry, both let `destroy()` accumulate kills, but only `fire_player_queue` emits
 `OnChainKill` from `detect_chain`. The TS ordnance phase does the same (no
 `onChainKill` emit during ordnance). If you want torpedo-driven chain kills to fire
 the hook, that's a future-work item; today it's intentionally omitted.

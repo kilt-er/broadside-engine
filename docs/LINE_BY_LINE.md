@@ -3375,22 +3375,31 @@ turn model can fire them separately: instant intents run `apply_instant_action` 
 fired); commit runs `fire_player_queue` + `run_world_phase`. See
 [`broadside.rs::apply_intent`](#srcbinbroadsidesrs).
 
-### Phases 2-4 — `fn run_world_phase(board, content)` (resolve.rs:265)
+### Phases 2-4 — `fn run_world_phase(board, content)` (resolve.rs:282)
 
 **Intent:** The world half of a round, run after every player input under SS rules.
 
-1. **Ordnance phase** (line 277-281). `board.destroys_this_window = 0` (line 277) opens
+1. **Ordnance phase** (line 294-298). `board.destroys_this_window = 0` (line 294) opens
    a fresh chain-kill window for the ordnance phase — torpedo impacts that kill multiple
    enemies count as a chain within the phase, separately from the player queue. Snapshot
    projectile ids, then `advance_projectile` each by id (the snapshot is needed because
    impact removes the projectile). The TS does *not* emit `onChainKill` from the ordnance
    phase — only the queue path does — and this port matches that.
-2. **Enemy phase** (line 287-300). Snapshot enemy ids in `enemy_initiative` order up
-   front (so movement/destroys during one enemy's turn can't reshuffle the rest). For
-   each surviving enemy: `skips_turn` check, `decide_enemy_action` fills its queue, then
-   `fire_player_queue` runs it — the same per-ship loop body as the player, which is the
-   "AI never bypasses the pipeline" design principle.
-3. **End of turn** (line 303). `end_of_turn` ticks cooldowns/heat/statuses and emits
+2. **Enemy phase — FIRE-THEN-DECIDE (telegraph-one-turn-ahead, #67)** (line 300-345).
+   Snapshot enemy ids in `enemy_initiative` order up front (so movement/destroys during
+   one enemy's turn can't reshuffle the rest). For each surviving enemy, the order is the
+   **opposite** of the player's: (a) **fire** the action it telegraphed on the *previous*
+   world phase via `fire_player_queue` (which clears the queue; gated by `skips_turn` — a
+   stunned enemy skips the fire; no-op on the first phase when the queue is empty), then
+   re-locate (firing may have moved/destroyed it), then (b) `decide_enemy_action` to pick
+   its NEXT action and leave it **queued un-fired** for the renderer's telegraph stack to
+   draw above the sprite. Between player inputs `enemy.queue` therefore persistently holds
+   the enemy's next intent — moves and reorients telegraph this phase and execute next,
+   the Shogun-Showdown readability the design doc calls for. (Pre-#67 this was
+   decide-then-fire in one phase, so the queue emptied the instant it filled and the
+   telegraph never rendered.) The per-ship fire body is still shared with the player —
+   "AI never bypasses the pipeline" holds; only the fire-vs-decide *ordering* differs.
+3. **End of turn** (line 348). `end_of_turn` ticks cooldowns/heat/statuses and emits
    `OnTurnEnd`.
 
 **Drift — snapshot iteration.** TS uses `[...board.ordnance]` / enemy-array copies; Rust
