@@ -308,25 +308,55 @@ enemy code path. (TS source: `resolve.ts:395`; HTML Part IV closing paragraph.)
 
 ---
 
-## Renderer scaffold
+## Renderer (live)
 
-Not yet implemented. The plan:
+The renderer is **implemented** in `wgpu`. It is a one-way pipeline: the simulation
+owns the `Board`; the renderer reads it and draws — it never mutates game state. Per
+module (each has a full companion under `docs/MODULES/`):
 
-- **wgpu** pipeline drawing the lane as a horizontal strip of cells, ships as sprite
-  quads, projectiles as smaller sprites, hazards as cell overlays.
-- **Atlas** module packs all ship / weapon / status icons into one texture; UV lookup
-  by string ID matches the TS `icon` field convention.
-- **HUD** overlay shows queue, heat bar, cooldown pips, initiative badges, range-band
-  ruler. Driven by event-bus subscriptions for damage numbers and kill flashes.
-- **Frame separation:** the simulation runs one `resolveRound` per player commit; the
-  renderer interpolates ordnance motion and animation timing between steps. The
-  simulation is *not* per-frame; the renderer is.
+- **Scene composition — `hud.rs`** ([`hud.md`](MODULES/hud.md)). The compositor turns a
+  `Board` into a `Vec<DrawCommand>` in a fixed draw order: parallax background → lane
+  plate → ships → ordnance → VFX → HUD overlays. The HUD draws the player ability tiles
+  (square icons + cooldown/heat state, #64), the **per-enemy telegraph stack** above each
+  enemy (the action it will fire next phase — the readable half of the #67
+  fire-then-decide model), heat/shield state, the range-band context, salvage, and the
+  win/lose + between-encounter screens. No event-bus subscription — it reads board state
+  directly each frame.
+- **Ship geometry — two producers, one boundary** ([`RENDER_PIPELINE.md`](RENDER_PIPELINE.md)).
+  Ships are **live 3D styled to read as pixel art**, not sprites. A low-poly hull is
+  produced either by **lofting** a `ShipDesign` (`loft.rs`, [`loft.md`](MODULES/loft.md))
+  or by **importing** a CAD `.glb` (`mesh_import.rs`,
+  [`mesh_import.md`](MODULES/mesh_import.md)); both meet at one `HullMesh`, selected by
+  `ship_asset.rs` ([`ship_asset.md`](MODULES/ship_asset.md)).
+- **GPU loft pipeline — `loft_gpu.rs`** ([`loft_gpu.md`](MODULES/loft_gpu.md)). Renders a
+  `HullMesh` with an orthographic ¾-view camera into a **low-resolution offscreen buffer**
+  (nearest sampling), then a **posterize** pass quantizes it to flat colour bands — the
+  Dead-Cells / HD-2D look: 3D source, limited-palette 2D result.
+- **wgpu draw layer — `gfx.rs`** ([`gfx.md`](MODULES/gfx.md)). Consumes the
+  `Vec<DrawCommand>`, drawing each into the offscreen target, then blits fit-scaled to the
+  window. Sprite/quad shapes for the lane, HUD, and 2D glyphs.
+- **Procedural atlas — `atlas.rs`** ([`atlas.md`](MODULES/atlas.md)). Packs HUD glyphs,
+  status icons, chevrons, ordnance, and parallax art into one texture.
+- **Combat juice — `vfx.rs`** ([`vfx.md`](MODULES/vfx.md)). Turns combat events into
+  transient visuals (weapon-fire beams, ordnance trails, hit flashes, destroy explosions,
+  the telegraphed-intent cue) via a **read-only board diff** — never an EventBus
+  subscription, which keeps it clear of the "no chained emit" invariant by construction.
+
+> **Continuous motion, not frame-stepping.** Ships render their *actual pose every frame*
+> — smooth yaw as they turn, smooth pitch as the camera scrubs. There is no sprite
+> interpolation and no discrete frame-stepping; the earlier handoff doc's "frame-stepped /
+> stop-motion" framing was superseded by bruce's choice of continuous live motion. See
+> [`RENDER_PIPELINE.md`](RENDER_PIPELINE.md). The simulation still advances discretely (one
+> world phase per player input under the SS turn model); the renderer animates continuously
+> between those steps.
 
 ---
 
-## What ships in the first playable
+## Build order (all shipped)
 
-Following the HTML's suggested order:
+> **Status: complete.** This was the planned build sequence (HTML's suggested order);
+> all of it is now implemented, plus the campaign layer, the live renderer, and the
+> combat-feel pass. Kept as a record of the order things were built.
 
 1. `Board`, `Ship`, the five movement modes, orientation.
 2. `resolveTargeting` for all eight patterns with band + arc checks.
@@ -334,5 +364,8 @@ Following the HTML's suggested order:
 4. Ordnance + the round interleave.
 5. Heat / vent / overheat.
 
-That gets a deterministic duel running through the resolver. 6–8 (event bus +
-subsystems, AI, mods/traits/classes/field kit) are pure content layered on top.
+That got a deterministic duel running through the resolver. 6–8 (event bus +
+subsystems, AI, mods/traits/classes/field kit) layered on as content. Beyond the
+original list: the campaign/run layer (sectors, spawn-pool encounter generation,
+capitals, salvage, save/load), the `wgpu` renderer (above), and the combat-feel batch
+(#67 telegraph model, #71/#74 AI fire-vs-maneuver, #72 mid-lane pincer, #73 heat-gate).
