@@ -142,6 +142,10 @@ slot.
      check cooldown: skip if cooldowns[action_id] > 0
      cells = resolve_targeting(...)
      check arc-bore: skip if requires_arc && cells empty  // no cost, no cooldown
+     record FireEvents (#59): if action has a DAMAGE effect, push one
+       FireEvent{from=ship_cell, to=target, archetype, faction, hit:true}
+       per CONNECTING target cell — BEFORE effects run (origins/targets
+       are pre-mutation); multi-target fans out to N events
      for each effect:
        apply_effect(...)                  // may destroy ships, mutate cells
      ship.heat += action.cost.heat
@@ -163,6 +167,22 @@ Three contracts worth memorising:
    to `cost.cooldown_max`. Matches TS exactly.
 3. **`OnDamageDealt` fires per action, not per effect.** Subscribers see one event per
    queued action that passed the arc gate, regardless of whether any damage landed.
+
+### Exact attacker→target beams (#59)
+
+`run_action` records one [`FireEvent`](types.md) per **connecting** target of a
+DAMAGE-bearing action — fires-only (a move/vent/reorient is not a shot), one beam per
+occupied target cell (multi-target shots fan out to N), captured **before** effects run
+so the origin is the gun's fire-time cell. Purely additive: it appends to
+`board.fire_events` and gates nothing. **Lifecycle:** `resolve_round` clears
+`fire_events` ONCE at turn start (so a round's worth — the player's queue AND every
+enemy's — accumulates for the renderer); `fire_player_queue` must NOT clear (it runs
+once per enemy, so clearing there would wipe all-but-the-last ship's beams — the
+"per-enemy-wipe trap"). The in-game SS path never calls `resolve_round`, so the bin
+clears `fire_events` at the top of its `apply_intent` instead. The renderer
+([`vfx.md`](vfx.md)) latches these into exact `ShotBeam`s — replacing the old
+nearest-opponent guess, which missed shield-absorbed hits and multi-target lines.
+`hit` is currently always `true` (reserved for the #81 dodge-whiff miss path).
 
 ---
 

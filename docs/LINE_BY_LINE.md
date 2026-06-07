@@ -207,6 +207,10 @@ Fields:
   test at `types.rs:1002`.
 - `destroys_this_window: usize` — **new vs TS**. The chain-kill counter. See **Drift
   note: addition** below.
+- `fire_events: Vec<FireEvent>` — **new vs TS (#59)**. Exact attacker→target shots
+  fired during the current resolution, for the renderer to draw precise beams. Like
+  `destroys_this_window` it is transient render state and is **excluded from
+  `BoardSnapshot`** (does not round-trip save/load). See the `FireEvent` entry below.
 
 **Drift note: addition of `destroys_this_window`.** The TS `Board` has no such field
 (see `types.ts:31`); chain-kill detection in `resolve.ts:346` is a stubbed
@@ -225,6 +229,31 @@ bus back. See `EventBus::Default` impl (line 651) which makes `mem::take` legal 
 that's the impl `mem::take` rests on. The trade-off: brief moments where
 `board.bus.subscribers.iter().any(...)` from outside the emit path would see an empty
 list. Not a problem in practice because nothing reads the bus outside emit.
+
+#### `struct FireEvent` (types.rs:164) — exact attacker→target shot (#59)
+
+**Mirrors:** No TS analog — render-feedback addition.
+
+**Intent:** One attacker→target shot, recorded on `Board::fire_events` so the renderer
+draws an **exact** beam between two cells instead of guessing who-shot-whom. Fields:
+`from_cell` (attacker's cell), `to_cell` (target's cell), `archetype`
+([`WeaponArchetype`](#srctypesrs), drives per-weapon beam styling), `attacker_faction`
+([`Faction`](#srctypesrs), the renderer's side tint), and `hit: bool` (a miss renders
+dimmer). For an N-target shot the resolver emits **N events** — one attacker→target line
+each. `Copy` + `Eq` (all-scalar), so the renderer's per-frame signature hashing is cheap.
+
+**Why it exists (the "why" of #59):** the renderer's *old* beam INFERRED the shot from a
+hull-drop diff — it guessed the attacker (nearest opponent), couldn't draw multi-target
+fan-out, and **missed shield-fully-absorbed hits entirely** (no hull drop → no inferred
+beam, even though a shot connected). #59 makes the resolver produce the EXACT shot, so
+the beam is always correct. Produced in `run_action` ([`resolve.rs`](#srcresolvers)),
+consumed by [`vfx.rs`](#srcvfxrs)'s `ShotBeam`.
+
+> **`hit: bool` is currently always `true` (reserved).** The producer only emits for
+> occupied target cells, and a shield-fully-absorbed hit still *connects*, so today
+> every emitted event is `hit: true`. The `hit: false` "miss" path is the **dormant hook
+> for the out-of-scope #81 dodge-whiff feature** (telegraphed shot fires into a vacated
+> cell). Document it as reserved, NOT as live miss-detection.
 
 #### `struct Hazard` (types.rs:152)
 
@@ -3204,44 +3233,60 @@ plumbing.
 
 ### Effect types + `Snapshot` (src/vfx.rs:44–102)
 
-`Effect { kind, age, dur }` with an eased 0→1 lifetime; `EffectKind` is `Beam` /
-`HitFlash` / `Explosion` / `Trail` (the telegraph cue is NOT a transient — it pulses
-live from the board). `Snapshot` (src/vfx.rs:83) is the diff baseline: `ships: id →
-(hull, cell, faction)` + `ordnance: id → cell` — the mechanism that replaces an
+`Effect { kind, age, dur }` with an eased 0→1 lifetime. `EffectKind` includes
+`HitFlash` / `Explosion` / `Trail` (board-diff-sourced) plus **`ShotBeam`** (#59) — the
+EXACT fired shot, latched from the resolver's `board.fire_events` (`from_cell`/`to_cell`
+straight from the [`FireEvent`](#srctypesrs); `color` from the firing faction;
+`thickness` from the archetype; `dim` set on a miss). The telegraph cue is NOT a
+transient — it pulses live from the board. `Snapshot` (src/vfx.rs:83) is the diff
+baseline: `ships: id → (hull, cell, faction)` + `ordnance: id → cell` + a **`fire_sig`**
+(a cheap rolling hash of `board.fire_events`, see below) — the mechanism that replaces an
 EventBus subscription.
 
 ### `struct CombatVfx` (src/vfx.rs:107)
 
 The live state: active `effects` + `prev: Option<Snapshot>`. `observe(board)`
-(src/vfx.rs:126, read-only) diffs against the prev frame and spawns effects, storing
-the current as the next baseline (first observe = baseline, spawns nothing). `diff`
-(src/vfx.rs:134) is the inference: hull drop → `HitFlash` + a `Beam` from the nearest
-opposing ship (`nearest_opponent_cell` heuristic — the resolver doesn't surface
-attacker→target yet); vanished id → `Explosion`; moved ordnance → `Trail`. `advance(dt)`
-(src/vfx.rs:196) ages + culls expired, returns `true` while any survive (redraw
-keepalive). `emit(out, board, lane)` (src/vfx.rs:213) appends [`DrawCommand`](#srcgfxrs)s
-for active effects + the live telegraph cues (red marker above any enemy with a
-non-empty queue).
+(src/vfx.rs:126, read-only) diffs against the prev frame and spawns effects, storing the
+current as the next baseline (first observe = baseline, spawns nothing). Two sources:
+- **Exact shots (#59, src/vfx.rs:166-186):** latch every `board.fire_events` entry into a
+  styled `ShotBeam` — but only when this frame's `fire_sig` differs from the previous
+  frame's, so the round's shots spawn **once** (the list persists across redraws until the
+  next round repopulates it). Read-only — the resolver owns clear+repopulate; the VFX
+  COPIES and animates with its own fade timers, never mutating `board.fire_events`.
+  `archetype_beam_style(fe.archetype)` picks thickness+duration; `faction_beam_tint`
+  picks the side colour.
+- **`diff`** (src/vfx.rs:190): hull drop → `HitFlash` **only** (the shot LINE now comes
+  from the exact `ShotBeam` above — the VFX no longer fabricates a beam from a guessed
+  attacker); vanished id → `Explosion`; moved ordnance → `Trail`.
 
-**Cross-references:** driven by the bin's frame loop ([`broadside.rs`](#srcbinbroadsidesrs));
-produces [`DrawCommand`](#srcgfxrs)s positioned via
-[`perspective::fractional_cell_to_screen`](#srcperspectivers); the read-only-diff design
-is the deliberate counterpart to the resolver's [EventBus "no chained emit"](#srctypesrs)
-invariant. **Worked examples:** `first_observe_spawns_nothing` (src/vfx.rs:377),
-`hull_drop_spawns_hit_flash_and_beam` (src/vfx.rs:390), `vanished_ship_spawns_explosion`
-(src/vfx.rs:404), `advance_expires_effects` (src/vfx.rs:437),
-`telegraph_emits_for_enemy_with_queue` (src/vfx.rs:452).
+`advance(dt)` (src/vfx.rs:196) ages + culls expired. `emit(out, board, lane)`
+(src/vfx.rs:213) appends [`DrawCommand`](#srcgfxrs)s for active effects + the live
+telegraph cues.
+
+### `fn fire_events_sig(board) -> u64` (src/vfx.rs:324)
+
+A cheap order-sensitive rolling hash of `board.fire_events` (each event's endpoints +
+archetype + faction + hit folded in). Lets `observe` spawn the `ShotBeam` batch exactly
+once per distinct fire-event set instead of every redraw — the latch-once guard.
+
+**Cross-references:** consumes the resolver's exact [`FireEvent`](#srctypesrs)s
+(produced in `run_action`, [`resolve.rs`](#srcresolversr)); driven by the bin's frame loop
+([`broadside.rs`](#srcbinbroadsidesrs), which clears `board.fire_events` at turn start);
+the read-only-diff design is the deliberate counterpart to the resolver's
+[EventBus "no chained emit"](#srctypesrs) invariant.
 
 ### Draw helpers (src/vfx.rs:258–320)
 
 Flat-colour quads via the atlas `SOLID_WHITE` cell: `emit_beam` (rotated thin rect,
-fading+thinning; used for Beam + Trail), `emit_flash` (expanding fading square; peak 16
-hit / 30 explosion), `emit_telegraph` (red marker at `lane.center_y − 96`, first-pass
-chevron-bar).
+fading+thinning; used for `ShotBeam` + `Trail`), `emit_flash` (expanding fading square),
+`emit_telegraph` (marker above an enemy with a queued intent).
 
-**Drift:** the beam pairing is a nearest-opponent heuristic, not a true attacker→target
-link (the resolver doesn't surface one); flat-quad look is placeholder pending bruce's
-art. The event-by-state-diff design is durable.
+**Drift / history (#59).** The beam used to be **inferred** from a hull-drop diff: it
+guessed the attacker via a `nearest_opponent_cell` heuristic, couldn't draw multi-target
+fan-out, and missed shield-fully-absorbed hits (no hull drop → no beam). #59 replaced that
+guess with the resolver's exact `FireEvent` → `ShotBeam`, so the beam is always correct;
+the diff path now only spawns the impact `HitFlash`. The flat-quad look is still
+placeholder pending bruce's art; the event-by-state-diff design is durable.
 
 ---
 
@@ -3363,9 +3408,15 @@ correctly because they don't go through the bus.
 **Design anchor:** HTML Part I — the four-phase round is the engine's heartbeat.
 **Intent:** One full round, now a thin composition of two reusable halves so the
 Shogun-Showdown turn dispatch in `input.rs` / `broadside.rs` can call them
-independently. Line 184-187: find the player (`find_player_id`) and, if present, run
-`fire_player_queue` (phase 1). Line 188: `run_world_phase` (phases 2-4). That's the
-whole function.
+independently. Line 184-192: **clear `board.fire_events` ONCE here, at turn start,
+before anyone fires (#59)** — a turn's worth of exact-shot events accumulates across the
+WHOLE round (the player's fired queue AND every enemy's), so the renderer can draw one
+beam per shot. The clear lives here, NOT in `fire_player_queue`: that runs once per enemy
+inside `run_world_phase`, so clearing there would wipe all-but-the-last ship's beams (the
+"per-enemy-wipe trap"). The in-game SS path doesn't call `resolve_round` — the bin clears
+`fire_events` at the top of its `apply_intent`; this clear covers the
+`resolve_round`-driven headless/test path. Then find the player (`find_player_id`) and, if
+present, run `fire_player_queue` (phase 1); line 188 → `run_world_phase` (phases 2-4).
 
 **Drift — the executeQueue split.** The TS `resolveRound` inlined player-queue + world
 phases in one body. The Rust port factors them into [`fire_player_queue`](#phase-1--3--fn-fire_player_queuesship_id-board-content-srcresolversr212)
@@ -3468,6 +3519,24 @@ application, factored out of the queue loop. Returns whether it fired.
 > test/fixture that pushes an id onto `ship.queue` directly). Tester surfaced this while
 > writing `tests/run_loop.rs`. If a future change wants mounts to be a hard prerequisite,
 > the gate belongs right here at the top of `run_action`.
+
+- **Line 434-469 — FireEvent production (#59)**, *after* the "nothing bore" gate but
+  **before** effects run. If the action carries any `Effect::DAMAGE` (fires-only — a
+  move / vent / reorient is not a "shot"), push one `crate::types::FireEvent` per
+  **connecting** target: a target cell that holds a ship and isn't the firer's own cell
+  (SELF actions resolve to the firer — not an attacker→target line). A multi-target shot
+  (spinal / blast / broadside) thus fans out as **N events from one origin**. Recorded
+  here — before effects mutate the board — so `from_cell` is the gun's **fire-time** cell
+  and `to_cell`s are pre-displacement. `attacker_faction` is read from the firer;
+  `archetype` from the action. **Purely additive** — appends to the runtime
+  `board.fire_events`, gates nothing, changes no mechanic. `hit` is always `true` (we only
+  emit for occupied target cells, and a shield-fully-absorbed hit still *connects* — the
+  exact case the old hull-drop VFX guess missed); the `hit: false` miss path is reserved
+  for the out-of-scope #81 dodge-whiff feature. **Worked example:**
+  `fire_events_accumulate_across_a_multi_ship_round` (resolve.rs:4265) — the player's fired
+  pulse produces a `FireEvent` from cell 0, and across a full round the player's shot AND
+  both enemies' shots accumulate (the across-the-whole-round semantics; see the
+  `resolve_round` clear note). Consumed by [`vfx.rs`](#srcvfxrs)'s `ShotBeam`.
 
 - **Line 385-401**: apply the effect list via `apply_effect`, **possibly twice** — the
   `twin_linked` weapon-mod (#50) makes the effects run for `passes = 2`, **re-resolving
@@ -5306,11 +5375,18 @@ imports winit**. One arm per advertised binding; everything else `None`. Pinned 
 advances time (`run_world_phase`). Returns `true` if the visible state changed.
 
 Line 119-122: `Restart` short-circuits (never advances time; rebuilds from
-`initial_board()`). Line 126-128: every other intent needs the player; gone → only Restart
-legal. The `match`: **instant** moves/reorient/vent (133) apply via `apply_instant_action`
-then `run_world_phase`; **PlayCard** (151) validates via `try_play_card`, runs the synthetic
-`__card_<id>` instantly; **QueueAction** (175) pushes to `player.queue` (not fired here);
-**CommitTurn** (186) fires the queue via `fire_player_queue`.
+`initial_board()`). Line 127-135: **turn-start clear of `board.fire_events` (#59)** — the
+resolver clears it at the top of `resolve_round`, but the bin drives combat directly via
+`apply_instant_action`/`fire_player_queue`/`run_world_phase` and never calls
+`resolve_round`, so without this the in-game beams would ACCUMULATE across every turn
+forever. Safe to drop here because `CombatVfx` has already latched the previous turn's
+events into its own fading copy ([`vfx.rs`](#srcvfxrs)) — the fade keeps playing on the
+renderer's side. This is the in-game counterpart to the `resolve_round` clear. Then every
+other intent needs the player; gone → only Restart legal. The `match`: **instant**
+moves/reorient/vent apply via `apply_instant_action` then `run_world_phase`; **PlayCard**
+validates via `try_play_card`, runs the synthetic `__card_<id>` instantly; **QueueAction**
+pushes to `player.queue` (not fired here); **CommitTurn** fires the queue via
+`fire_player_queue`.
 
 **Drift — SS turn model.** Moves/cards are now *instant* (not queued); only `QueueAction`
 weapon ids sit in the queue. `move_intent_advances_ship_instantly` (src/bin/broadside.rs:898)

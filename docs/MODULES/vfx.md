@@ -38,9 +38,10 @@ concern.
 
 `Effect { kind, age, dur }` (src/vfx.rs:44) is one transient with an eased 0→1
 lifetime (`t() = age/dur` clamped; `alive()` = `age < dur`). `EffectKind`
-(src/vfx.rs:51) is the four transient shapes: `Beam` (attacker→target line),
-`HitFlash` (expanding flash on a hit ship), `Explosion` (burst at a destroyed
-ship), `Trail` (fading ordnance streak). The per-kind lifetimes are tunable consts
+(src/vfx.rs:51) is the transient shapes: **`ShotBeam`** (the EXACT attacker→target
+line, latched from the resolver's `board.fire_events` — #59; styled by archetype,
+tinted by faction, dimmed on a miss), `HitFlash` (expanding flash on a hit ship),
+`Explosion` (burst at a destroyed ship), `Trail` (fading ordnance streak). The per-kind lifetimes are tunable consts
 (`BEAM_SECS` 0.22, `HIT_FLASH_SECS` 0.30, `EXPLOSION_SECS` 0.55, `TRAIL_SECS` 0.35).
 The placeholder palette consts (src/vfx.rs:113-117) are readable flat tones. Note the
 **telegraph cue is not a transient Effect** — it pulses live while the intent is
@@ -68,13 +69,22 @@ the prev snapshot, diffs into new effects, stores the current as the next baseli
 The **first** `observe` establishes the baseline and spawns nothing
 (`first_observe_spawns_nothing`, src/vfx.rs:377).
 
-### `fn diff(&mut self, prev, cur, board)` (src/vfx.rs:134)
+### Two sources: exact shots (#59) + the board diff
 
-The inference engine. Ships: a `hull` drop → `HitFlash` on the hit cell **plus** a
-`Beam` from the nearest live *opposing* ship toward it (a first-pass pairing
-heuristic, `nearest_opponent_cell` src/vfx.rs:244 — the resolver doesn't hand VFX an
-attacker→target pair yet); a vanished `id` → `Explosion` at its last known cell.
-Ordnance: a projectile whose cell changed → `Trail` along the step.
+**Exact shots (`observe`, src/vfx.rs:166-186).** Before the diff, `observe` latches the
+resolver's exact `board.fire_events` into styled `ShotBeam` effects — one per
+[`FireEvent`](types.md) (`from_cell`/`to_cell` straight through, archetype → thickness,
+faction → tint, miss → `dim`). It spawns the batch **once per round** via a `fire_sig`
+guard (`fire_events_sig`, src/vfx.rs:324 — a rolling hash of the event list; spawn only
+when this frame's sig differs from last frame's, since the list persists across redraws).
+Read-only: the resolver owns clear+repopulate; the VFX COPIES and animates with its own
+fade timers, never mutating `board.fire_events`.
+
+**`fn diff(&mut self, prev, cur)` (src/vfx.rs:190) — the board-diff source.** Ships: a
+`hull` drop → `HitFlash` on the hit cell (the impact **only** — the shot LINE now comes
+from the exact `ShotBeam` above, so the diff no longer fabricates a beam from a guessed
+attacker); a vanished `id` → `Explosion` at its last known cell. Ordnance: a projectile
+whose cell changed → `Trail` along the step.
 
 ### `fn advance(&mut self, dt) -> bool` (src/vfx.rs:196) + `is_active` (src/vfx.rs:205)
 
@@ -105,24 +115,29 @@ design** is the deliberate counterpart to the resolver's EventBus invariant
 All render as flat-colour quads via the atlas's `SOLID_WHITE` cell:
 - `emit_beam` (src/vfx.rs:258) — a thin rotated rectangle from `from`→`to` along the
   lane (`rotation_rad = atan2(dy, dx)`), fading + thinning over its life. Used for
-  both `Beam` and `Trail`.
+  both `ShotBeam` and `Trail`.
 - `emit_flash` (src/vfx.rs:287) — an expanding (ease-out grow), fading axis-aligned
   square centred on a cell; `peak` size differs for hit (16) vs explosion (30).
 - `emit_telegraph` (src/vfx.rs:310) — a small red marker well above the ship
   silhouette (`lane.center_y − 96`); first-pass chevron-bar, the per-intent icon set
   is a later art pass.
 
-**Worked examples:** `hull_drop_spawns_hit_flash_and_beam` (src/vfx.rs:390, the 2
-effects), `vanished_ship_spawns_explosion` (src/vfx.rs:404),
-`ordnance_step_spawns_trail` (src/vfx.rs:415).
+**Worked examples:** `hull_drop_spawns_hit_flash_only` (src/vfx.rs:569 — the diff now
+spawns the impact flash only, no fabricated beam), `fire_event_spawns_exact_shot_beam`
+(src/vfx.rs:585 — a `board.fire_events` entry latches into a `ShotBeam`),
+`vanished_ship_spawns_explosion` (src/vfx.rs:634), `ordnance_step_spawns_trail`
+(src/vfx.rs:645), `first_observe_spawns_nothing` (src/vfx.rs:556).
 
 ---
 
 ## Status / drift
 
-First-pass plumbing (#51). The beam pairing is a **heuristic** (nearest opponent),
-not a real attacker→target link — the resolver doesn't surface that pairing yet, so
-a future pass that does could replace `nearest_opponent_cell` with the true source.
-The flat-quad look is explicitly placeholder pending bruce's art iteration. The
-event-sourcing-by-state-diff (vs a resolver hook) is the durable architectural
-decision and is not expected to change.
+First-pass plumbing (#51), upgraded by #59. The beam is now the resolver's **exact**
+attacker→target shot (`board.fire_events` → `ShotBeam`), not the old nearest-opponent
+guess — that heuristic guessed the attacker, couldn't draw multi-target fan-out, and
+missed shield-fully-absorbed hits; #59 makes it always correct. The flat-quad look is
+still placeholder pending bruce's art iteration. The event-sourcing-by-state-diff (vs a
+resolver hook) remains the durable architectural decision — note `ShotBeam` is **read
+from** `board.fire_events`, still NOT an EventBus subscription, so the "no chained emit"
+property holds. The `FireEvent.hit` flag is wired through to `dim` but is always `true`
+today (reserved for the #81 dodge-whiff miss path).

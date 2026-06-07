@@ -81,7 +81,14 @@ Six enums, all `Copy + Eq + Hash + Serialize + Deserialize`:
 ### 2. Board (lines 119–168)
 
 - **`Board`** — *not* serde. Runtime only. Holds `cells`, `ordnance`, `hazards`, the
-  `EventBus`, and the chain-kill counter `destroys_this_window` (new vs. TS).
+  `EventBus`, the chain-kill counter `destroys_this_window`, and `fire_events:
+  Vec<FireEvent>` (both new vs. TS; both transient render state excluded from
+  `BoardSnapshot`).
+- **`FireEvent`** (#59) — one exact attacker→target shot `{from_cell, to_cell,
+  archetype, attacker_faction, hit}`, recorded by the resolver in `run_action` so the
+  renderer draws a precise beam instead of guessing who-shot-whom. `hit` is currently
+  always `true` (reserved for the #81 dodge-whiff miss path). See the LINE_BY_LINE
+  `FireEvent` entry and [`vfx.md`](vfx.md).
 - **`Hazard`** — cell-resident feature: mine / drone / debris. `ttl: Option<u32>` is
   `?:` (omittable), not `null` (always-present-or-null).
 - **`HazardKind`** — three variants. Distinct from `DeployHazardKind` (action-effect
