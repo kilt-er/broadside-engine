@@ -124,6 +124,16 @@ pub fn apply_intent(
         return true;
     }
 
+    // Turn-start clear of the exact-shot FireEvent set (#59). The resolver clears
+    // `fire_events` at the top of `resolve_round`, but the bin drives combat via
+    // apply_instant_action / fire_player_queue / run_world_phase directly and
+    // never calls resolve_round — so without this the in-game beams would
+    // ACCUMULATE across every turn forever. Clearing here resets the set each
+    // acting turn; the renderer (CombatVfx) has already latched the previous
+    // turn's events into its own fading copy, so dropping them from the board is
+    // safe — the fade keeps playing on the renderer's side.
+    board.fire_events.clear();
+
     // Every other intent needs the player. If the player is gone (defeat
     // state), the only legal intent is Restart; everything else no-ops.
     let Some(player_id) = find_player_id(board) else {
