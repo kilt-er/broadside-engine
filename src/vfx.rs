@@ -32,7 +32,6 @@ use crate::{atlas, types::Ship};
 use std::collections::HashMap;
 
 /// How long each effect lives, seconds. First-pass values; bruce tunes.
-const BEAM_SECS: f32 = 0.22;
 const HIT_FLASH_SECS: f32 = 0.30;
 const EXPLOSION_SECS: f32 = 0.55;
 const TRAIL_SECS: f32 = 0.35;
@@ -50,11 +49,16 @@ struct Effect {
 
 #[derive(Clone, Copy, Debug)]
 enum EffectKind {
-    /// Straight beam between two lane cells (attacker → target).
-    Beam {
+    /// EXACT fired shot (#59): the resolver's per-round FireEvent, drawn as a
+    /// styled beam attacker→target. `thickness` + `dur` come from the weapon
+    /// archetype, `color` from the firing faction; a miss (`dim`) renders
+    /// fainter. Replaces the old guessed nearest-opponent beam.
+    ShotBeam {
         from_cell: f32,
         to_cell: f32,
         color: [f32; 3],
+        thickness: f32,
+        dim: bool,
     },
     /// Expanding flash centred on a cell (a ship taking a hit).
     HitFlash { cell: f32 },
@@ -97,6 +101,13 @@ struct Snapshot {
     /// shot-beam + telegraph-pop (#70), independent of whether the player's
     /// hull actually dropped (a shielded/missed shot still visibly fires).
     enemy_intent: HashMap<String, String>,
+    /// A cheap signature of this frame's `board.fire_events` (#59). The resolver
+    /// clears+repopulates the list each resolve round; the SAME list then
+    /// persists across the many redraw frames until the next round. We latch the
+    /// exact-shot beams once per round by spawning only when the signature
+    /// CHANGES from the previous frame's — so a 2-event round followed by another
+    /// 2-event round still re-fires (a bare count would miss that).
+    fire_sig: u64,
 }
 
 impl Snapshot {
@@ -119,6 +130,7 @@ impl Snapshot {
             ships,
             ordnance,
             enemy_intent,
+            fire_sig: fire_events_sig(board),
         }
     }
 }
@@ -132,7 +144,6 @@ pub struct CombatVfx {
 }
 
 /// Placeholder palette — readable flat tones; bruce refines.
-const BEAM_COLOR: [f32; 3] = [0.40, 0.86, 1.0]; // cyan bolt
 const HIT_COLOR: [f32; 3] = [1.0, 0.86, 0.45]; // warm spark
 const EXPLOSION_COLOR: [f32; 3] = [1.0, 0.55, 0.25]; // orange burst
 const TRAIL_COLOR: [f32; 3] = [0.95, 0.70, 0.35]; // ordnance ember
@@ -147,33 +158,47 @@ impl CombatVfx {
     /// changes. Read-only over `board`. Call once per frame BEFORE [`advance`].
     pub fn observe(&mut self, board: &Board) {
         let cur = Snapshot::of(board);
+        // Capture the previous frame's fire signature BEFORE `take()` empties it.
+        let prev_sig = self.prev.as_ref().map(|p| p.fire_sig).unwrap_or(0);
         if let Some(prev) = self.prev.take() {
-            self.diff(&prev, &cur, board);
+            self.diff(&prev, &cur);
+        }
+        // EXACT fired shots (#59): latch the resolver's per-round FireEvent list
+        // into styled ShotBeam effects. Read-only — the resolver owns
+        // clear+repopulate; we COPY and animate with our own fade timers, never
+        // mutate `board.fire_events`. Spawn once per round: only when this
+        // frame's fire-event signature differs from the previous frame's (the
+        // list persists across redraws until the next round repopulates it).
+        if !board.fire_events.is_empty() && cur.fire_sig != prev_sig {
+            for fe in &board.fire_events {
+                let (thickness, dur) = archetype_beam_style(fe.archetype);
+                self.spawn(
+                    EffectKind::ShotBeam {
+                        from_cell: fe.from_cell as f32,
+                        to_cell: fe.to_cell as f32,
+                        color: faction_beam_tint(fe.attacker_faction),
+                        thickness,
+                        dim: !fe.hit,
+                    },
+                    dur,
+                );
+            }
         }
         self.prev = Some(cur);
     }
 
-    fn diff(&mut self, prev: &Snapshot, cur: &Snapshot, board: &Board) {
-        // Ships: hull-drop → hit flash + beam; vanished → explosion.
-        for (id, &(prev_hull, prev_cell, prev_faction)) in &prev.ships {
+    fn diff(&mut self, prev: &Snapshot, cur: &Snapshot) {
+        // Ships: hull-drop → hit flash; vanished → explosion.
+        for (id, &(prev_hull, prev_cell, _prev_faction)) in &prev.ships {
             match cur.ships.get(id) {
                 Some(&(cur_hull, cur_cell, _)) => {
                     if cur_hull < prev_hull {
+                        // Hull drop → the IMPACT (flash). The shot LINE itself now
+                        // comes from the resolver's exact FireEvent (#59,
+                        // ShotBeam in observe), not a guessed nearest-opponent
+                        // beam — so we no longer fabricate an attacker here.
                         let cell = cur_cell as f32;
                         self.spawn(EffectKind::HitFlash { cell }, HIT_FLASH_SECS);
-                        // Beam from the nearest live OPPOSING ship toward the
-                        // ship that was hit (first-pass pairing heuristic — the
-                        // resolver doesn't hand us attacker→target yet).
-                        if let Some(from) = nearest_opponent_cell(board, prev_faction, cur_cell) {
-                            self.spawn(
-                                EffectKind::Beam {
-                                    from_cell: from,
-                                    to_cell: cell,
-                                    color: BEAM_COLOR,
-                                },
-                                BEAM_SECS,
-                            );
-                        }
                     }
                 }
                 None => {
@@ -188,17 +213,11 @@ impl CombatVfx {
             }
         }
         // Telegraphed enemy FIRE (#70): an enemy whose queue head CHANGED since
-        // last frame just spent its telegraphed action (fire-then-decide). Show
-        // the shot — a beam from the enemy toward the player — and a pop at the
-        // telegraph slot so the player connects telegraph → shot → damage. This
-        // fires on the intent change itself, so a shot still reads even when the
-        // player's shield eats it (no hull drop to trigger the hull-drop beam).
-        let player_cell = board
-            .cells
-            .iter()
-            .flatten()
-            .find(|s| s.faction == Faction::Player)
-            .map(|s| s.cell as f32);
+        // last frame just spent its telegraphed action (fire-then-decide). Pop
+        // the telegraph slot so the readied icon visibly DISCHARGES rather than
+        // silently rolling to the next intent. The shot LINE is no longer drawn
+        // here — the resolver's exact FireEvent (#59) draws the precise
+        // attacker→target beam; this keeps only the slot-discharge pop.
         for (id, prev_head) in &prev.enemy_intent {
             // Enemy must still be alive this frame (a destroyed enemy is an
             // explosion, not a fire).
@@ -210,18 +229,12 @@ impl CombatVfx {
                 None => true,                            // queue emptied → spent
             };
             if fired {
-                let cell = cur_cell as f32;
-                self.spawn(EffectKind::TelegraphFire { cell }, TELEGRAPH_FIRE_SECS);
-                if let Some(pc) = player_cell {
-                    self.spawn(
-                        EffectKind::Beam {
-                            from_cell: cell,
-                            to_cell: pc,
-                            color: BEAM_COLOR,
-                        },
-                        BEAM_SECS,
-                    );
-                }
+                self.spawn(
+                    EffectKind::TelegraphFire {
+                        cell: cur_cell as f32,
+                    },
+                    TELEGRAPH_FIRE_SECS,
+                );
             }
         }
         // Ordnance: a projectile that moved leaves a trail along its step.
@@ -272,11 +285,6 @@ impl CombatVfx {
     pub fn emit(&self, out: &mut Vec<DrawCommand>, board: &Board, lane: &LaneGeometry) {
         for e in &self.effects {
             match e.kind {
-                EffectKind::Beam {
-                    from_cell,
-                    to_cell,
-                    color,
-                } => emit_beam(out, lane, from_cell, to_cell, color, e.t()),
                 EffectKind::HitFlash { cell } => {
                     emit_flash(out, lane, cell, HIT_COLOR, e.t(), 16.0)
                 }
@@ -289,6 +297,13 @@ impl CombatVfx {
                     color,
                 } => emit_beam(out, lane, from_cell, to_cell, color, e.t()),
                 EffectKind::TelegraphFire { cell } => emit_telegraph_fire(out, lane, cell, e.t()),
+                EffectKind::ShotBeam {
+                    from_cell,
+                    to_cell,
+                    color,
+                    thickness,
+                    dim,
+                } => emit_shot_beam(out, lane, from_cell, to_cell, color, thickness, dim, e.t()),
             }
         }
         // Telegraph: live cue above any enemy holding a queued action.
@@ -300,15 +315,27 @@ impl CombatVfx {
     }
 }
 
-/// Nearest live ship of the opposite faction to `cell`, as a fractional cell.
-fn nearest_opponent_cell(board: &Board, hit_faction: Faction, cell: usize) -> Option<f32> {
-    board
-        .cells
-        .iter()
-        .flatten()
-        .filter(|s| s.faction != hit_faction)
-        .min_by_key(|s| (s.cell as i64 - cell as i64).abs())
-        .map(|s| s.cell as f32)
+/// A cheap order-sensitive signature of `board.fire_events` (#59), so the latch
+/// can tell "new round's shots" from "same round, redrawn again". Folds each
+/// event's endpoints + archetype + faction + hit into a rolling hash. Distinct
+/// rounds with identical shot lists hash the same (harmless — identical shots
+/// would look the same anyway); the realistic case (different cells/weapons each
+/// round) changes the hash so the beams re-fire.
+fn fire_events_sig(board: &Board) -> u64 {
+    let mut h: u64 = 1469598103934665603; // FNV-1a offset
+    let mut fold = |v: u64| {
+        h ^= v;
+        h = h.wrapping_mul(1099511628211);
+    };
+    for fe in &board.fire_events {
+        fold(fe.from_cell as u64);
+        fold(fe.to_cell as u64);
+        fold(fe.archetype as u64);
+        fold(fe.attacker_faction as u64);
+        fold(fe.hit as u64);
+    }
+    fold(0xFF00 ^ board.fire_events.len() as u64);
+    h
 }
 
 /* ---- draw helpers (flat-colour quads via SOLID_WHITE) --------------------- */
@@ -335,6 +362,78 @@ fn emit_beam(
     out.push(DrawCommand::Sprite(SpriteInstance {
         pos: [cx, cy],
         half_size: [len / 2.0, thickness / 2.0],
+        color: [color[0], color[1], color[2], alpha],
+        uv_min: atlas::cell_uvs(atlas::SOLID_WHITE).0,
+        uv_max: atlas::cell_uvs(atlas::SOLID_WHITE).1,
+        rotation_rad: dy.atan2(dx),
+        _pad: [0.0; 3],
+    }));
+}
+
+/* ---- #59 exact attacker→target beam styling ------------------------------
+ *
+ * Per-archetype + per-faction styling for the resolver's per-round FireEvent
+ * list. `observe` latches each `FireEvent { from_cell, to_cell, archetype,
+ * attacker_faction, hit }` into a `ShotBeam` effect styled via
+ * `archetype_beam_style` and tinted via `faction_beam_tint` (a miss —
+ * `hit == false` — drawn dimmer in `emit_shot_beam`), giving the EXACT
+ * attacker→target line instead of the old guessed nearest-opponent beam. The
+ * resolver owns clear+repopulate each round; we COPY read-only and animate with
+ * our own fade timers, never mutating `board.fire_events`. ----------------- */
+
+/// Visual style for a fired shot, by weapon archetype: `(thickness, life_secs)`.
+/// Cheap differentiation so a beam reads instant-and-thin, ordnance slow-and-fat,
+/// a broadside short-and-wide, etc. Colour comes from the firing faction.
+fn archetype_beam_style(a: crate::types::WeaponArchetype) -> (f32, f32) {
+    use crate::types::WeaponArchetype as W;
+    match a {
+        W::Beam => (2.5, 0.20),      // instant thin bolt
+        W::Ordnance => (4.5, 0.40),  // fat, lingering streak
+        W::Broadside => (5.5, 0.26), // wide volley
+        W::Control => (2.0, 0.30),   // thin, lingering tractor/lock
+        W::Displacement => (3.0, 0.24),
+        W::Movement => (2.0, 0.20),
+        W::Defensive => (2.0, 0.20),
+    }
+}
+
+/// Beam tint by the FIRING faction: enemy shots red, player shots cyan, so the
+/// player can read at a glance who is shooting whom.
+pub(crate) fn faction_beam_tint(f: Faction) -> [f32; 3] {
+    match f {
+        Faction::Enemy => [0.98, 0.34, 0.30], // hostile red
+        Faction::Player => [0.40, 0.86, 1.0], // friendly cyan
+    }
+}
+
+/// Draw an EXACT fired shot (#59): a styled beam attacker→target, given
+/// archetype `thickness` and faction `color`, fading over its life. A miss
+/// (`dim`) renders at reduced alpha so it reads as "fired but didn't connect".
+#[allow(clippy::too_many_arguments)]
+fn emit_shot_beam(
+    out: &mut Vec<DrawCommand>,
+    lane: &LaneGeometry,
+    from_cell: f32,
+    to_cell: f32,
+    color: [f32; 3],
+    thickness: f32,
+    dim: bool,
+    t: f32,
+) {
+    let a = fractional_cell_to_screen(from_cell, lane);
+    let b = fractional_cell_to_screen(to_cell, lane);
+    let dx = b.x - a.x;
+    let dy = b.y - a.y;
+    let len = (dx * dx + dy * dy).sqrt().max(1.0);
+    let cx = (a.x + b.x) / 2.0;
+    let cy = (a.y + b.y) / 2.0;
+    // Bright at birth, fading out; a connecting hit reads fuller than a miss.
+    let base_alpha = if dim { 0.45 } else { 0.95 };
+    let alpha = (1.0 - t) * base_alpha;
+    let th = thickness * (1.0 - t * 0.4); // thins slightly as it fades
+    out.push(DrawCommand::Sprite(SpriteInstance {
+        pos: [cx, cy],
+        half_size: [len / 2.0, th / 2.0],
         color: [color[0], color[1], color[2], alpha],
         uv_min: atlas::cell_uvs(atlas::SOLID_WHITE).0,
         uv_max: atlas::cell_uvs(atlas::SOLID_WHITE).1,
@@ -467,7 +566,10 @@ mod tests {
     }
 
     #[test]
-    fn hull_drop_spawns_hit_flash_and_beam() {
+    fn hull_drop_spawns_hit_flash_only() {
+        // #59: the shot LINE now comes from the resolver's FireEvent, so a hull
+        // drop spawns ONLY the impact flash here (no guessed nearest-opponent
+        // beam anymore).
         let mut vfx = CombatVfx::new();
         let mut board = empty_board(7);
         board.cells[0] = Some(ship("player", Faction::Player, 0, 5));
@@ -476,8 +578,56 @@ mod tests {
                              // Enemy takes a hit.
         board.cells[3].as_mut().unwrap().hull = 3;
         vfx.observe(&board);
-        // Hit flash on the enemy + a beam from the player (its only opponent).
-        assert_eq!(vfx.effects.len(), 2, "hit flash + beam");
+        assert_eq!(vfx.effects.len(), 1, "hull drop = one hit flash only");
+    }
+
+    #[test]
+    fn fire_event_spawns_exact_shot_beam() {
+        // The consumer latches each per-round FireEvent into a styled ShotBeam.
+        use crate::types::{FireEvent, WeaponArchetype};
+        let mut vfx = CombatVfx::new();
+        let mut board = empty_board(7);
+        board.cells[0] = Some(ship("player", Faction::Player, 0, 5));
+        board.cells[4] = Some(ship("enemy", Faction::Enemy, 4, 5));
+        vfx.observe(&board); // baseline, no fire_events
+        assert!(!vfx.is_active(), "no shots yet");
+        // Resolver populates two shots this round (e.g. a broadside hitting two).
+        board.fire_events = vec![
+            FireEvent {
+                from_cell: 4,
+                to_cell: 0,
+                archetype: WeaponArchetype::Beam,
+                attacker_faction: Faction::Enemy,
+                hit: true,
+            },
+            FireEvent {
+                from_cell: 0,
+                to_cell: 4,
+                archetype: WeaponArchetype::Ordnance,
+                attacker_faction: Faction::Player,
+                hit: false,
+            },
+        ];
+        vfx.observe(&board);
+        let shots = vfx
+            .effects
+            .iter()
+            .filter(|e| matches!(e.kind, EffectKind::ShotBeam { .. }))
+            .count();
+        assert_eq!(shots, 2, "two FireEvents → two exact shot beams");
+        // Same list persisting next frame must NOT re-spawn (latch once/round).
+        vfx.advance(0.001);
+        let before = vfx.effects.len();
+        vfx.observe(&board);
+        let after = vfx
+            .effects
+            .iter()
+            .filter(|e| matches!(e.kind, EffectKind::ShotBeam { .. }))
+            .count();
+        assert_eq!(
+            after, before,
+            "persisting fire_events must not re-spawn beams (signature unchanged)"
+        );
     }
 
     #[test]
@@ -529,10 +679,11 @@ mod tests {
     }
 
     #[test]
-    fn enemy_intent_change_spawns_fire_pop_and_beam() {
+    fn enemy_intent_change_spawns_fire_pop() {
         // With fire-then-decide, an enemy's queue head changes when it fires.
-        // That should spawn a TelegraphFire pop + a beam toward the player,
-        // independent of any hull drop (a shielded shot still visibly fires).
+        // That should spawn the TelegraphFire POP (the icon discharge). The shot
+        // LINE itself now comes from the resolver's FireEvent (#59), not here, so
+        // the intent change alone spawns exactly the one pop.
         let mut vfx = CombatVfx::new();
         let mut board = empty_board(7);
         board.cells[0] = Some(ship("player", Faction::Player, 0, 5));
@@ -543,11 +694,10 @@ mod tests {
                              // Enemy fires → queue head rolls to its NEXT intent.
         board.cells[4].as_mut().unwrap().queue = vec!["beam_b".into()];
         vfx.observe(&board);
-        // Fire pop + beam (no hull drop this frame, so exactly those two).
         assert_eq!(
             vfx.effects.len(),
-            2,
-            "intent change should spawn a fire pop + a beam"
+            1,
+            "intent change should spawn exactly the fire pop"
         );
     }
 
