@@ -157,8 +157,9 @@ pub struct Board {
 /// renderer can draw an exact beam between the two cells (#59). Replaces the
 /// renderer's previous guesswork about who-shot-whom. The resolver emits one
 /// per shot in `run_action`; the renderer styles the beam by `archetype`
-/// (per-weapon look), tints it by the `attacker` faction, and dims it on a
-/// miss (`hit == false`).
+/// (per-weapon look), tints it by the `attacker_faction`, and dims it on a
+/// miss (`hit == false`). For an N-target shot the resolver emits N events
+/// (one attacker→target line each).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FireEvent {
     /// Lane cell the shot originates from (the attacker's cell).
@@ -168,7 +169,7 @@ pub struct FireEvent {
     /// Firing weapon's archetype — drives per-weapon beam styling.
     pub archetype: WeaponArchetype,
     /// Faction of the firing ship — for the renderer's side tint.
-    pub attacker: Faction,
+    pub attacker_faction: Faction,
     /// Whether the shot connected. Misses render dimmer.
     pub hit: bool,
 }
@@ -1764,7 +1765,7 @@ mod tests {
                 from_cell: 0,
                 to_cell: 2,
                 archetype: WeaponArchetype::Beam,
-                attacker: Faction::Player,
+                attacker_faction: Faction::Player,
                 hit: true,
             }], // transient render junk that must NOT round-trip either
         };
