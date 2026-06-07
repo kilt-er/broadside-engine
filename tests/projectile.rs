@@ -103,6 +103,7 @@ fn board(size: usize, cells: Vec<Option<Ship>>, ordnance: Vec<Projectile>) -> Bo
         patrol: 1,
         bus: EventBus::default(),
         destroys_this_window: 0,
+        fire_events: vec![],
     }
 }
 

@@ -144,6 +144,33 @@ pub struct Board {
     pub bus: EventBus,
     /// Ships destroyed during the current chain-kill window. Resolver-managed.
     pub destroys_this_window: usize,
+    /// Exact attacker→target shots fired during the current resolution, for
+    /// the renderer to draw precise beams (#59). The resolver pushes a
+    /// [`FireEvent`] in `run_action` for each shot; the renderer latches +
+    /// draws them, then they're cleared at the next window boundary. Transient
+    /// per-resolution render state — like `destroys_this_window`, it does
+    /// **not** round-trip through [`BoardSnapshot`].
+    pub fire_events: Vec<FireEvent>,
+}
+
+/// One attacker→target shot, recorded on [`Board::fire_events`] so the
+/// renderer can draw an exact beam between the two cells (#59). Replaces the
+/// renderer's previous guesswork about who-shot-whom. The resolver emits one
+/// per shot in `run_action`; the renderer styles the beam by `archetype`
+/// (per-weapon look), tints it by the `attacker` faction, and dims it on a
+/// miss (`hit == false`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FireEvent {
+    /// Lane cell the shot originates from (the attacker's cell).
+    pub from_cell: usize,
+    /// Lane cell the shot targets (the target's cell).
+    pub to_cell: usize,
+    /// Firing weapon's archetype — drives per-weapon beam styling.
+    pub archetype: WeaponArchetype,
+    /// Faction of the firing ship — for the renderer's side tint.
+    pub attacker: Faction,
+    /// Whether the shot connected. Misses render dimmer.
+    pub hit: bool,
 }
 
 /// A cell-resident hazard: mine, drone, or debris field. Applies `payload`
@@ -1167,6 +1194,8 @@ impl BoardSnapshot {
             patrol: self.patrol,
             bus,
             destroys_this_window: 0,
+            // Transient render state; a loaded board starts with none.
+            fire_events: Vec::new(),
         }
     }
 }
@@ -1525,6 +1554,7 @@ mod tests {
             patrol: 1,
             bus: EventBus::default(),
             destroys_this_window: 0,
+            fire_events: Vec::new(),
         };
 
         // Take the bus off the board so the callback closures can hold their
@@ -1730,6 +1760,13 @@ mod tests {
             patrol: 1,
             bus: EventBus::default(),
             destroys_this_window: 7,  // runtime junk that must NOT round-trip
+            fire_events: vec![FireEvent {
+                from_cell: 0,
+                to_cell: 2,
+                archetype: WeaponArchetype::Beam,
+                attacker: Faction::Player,
+                hit: true,
+            }], // transient render junk that must NOT round-trip either
         };
         // Register a callback so the bus is non-empty at snapshot time —
         // the snapshot still must not carry it.
@@ -1752,6 +1789,8 @@ mod tests {
         assert!(!json.contains("\"bus\""), "BoardSnapshot leaked bus into JSON: {json}");
         assert!(!json.contains("destroys_this_window"),
             "BoardSnapshot leaked destroys_this_window: {json}");
+        assert!(!json.contains("fire_events"),
+            "BoardSnapshot leaked fire_events (transient render state): {json}");
 
         let back: SaveState = serde_json::from_str(&json).unwrap();
         assert_eq!(save, back);
@@ -1762,6 +1801,8 @@ mod tests {
         assert_eq!(rebuilt.patrol, 1);
         assert_eq!(rebuilt.destroys_this_window, 0,
             "rebuilt board resets the chain-kill counter to 0");
+        assert!(rebuilt.fire_events.is_empty(),
+            "rebuilt board starts with no fire events");
         // The Ship's pre-save state is preserved (cell, hull, heat, charge).
         let s = rebuilt.cells[0].as_ref().unwrap();
         assert_eq!(s.heat, 2);

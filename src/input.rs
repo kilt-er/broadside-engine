@@ -813,6 +813,7 @@ mod tests {
             patrol: 1,
             bus: EventBus::default(),
             destroys_this_window: 0,
+            fire_events: vec![],
         };
 
         let content = DemoContent::default();
@@ -860,6 +861,7 @@ mod tests {
             patrol: 1,
             bus: EventBus::default(),
             destroys_this_window: 0,
+            fire_events: vec![],
         };
 
         // Weapon: 4 raw, bandFalloff: false so the modifier delta is
@@ -915,6 +917,7 @@ mod tests {
             patrol: 1,
             bus: EventBus::default(),
             destroys_this_window: 0,
+            fire_events: vec![],
         };
 
         let mut content = DemoContent::default();
@@ -955,6 +958,7 @@ mod tests {
             patrol: 1,
             bus: EventBus::default(),
             destroys_this_window: 0,
+            fire_events: vec![],
         };
 
         let mut content = DemoContent::default();

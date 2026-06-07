@@ -294,6 +294,7 @@ where
         patrol: 1,
         bus: EventBus::default(),
         destroys_this_window: 0,
+        fire_events: Vec::new(),
     }
 }
 
@@ -1037,6 +1038,7 @@ mod tests {
             patrol: 1,
             bus: EventBus::default(),
             destroys_this_window: 0,
+            fire_events: vec![],
         }
     }
 

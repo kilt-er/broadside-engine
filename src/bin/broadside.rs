@@ -459,6 +459,7 @@ fn render_example_board() -> Board {
         patrol: 1,
         bus: EventBus::default(),
         destroys_this_window: 0,
+        fire_events: vec![],
     }
 }
 

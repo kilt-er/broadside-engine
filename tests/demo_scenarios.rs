@@ -150,6 +150,7 @@ fn demo_board(scout_bow: LaneEnd) -> Board {
         patrol: 1,
         bus: EventBus::default(),
         destroys_this_window: 0,
+        fire_events: vec![],
     }
 }
 
