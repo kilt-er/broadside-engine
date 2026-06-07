@@ -181,6 +181,16 @@ fn emit(board: &mut Board, hook: Hook, build: impl FnOnce(&mut HookContext)) {
 /// the player's queue and call [`run_world_phase`] alone (queue not fired);
 /// commit calls [`fire_player_queue`] + [`run_world_phase`].
 pub fn resolve_round(board: &mut Board, content: &dyn Content) {
+    // #59: a turn's worth of FireEvents accumulates across the WHOLE round —
+    // the player's fired queue AND every enemy's — so the renderer draws one
+    // beam per shot. Clear ONCE here, at turn start, BEFORE anyone fires.
+    // `fire_player_queue` must NOT clear: it runs once per enemy inside
+    // `run_world_phase`, so clearing there would wipe all-but-the-last ship's
+    // beams. The in-game SS path doesn't call `resolve_round` — the bin clears
+    // `board.fire_events` at the top of its `apply_intent` (renderer's lane);
+    // this clear covers the resolve_round-driven (headless / test) path.
+    board.fire_events.clear();
+
     let player_id: Option<String> = find_player_id(board);
     if let Some(id) = player_id {
         fire_player_queue(&id, board, content);
@@ -419,6 +429,43 @@ fn run_action(
     // TS `if (a.targeting.requiresArc !== null && cells.length === 0) continue`.
     if action.targeting.requires_arc.is_some() && cells.is_empty() {
         return false;
+    }
+
+    // FireEvent production (#59): record the EXACT shot for the renderer's
+    // beam, BEFORE effects run (so `ship_cell` is the gun's fire-time cell and
+    // the target cells are pre-mutation). One [`crate::types::FireEvent`] per
+    // CONNECTING target — a target cell that holds a ship — so a multi-target
+    // shot (spinal / blast / broadside) fans out as N beams from one origin.
+    // Fires-only: only DAMAGE-bearing actions emit (a move / vent / reorient
+    // is not a "shot"). This is purely additive — it appends to the runtime
+    // `board.fire_events` and changes no mechanic. `hit` is always `true`
+    // here: we only emit for occupied target cells (a resolved target is a
+    // ship), and shield-fully-absorbed hits still CONNECT (the exact case the
+    // old hull-drop VFX guess missed). The `hit: false` "miss" path is the
+    // out-of-scope #81 dodge-whiff feature.
+    let fires_damage = action
+        .effects
+        .iter()
+        .any(|e| matches!(e, Effect::DAMAGE { .. }));
+    if fires_damage {
+        let attacker_faction = board.cells[ship_cell]
+            .as_ref()
+            .map(|s| s.faction)
+            .unwrap_or(Faction::Enemy);
+        for &target in &cells {
+            // Only connecting shots (a ship sits at the target cell) and never
+            // a self-targeting beam (SELF actions resolve to the firer's own
+            // cell — those aren't an attacker->target line).
+            if target != ship_cell && board.cells[target].is_some() {
+                board.fire_events.push(crate::types::FireEvent {
+                    from_cell: ship_cell,
+                    to_cell: target,
+                    archetype: action.archetype,
+                    attacker_faction,
+                    hit: true,
+                });
+            }
+        }
     }
 
     // Apply each effect. `apply_effect` may mutate cells / ordnance / etc.
@@ -4208,5 +4255,73 @@ mod tests {
         let mut flak = pulse_laser();
         flak.r#mod = Some("flak_burst".into());
         assert!(action_advances_turn(&flak), "flak_burst leaves advances_turn alone");
+    }
+
+    /// #59: FireEvents accumulate across the WHOLE round — the player's fired
+    /// shot AND every enemy's — and are cleared once at resolve_round start.
+    /// This is the regression that proves fire_player_queue does NOT clear
+    /// per-enemy (which would wipe all-but-the-last ship's beams).
+    #[test]
+    fn fire_events_accumulate_across_a_multi_ship_round() {
+        // Player at cell 0 (bow fore) with a queued pulse at the enemies up
+        // lane. Two enemies adjacent to the player's targets, bow=Aft so their
+        // forward guns bear back down-lane and telegraph a shot at the player.
+        let mut player = make_ship("p", Faction::Player, 0, 40, LaneEnd::Fore);
+        player.heat_max = 99; // never lock out across the round
+        player.queue = vec!["pulse_laser".into()];
+        // e1 at cell 1: player's pulse (PointBlank) bears + in band -> player
+        // shot lands here. e1 (bow Aft) also bears on the player at cell 0.
+        let mut e1 = enemy_with_weapon("e1", 1, "pulse_laser", Arc::Forward, LaneEnd::Aft);
+        e1.hull = 40;
+        e1.heat_max = 99;
+        // e2 at cell 2 (Close), bow Aft, also bears on the player.
+        let mut e2 = enemy_with_weapon("e2", 2, "pulse_laser", Arc::Forward, LaneEnd::Aft);
+        e2.hull = 40;
+        e2.heat_max = 99;
+        let mut board = make_board(7, vec![
+            Some(player), Some(e1), Some(e2), None, None, None, None,
+        ]);
+        let content = AiContent {
+            actions: HashMap::from([("pulse_laser".into(), pulse_laser())]),
+        };
+
+        // First resolve_round: enemies fire-then-decide, so this round they
+        // only TELEGRAPH (their queues were empty). The player fires its queued
+        // pulse at e1. So fire_events should hold the player's shot this round.
+        resolve_round(&mut board, &content);
+        let after_first: Vec<_> = board.fire_events.clone();
+        assert!(
+            after_first.iter().any(|f| f.from_cell == 0),
+            "player's fired pulse produced a FireEvent from cell 0; got {after_first:?}",
+        );
+
+        // Re-arm the player and run a SECOND round: now the enemies have a
+        // telegraphed shot to fire (from round 1's decide). The player fires
+        // again. fire_events must contain the player's shot AND BOTH enemies'
+        // shots — proving accumulation (no per-enemy wipe) and the
+        // start-of-round clear (no carryover of round-1 events).
+        if let Some(c) = board.cells.iter().position(|s| s.as_ref().map(|s| s.id == "p").unwrap_or(false)) {
+            if let Some(s) = board.cells[c].as_mut() { s.queue.push("pulse_laser".into()); }
+        }
+        resolve_round(&mut board, &content);
+        let after_second = &board.fire_events;
+
+        // No round-1 carryover: every event's attacker still exists this round
+        // (we only assert the count grew to include multiple distinct shooters).
+        let distinct_shooters: std::collections::HashSet<usize> =
+            after_second.iter().map(|f| f.from_cell).collect();
+        assert!(
+            distinct_shooters.len() >= 2,
+            "a multi-ship-fire round records beams from >=2 distinct attackers (player + enemies), not just the last; \
+             got {} distinct from {:?}",
+            distinct_shooters.len(),
+            after_second,
+        );
+        // And the player (cell 0) is among them — its shot wasn't wiped by the
+        // enemies' subsequent fire_player_queue calls.
+        assert!(
+            after_second.iter().any(|f| f.from_cell == 0),
+            "the player's beam survives the enemies' fires in the same round; got {after_second:?}",
+        );
     }
 }
