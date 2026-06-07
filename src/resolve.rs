@@ -1807,53 +1807,58 @@ fn resolve_target_move(
 }
 
 /// Enemy AI decision layer. Picks one action for this enemy and pushes it
-/// onto `ship.queue`; the resolver then runs the queue through
-/// [`execute_queue`] unchanged — the AI never bypasses the pipeline.
+/// onto `ship.queue`; the resolver then runs the queue through the per-ship
+/// firing path unchanged — the AI never bypasses the pipeline.
 ///
-/// # Objective
+/// # Objective: FIRE when you can, else CLOSE to firing range
 ///
-/// Per the analysis doc (`broadside-analysis.html:499-500`):
-///
-/// > "the enemy controls which situation you are in (its AI maximises the
-/// > number of distinct lane-ends it threatens), the player keeps flipping
-/// > between the two"
-///
-/// So the AI's goal is **lane-end diversity**: enemies stacked on one side
-/// of the player let the player tank with the bow; enemies on opposite
-/// sides force a stance flip. The score function below rewards an action
-/// that threatens the player from a lane-end NOT already covered by an
-/// already-queued enemy.
+/// The design-doc ideal (`broadside-analysis.html:499-500`) is lane-end
+/// diversity — "the AI maximises the number of distinct lane-ends it
+/// threatens" — but that requires CROSS-ENEMY coordination (an
+/// `enemyInitiative` pass assigning enemies to distinct ends) that is NOT
+/// built. What exists is a per-enemy policy: if you can shoot the player,
+/// shoot; if you can't, close toward firing range. Diversity is EMERGENT
+/// from spawn positions + this individual maneuver logic, not from a scoring
+/// term. (#71 dropped an earlier "covered-end -> reposition instead of fire"
+/// suppression, and #74 removed the inert `+6` lane-end-diversity bonus that
+/// went with it — see the NOTE at the scoring section.)
 ///
 /// # Algorithm
 ///
-/// 1. Find the player; if there is no player, return — nothing to threaten.
-/// 2. Enumerate this enemy's available actions: every mount's `.weapon`
-///    (an action id), gated by content lookup, cooldown, heat / lockout,
-///    band, and arc. The arc test uses [`resolve_targeting`] against the
-///    real board, so the action is "available" iff it would actually
-///    resolve to a non-empty cell set.
-/// 3. Score each available action:
-///    - `+10` per cell hit that contains the player (the visible threat)
-///    - `+6` if the threatened lane-end is NOT yet covered by an
-///      already-queued enemy on this enemy's turn (diversity bonus)
-///    - `+raw_damage` (the action's first `DAMAGE` effect amount)
-///    - `-heat` cost (cheap actions preferred when threat is equal)
-///    - Trait nudges: `Pursuit` adds a small bonus to actions that hit
-///      the player; `BurnHard` reduces `heat` penalty (it likes to burn).
-/// 4. Pick the highest-scoring action. Push its id onto the queue.
-/// 5. Fallback ladder when nothing threatens the player:
-///    - **Reorient** if a flip would put the player in arc next turn.
-///    - **Move** (any DISPLACE_SELF action) — closes range, telegraphs.
-///    - **Vent** — at the very least, blow off heat so the next round is
-///      more viable. Always a visible telegraph in the queue.
+/// 1. Find the player; if there is none, return — nothing to threaten.
+/// 2. Enumerate this enemy's mount weapons, gated by content lookup,
+///    cooldown, heat / lockout, the arc + band check ([`resolve_targeting`]
+///    against the real board, so an action is "available" iff it resolves to
+///    a non-empty cell set), and the friendly-fire filter (skip actions whose
+///    only targets are same-faction).
+/// 3. Score each available action: `+10` if it hits the player, `+raw_damage`
+///    (sum of its `DAMAGE` effect amounts), `-heat` cost (halved for the
+///    `BurnHard` trait), `+2` if the `Pursuit` trait holds AND it hits the
+///    player. Highest score is `best`.
+///    - NOTE on `Pursuit`'s `+2`: it is CONDITIONAL on hitting the player, so
+///      (unlike the removed unconditional `+6`) it CAN change the argmax — it
+///      is live in the scoring math and test-guarded. But it only RACES when
+///      a non-player-hitting candidate exists, which needs a second
+///      player-faction ship on the board; no current single-player campaign
+///      spawns one, so it never flips a pick on real boards today.
+/// 4. FIRE: if `best` exists, queue it — full stop. An in-band, bearing
+///    enemy shoots; it does NOT hold fire to reposition. (This is the #71
+///    fix for "march in a line, don't shoot, die".)
+/// 5. Cannot fire (no `best`) -> CLOSE, then reorient, then vent:
+///    - [`queue_purposeful_maneuver`]: queue the synthetic lane-relative
+///      close toward the player (`__move_left` / `__move_right`), GATED on
+///      `!locked_out` (an overheated enemy skips the close and vents instead,
+///      so it cools down rather than trudging into the player on a move it
+///      can't follow with a shot).
+///    - **Reorient** if available — a flip might bring the player into arc.
+///    - **Vent** — blow off heat so next turn is viable. A visible telegraph.
 ///
-/// # Visible-threat invariant
+/// # Visible-telegraph invariant
 ///
-/// Every successful AI turn produces an action whose `resolve_targeting`
-/// returns a non-empty cell set against the current board, OR a fallback
-/// action (reorient / move / vent) that is itself a visible queued
-/// telegraph. The TS resolver renders queue contents over each ship, so
-/// pushing any action id is enough to make the intent legible.
+/// Under the fire-then-decide world phase (#67), whatever this function
+/// queues stays in `enemy.queue` until the NEXT world phase fires it — so the
+/// renderer's per-enemy telegraph always has something to show (a pending
+/// shot, a close arrow, a reorient, or a vent).
 fn decide_enemy_action(
     enemy_cell: usize,
     board: &mut Board,
