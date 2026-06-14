@@ -70,6 +70,12 @@ const THREAT_FILL_LETHAL: [f32; 4] = [0.961, 0.341, 0.286, 0.62];
 /// one pip per held charge, positioned by zone).
 const SHIELD_PIP: [f32; 4] = [1.0, 0.847, 0.420, 1.0];
 
+/// Queued-move telegraph arrow (blueprint §defense: the "queued reposition"
+/// channel, distinct from the red positional-threat fill). A cool, deliberate
+/// hue so a queued move — including a long-range enemy's INTENDED back-off to
+/// re-open firing range (content C1) — reads as planned movement, not danger.
+const MOVE_ARROW: [f32; 4] = [0.475, 0.675, 0.945, 0.92];
+
 /* =============================================================================
  * Mock board — stands in for the A3.1 `Ship` / `Board.threats`. Local to this
  * harness; the real draw path reads `types::Ship` + `Board.threats`.
@@ -100,6 +106,11 @@ struct MockShip {
     /// Held shield charges per zone `[bow, stern, port, starboard]` — drives the
     /// gold pip count. Stands in for `ship.shield_profile.face(zone).charge`.
     charges: [i32; 4],
+    /// The cell this ship has QUEUED a move to, if any — drives the move-arrow
+    /// telegraph channel. `None` = no queued move. Stands in for reading the
+    /// ship's queued move action (incl. a long-range enemy's intended BACK-OFF
+    /// to re-open firing range, content C1 — rendered like any queued move).
+    queued_move: Option<Pos>,
 }
 
 /// A mock threatened cell: a board position + whether the queued hit is lethal.
@@ -123,6 +134,7 @@ fn demo_board() -> (Vec<MockShip>, Vec<MockThreat>) {
             facing: Facing::Bow(Dir4::N),
             faction: Faction::Player,
             charges: [2, 0, 1, 1], // bow-heavy: presenting the strong face forward
+            queued_move: None,
         },
         // Enemy 1: back row, left, bow pointing S (down the board, AT the player).
         MockShip {
@@ -130,6 +142,7 @@ fn demo_board() -> (Vec<MockShip>, Vec<MockThreat>) {
             facing: Facing::Bow(Dir4::S),
             faction: Faction::Enemy,
             charges: [0, 0, 0, 0],
+            queued_move: None,
         },
         // Enemy 2: back row, right, broadside along the E-W axis (flanks face
         // N/S — i.e. presenting a broadside DOWN the board at the player).
@@ -138,14 +151,20 @@ fn demo_board() -> (Vec<MockShip>, Vec<MockThreat>) {
             facing: Facing::Broadside(Axis::EastWest),
             faction: Faction::Enemy,
             charges: [0, 0, 0, 0],
+            queued_move: None,
         },
         // Enemy 3: second-from-back, center, bow pointing W (turned sideways) —
         // shows a non-toward-player stance so the arrow direction is unmistakable.
+        // It has CLOSED past its optimal range and queues a BACK-OFF (move toward
+        // row 0, away from the player) to re-open firing distance — the visible
+        // payoff of the over-extension mechanic (content C1). Rendered as a normal
+        // queued move-arrow.
         MockShip {
             pos: Pos::new(2, 1),
             facing: Facing::Bow(Dir4::W),
             faction: Faction::Enemy,
             charges: [0, 0, 0, 0],
+            queued_move: Some(Pos::new(2, 0)), // back off one row, away from player
         },
     ];
     // Threats: the two cells flanking the player (so the "dodge" read is obvious)
@@ -261,6 +280,44 @@ fn threat_draw_commands(out: &mut Vec<DrawCommand>, threats: &[MockThreat], cfg:
         let color = if t.lethal { THREAT_FILL_LETHAL } else { THREAT_FILL };
         fill_quad(out, q.corners, color);
     }
+}
+
+/// D4 channel 3 (the "queued reposition" telegraph): draw a move-arrow from a
+/// ship's current cell toward the cell it has QUEUED a move to. A line in the
+/// cool [`MOVE_ARROW`] hue with a chevron arrowhead at the destination, so the
+/// queued move reads as deliberate repositioning — distinct from the red
+/// positional-threat fill. A long-range enemy's INTENDED back-off to re-open
+/// firing range (content C1) is exactly this: a normal queued move rendered the
+/// same way (the lead's D4 note). No-op when the ship has no queued move.
+///
+/// Lift note: in hud.rs this reads the ship's queued move action (and the
+/// projector cell centers) instead of `MockShip::queued_move`.
+fn push_move_arrow(out: &mut Vec<DrawCommand>, ship: &MockShip, cfg: &ProjectorConfig) {
+    let Some(dest) = ship.queued_move else {
+        return;
+    };
+    let from = grid_cell_quad(ship.pos, cfg).center;
+    let to = grid_cell_quad(dest, cfg).center;
+    // Shorten the arrow slightly at both ends so it sits between the cell
+    // centers without poking through the ship hulls.
+    let dx = to[0] - from[0];
+    let dy = to[1] - from[1];
+    let len = (dx * dx + dy * dy).sqrt().max(1e-3);
+    let (ux, uy) = (dx / len, dy / len);
+    let inset = 10.0_f32.min(len * 0.3);
+    let a = [from[0] + ux * inset, from[1] + uy * inset];
+    let b = [to[0] - ux * inset, to[1] - uy * inset];
+    line(out, a, b, 1.5, MOVE_ARROW);
+    // Arrowhead chevron at the destination end, rotated to the heading.
+    out.push(DrawCommand::Sprite(SpriteInstance {
+        pos: b,
+        half_size: [5.0, 5.0],
+        color: MOVE_ARROW,
+        uv_min: atlas::cell_uvs(atlas::BOW_CHEVRON).0,
+        uv_max: atlas::cell_uvs(atlas::BOW_CHEVRON).1,
+        rotation_rad: uy.atan2(ux),
+        _pad: [0.0; 3],
+    }));
 }
 
 /// The screen-space forward vector (dx, dy) the bow arrow points along, derived
@@ -402,7 +459,8 @@ fn push_shield_pips(
 }
 
 /// Build the whole frame's draw list, back to front (matches the blueprint render
-/// order): backdrop → grid → threat fill → ships (with arrows + pips).
+/// order): backdrop → grid → threat fill → queued move-arrows → ships (with bow
+/// arrows + shield pips).
 fn compose(
     cfg: &ProjectorConfig,
     ships: &[MockShip],
@@ -414,6 +472,11 @@ fn compose(
     push_backdrop(&mut out, focus, player_pos);
     push_grid(&mut out, cfg);
     threat_draw_commands(&mut out, threats, cfg);
+    // Queued move-arrows under the ships (so a ship hull sits on top of its
+    // arrow's tail) — incl. enemy back-off repositioning.
+    for s in ships {
+        push_move_arrow(&mut out, s, cfg);
+    }
     // Draw ships far row first (row 0) → near last, so nearer ships overlap
     // farther ones correctly.
     let mut sorted: Vec<&MockShip> = ships.iter().collect();
