@@ -31,8 +31,9 @@
 //! - The `BOARD` effect arm in [`apply_effect`] — currently a no-op.
 
 use crate::geometry::{absorb_shield, bears, direction_to, facing_zone, opposite, range_band};
+use crate::grid::{Dir4, Dir8, Facing, Pos};
 use crate::types::{
-    Action, ActionCost, Board, DeployHazardKind, Effect, Faction, Hazard, HazardKind, Hook,
+    Action, ActionCost, Arc, Board, DeployHazardKind, Effect, Faction, Hazard, HazardKind, Hook,
     HookContext, LaneEnd, MovementMode, Orientation, Projectile, RangeBand, ReorientTo, Ship,
     Status, StatusKind, Targeting, TargetingPattern, WeaponArchetype,
 };
@@ -422,8 +423,16 @@ fn run_action(
         return false;
     }
 
-    // Resolve targeting against the CURRENT cell.
-    let cells = resolve_targeting(action, board, ship_cell);
+    // Resolve targeting against the CURRENT cell. R3: 2-D path —
+    // `resolve_targeting_2d` returns `Vec<Pos>` over the real grid; we shim to
+    // 1-D `cells` (`Pos::to_index`) to feed the still-1-D `apply_effect` /
+    // FireEvent code below. The shim is CORRECT under the Board slot==pos
+    // invariant (A): a ship at `cells[i]` has `pos.to_index() == i`, so 2-D
+    // targeting + 1-D cell application address the same slots. Removed when R4
+    // takes `apply_effect`/`apply_damage` to `Pos`.
+    let ship_pos = ship.pos;
+    let target_positions = resolve_targeting_2d(action, board, ship_pos);
+    let cells: Vec<usize> = target_positions.iter().map(|p| p.to_index()).collect();
     // The "nothing bore" gate: arc-required actions with no targets eat
     // nothing — cooldown is NOT reset and heat is NOT spent. Mirrors the
     // TS `if (a.targeting.requiresArc !== null && cells.length === 0) continue`.
@@ -460,10 +469,13 @@ fn run_action(
                 board.fire_events.push(crate::types::FireEvent {
                     from_cell: ship_cell,
                     to_cell: target,
-                    // v2 (A3 EXPAND): 2-D beam endpoints default until the
-                    // resolver migrates this emission to Pos (R-series).
-                    from_pos: crate::grid::Pos::new(0, 0),
-                    to_pos: crate::grid::Pos::new(0, 0),
+                    // R3: real 2-D beam endpoints. `from_pos` is the gun's
+                    // fire-time cell; `to_pos` recovers the target's Pos from
+                    // its flat slot index (exact under invariant (A):
+                    // `target == target_pos.to_index()`). The renderer's #59
+                    // exact beam + the R7 dodge-whiff draw between these.
+                    from_pos: ship_pos,
+                    to_pos: Pos::from_index(target).unwrap_or(ship_pos),
                     archetype: action.archetype,
                     attacker_faction,
                     hit: true,
@@ -507,8 +519,14 @@ fn run_action(
         let pass_cells = if pass == 0 {
             cells.clone()
         } else {
-            match find_cell_by_id(board, ship_id) {
-                Some(cur) => resolve_targeting(action, board, cur),
+            // R3: re-resolve via the 2-D path against the ship's CURRENT Pos
+            // (it may have moved); shim Pos->usize for the 1-D apply_effect
+            // (correct under invariant (A), as above).
+            match board.find_pos_by_id(ship_id) {
+                Some(cur_pos) => resolve_targeting_2d(action, board, cur_pos)
+                    .iter()
+                    .map(|p| p.to_index())
+                    .collect(),
                 None => break, // attacker gone after the first pass
             }
         };
@@ -768,6 +786,204 @@ pub fn resolve_targeting(a: &Action, board: &Board, ship_cell: usize) -> Vec<usi
             match c {
                 Some(c) if c < board.size => vec![c],
                 _ => Vec::new(),
+            }
+        }
+    }
+}
+
+/* =============================================================================
+ * Targeting — the 2-D port (blueprint R3). `resolve_targeting_2d` is the v2
+ * replacement for the 1-D `resolve_targeting` above, built on the frozen
+ * `grid` + `geometry2d` and the Board EXPAND occupancy seam ([`Board::ship_at`]).
+ *
+ * EXPAND-CONTRACT (matching the geometry.rs/geometry2d.rs split): the 1-D
+ * `resolve_targeting` stays here, compiling + passing its own 1-D fixture tests,
+ * until CONTRACT deletes it and renames `_2d` -> canonical. Only the live call
+ * sites switch to `_2d` (the 1-D one is dead-for-live once the board is
+ * 2-D-native, but kept as a reference + for its tests).
+ *
+ * SINGLE SOURCE OF TRUTH: this is the ONLY cell-selection path — both firing
+ * and the ThreatMap telegraph run it, so a painted threat cell can never desync
+ * from where the shot lands (blueprint "single best idea"; reviewer V4).
+ *
+ * FIRING-DIRECTION CONTRACT (reviewer-confirmed, the V4/V5 authority): the
+ * firing ray is **cardinal** (4-way) — `bearing_cardinals` yields cardinals,
+ * `first_target_along` walks a cardinal, `arc_bears` gates a cardinal (decision
+ * #9: 4-cardinal facing). For every DIRECT hit the target sits ON the cardinal
+ * ray, so the damage-step `incoming_from` (an 8-way `direction_to`, R4) is the
+ * exact opposite cardinal. The 8-way `direction_to` only ever yields a diagonal
+ * for BLAST splash (off-ray neighbours) + ordnance impacts — intended, since
+ * `facing_zone` is total over all 8 (an off-axis splash lands on whatever face
+ * the diagonal presents).
+ * ========================================================================== */
+
+/// The set of **cardinal** [`Dir8`] directions a mount with firing `arc` fires
+/// along, given the ship's [`Facing`]. The 2-D replacement for the 1-D
+/// `bearing_direction` (which returned a single `Fore`/`Aft`); in 2-D an arc can
+/// bear along more than one cardinal (a `BroadsideArc` fires out *both* flanks),
+/// so this returns a `Vec`. Empty = the arc does not bear at all in this stance.
+///
+/// Cardinals only (decision #9): a weapon never fires along a diagonal. Each
+/// direction here is exactly a direction [`geometry2d::arc_bears`] accepts, so
+/// "where I fire" and "which arc gate passes" are one model.
+fn bearing_cardinals(facing: Facing, arc: Option<Arc>) -> Vec<Dir8> {
+    use crate::grid::{Axis, Facing as F};
+    let Some(arc) = arc else {
+        // Arc-less (SELF / DEPLOYED_CELL / ORDNANCE): fire along the hull's
+        // forward cardinal. `Bow(dir)` -> the bow; `Broadside(axis)` -> the
+        // axis's increasing-coordinate direction (`dirs().0`), a stable choice
+        // for the spawn/deploy "ahead" with no real bow.
+        return match facing {
+            F::Bow(dir) => vec![dir.to_dir8()],
+            F::Broadside(axis) => vec![axis.dirs().0.to_dir8()],
+        };
+    };
+    match arc {
+        // Turret bears every cardinal; single-ray patterns pick among them.
+        Arc::Turret => Dir4::ALL.iter().map(|d| d.to_dir8()).collect(),
+        Arc::Forward => match facing {
+            F::Bow(dir) => vec![dir.to_dir8()],
+            F::Broadside(_) => Vec::new(),
+        },
+        Arc::Rear => match facing {
+            F::Bow(dir) => vec![dir.to_dir8().opposite()],
+            F::Broadside(_) => Vec::new(),
+        },
+        // Broadside battery: both off-axis flank cardinals, only when turned.
+        Arc::BroadsideArc => match facing {
+            F::Bow(_) => Vec::new(),
+            F::Broadside(axis) => {
+                let off = match axis {
+                    Axis::NorthSouth => Axis::EastWest,
+                    Axis::EastWest => Axis::NorthSouth,
+                };
+                let (a, b) = off.dirs();
+                vec![a.to_dir8(), b.to_dir8()]
+            }
+        },
+    }
+}
+
+/// Every in-bounds cell along the cardinal ray from `from` in direction `dir`,
+/// nearest-first. The 2-D replacement for the 1-D `cells_toward`; walks via
+/// [`crate::grid::offset`] so the bounds check (and the no-1-D-underflow-hack
+/// property the reviewer asked for, gate #1) is the grid's, not ad-hoc signed
+/// math.
+fn cells_along(from: Pos, dir: Dir8) -> Vec<Pos> {
+    let mut out = Vec::new();
+    let mut k = 1;
+    while let Some(p) = crate::grid::offset(from, dir, k) {
+        out.push(p);
+        k += 1;
+    }
+    out
+}
+
+/// First occupied cell along the cardinal ray from `from` in `dir`, or `None`.
+/// 2-D replacement for the 1-D `first_target_toward` — RE-DERIVED as a clean
+/// ray-walk over [`Board::ship_at`] (no negative-index probe).
+fn first_target_along(board: &Board, from: Pos, dir: Dir8) -> Option<Pos> {
+    cells_along(from, dir)
+        .into_iter()
+        .find(|p| board.ship_at(*p).is_some())
+}
+
+// NOTE: the 2-D `bears(ship, arc, target_pos)` convenience wrapper (the 1-D
+// `geometry::bears` analog — `arc_bears(ship.facing, arc, direction_to(ship.pos,
+// target))`, with a same-cell `None` rejected per reviewer gate #3) is deferred
+// to its first caller. `resolve_targeting_2d` doesn't need it (the patterns gate
+// via `bearing_cardinals` directly); it lands with the 2-D AI (C1) or a later
+// R-task that needs an arbitrary-target bearing test, to avoid dead code now.
+
+/// 2-D `resolve_targeting`: the cells `a` resolves on from `ship_pos`, honouring
+/// arc + 3-band range. The SINGLE source for firing AND the ThreatMap telegraph.
+/// See the module-level firing-direction contract above. Pure + deterministic.
+pub fn resolve_targeting_2d(a: &Action, board: &Board, ship_pos: Pos) -> Vec<Pos> {
+    let t = &a.targeting;
+    let Some(ship) = board.ship_at(ship_pos) else {
+        return Vec::new();
+    };
+    // 2-D allowed bands (the EXPAND `range_band` field; `band` is the dead 1-D
+    // one). `in_band` realises the over-extension deadzone (decision #7).
+    let in_band = |target: Pos| crate::geometry2d::in_band(&t.range_band, ship_pos, target);
+
+    match t.pattern {
+        TargetingPattern::SELF => vec![ship_pos],
+
+        TargetingPattern::BROADSIDE => {
+            // Fire along every bearing cardinal (both flanks for a broadside),
+            // taking the first in-band occupant on each ray.
+            let mut out = Vec::new();
+            for dir in bearing_cardinals(ship.facing, t.requires_arc) {
+                if let Some(p) = first_target_along(board, ship_pos, dir) {
+                    if in_band(p) {
+                        out.push(p);
+                    }
+                }
+            }
+            out
+        }
+
+        TargetingPattern::BEAM | TargetingPattern::POINT_BLANK => {
+            // First in-band occupant along the first bearing cardinal that has
+            // one (faithful 2-D analog of the 1-D fore-first scan: iterate the
+            // bearing cardinals in order, take the first ray that yields a
+            // legal target).
+            for dir in bearing_cardinals(ship.facing, t.requires_arc) {
+                if let Some(p) = first_target_along(board, ship_pos, dir) {
+                    if in_band(p) {
+                        return vec![p];
+                    }
+                }
+            }
+            Vec::new()
+        }
+
+        TargetingPattern::SPINAL_LINE => {
+            // Pierce along ONE bearing cardinal: the first that yields any
+            // in-band occupant. `hits_all` -> every in-band occupant on the
+            // ray; else just the first.
+            for dir in bearing_cardinals(ship.facing, t.requires_arc) {
+                let line: Vec<Pos> = cells_along(ship_pos, dir)
+                    .into_iter()
+                    .filter(|p| in_band(*p) && board.ship_at(*p).is_some())
+                    .collect();
+                if line.is_empty() {
+                    continue;
+                }
+                return if t.hits_all { line } else { line.into_iter().take(1).collect() };
+            }
+            Vec::new()
+        }
+
+        TargetingPattern::BLAST => {
+            // First occupant along a bearing cardinal, then splash its
+            // 8-neighbours. ±1 -> 8-NEIGHBOUR is the deliberate 2-D widening
+            // (reviewer gate #2): the 1-D "first + the two lane neighbours"
+            // becomes "first + its in-bounds 8-neighbours" — an area burst.
+            // (Splash cells are off the firing ray, so a splashed neighbour's
+            // damage-step `incoming_from` may be diagonal — intended per the
+            // firing-direction contract; `facing_zone` is total over 8.)
+            for dir in bearing_cardinals(ship.facing, t.requires_arc) {
+                if let Some(center) = first_target_along(board, ship_pos, dir) {
+                    let mut out = vec![center];
+                    out.extend(crate::grid::neighbors(center));
+                    return out;
+                }
+            }
+            Vec::new()
+        }
+
+        TargetingPattern::DEPLOYED_CELL | TargetingPattern::ORDNANCE => {
+            // The single adjacent cell one step along the forward cardinal (the
+            // spawn/deploy cell). Arc-less -> bearing_cardinals returns the
+            // forward cardinal; take one step via grid::offset.
+            let Some(&dir) = bearing_cardinals(ship.facing, t.requires_arc).first() else {
+                return Vec::new();
+            };
+            match crate::grid::offset(ship_pos, dir, 1) {
+                Some(p) => vec![p],
+                None => Vec::new(),
             }
         }
     }
@@ -2211,15 +2427,28 @@ mod tests {
     }
 
     fn make_ship(id: &str, faction: Faction, cell: usize, hull: i32, bow: LaneEnd) -> Ship {
+        // R3 green-keep: map the 1-D `cell`/`bow` onto a 2-D-coherent
+        // pos/facing so these legacy lane fixtures stay green on the
+        // now-2-D live firing path (run_action -> resolve_targeting_2d on
+        // Board::ship_at). `Pos::from_index(cell)` lands the lane onto row 0's
+        // E-W axis (cells 0..4 -> cols 0..4) and SATISFIES invariant (A)
+        // (`pos.to_index() == cell`, the slot make_board places the ship at).
+        // `bow` Fore/Aft -> Bow(E)/Bow(W) so a Forward-arc attacker at the low
+        // cell bears E along the lane exactly as the 1-D tests expect. (The
+        // proper multi-row 2-D fixtures + real-target asserts are the tester's
+        // T-follow #20; this is the minimal green-keep, not the full rewrite.)
+        let pos = crate::grid::Pos::from_index(cell).unwrap_or(crate::grid::Pos::new(0, 0));
+        let facing = match bow {
+            LaneEnd::Fore => crate::grid::Facing::Bow(crate::grid::Dir4::E),
+            LaneEnd::Aft => crate::grid::Facing::Bow(crate::grid::Dir4::W),
+        };
         Ship {
             id: id.into(),
             faction,
             cell,
-            // v2 (A3 EXPAND): transitional 2-D fields; resolver tests still
-            // assert on `cell` — pos/facing migrate in the R-series.
-            pos: crate::grid::Pos::new(0, 0),
+            pos,
             orientation: Orientation::BowOn { bow },
-            facing: crate::grid::Facing::Bow(crate::grid::Dir4::S),
+            facing,
             hull,
             max_hull: hull,
             heat: 0,
@@ -4368,5 +4597,152 @@ mod tests {
             after_second.iter().any(|f| f.from_cell == 0),
             "the player's beam survives the enemies' fires in the same round; got {after_second:?}",
         );
+    }
+
+    /* =====================================================================
+     * resolve_targeting_2d (R3) — sanity coverage over a real 2-D board.
+     * One+ per pattern; exhaustive per-pattern coverage is the tester's T3.
+     * Ships are placed at cells[pos.to_index()] (invariant A) so Board::ship_at
+     * finds them — the same shape C4's build_encounter_board produces.
+     * ================================================================== */
+
+    use crate::grid::{Axis, Dir4, Facing, Pos};
+
+    /// A ship at a real 2-D `pos` with a real `facing` and one mount of `arc`.
+    fn ship_2d(id: &str, faction: Faction, pos: Pos, facing: Facing, arc: Arc) -> Ship {
+        let mut s = make_ship(id, faction, pos.to_index(), 10, LaneEnd::Fore);
+        s.pos = pos;
+        s.facing = facing;
+        s.mounts = vec![Mount { id: "m".into(), arc, weapon: "w".into() }];
+        s
+    }
+
+    /// A len-CELLS board with each ship slotted at `pos.to_index()` (invariant A).
+    fn board_2d(ships: Vec<Ship>) -> Board {
+        let mut cells: Vec<Option<Ship>> = (0..crate::grid::CELLS).map(|_| None).collect();
+        for s in ships {
+            let idx = s.pos.to_index();
+            cells[idx] = Some(s);
+        }
+        let mut b = make_board(crate::grid::CELLS, cells);
+        b.hazards = (0..crate::grid::CELLS).map(|_| Vec::new()).collect();
+        b
+    }
+
+    /// An action with a given pattern/arc and the full 3-band range allowed.
+    fn action_2d(pattern: TargetingPattern, arc: Option<Arc>, hits_all: bool) -> Action {
+        let mut a = pulse_laser();
+        a.targeting.pattern = pattern;
+        a.targeting.requires_arc = arc;
+        a.targeting.hits_all = hits_all;
+        a.targeting.range_band = vec![Range::Adjacent, Range::Near, Range::Far];
+        a
+    }
+    use crate::grid::Range;
+
+    #[test]
+    fn rt2d_self_returns_own_pos() {
+        let p = Pos::new(2, 3);
+        let board = board_2d(vec![ship_2d("p", Faction::Player, p, Facing::Bow(Dir4::N), Arc::Turret)]);
+        let a = action_2d(TargetingPattern::SELF, None, false);
+        assert_eq!(resolve_targeting_2d(&a, &board, p), vec![p]);
+    }
+
+    #[test]
+    fn rt2d_beam_forward_hits_first_occupant_up_the_bow_column() {
+        // Player at (2,3) facing Bow(N) (up-board). Forward beam walks N (row
+        // decreasing) along column 2; the enemy at (2,1) is the first occupant.
+        let player = ship_2d("p", Faction::Player, Pos::new(2, 3), Facing::Bow(Dir4::N), Arc::Forward);
+        let near = ship_2d("e1", Faction::Enemy, Pos::new(2, 1), Facing::Bow(Dir4::S), Arc::Turret);
+        let far = ship_2d("e2", Faction::Enemy, Pos::new(2, 0), Facing::Bow(Dir4::S), Arc::Turret);
+        let board = board_2d(vec![player, near, far]);
+        let a = action_2d(TargetingPattern::BEAM, Some(Arc::Forward), false);
+        assert_eq!(resolve_targeting_2d(&a, &board, Pos::new(2, 3)), vec![Pos::new(2, 1)]);
+    }
+
+    #[test]
+    fn rt2d_beam_does_not_bear_off_the_bow_column() {
+        // Same player, but the only enemy is in a different column (off the N
+        // ray) — a Forward beam fires straight N and finds nothing.
+        let player = ship_2d("p", Faction::Player, Pos::new(2, 3), Facing::Bow(Dir4::N), Arc::Forward);
+        let off = ship_2d("e", Faction::Enemy, Pos::new(0, 1), Facing::Bow(Dir4::S), Arc::Turret);
+        let board = board_2d(vec![player, off]);
+        let a = action_2d(TargetingPattern::BEAM, Some(Arc::Forward), false);
+        assert!(resolve_targeting_2d(&a, &board, Pos::new(2, 3)).is_empty());
+    }
+
+    #[test]
+    fn rt2d_broadside_fires_both_flanks() {
+        // Broadside(EastWest) hull at (2,2): flanks face N and S. Enemies due N
+        // (2,0) and due S (2,3) both get hit; a third off-flank (0,2) does not.
+        let ship = ship_2d("p", Faction::Player, Pos::new(2, 2), Facing::Broadside(Axis::EastWest), Arc::BroadsideArc);
+        let n = ship_2d("n", Faction::Enemy, Pos::new(2, 0), Facing::Bow(Dir4::S), Arc::Turret);
+        let s = ship_2d("s", Faction::Enemy, Pos::new(2, 3), Facing::Bow(Dir4::N), Arc::Turret);
+        let w = ship_2d("w", Faction::Enemy, Pos::new(0, 2), Facing::Bow(Dir4::E), Arc::Turret);
+        let board = board_2d(vec![ship, n, s, w]);
+        let a = action_2d(TargetingPattern::BROADSIDE, Some(Arc::BroadsideArc), false);
+        let mut hit = resolve_targeting_2d(&a, &board, Pos::new(2, 2));
+        hit.sort_by_key(|p| p.to_index());
+        assert_eq!(hit, vec![Pos::new(2, 0), Pos::new(2, 3)]);
+    }
+
+    #[test]
+    fn rt2d_spinal_pierces_all_when_hits_all() {
+        // Forward spinal up column 2 from (2,3): both (2,1) and (2,0) pierce.
+        let player = ship_2d("p", Faction::Player, Pos::new(2, 3), Facing::Bow(Dir4::N), Arc::Forward);
+        let a1 = ship_2d("a", Faction::Enemy, Pos::new(2, 1), Facing::Bow(Dir4::S), Arc::Turret);
+        let a0 = ship_2d("b", Faction::Enemy, Pos::new(2, 0), Facing::Bow(Dir4::S), Arc::Turret);
+        let board = board_2d(vec![player, a1, a0]);
+        let pierce = action_2d(TargetingPattern::SPINAL_LINE, Some(Arc::Forward), true);
+        assert_eq!(
+            resolve_targeting_2d(&pierce, &board, Pos::new(2, 3)),
+            vec![Pos::new(2, 1), Pos::new(2, 0)]
+        );
+        // hits_all=false -> just the first.
+        let first = action_2d(TargetingPattern::SPINAL_LINE, Some(Arc::Forward), false);
+        assert_eq!(resolve_targeting_2d(&first, &board, Pos::new(2, 3)), vec![Pos::new(2, 1)]);
+    }
+
+    #[test]
+    fn rt2d_blast_hits_center_plus_eight_neighbours() {
+        // Forward blast up column 2 from (3,3): center is the first occupant
+        // (3,1); splash is its in-bounds 8-neighbours. (The ±1->8-neighbour
+        // widening, reviewer gate #2.)
+        let player = ship_2d("p", Faction::Player, Pos::new(3, 3), Facing::Bow(Dir4::N), Arc::Forward);
+        let center = ship_2d("c", Faction::Enemy, Pos::new(3, 1), Facing::Bow(Dir4::S), Arc::Turret);
+        let board = board_2d(vec![player, center]);
+        let a = action_2d(TargetingPattern::BLAST, Some(Arc::Forward), false);
+        let hit = resolve_targeting_2d(&a, &board, Pos::new(3, 3));
+        assert!(hit.contains(&Pos::new(3, 1)), "center");
+        // 8-neighbours of (3,1) that are in-bounds, e.g. (2,1),(4,1),(3,0),(3,2),(2,0)...
+        assert!(hit.contains(&Pos::new(2, 1)) && hit.contains(&Pos::new(4, 1)));
+        assert!(hit.contains(&Pos::new(3, 0)) && hit.contains(&Pos::new(3, 2)));
+        // center + 8 neighbours, all in-bounds for an interior cell.
+        assert_eq!(hit.len(), 1 + crate::grid::neighbors(Pos::new(3, 1)).len());
+    }
+
+    #[test]
+    fn rt2d_far_only_weapon_cannot_hit_adjacent_deadzone() {
+        // Decision #7 over-extension deadzone: a Far-only weapon does NOT bear
+        // on an adjacent target. Player (2,3) Bow(N); enemy adjacent at (2,2).
+        let player = ship_2d("p", Faction::Player, Pos::new(2, 3), Facing::Bow(Dir4::N), Arc::Forward);
+        let adj = ship_2d("e", Faction::Enemy, Pos::new(2, 2), Facing::Bow(Dir4::S), Arc::Turret);
+        let board = board_2d(vec![player, adj]);
+        let mut a = action_2d(TargetingPattern::BEAM, Some(Arc::Forward), false);
+        a.targeting.range_band = vec![Range::Far]; // Far only
+        assert!(
+            resolve_targeting_2d(&a, &board, Pos::new(2, 3)).is_empty(),
+            "Far-only weapon must not hit an Adjacent (dist-1) target"
+        );
+    }
+
+    #[test]
+    fn rt2d_broadside_bow_stance_does_not_bear() {
+        // A BroadsideArc weapon on a Bow stance never bears (wrong stance).
+        let ship = ship_2d("p", Faction::Player, Pos::new(2, 2), Facing::Bow(Dir4::N), Arc::BroadsideArc);
+        let n = ship_2d("n", Faction::Enemy, Pos::new(2, 0), Facing::Bow(Dir4::S), Arc::Turret);
+        let board = board_2d(vec![ship, n]);
+        let a = action_2d(TargetingPattern::BROADSIDE, Some(Arc::BroadsideArc), false);
+        assert!(resolve_targeting_2d(&a, &board, Pos::new(2, 2)).is_empty());
     }
 }
