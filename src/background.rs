@@ -944,4 +944,51 @@ mod tests {
             );
         }
     }
+
+    /// A spec **v1.0** manifest carries new top-level `sprites[]` / `placements[]`
+    /// blocks (BACKGROUND_SPEC_v1.0 §0/§9) that the engine does not consume here.
+    /// The `Manifest` deserializer must IGNORE those unknown fields (no
+    /// `deny_unknown_fields`) so a v1.0 bundle still loads its parallax + layers
+    /// — the layer background renders even before the §9 animated-sprite path
+    /// (task D7) exists. This pins that forward-compatibility so a future
+    /// `deny_unknown_fields` can't silently break v1.0 manifests.
+    #[test]
+    fn v1_manifest_with_sprites_and_placements_still_deserializes() {
+        let json = r#"{
+            "format": "broadside-background-manifest",
+            "v": 2,
+            "frame":  { "w": 480, "h": 270, "upscale": 4 },
+            "canvas": { "w": 960, "h": 270 },
+            "queue":  { "layerCount": 20, "visible": 5, "positions": 5 },
+            "parallax": {
+                "stepPx": 120,
+                "nearFactor": 1.0, "farFactor": 0.18,
+                "nearScale": 1.0,  "farScale": 0.62,
+                "centerPosition": 2
+            },
+            "layers": [
+                { "index": 0, "name": "starfield bright", "visible": true, "empty": false, "file": "bg_layer_00_starfield_bright.png" },
+                { "index": 1, "name": "empty slot",       "visible": true, "empty": true,  "file": null }
+            ],
+            "sprites": [
+                { "id": "spr_ab12cd3", "name": "beacon", "w": 32, "h": 32, "fps": 8, "frameCount": 4,
+                  "strip": "sprite_beacon_spr_ab12cd3.png" }
+            ],
+            "placements": [
+                { "spriteId": "spr_ab12cd3", "layer": 9, "x": 480, "y": 135, "scale": 1.0, "vx": 12, "vy": 0, "loop": "wrap" }
+            ]
+        }"#;
+
+        let m: Manifest = serde_json::from_str(json).expect("v1.0 manifest must deserialize");
+        // The fields the engine DOES read survive the unknown-field ignore.
+        assert_eq!(m.frame.w, 480);
+        assert_eq!(m.frame.h, 270);
+        assert_eq!(m.canvas.w, 960);
+        assert_eq!(m.queue.layer_count, 20);
+        assert_eq!(m.queue.visible, 5);
+        assert_eq!((m.parallax.step_px, m.parallax.far_scale), (120.0, 0.62));
+        assert_eq!(m.layers.len(), 2);
+        assert!(!m.layers[0].empty && m.layers[0].file.is_some());
+        assert!(m.layers[1].empty && m.layers[1].file.is_none());
+    }
 }
