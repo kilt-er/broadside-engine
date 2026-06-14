@@ -711,6 +711,15 @@ impl App {
             #[cfg(feature = "audio")]
             audio: None,
         };
+        // #83: boot into the campaign's FIRST generated encounter (player
+        // mid-lane, pincered catalog enemies that bear + fire) instead of the
+        // showcase demo board the struct literal seeded above. Mirrors
+        // restart_run's board build; falls back to render_example_board only if
+        // the run has no current encounter. Done BEFORE the audio install below
+        // so the EventBus is wired on the board the player actually plays.
+        if let Some(first) = app.build_current_board() {
+            app.board = first;
+        }
         #[cfg(feature = "audio")]
         {
             if let Some(state) = broadside_engine::audio::AudioState::new(std::path::Path::new("assets")) {
