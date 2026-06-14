@@ -38,6 +38,11 @@ use crate::types::{
     StatusKind, WeaponArchetype,
 };
 
+// v2 (D3): the 2-D scene compositor reads these alongside the 1-D surface above.
+// Both coexist during A3 EXPAND→CONTRACT — see `compose_scene_2d`.
+use crate::grid::{Axis, Dir4, Facing};
+use crate::projector::{grid_cell_quad, CellQuad, ProjectorConfig};
+
 /* ---- palette --------------------------------------------------------------
  *
  * Analysis HTML CSS tokens, scaled to 0..1.
@@ -268,6 +273,222 @@ pub fn compose_scene_tweened(
     // bin now drives the overlay-vs-no-overlay decision.
 
     out
+}
+
+/* =============================================================================
+ * v2 2-D scene compositor (D3) — the perspective-grid render path.
+ *
+ * This is the v2 replacement for the 1-D `compose_scene*` flat-lane path above.
+ * Where the 1-D path lays ships on a horizontal strip by `ship.cell`, this path
+ * places each ship on the 5×4 perspective grid by `ship.pos`, scaled by the
+ * projector's per-cell `depth_scale`, with a bow-direction arrow encoding
+ * `Facing::forward_axis()` (the SAME forward axis the resolver's `facing_zone`
+ * table uses — the correctness-critical orientation contract) and gold shield
+ * pips per zone.
+ *
+ * It lands ALONGSIDE the 1-D path (A3 EXPAND→CONTRACT): the demo bin still
+ * drives the 1-D `compose_scene_tweened` until bin wiring is green-lit, so the
+ * old path stays intact. Lifted near-verbatim from the proven
+ * `src/bin/grid_preview.rs` staging.
+ *
+ * NOT in this path yet (deferred, by sequencing):
+ *  - Threat-fill + the queued move-arrow telegraph — both consume the telegraph
+ *    data source (`Board.threats`, populated by resolver R8), which is not in the
+ *    tree yet. The styling is staged in grid_preview; it wires here when
+ *    Board.threats lands (D4). The move destination is derived from a queued
+ *    action (resolver), not plain ship state, so it is part of that same D4 step.
+ *  - The live loft / textured-ship draw — D3 emits the flat placeholder hull;
+ *    the depth_scale-driven loft seating follows.
+ * ============================================================================= */
+
+/// Build the v2 perspective-grid scene as a back-to-front `Vec<DrawCommand>`:
+/// the grid wireframe, then every ship (hull + bow-direction arrow + shield
+/// pips) placed at its projected cell, far row first so nearer ships overlap
+/// farther ones. `cfg` is the perspective tuning ([`ProjectorConfig::default`]
+/// matches the 480×270 canvas).
+///
+/// Reads `ship.pos` / `ship.facing` (the v2 fields). Until the resolver/content
+/// MIGRATE writes real positions (every ship currently defaults to
+/// `Pos::new(0,0)`), all ships render stacked at the back-left origin cell — the
+/// render logic is correct and lights up as the data fills in (the
+/// `grid_preview` bin proves the path with non-default mock positions).
+pub fn compose_scene_2d(board: &Board, cfg: &ProjectorConfig) -> Vec<DrawCommand> {
+    let mut out = Vec::with_capacity(256);
+    push_grid_2d(&mut out, cfg);
+
+    // Far row (row 0) first → front row last, so nearer ships overlap farther.
+    let mut ships: Vec<&Ship> = board.cells.iter().flatten().collect();
+    ships.sort_by_key(|s| s.pos.row);
+    for ship in ships {
+        push_ship_2d(&mut out, ship, cfg);
+    }
+    out
+}
+
+/// Draw the empty 5×4 grid: each cell's wireframe trapezoid via the projector.
+/// The front (player) row is drawn brighter so "near = where you are" reads at a
+/// glance.
+fn push_grid_2d(out: &mut Vec<DrawCommand>, cfg: &ProjectorConfig) {
+    use crate::grid::Pos as GridPos;
+    use crate::grid::{COLS, ROWS};
+    for row in 0..ROWS {
+        for col in 0..COLS {
+            let q = grid_cell_quad(GridPos::new(col, row), cfg);
+            let color = if row == ROWS - 1 {
+                LANE_TICK // brighter front row
+            } else {
+                LANE_STROKE
+            };
+            outline_cell_2d(out, &q, color);
+        }
+    }
+}
+
+/// Outline a projected cell quad's four edges (the grid wireframe).
+fn outline_cell_2d(out: &mut Vec<DrawCommand>, q: &CellQuad, color: [f32; 4]) {
+    let c = q.corners;
+    push_line(out, pt(c[0]), pt(c[1]), 1.0, color); // far (top) edge
+    push_line(out, pt(c[1]), pt(c[2]), 1.0, color); // right edge
+    push_line(out, pt(c[2]), pt(c[3]), 1.0, color); // near (bottom) edge
+    push_line(out, pt(c[3]), pt(c[0]), 1.0, color); // left edge
+}
+
+/// `[f32; 2]` → the `perspective::Point2` the existing `push_line` takes.
+#[inline]
+fn pt(p: [f32; 2]) -> Point2 {
+    Point2 { x: p[0], y: p[1] }
+}
+
+/// D3: draw one ship at its projected cell — a faction-tinted hull quad (inset
+/// from the cell, scaled by `depth_scale`) + outline + a bow-direction arrow
+/// encoding `Facing::forward_axis()` + gold shield pips per zone. The hull fill
+/// is a flat placeholder; the depth_scale-driven loft seating follows in a later
+/// pass. Lifted from `grid_preview`'s `ship_draw_commands`.
+fn push_ship_2d(out: &mut Vec<DrawCommand>, ship: &Ship, cfg: &ProjectorConfig) {
+    let q = grid_cell_quad(ship.pos, cfg);
+    let (fill, stroke) = if ship.faction == Faction::Player {
+        (PLAYER_HULL_FILL, PLAYER_HULL_STROKE)
+    } else {
+        (ENEMY_HULL_FILL, ENEMY_HULL_STROKE)
+    };
+    let center = q.center;
+
+    // Inset hull box, scaled by depth so far ships are smaller. Bow stance is
+    // longer along the bow axis; broadside is wider across the hull axis — a
+    // coarse stance read under the (always-present) arrow.
+    let base = 22.0 * q.depth_scale;
+    let (hx, hy) = match ship.facing {
+        Facing::Bow(d) => match d.axis() {
+            Axis::NorthSouth => (base * 0.62, base),
+            Axis::EastWest => (base, base * 0.62),
+        },
+        Facing::Broadside(axis) => match axis {
+            Axis::EastWest => (base, base * 0.5),
+            Axis::NorthSouth => (base * 0.5, base),
+        },
+    };
+    let hull = [
+        [center[0] - hx, center[1] - hy],
+        [center[0] + hx, center[1] - hy],
+        [center[0] + hx, center[1] + hy],
+        [center[0] - hx, center[1] + hy],
+    ];
+    push_polygon(
+        out,
+        PolygonInstance::flat(hull, fill, atlas::cell_uvs(atlas::SOLID_WHITE)),
+    );
+    for i in 0..4 {
+        push_line(out, pt(hull[i]), pt(hull[(i + 1) % 4]), 1.0, stroke);
+    }
+
+    // Bow-direction arrow: a chevron just past the hull edge along the forward
+    // axis (Facing::forward_axis(), via bow_screen_dir), rotated to point that
+    // way. BOW_CHEVRON points +x at rotation 0.
+    let (dx, dy) = bow_screen_dir(ship.facing);
+    let reach = base + 8.0;
+    let arrow_sz = 6.0 * q.depth_scale.max(0.5);
+    push_sprite(
+        out,
+        SpriteInstance {
+            pos: [center[0] + dx * reach, center[1] + dy * reach],
+            half_size: [arrow_sz, arrow_sz],
+            color: stroke,
+            uv_min: atlas::cell_uvs(atlas::BOW_CHEVRON).0,
+            uv_max: atlas::cell_uvs(atlas::BOW_CHEVRON).1,
+            rotation_rad: dy.atan2(dx),
+            _pad: [0.0; 3],
+        },
+    );
+
+    push_shield_pips_2d(out, ship, center, base, (dx, dy));
+}
+
+/// The screen-space forward unit vector `(dx, dy)` the bow arrow points along,
+/// from `Facing::forward_axis()` — the SAME forward axis the resolver's
+/// `facing_zone` table uses (blueprint: "the renderer's bow-arrow MUST encode
+/// the SAME forward axis"). `Bow(dir)` points its cardinal; `Broadside(axis)`
+/// points along the axis's positive cardinal (a render choice — both flanks are
+/// symmetric). y is screen-down: `N` (toward row 0 / up-board) is `-y`.
+fn bow_screen_dir(facing: Facing) -> (f32, f32) {
+    let dir4 = match facing {
+        Facing::Bow(d) => d,
+        Facing::Broadside(axis) => match axis {
+            Axis::NorthSouth => Dir4::S,
+            Axis::EastWest => Dir4::E,
+        },
+    };
+    match dir4 {
+        Dir4::N => (0.0, -1.0),
+        Dir4::S => (0.0, 1.0),
+        Dir4::E => (1.0, 0.0),
+        Dir4::W => (-1.0, 0.0),
+    }
+}
+
+/// Gold shield pips per zone (one per held charge): bow/stern along the forward
+/// axis, port/starboard perpendicular to it, stacked ALONG each face so multiple
+/// charges read as a row. Reads `ship.shield_profile.face(zone).charge`. `fwd`
+/// is the screen forward unit vector from [`bow_screen_dir`].
+fn push_shield_pips_2d(
+    out: &mut Vec<DrawCommand>,
+    ship: &Ship,
+    center: [f32; 2],
+    base: f32,
+    fwd: (f32, f32),
+) {
+    let (fx, fy) = fwd;
+    let (px, py) = (-fy, fx); // perpendicular
+    let pip = 1.8;
+    let edge = base + 3.0;
+    let step = pip * 2.0 + 1.0;
+    let faces = [
+        (HullZone::Bow, (fx, fy)),
+        (HullZone::Stern, (-fx, -fy)),
+        (HullZone::Starboard, (px, py)),
+        (HullZone::Port, (-px, -py)),
+    ];
+    for (zone, (ox, oy)) in faces {
+        let n = ship.shield_profile.face(zone).charge;
+        if n <= 0 {
+            continue;
+        }
+        let (sx, sy) = (-oy, ox); // stack along the face
+        let bx = center[0] + ox * edge;
+        let by = center[1] + oy * edge;
+        let start = -(n as f32 - 1.0) * 0.5;
+        for i in 0..n {
+            let k = start + i as f32;
+            push_sprite(
+                out,
+                SpriteInstance::axis_aligned(
+                    [bx + sx * step * k, by + sy * step * k],
+                    [pip, pip],
+                    SHIELD_PIP_CHARGE,
+                    atlas::cell_uvs(atlas::SOLID_WHITE),
+                ),
+            );
+        }
+    }
 }
 
 /// On-screen silhouette bounding box for a ship at the current view angle.
@@ -3305,4 +3526,113 @@ mod tests {
             }
         }
     }
+
+    /* ---- v2 2-D compositor (D3) smoke tests ------------------------------ */
+
+    use crate::grid::{Axis, Dir4, Facing, Pos};
+    use crate::projector::ProjectorConfig;
+
+    /// `compose_scene_2d` draws the grid wireframe even with no ships, and adds
+    /// strictly more commands once ships are present — the basic "it composes"
+    /// guard for the perspective path.
+    #[test]
+    fn compose_scene_2d_draws_grid_then_ships() {
+        let cfg = ProjectorConfig::default();
+
+        let empty = empty_board(crate::grid::CELLS);
+        let grid_only = compose_scene_2d(&empty, &cfg);
+        // 5×4 cells × 4 edge lines = 80 line sprites minimum.
+        assert!(
+            grid_only.len() >= 80,
+            "grid wireframe should emit ≥80 commands, got {}",
+            grid_only.len()
+        );
+
+        let mut board = empty_board(crate::grid::CELLS);
+        let mut player = frigate_at(0, Faction::Player, Orientation::Broadside);
+        player.pos = Pos::new(2, ROWS_LOCAL - 1);
+        player.facing = Facing::Bow(Dir4::N);
+        let idx = player.pos.to_index();
+        board.cells[idx] = Some(player);
+        let with_ship = compose_scene_2d(&board, &cfg);
+        assert!(
+            with_ship.len() > grid_only.len(),
+            "a ship should add commands ({} vs {})",
+            with_ship.len(),
+            grid_only.len()
+        );
+    }
+
+    /// The bow arrow encodes `Facing::forward_axis()`: a ship facing N puts its
+    /// chevron ABOVE the hull center (smaller y, screen-down), facing S puts it
+    /// BELOW — the orientation-obvious contract shared with `facing_zone`.
+    #[test]
+    fn bow_arrow_points_along_forward_axis() {
+        let cfg = ProjectorConfig::default();
+        let center = grid_cell_quad(Pos::new(2, ROWS_LOCAL - 1), &cfg).center;
+
+        // Extract the BOW_CHEVRON sprite y for a given facing.
+        let chevron_y = |facing: Facing| -> f32 {
+            let mut s = frigate_at(0, Faction::Enemy, Orientation::Broadside);
+            s.pos = Pos::new(2, ROWS_LOCAL - 1);
+            s.facing = facing;
+            let mut out = Vec::new();
+            push_ship_2d(&mut out, &s, &cfg);
+            let (mn, mx) = atlas::cell_uvs(atlas::BOW_CHEVRON);
+            out.iter()
+                .find_map(|c| match c {
+                    DrawCommand::Sprite(sp) if sp.uv_min == mn && sp.uv_max == mx => Some(sp.pos[1]),
+                    _ => None,
+                })
+                .expect("a bow chevron sprite should be emitted")
+        };
+
+        // N (toward row 0 / up the board) ⇒ chevron above center (smaller y).
+        assert!(chevron_y(Facing::Bow(Dir4::N)) < center[1]);
+        // S (toward the player / down) ⇒ chevron below center (larger y).
+        assert!(chevron_y(Facing::Bow(Dir4::S)) > center[1]);
+        // Broadside(EastWest) points along +E ⇒ chevron to the right, same y as
+        // center (no vertical offset).
+        let mut s = frigate_at(0, Faction::Enemy, Orientation::Broadside);
+        s.pos = Pos::new(2, ROWS_LOCAL - 1);
+        s.facing = Facing::Broadside(Axis::EastWest);
+        let mut out = Vec::new();
+        push_ship_2d(&mut out, &s, &cfg);
+        let (mn, mx) = atlas::cell_uvs(atlas::BOW_CHEVRON);
+        let chev = out
+            .iter()
+            .find_map(|c| match c {
+                DrawCommand::Sprite(sp) if sp.uv_min == mn && sp.uv_max == mx => Some(sp.pos),
+                _ => None,
+            })
+            .expect("chevron present");
+        assert!(chev[0] > center[0], "EastWest broadside arrow points +E (right)");
+    }
+
+    /// Shield pips: a ship with bow+port charges emits exactly that many pip
+    /// sprites in the 2-D path (one per held charge, by zone).
+    #[test]
+    fn shield_pips_2d_one_per_charge() {
+        let cfg = ProjectorConfig::default();
+        let mut ship = frigate_at(0, Faction::Player, Orientation::Broadside);
+        ship.pos = Pos::new(1, 1);
+        ship.facing = Facing::Bow(Dir4::N);
+        ship.shield_profile = ShieldProfile {
+            bow: ShieldFace { armour: 2, charge: 2 },
+            stern: ShieldFace { armour: 0, charge: 0 },
+            port: ShieldFace { armour: 1, charge: 1 },
+            starboard: ShieldFace { armour: 1, charge: 0 },
+        };
+        let center = grid_cell_quad(ship.pos, &cfg).center;
+        let base = 22.0 * grid_cell_quad(ship.pos, &cfg).depth_scale;
+        let fwd = bow_screen_dir(ship.facing);
+        let mut out = Vec::new();
+        push_shield_pips_2d(&mut out, &ship, center, base, fwd);
+        // 2 bow + 1 port = 3 pip sprites (SOLID_WHITE in the pip color).
+        assert_eq!(out.len(), 3, "expected 3 pips (2 bow + 1 port)");
+    }
+
+    /// `ROWS` aliased locally so the tests read clearly without colliding with
+    /// the module-wide `use` set.
+    const ROWS_LOCAL: usize = crate::grid::ROWS;
 }
