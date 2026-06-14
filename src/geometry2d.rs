@@ -40,7 +40,7 @@
 //! - [`direction_to`] — the **magnitude-aware** nearest-of-8 snap of an
 //!   arbitrary vector (grid.rs's `from_to` only handles the exact-octant case
 //!   and explicitly defers the general snap to "R1 `direction_to`").
-//! - [`arc_bears`] / [`bears`] — the 2-D firing-arc cone gate.
+//! - [`arc_bears`] / [`bears`] — the 2-D firing-arc gate (cardinal-exact).
 //! - [`facing_zone`] — the correctness-critical 2-D quadrant table mapping an
 //!   incoming direction to the [`HullZone`] that eats the hit.
 //! - [`absorb_shield`] / [`default_shield_profile`] — **kept verbatim** from the
@@ -274,41 +274,53 @@ fn broadside_zone(axis: Axis, incoming_from: Dir8) -> HullZone {
 }
 
 /* =========================================================================
- * Arcs — the 2-D firing-arc cone gate
+ * Arcs — the 2-D firing-arc gate (cardinal-exact)
  * ====================================================================== */
 
 /// Does a mount with firing `arc` bear on something lying toward `toward`,
 /// given the ship's [`Facing`]? This is the gate that makes facing matter in
-/// 2-D: a forward gun only fires in a cone out the bow, a rear gun only astern,
+/// 2-D: a forward gun only fires out the bow cardinal, a rear gun only astern,
 /// a broadside battery only when the hull is turned across the grid (and then
-/// out both flanks), a turret always bears.
+/// out both flank cardinals), a turret always bears.
 ///
 /// `toward` is the direction from the firing ship to the target (use
-/// [`direction_to`]). The cone is the ±45° sector around the relevant hull
-/// vector — i.e. the cardinal plus its two diagonal neighbours — mirroring the
-/// `facing_zone` ±45° partition so "where my gun bears" and "which of my faces
-/// a return shot hits" use one consistent angular model.
+/// [`direction_to`]). Under the v2 **cardinals-only firing** model (decision
+/// #9: 4-cardinal facing, 8-way deferred) a weapon fires along an *exact*
+/// cardinal ray, so an arc bears iff `toward` is exactly that arc's cardinal
+/// direction — **not** a ±45° cone. A diagonal `toward` never bears (you cannot
+/// fire diagonally), so e.g. a `Broadside` battery does NOT bear on a target
+/// that is diagonal from the ship; it must be due-N/S or due-E/W of a flank.
+///
+/// This is deliberately a *different arity* from [`facing_zone`]: FIRING is
+/// cardinal-exact (4-way) here, while RECEIVING ([`facing_zone`]) is 8-way (an
+/// off-axis BLAST splash or ordnance hit can arrive on a diagonal and land on
+/// whatever face it presents). Conflating the two — making `arc_bears` a ±45°
+/// cone to mirror `facing_zone`'s receiving sectors — would (wrongly) let a
+/// broadside "bear" on a diagonal target it cannot actually hit with a cardinal
+/// shot. (For every *cardinal* `toward` the cone and the exact test agree; they
+/// differ only on diagonals, which is exactly the case that must be rejected.)
 ///
 /// 2-D port of the 1-D `arc_bears(Orientation, Arc, LaneEnd)`. The 1-D version
-/// was a binary fore/aft test; in 2-D `Forward`/`Rear` become bow/stern cones
-/// and `BroadsideArc` fires out either flank of a `Broadside` hull.
+/// was a binary fore/aft test; in 2-D `Forward`/`Rear` fire out the bow/stern
+/// cardinal and `BroadsideArc` fires out either flank cardinal of a `Broadside`
+/// hull.
 pub fn arc_bears(facing: Facing, arc: Arc, toward: Dir8) -> bool {
     match arc {
         // Turret bears in every direction regardless of facing.
         Arc::Turret => true,
-        // Forward: only a Bow stance, and only within the ±45° bow cone.
+        // Forward: only a Bow stance, firing out the exact bow cardinal.
         Arc::Forward => match facing {
-            Facing::Bow(dir) => within_45(dir.to_dir8(), toward),
+            Facing::Bow(dir) => toward == dir.to_dir8(),
             Facing::Broadside(_) => false,
         },
-        // Rear: only a Bow stance, and only within the ±45° stern cone.
+        // Rear: only a Bow stance, firing out the exact stern cardinal.
         Arc::Rear => match facing {
-            Facing::Bow(dir) => within_45(dir.to_dir8().opposite(), toward),
+            Facing::Bow(dir) => toward == dir.to_dir8().opposite(),
             Facing::Broadside(_) => false,
         },
-        // Broadside battery: only when turned broadside, and only out the two
-        // flank cones (perpendicular to the hull axis). The on-axis hull ends
-        // do not bear.
+        // Broadside battery: only when turned broadside, firing out either exact
+        // flank cardinal (perpendicular to the hull axis). The on-axis hull ends
+        // and all diagonals do not bear.
         Arc::BroadsideArc => match facing {
             Facing::Bow(_) => false,
             Facing::Broadside(axis) => {
@@ -317,18 +329,10 @@ pub fn arc_bears(facing: Facing, arc: Arc, toward: Dir8) -> bool {
                     Axis::EastWest => Axis::NorthSouth,
                 };
                 let (a, b) = off.dirs();
-                within_45(a.to_dir8(), toward) || within_45(b.to_dir8(), toward)
+                toward == a.to_dir8() || toward == b.to_dir8()
             }
         },
     }
-}
-
-/// `true` iff `toward` is within ±45° of `axis_dir` — i.e. equal to it or one
-/// of its two diagonal neighbours (the same ±45° sector the `facing_zone`
-/// partition uses).
-fn within_45(axis_dir: Dir8, toward: Dir8) -> bool {
-    let rel = (toward.step() + 8 - axis_dir.step()) % 8;
-    rel == 0 || rel == 1 || rel == 7
 }
 
 /* =========================================================================
@@ -606,7 +610,7 @@ mod tests {
         }
     }
 
-    /* ---- arc_bears (2-D cone) ---- */
+    /* ---- arc_bears (2-D firing gate: cardinal-EXACT, diagonals never bear) ---- */
 
     #[test]
     fn arc_bears_turret_always_bears() {
@@ -618,13 +622,15 @@ mod tests {
     }
 
     #[test]
-    fn arc_bears_forward_is_a_bow_cone_only() {
+    fn arc_bears_forward_is_the_exact_bow_cardinal_only() {
         let f = Facing::Bow(Dir4::N);
-        // within the ±45° bow cone
+        // exactly the bow cardinal bears
         assert!(arc_bears(f, Arc::Forward, Dir8::N));
-        assert!(arc_bears(f, Arc::Forward, Dir8::NE));
-        assert!(arc_bears(f, Arc::Forward, Dir8::NW));
-        // outside it
+        // diagonals flanking the bow do NOT bear (can't fire diagonally —
+        // cardinals-only firing, decision #9)
+        assert!(!arc_bears(f, Arc::Forward, Dir8::NE));
+        assert!(!arc_bears(f, Arc::Forward, Dir8::NW));
+        // perpendicular / astern cardinals don't bear
         assert!(!arc_bears(f, Arc::Forward, Dir8::E));
         assert!(!arc_bears(f, Arc::Forward, Dir8::S));
         // never when broadside
@@ -632,28 +638,42 @@ mod tests {
     }
 
     #[test]
-    fn arc_bears_rear_is_a_stern_cone_only() {
+    fn arc_bears_rear_is_the_exact_stern_cardinal_only() {
         let f = Facing::Bow(Dir4::N);
+        // exactly the stern cardinal (opposite the bow) bears
         assert!(arc_bears(f, Arc::Rear, Dir8::S));
-        assert!(arc_bears(f, Arc::Rear, Dir8::SE));
-        assert!(arc_bears(f, Arc::Rear, Dir8::SW));
+        // flanking diagonals do NOT bear
+        assert!(!arc_bears(f, Arc::Rear, Dir8::SE));
+        assert!(!arc_bears(f, Arc::Rear, Dir8::SW));
         assert!(!arc_bears(f, Arc::Rear, Dir8::N));
         assert!(!arc_bears(f, Arc::Rear, Dir8::W));
         assert!(!arc_bears(Facing::Broadside(Axis::EastWest), Arc::Rear, Dir8::S));
     }
 
     #[test]
-    fn arc_bears_broadside_fires_both_flanks_only_when_turned() {
-        // EastWest hull: flanks face N/S, so it bears N and S (and their ±45°).
+    fn arc_bears_broadside_fires_exact_flank_cardinals_only() {
+        // EastWest hull: flanks face the exact cardinals N and S.
         let f = Facing::Broadside(Axis::EastWest);
         assert!(arc_bears(f, Arc::BroadsideArc, Dir8::N));
         assert!(arc_bears(f, Arc::BroadsideArc, Dir8::S));
-        assert!(arc_bears(f, Arc::BroadsideArc, Dir8::NE)); // within 45° of N
+        // diagonals do NOT bear — a broadside cannot fire at a diagonal target
+        // (this is the bug the tester's T2 caught: SE is off-axis from a flank).
+        assert!(!arc_bears(f, Arc::BroadsideArc, Dir8::NE));
+        assert!(!arc_bears(f, Arc::BroadsideArc, Dir8::SE));
+        assert!(!arc_bears(f, Arc::BroadsideArc, Dir8::NW));
+        assert!(!arc_bears(f, Arc::BroadsideArc, Dir8::SW));
         // the hull ends (E/W) do NOT bear a broadside battery
         assert!(!arc_bears(f, Arc::BroadsideArc, Dir8::E));
         assert!(!arc_bears(f, Arc::BroadsideArc, Dir8::W));
         // a Bow stance never bears a broadside arc
         assert!(!arc_bears(Facing::Bow(Dir4::N), Arc::BroadsideArc, Dir8::E));
+        // NorthSouth hull: flanks are the exact cardinals E and W; SE (the
+        // tester's case) is off-axis and must NOT bear.
+        let ns = Facing::Broadside(Axis::NorthSouth);
+        assert!(arc_bears(ns, Arc::BroadsideArc, Dir8::E));
+        assert!(arc_bears(ns, Arc::BroadsideArc, Dir8::W));
+        assert!(!arc_bears(ns, Arc::BroadsideArc, Dir8::SE));
+        assert!(!arc_bears(ns, Arc::BroadsideArc, Dir8::N));
     }
 
     /* ---- shield absorption (verbatim port) ---- */
