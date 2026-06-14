@@ -207,24 +207,32 @@ pub fn current_encounter<'s>(run: &Run, sectors: &'s [Sector]) -> Option<&'s Enc
  * Encounter → Board materialization.
  * ====================================================================== */
 
-/// Build a fresh [`Board`] for the encounter. The board size is derived
-/// from the maximum spawn cell (rounded up to the canonical 5 / 7 / 9
-/// lane lengths from the analysis doc). The player ship is placed at
-/// cell 0; the spawns populate the rest.
+/// Build a fresh [`Board`] for the encounter on the fixed 5×4 grid (v2 C4).
+/// The player is placed at the front-centre cell ([`player_start_pos`], bow N
+/// toward the enemies); each enemy spawn is placed at its 2-D [`ShipSpawn::pos`]
+/// on the back rows.
 ///
-/// `player` is the player's CURRENT ship (with whatever heat / hull /
-/// statuses carried over from the prior encounter). The board's cell
-/// vector is rebuilt — the player's `cell` field is normalized to 0
-/// regardless of where they ended the previous encounter, matching
-/// "you start a new sector at the lane mouth" framing.
+/// `player` is the player's CURRENT ship (with whatever heat / hull / statuses
+/// carried over from the prior encounter). The board's cell vector is rebuilt;
+/// the player's `pos`/`facing` are normalized to the front-centre start
+/// regardless of where they ended the previous encounter ("you start a new
+/// encounter at the front").
 ///
-/// `class_to_ship` is a builder closure that turns a [`ShipSpawn`]
-/// into a [`Ship`] given the class id lookup. The bin passes
-/// `|spawn, board| spawn_to_ship(spawn, content)` (or any equivalent
-/// catalog-aware builder); keeping it a parameter lets the same
-/// encounter builder work with placeholder data and real catalog data.
+/// `class_to_ship` is a builder closure that turns a [`ShipSpawn`] into a
+/// [`Ship`] given the class id lookup. The bin passes a catalog-aware builder;
+/// keeping it a parameter lets the same encounter builder work with placeholder
+/// data and real catalog data.
 ///
-/// Hazards on the encounter populate `board.hazards` at the spawn cells.
+/// **INVARIANT (A) — slot == pos.to_index().** Every ship is stored at
+/// `cells[ship.pos.to_index()]` with `ship.pos` set to its real grid [`Pos`], so
+/// [`Board::ship_at`]`(pos) == cells[pos.to_index()]` finds it. The resolver's
+/// R3 ray-walk and R4 `apply_damage` depend on this; a ship whose slot and
+/// `pos` disagree is invisible to `ship_at`. A spawn whose `pos` collides with
+/// an already-placed ship (or the player) is skipped — placeholder/generated
+/// sectors are collision-free by construction, but a hand-authored sector with
+/// a duplicate cell won't corrupt the board.
+///
+/// Hazards on the encounter populate `board.hazards` at their 2-D [`Hazard::pos`].
 pub fn build_encounter_board<F>(
     encounter: &EncounterDef,
     mut player: Ship,
@@ -233,67 +241,61 @@ pub fn build_encounter_board<F>(
 where
     F: FnMut(&ShipSpawn) -> Option<Ship>,
 {
-    // Lane size: enough cells to hold every spawn plus the player at 0.
-    // Round up to the canonical 5 / 7 / 9 sizes the analysis doc uses.
-    let max_cell = encounter
-        .enemy_ships
-        .iter()
-        .map(|s| s.cell)
-        .max()
-        .unwrap_or(0)
-        .max(player.cell);
-    let size = canonical_lane_size(max_cell);
-
-    // v2 (A3 Board EXPAND): the backing Vecs are fixed len-CELLS (20) so the 2-D
+    // v2 (A3 Board EXPAND): fixed len-CELLS (20) backing Vecs so the 2-D
     // occupancy view (Board::ship_at(pos) = cells[pos.to_index()]) is valid over
-    // the whole 5×4 grid. The 1-D placement below still uses `size` for its
-    // bounds and only populates cells[0..size]; content's C4 rewrites this to
-    // place ships 2-D-natively at cells[spawn.pos.to_index()].
+    // the whole 5×4 grid.
     let mut cells: Vec<Option<Ship>> = (0..crate::grid::CELLS).map(|_| None).collect();
     let mut hazards: Vec<Vec<crate::types::Hazard>> =
         (0..crate::grid::CELLS).map(|_| Vec::new()).collect();
 
-    // #72: place the player at the MIDDLE of the lane, not the edge. A
-    // mid-lane player can be threatened from BOTH ends — they must rotate to
-    // keep their armoured face toward whichever side is closing, instead of
-    // edge-camping one direction. resolver's #68 close-move already pulls
-    // enemies in from both sides, so the spawn distribution (pincer) +
-    // mid-start together make the fight directional.
-    let player_cell = player_start_cell(size);
-    player.cell = player_cell;
-    cells[player_cell] = Some(player);
+    // Player at the front-centre cell, bow pointed N (into the board, toward the
+    // enemies). Normalize both the 2-D pos/facing and the legacy 1-D
+    // cell/orientation (transition window). Invariant (A): slot == pos.to_index().
+    let player_pos = player_start_pos();
+    player.pos = player_pos;
+    player.facing = player_spawn_facing();
+    player.cell = player_pos.to_index();
+    player.orientation = Orientation::BowOn { bow: LaneEnd::Fore };
+    cells[player_pos.to_index()] = Some(player);
 
-    // Place each enemy spawn.
+    // Place each enemy spawn at its 2-D pos (invariant A).
     for spawn in &encounter.enemy_ships {
-        if spawn.cell >= size || spawn.cell == player_cell {
-            // Off-board or colliding with the (mid-lane) player — skip. The
-            // placeholder sectors below are correct by construction; a buggy
-            // custom sector won't crash the demo.
+        if !spawn.pos.in_bounds() || spawn.pos == player_pos {
+            // Off-grid or colliding with the player — skip (defensive).
             continue;
         }
-        if cells[spawn.cell].is_some() {
-            continue;
+        let idx = spawn.pos.to_index();
+        if cells[idx].is_some() {
+            continue; // a prior spawn already holds this cell
         }
         if let Some(mut ship) = class_to_ship(spawn) {
-            ship.cell = spawn.cell;
+            // Force slot == pos.to_index(): trust the spawn's authoritative 2-D
+            // pos/facing over whatever the builder defaulted, and keep the
+            // legacy fields consistent for the transition.
+            ship.pos = spawn.pos;
+            ship.facing = spawn.facing;
+            ship.cell = idx;
             ship.orientation = spawn.orientation;
             if let Some(hp) = spawn.hp_override {
                 ship.hull = hp;
                 ship.max_hull = hp;
             }
-            cells[spawn.cell] = Some(ship);
+            cells[idx] = Some(ship);
         }
     }
 
-    // Drop hazards into their cells.
+    // Drop hazards into their 2-D cells.
     for h in &encounter.hazards {
-        if h.cell < size {
-            hazards[h.cell].push(h.clone());
+        if h.pos.in_bounds() {
+            hazards[h.pos.to_index()].push(h.clone());
         }
     }
 
     Board {
-        size,
+        // `size` is the legacy 1-D lane length, kept for the transition window;
+        // 2-D placement uses the fixed CELLS grid. Report the grid width so any
+        // remaining 1-D reader sees a sane lane spanning the columns.
+        size: crate::grid::COLS,
         cells,
         ordnance: Vec::new(),
         hazards,
@@ -515,15 +517,112 @@ pub fn placeholder_sectors() -> Vec<Sector> {
     ]
 }
 
+/* =========================================================================
+ * v2 2-D spawn geometry (C4).
+ *
+ * Blueprint decisions #2 (5×4 grid) + #8 (rows = dodge space). The 1-D pincer
+ * (enemies straddling a mid-lane player on a line) is REPLACED by a fixed 2-D
+ * layout, ratified by the lead 2026-06-14:
+ *
+ *   - PLAYER at the front-center cell, bow pointed N (INTO the board, toward the
+ *     enemies on row 0). The player faces the threat, not the camera.
+ *   - ENEMIES on the BACK rows (row 0 first, then row 1), fanned across the
+ *     columns, all bow=S (toward the player). Lateral column spread + the
+ *     two-row depth gradient is the dodge space.
+ *
+ * Spawn facings are set EXPLICITLY here (player N / enemies S) — NOT derived via
+ * `facing_from_orientation`, which is the MIGRATE stopgap for *other* 1-D
+ * constructs. These spawns are authoritative: they know the real 2-D layout.
+ * The legacy `cell`/`orientation` fields are still populated for the transition
+ * window (read by code not yet migrated); the 2-D `pos`/`facing` are the source
+ * of truth for placement and are what `build_encounter_board` keys on.
+ * ====================================================================== */
+
+/// The player's fixed 2-D start cell: front-center (`col = COLS/2`, the front
+/// row `ROWS-1`). Blueprint decision #8 — the player anchors at the front and
+/// the rows ahead are pure dodge space.
+pub fn player_start_pos() -> crate::grid::Pos {
+    crate::grid::Pos::new(crate::grid::COLS / 2, crate::grid::ROWS - 1)
+}
+
+/// The player's spawn stance: bow pointed N (toward row 0 / the enemies). The
+/// player faces INTO the board, so its strong bow meets the incoming threat.
+pub fn player_spawn_facing() -> crate::grid::Facing {
+    crate::grid::Facing::Bow(crate::grid::Dir4::N)
+}
+
+/// Every enemy's spawn stance: bow pointed S (toward the player). Combined with
+/// the resolver's close-move (which steps toward the player), the approach is
+/// bow-first from the back rows.
+pub fn enemy_spawn_facing() -> crate::grid::Facing {
+    crate::grid::Facing::Bow(crate::grid::Dir4::S)
+}
+
+/// Column order for fanning enemies across one back row: centre-out
+/// (`2, 1, 3, 0, 4` for `COLS == 5`) so small encounters cluster toward the
+/// middle (in front of the front-centre player) and larger ones fan to the
+/// edges. Deterministic and total over `0..COLS`.
+fn back_row_column_order() -> Vec<usize> {
+    let mid = crate::grid::COLS / 2;
+    let mut cols = vec![mid];
+    let mut k = 1usize;
+    while cols.len() < crate::grid::COLS {
+        // mid - k then mid + k, dropping any that fall off the row.
+        if mid >= k {
+            cols.push(mid - k);
+        }
+        if mid + k < crate::grid::COLS {
+            cols.push(mid + k);
+        }
+        k += 1;
+    }
+    cols
+}
+
+/// The back-row [`crate::grid::Pos`] for the `i`-th enemy in an encounter: fill
+/// row 0 across the centre-out column order, then row 1, then (defensively) row
+/// 2. Returns `None` once the back rows are exhausted — encounters cap at 4
+/// enemies ([`encounter_enemy_count`]) so the first two rows (10 slots) always
+/// suffice; the `None` is a guard, not an expected path.
+///
+/// The two back rows give the depth gradient (decision #8): row-0 enemies are
+/// Far/Near from the front-centre player, row-1 ones one band closer, so the
+/// player reads a wall with depth and dodges laterally between threatened
+/// columns.
+fn enemy_spawn_pos(i: usize) -> Option<crate::grid::Pos> {
+    let order = back_row_column_order();
+    let per_row = order.len(); // == COLS
+    let row = i / per_row;
+    let col = order[i % per_row];
+    // Enemies occupy the back rows only; never the front row (the player's).
+    if row >= crate::grid::ROWS - 1 {
+        return None;
+    }
+    Some(crate::grid::Pos::new(col, row))
+}
+
+/// Map a placeholder sector's 1-D lane `cell` onto a back-row 2-D [`Pos`]
+/// (the placeholder sectors below author 1-D cells; this re-keys them onto the
+/// grid). Columns wrap across `COLS`; each full wrap drops to the next back row,
+/// so a spread of cells fans across row 0 then row 1. Bounded to the back rows
+/// (row 0..ROWS-1) — a cell that would overflow past the back rows clamps to the
+/// last back row's last column (defensive; the placeholder cells stay small).
+fn placeholder_cell_to_pos(cell: usize) -> crate::grid::Pos {
+    let col = cell % crate::grid::COLS;
+    let row = (cell / crate::grid::COLS).min(crate::grid::ROWS.saturating_sub(2));
+    crate::grid::Pos::new(col, row)
+}
+
 fn spawn(class_id: &str, cell: usize, bow: LaneEnd, hp_override: Option<i32>) -> ShipSpawn {
     ShipSpawn {
         class_id: class_id.into(),
         cell,
-        // v2 (A3 EXPAND): 2-D pos/facing default until content's spawn-gen (C4)
-        // re-keys the placeholder/generated sectors onto the 5×4 grid.
-        pos: crate::grid::Pos::new(0, 0),
+        // v2 (C4): re-key the placeholder sector's 1-D cell onto a back-row 2-D
+        // Pos, and set the spawn stance EXPLICITLY to bow=S (toward the player).
+        // The legacy cell/orientation stay set for the transition window.
+        pos: placeholder_cell_to_pos(cell),
         orientation: Orientation::BowOn { bow },
-        facing: crate::grid::Facing::Bow(crate::grid::Dir4::S),
+        facing: enemy_spawn_facing(),
         hp_override,
     }
 }
@@ -642,36 +741,44 @@ fn sector_citadel_approach() -> Sector {
             EncounterDef {
                 id: "citadel_boss".into(),
                 enemy_ships: vec![
-                    // Forward escort — closer to the player, harasses on
-                    // the approach.
+                    // v2 (C4) 2-D boss layout: warlord at back-row centre
+                    // (2,0); one escort pushed a row forward to (2,1) — in
+                    // front of the warlord, harassing the approach so the
+                    // player must break past it; the other escort flanking on
+                    // the back row at (3,0). All bow=S toward the player. The
+                    // "clear the escorts, then flank the warlord's stern" read
+                    // carries over: the forward escort blocks the lane to the
+                    // boss, and the warlord's stern (facing N) is reachable
+                    // only after clearing the front.
+                    //
+                    // Forward escort — one row closer to the player.
                     ShipSpawn {
                         class_id: "voidrunner".into(),
-                        cell: 3,
-                        pos: crate::grid::Pos::new(0, 0),
+                        cell: crate::grid::Pos::new(2, 1).to_index(),
+                        pos: crate::grid::Pos::new(2, 1),
                         orientation: Orientation::BowOn { bow: LaneEnd::Aft },
-                        facing: crate::grid::Facing::Bow(crate::grid::Dir4::S),
+                        facing: enemy_spawn_facing(),
                         hp_override: None,
                     },
-                    // The warlord itself — mid-board, bow facing the
-                    // player. boss_ship_for_spawn supplies the rich
-                    // loadout; hp_override stays None so the function's
-                    // 14-hull default applies.
+                    // The warlord itself — back-row centre, bow facing the
+                    // player. boss_ship_for_spawn supplies the rich loadout;
+                    // hp_override stays None so the function's 14-hull default
+                    // applies.
                     ShipSpawn {
                         class_id: "warlord".into(),
-                        cell: 5,
-                        pos: crate::grid::Pos::new(0, 0),
+                        cell: crate::grid::Pos::new(2, 0).to_index(),
+                        pos: crate::grid::Pos::new(2, 0),
                         orientation: Orientation::BowOn { bow: LaneEnd::Aft },
-                        facing: crate::grid::Facing::Bow(crate::grid::Dir4::S),
+                        facing: enemy_spawn_facing(),
                         hp_override: None,
                     },
-                    // Aft escort — covers the warlord's stern; the
-                    // player has to break through to flank.
+                    // Flank escort — back row, off to one side of the warlord.
                     ShipSpawn {
                         class_id: "voidrunner".into(),
-                        cell: 6,
-                        pos: crate::grid::Pos::new(0, 0),
+                        cell: crate::grid::Pos::new(3, 0).to_index(),
+                        pos: crate::grid::Pos::new(3, 0),
                         orientation: Orientation::BowOn { bow: LaneEnd::Aft },
-                        facing: crate::grid::Facing::Bow(crate::grid::Dir4::S),
+                        facing: enemy_spawn_facing(),
                         hp_override: None,
                     },
                 ],
@@ -881,65 +988,56 @@ pub fn generate_sector(
     }
 }
 
-/// Sample `count` enemy spawns for one encounter from the pool, PINCERING the
-/// mid-lane player (#72): enemies are distributed on BOTH sides of the player's
-/// middle cell and each bows toward the player, so the player is threatened
-/// fore AND aft and must rotate to face whichever side is closing. Deterministic
-/// in `seed`; never spawns on the player's cell.
+/// Sample `count` enemy spawns for one encounter from the pool, distributed
+/// across the BACK ROWS of the 5×4 grid (v2 C4, replacing the v1 1-D pincer).
+/// Enemies fill row 0 centre-out, then row 1, each bow=S toward the
+/// front-centre player. Deterministic in `seed`.
 ///
-/// Facing: an enemy AFT of the player (lower cell) bows `Fore` (toward higher
-/// cells → toward the player); an enemy FORE of the player (higher cell) bows
-/// `Aft` (toward the player). Combined with resolver's #68 close-move (which
-/// closes toward the player from either side), this makes the approach
-/// directional from both ends.
+/// The 1-D pincer's "threatened from both ends, rotate to face" intent becomes
+/// the 2-D "lateral column spread + depth gradient": the player at the front
+/// centre faces a wall of enemies fanned across the columns and two rows deep,
+/// and dodges laterally between threatened columns while keeping its bow (N)
+/// toward the incoming threat. `count` is capped by [`encounter_enemy_count`]
+/// (≤4), well within the two back rows' 10 slots.
 ///
-/// Distribution: walk outward from the mid cell, alternating aft / fore
-/// (mid-1, mid+1, mid-2, mid+2, …) so the first two enemies straddle the
-/// player and additional enemies fan out symmetrically.
+/// The legacy `cell` field is still populated (centre-out lane order) for the
+/// transition window; the 2-D `pos` from [`enemy_spawn_pos`] is the source of
+/// truth for placement.
 fn sample_encounter_spawns(
     pool: &SpawnPool,
     lane: u8,
     count: usize,
     seed: u32,
 ) -> Vec<ShipSpawn> {
-    let lane = lane as usize;
-    if lane < 2 || pool.is_empty() {
+    // `lane` (the v1 1-D lane length) no longer drives distribution — the grid
+    // is a fixed 5×4 and enemies fan across the back rows. Kept in the signature
+    // for the `generate_sector` call site / future per-sector tuning.
+    let _ = lane;
+    if pool.is_empty() {
         return Vec::new();
     }
-    let mid = player_start_cell(lane);
-    // Build the pincer cell order: alternate aft (mid-k) / fore (mid+k),
-    // k = 1, 2, 3, …, keeping cells in [0, lane) and skipping the player cell.
-    let usable = lane.saturating_sub(1); // every cell except the player's
-    let n = count.min(usable);
-    let mut cells: Vec<usize> = Vec::with_capacity(n);
-    let mut k = 1usize;
-    while cells.len() < n && k <= lane {
-        // Aft side first (mid - k), then fore side (mid + k).
-        if mid >= k {
-            cells.push(mid - k);
-            if cells.len() == n {
-                break;
-            }
-        }
-        if mid + k < lane {
-            cells.push(mid + k);
-        }
-        k += 1;
-    }
+    // Cap at the back-row capacity (row 0 + row 1 = 2 * COLS slots). Encounters
+    // never request this many, but keep placement total.
+    let max_back_row = (crate::grid::ROWS.saturating_sub(1)) * crate::grid::COLS;
+    let n = count.min(max_back_row);
 
-    let mut spawns = Vec::with_capacity(cells.len());
-    for (i, &cell) in cells.iter().enumerate() {
+    let mut spawns = Vec::with_capacity(n);
+    for i in 0..n {
+        let Some(pos) = enemy_spawn_pos(i) else {
+            break; // back rows exhausted (guard; not reached at count ≤ 4)
+        };
         let pick = wang_hash(seed.wrapping_add(i as u32)) as usize % pool.class_ids.len();
         let class_id = pool.class_ids[pick].clone();
-        // Bow toward the player: aft-of-player faces Fore, fore-of-player faces Aft.
-        let bow = if cell < mid { LaneEnd::Fore } else { LaneEnd::Aft };
         spawns.push(ShipSpawn {
             class_id,
-            cell,
-            // v2 (A3 EXPAND): default until content's 2-D spawn-gen (C4).
-            pos: crate::grid::Pos::new(0, 0),
-            orientation: Orientation::BowOn { bow },
-            facing: crate::grid::Facing::Bow(crate::grid::Dir4::S),
+            // Legacy 1-D cell for the transition window: the spawn's grid index.
+            // Not load-bearing for placement (2-D `pos` is), just kept non-stale.
+            cell: pos.to_index(),
+            pos,
+            // Bow toward the player (S). Set explicitly — NOT via
+            // facing_from_orientation (see the 2-D spawn-geometry section).
+            orientation: Orientation::BowOn { bow: LaneEnd::Aft },
+            facing: enemy_spawn_facing(),
             hp_override: None,
         });
     }
@@ -967,7 +1065,12 @@ fn capital_spawn(capital_name: &str, lane: u8, catalog: &Catalog) -> Option<Ship
     if !known {
         return None;
     }
-    let mid = (lane as usize / 2).max(1);
+    // v2 (C4): a capital is a single ship — place it at the back-row centre
+    // (row 0, centre column), bow=S toward the player. `lane` is no longer used
+    // for placement (the grid is fixed 5×4); kept in the signature for the
+    // capital-lookup call sites and future per-capital tuning.
+    let _ = lane;
+    let boss_pos = crate::grid::Pos::new(crate::grid::COLS / 2, 0);
     Some(ShipSpawn {
         // class_id carries the capital's canonical name; the bin's
         // spawn callback maps capitals to boss_ship_for_spawn. Until a
@@ -975,11 +1078,10 @@ fn capital_spawn(capital_name: &str, lane: u8, catalog: &Catalog) -> Option<Ship
         // (hull 14, ReactorBreach) — distinct per-capital stats are a
         // future content+architect follow-up.
         class_id: capital_name.to_string(),
-        cell: mid,
-        // v2 (A3 EXPAND): default until content's 2-D spawn-gen (C4).
-        pos: crate::grid::Pos::new(0, 0),
+        cell: boss_pos.to_index(),
+        pos: boss_pos,
         orientation: Orientation::BowOn { bow: LaneEnd::Aft },
-        facing: crate::grid::Facing::Bow(crate::grid::Dir4::S),
+        facing: enemy_spawn_facing(),
         hp_override: None,
     })
 }
@@ -1315,18 +1417,24 @@ mod tests {
 
     /* ---- build_encounter_board ------------------------------------- */
 
+    // NOTE (C4): these three build_board tests carry MINIMAL green-keeping
+    // patches to the new 2-D placement contract (player front-centre Pos(2,3);
+    // ships stored at cells[pos.to_index()], invariant A). The proper 2-D
+    // rewrite + expanded coverage (enemy_spawn_pos ordering, collision-vs-(2,3),
+    // back-row fan) is the tester's follow-up, task #17.
+
     #[test]
-    fn build_board_places_player_mid_lane() {
-        // #72: the player starts at the MIDDLE cell, not the edge. Enemy at
-        // cell 4 keeps the lane at size 5 → player mid cell = 2.
+    fn build_board_places_player_front_center() {
+        // v2 (C4): player starts at the front-CENTRE grid cell Pos(2,3), bow N,
+        // regardless of pre-board state. Slot == pos.to_index() (invariant A).
         let enc = EncounterDef {
             id: "test".into(),
             enemy_ships: vec![ShipSpawn {
                 class_id: "skiff".into(),
-                cell: 4,
+                cell: crate::grid::Pos::new(0, 0).to_index(),
                 pos: crate::grid::Pos::new(0, 0),
                 orientation: Orientation::BowOn { bow: LaneEnd::Aft },
-                facing: crate::grid::Facing::Bow(crate::grid::Dir4::S),
+                facing: enemy_spawn_facing(),
                 hp_override: None,
             }],
             hazards: vec![],
@@ -1334,40 +1442,38 @@ mod tests {
         };
         let player = make_player(3, 8); // pre-board cell shouldn't matter
         let board = build_encounter_board(&enc, player, |spawn| Some(fallback_ship_for_spawn(spawn)));
-        // Player ends up at the middle cell (size 5 → cell 2) regardless of
-        // their pre-board cell.
-        let mid = player_start_cell(board.size);
-        assert_eq!(mid, 2, "size-5 lane → mid cell 2");
-        let at_mid = board.cells[mid].as_ref().unwrap();
-        assert_eq!(at_mid.faction, Faction::Player);
-        assert_eq!(at_mid.cell, mid);
-        // Hull state carries over (proof that the prior-encounter ship
-        // is preserved, not reset).
-        assert_eq!(at_mid.hull, 8);
-        // Cell 0 is now empty (player no longer edge-parked).
-        assert!(board.cells[0].is_none(), "player vacated the lane edge");
+        let ppos = player_start_pos();
+        assert_eq!(ppos, crate::grid::Pos::new(2, 3));
+        let at = board.ship_at(ppos).unwrap();
+        assert_eq!(at.faction, Faction::Player);
+        assert_eq!(at.pos, ppos);
+        assert_eq!(at.cell, ppos.to_index(), "invariant A: slot == pos.to_index()");
+        assert_eq!(at.facing, player_spawn_facing(), "player bow N into the board");
+        // Hull state carries over (prior-encounter ship preserved, not reset).
+        assert_eq!(at.hull, 8);
     }
 
     #[test]
-    fn build_board_spawns_enemies_at_their_cells() {
-        // Cells 1 and 4 (size-5 lane, player mid = cell 2 stays clear).
+    fn build_board_spawns_enemies_at_their_pos() {
+        // v2 (C4): enemies placed at their 2-D spawn.pos (invariant A), not the
+        // legacy 1-D cell. Two back-row spawns at (0,0) and (4,1).
         let enc = EncounterDef {
             id: "test".into(),
             enemy_ships: vec![
                 ShipSpawn {
                     class_id: "skiff".into(),
-                    cell: 1,
+                    cell: crate::grid::Pos::new(0, 0).to_index(),
                     pos: crate::grid::Pos::new(0, 0),
-                    orientation: Orientation::BowOn { bow: LaneEnd::Fore },
-                    facing: crate::grid::Facing::Bow(crate::grid::Dir4::S),
+                    orientation: Orientation::BowOn { bow: LaneEnd::Aft },
+                    facing: enemy_spawn_facing(),
                     hp_override: None,
                 },
                 ShipSpawn {
                     class_id: "lancer".into(),
-                    cell: 4,
-                    pos: crate::grid::Pos::new(0, 0),
+                    cell: crate::grid::Pos::new(4, 1).to_index(),
+                    pos: crate::grid::Pos::new(4, 1),
                     orientation: Orientation::Broadside,
-                    facing: crate::grid::Facing::Bow(crate::grid::Dir4::S),
+                    facing: crate::grid::Facing::Broadside(crate::grid::Axis::EastWest),
                     hp_override: Some(7),
                 },
             ],
@@ -1376,36 +1482,36 @@ mod tests {
         };
         let board = build_encounter_board(&enc, make_player(0, 10),
             |spawn| Some(fallback_ship_for_spawn(spawn)));
-        let e1 = board.cells[1].as_ref().unwrap();
+        let e1 = board.ship_at(crate::grid::Pos::new(0, 0)).unwrap();
         assert_eq!(e1.faction, Faction::Enemy);
-        let e4 = board.cells[4].as_ref().unwrap();
-        assert_eq!(e4.faction, Faction::Enemy);
-        assert_eq!(e4.orientation, Orientation::Broadside);
-        assert_eq!(e4.hull, 7, "hp_override applied");
+        assert_eq!(e1.pos, crate::grid::Pos::new(0, 0), "invariant A");
+        let e2 = board.ship_at(crate::grid::Pos::new(4, 1)).unwrap();
+        assert_eq!(e2.faction, Faction::Enemy);
+        assert_eq!(e2.facing, crate::grid::Facing::Broadside(crate::grid::Axis::EastWest));
+        assert_eq!(e2.hull, 7, "hp_override applied");
     }
 
     #[test]
-    fn build_board_skips_player_cell_spawn_to_avoid_collision() {
-        // #72: the player now sits mid-lane, so a spawn ON the mid cell (not
-        // cell 0) is the collision case. cells 0 and 4 keep the lane size 5
-        // → mid cell 2; the cell-2 spawn must be dropped.
+    fn build_board_skips_player_pos_spawn_to_avoid_collision() {
+        // v2 (C4): a spawn whose pos collides with the front-centre player
+        // Pos(2,3) is dropped; a non-colliding back-row spawn still places.
         let enc = EncounterDef {
             id: "test".into(),
             enemy_ships: vec![
                 ShipSpawn {
                     class_id: "skiff".into(),
-                    cell: 2, // tries to spawn ON the mid-lane player
-                    pos: crate::grid::Pos::new(0, 0),
+                    cell: player_start_pos().to_index(),
+                    pos: player_start_pos(), // tries to spawn ON the player
                     orientation: Orientation::BowOn { bow: LaneEnd::Aft },
-                    facing: crate::grid::Facing::Bow(crate::grid::Dir4::S),
+                    facing: enemy_spawn_facing(),
                     hp_override: None,
                 },
                 ShipSpawn {
                     class_id: "skiff".into(),
-                    cell: 4, // keeps lane size at 5
-                    pos: crate::grid::Pos::new(0, 0),
+                    cell: crate::grid::Pos::new(2, 0).to_index(),
+                    pos: crate::grid::Pos::new(2, 0),
                     orientation: Orientation::BowOn { bow: LaneEnd::Aft },
-                    facing: crate::grid::Facing::Bow(crate::grid::Dir4::S),
+                    facing: enemy_spawn_facing(),
                     hp_override: None,
                 },
             ],
@@ -1414,13 +1520,14 @@ mod tests {
         };
         let board = build_encounter_board(&enc, make_player(0, 10),
             |spawn| Some(fallback_ship_for_spawn(spawn)));
-        let mid = player_start_cell(board.size);
-        let at_mid = board.cells[mid].as_ref().unwrap();
-        // Player kept the mid cell; the colliding enemy spawn was dropped.
-        assert_eq!(at_mid.faction, Faction::Player);
-        // A cell-0 spawn would now be VALID (player vacated the edge) — confirm
-        // the non-colliding enemy at cell 4 still placed.
-        assert_eq!(board.cells[4].as_ref().unwrap().faction, Faction::Enemy);
+        // Player kept its cell; the colliding enemy spawn was dropped.
+        let at = board.ship_at(player_start_pos()).unwrap();
+        assert_eq!(at.faction, Faction::Player);
+        // The non-colliding back-row enemy still placed.
+        assert_eq!(
+            board.ship_at(crate::grid::Pos::new(2, 0)).unwrap().faction,
+            Faction::Enemy
+        );
     }
 
     #[test]
@@ -1565,29 +1672,26 @@ mod tests {
         assert!(last.is_boss, "sector ends in the capital boss");
         assert_eq!(last.enemy_ships.len(), 1, "boss is a single capital ship");
         assert_eq!(last.enemy_ships[0].class_id, "The Dasher");
-        // #72: player starts mid-lane (lane 5 → cell 2); enemies pincer
-        // around it and must never spawn ON the player cell.
-        let mid = player_start_cell(cat.sectors[1].lane as usize);
+        // v2 (C4): non-boss encounters fan enemies across the BACK ROWS, all
+        // bow=S, never on the front-centre player cell. (The proper back-row
+        // distribution coverage is the tester's #17; this is the green-keeping
+        // smoke check.)
+        let ppos = player_start_pos();
         for e in &sector.encounters[..sector.encounters.len() - 1] {
             assert!(!e.is_boss);
-            // Non-boss encounters draw from the pool (skiff/lancer) at
-            // distinct cells straddling the mid-lane player.
             assert!(!e.enemy_ships.is_empty());
-            let mut saw_aft = false;
-            let mut saw_fore = false;
             for sp in &e.enemy_ships {
-                assert_ne!(sp.cell, mid, "enemies never spawn on the player's mid cell");
-                if sp.cell < mid { saw_aft = true; }
-                if sp.cell > mid { saw_fore = true; }
+                assert_ne!(sp.pos, ppos, "enemies never spawn on the player cell");
+                assert!(sp.pos.row < crate::grid::ROWS - 1, "enemies on the back rows");
+                assert_eq!(sp.facing, enemy_spawn_facing(), "enemies bow S toward the player");
+                assert_eq!(sp.cell, sp.pos.to_index(), "invariant A: legacy cell tracks pos");
                 assert!(
                     pool.class_ids.contains(&sp.class_id),
                     "spawn {} drawn from the pool", sp.class_id,
                 );
             }
-            // Lane 5 → 2 enemies per encounter (encounter_enemy_count), and
-            // the pincer puts one on each side of the player.
+            // Lane-5 sector → 2 enemies per encounter (encounter_enemy_count).
             assert_eq!(e.enemy_ships.len(), 2);
-            assert!(saw_aft && saw_fore, "the two enemies pincer the mid player (one each side)");
         }
     }
 
