@@ -15,7 +15,16 @@
 //!   offset / from_to / neighbors helpers. Lands standalone ahead of the
 //!   atomic `cell:usize→Pos` migration (blueprint lane task A2). Pure data.
 //! - [`geometry`] — spatial primitives: orientation, arcs, range bands,
-//!   directional shield absorption (mirrors `engine/geometry.ts`).
+//!   directional shield absorption (mirrors `engine/geometry.ts`). The 1-D
+//!   lane version, live until the A3 `cell:usize→Pos` migration retires it.
+//! - [`geometry2d`] — the v2 2-D replacement for [`geometry`], built over
+//!   [`grid`]: `in_band` / `band_falloff` `[1.0,0.6,0.3]`, the magnitude-aware
+//!   `direction_to`, the 2-D `arc_bears` cone, the `facing_zone(Facing,Dir8)`
+//!   quadrant table, and `absorb_shield`/`default_shield_profile` kept verbatim.
+//!   Lands additively alongside the 1-D `geometry` (expand-contract); the
+//!   architect `git mv`s it onto `geometry.rs` once A3 removes the 1-D world
+//!   (blueprint resolver task R1). Pure + deterministic — the single source the
+//!   firing path and the ThreatMap telegraph both run.
 //! - [`resolve`] — the combat resolver: four-phase round, arc/heat/cooldown
 //!   gate, damage pipeline, ordnance advance (mirrors `engine/resolve.ts`).
 //!   Content / AI effect bodies are stubbed pending the content slice.
@@ -84,6 +93,7 @@ pub mod catalog;
 pub mod catalog_canonical;
 pub mod classes;
 pub mod geometry;
+pub mod geometry2d;
 pub mod grid;
 pub mod input;
 pub mod loft;
