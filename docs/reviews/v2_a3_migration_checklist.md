@@ -114,7 +114,11 @@ ORDER, or the EventBus contract. Guard both halves:
 
 The 1-D `facing_zone` (fore→starboard / aft→port tiebreak) has **no direct 2-D analog** — the
 blueprint mandates a NEW `facing_zone(Facing, Dir8) -> HullZone` quadrant table (R2, reviewed
-separately under V3). For V2, confirm only that the migration doesn't silently drop facing:
+separately under V3 — the corrected table is pinned in
+[`v3_facing_zone_table.md`](v3_facing_zone_table.md); **note blueprint line 30 was INVERTED for
+the Broadside case** — on-axis → Bow/Stern, perpendicular → Port/Starboard, per the lead's
+ruling and `grid.rs::Axis`). For V2, confirm only that the migration doesn't silently drop
+facing:
 - [ ] Every place that read `Orientation::BowOn{bow}` now reads `Facing::Bow(Dir4)` and every
       `Orientation::Broadside` now reads `Facing::Broadside(Axis)` — no arm collapsed/lost.
 - [ ] `arc_bears` / `bears` (mount-can-fire gate) migrated to `Facing`+`Dir8`; the
