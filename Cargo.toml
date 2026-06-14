@@ -105,6 +105,17 @@ name = "grid_preview"
 path = "src/bin/grid_preview.rs"
 required-features = ["render", "runtime"]
 
+# Real-board preview: the campaign's first-encounter 5×4 formation (a faithful
+# synthetic board matching content C4's spawn layout) rendered through the
+# production hud::compose_scene_2d — real ship.pos/facing/shield pips, the D2
+# projector, bow arrows, parallax backdrop. The interim "see the REAL board"
+# path while compose_scene_2d's wiring into broadside.rs proper stays held. Run:
+# `cargo run --bin encounter_preview --features render,runtime`.
+[[bin]]
+name = "encounter_preview"
+path = "src/bin/encounter_preview.rs"
+required-features = ["render", "runtime"]
+
 [dev-dependencies]
 # Property-based testing for the band_falloff overflow / clamp invariant
 # and the absorb_shield (dmg, armour, charge) state machine. Avoid using
