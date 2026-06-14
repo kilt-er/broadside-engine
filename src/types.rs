@@ -56,7 +56,7 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::grid::{Dir4, Dir8, Facing, Pos, Range};
+use crate::grid::{Axis, Dir4, Dir8, Facing, Pos, Range};
 
 /* =========================================================================
  * 0. v2 spatial migration — additive 2D fields (blueprint lane task A3)
@@ -105,6 +105,43 @@ fn default_facing() -> Facing {
 /// (`optimal_range`): `Adjacent`. Removed at CONTRACT.
 fn default_range() -> Range {
     Range::Adjacent
+}
+
+/// Canonical transitional derivation of the v2 [`Facing`] from the legacy 1-D
+/// [`Orientation`], for the EXPAND→MIGRATE window. **Single source** so the
+/// three lanes that consume `Ship.facing` — the resolver's `bears()`/arc-gating,
+/// the renderer's bow-arrow ([`crate::hud`] `bow_screen_dir`), and content's
+/// spawn builders ([`crate::runs`]) — agree on the mapping. Removed at CONTRACT
+/// once `Orientation` is deleted and spawns author a native [`Facing`] directly.
+///
+/// ## The convention (content/resolver-ratified; lead delegated the call)
+///
+/// The 1-D lane's depth axis embeds as the grid's **N/S** axis (per the frozen
+/// [`crate::grid`] frame: `Dir4::S` = `+row` = toward the player at the front
+/// row; `Dir4::N` = `-row` = toward the far/back row where enemies spawn):
+///
+/// - `BowOn { Fore }` → `Bow(S)` — bow points down-board toward the player. This
+///   matches the renderer's shipped `bow_screen_dir(Bow(S)) = (0, +1)` (arrow
+///   points at the player) and makes `bears(Forward)` gate on facing the player,
+///   which the AI/telegraph expect for a closing enemy.
+/// - `BowOn { Aft }`  → `Bow(N)` — bow points up-board, away from the player.
+/// - `Broadside`      → `Broadside(EastWest)` — hull lies across the depth axis,
+///   presenting its flanks to N/S (the fore/aft analog of v1's "lane hits land
+///   on a flank").
+///
+/// **Caveat for content (C4):** this is a pure function of `orientation` alone.
+/// If a spawn config wants an enemy to *face the player* regardless of side
+/// (e.g. the v1 pincer, where ships on opposite sides need opposite bows to both
+/// face center), derive the spawn's `orientation`/`facing` from its grid
+/// position — don't assume one orientation value yields "toward player" for all
+/// spawns. This helper is the faithful per-orientation map + the
+/// [`default_facing`] fallback; native 2-D spawn facing is C4's to author.
+pub fn facing_from_orientation(o: Orientation) -> Facing {
+    match o {
+        Orientation::BowOn { bow: LaneEnd::Fore } => Facing::Bow(Dir4::S),
+        Orientation::BowOn { bow: LaneEnd::Aft } => Facing::Bow(Dir4::N),
+        Orientation::Broadside => Facing::Broadside(Axis::EastWest),
+    }
 }
 
 /* =========================================================================
