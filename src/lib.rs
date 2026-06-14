@@ -24,6 +24,10 @@
 //!   consumed by the renderer (mirrors `engine/perspective.ts`).
 //! - [`atlas`]    — procedural sprite atlas (ship faces, bow chevron,
 //!   ordnance, HUD glyphs, parallax art).
+//! - [`background`] — the 20-layer parallax space background (depth queue +
+//!   horizontal parallax). Implements `BROADSIDE_BACKGROUND_SPEC.md` §4 slot
+//!   math; reads parallax constants from `background_manifest.json` and ships a
+//!   solid-ink-per-layer fallback so it renders before the painted PNGs exist.
 //! - [`gfx`]      — wgpu state, instanced sprite batcher, virtual-resolution
 //!   blit. Pipeline scaffold only; scene content lives in [`hud`].
 //! - [`hud`]      — turns a [`types::Board`] into a back-to-front
@@ -90,6 +94,8 @@ pub mod subsystems;
 
 #[cfg(feature = "render")]
 pub mod atlas;
+#[cfg(feature = "render")]
+pub mod background;
 #[cfg(feature = "render")]
 pub mod gfx;
 #[cfg(feature = "render")]
