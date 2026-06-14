@@ -153,6 +153,148 @@ fn index_is_row_major_col_is_the_fast_axis() {
     assert_eq!(Pos::new(COLS - 1, ROWS - 1).to_index(), CELLS - 1);
 }
 
+/* =========================================================================
+ * Absolute frame convention — the load-bearing "which way is the camera" pin
+ *
+ * Everything above this point is SIGN-AGNOSTIC: the round-trips, the
+ * delta+opposite cancellation, the from_to/delta sign-consistency — all survive
+ * a global flip of the N/S (or E/W) delta signs, because they only assert
+ * *relative* structure. But the module docs fix an ABSOLUTE frame the projector
+ * (D2) and the AI depend on: `row 0` is the far/back row (enemy spawn), `row
+ * ROWS-1` is the front row nearest the camera/player; `Dir8::S` (and `Dir4::S`)
+ * points toward the camera by INCREASING row, `Dir8::N` away by decreasing it;
+ * `E` increases col, `W` decreases it. These tests pin those exact signs, so
+ * flipping a single delta constant in `src/grid.rs` — which would invert the
+ * board under the renderer and make the AI "close" by retreating — fails LOUDLY
+ * here instead of passing silently through the symmetric suite below.
+ * ====================================================================== */
+
+#[test]
+fn row_zero_is_the_far_back_row_and_the_front_row_faces_the_camera() {
+    // The blueprint frame (decision context, module docs): enemies spawn at the
+    // back (row 0), the player/camera is at the front (row ROWS-1). Pin both the
+    // endpoints and that increasing `row` walks back→front in index order.
+    let back = Pos::new(0, 0);
+    let front = Pos::new(0, ROWS - 1);
+    assert_eq!(back.row, 0, "the back/far row is row 0");
+    assert_eq!(front.row, ROWS - 1, "the front/camera row is row ROWS-1");
+    // The front row sits at a STRICTLY GREATER flat index than the back row in
+    // the same column — i.e. row increases toward the camera, monotonically.
+    assert!(
+        front.to_index() > back.to_index(),
+        "front row (toward camera) has the higher flat index"
+    );
+    // Walking column 0 from back to front, the index strictly increases by COLS
+    // each step (depth advances one full row toward the camera per row++).
+    for r in 1..ROWS {
+        let here = Pos::new(0, r);
+        let behind = Pos::new(0, r - 1);
+        assert_eq!(
+            here.to_index(),
+            behind.to_index() + COLS,
+            "row {r} (one nearer the camera) is COLS past row {}",
+            r - 1
+        );
+    }
+}
+
+#[test]
+fn cardinal_deltas_pin_the_absolute_frame_not_just_a_consistent_one() {
+    // THE pin the symmetric suite cannot make: the exact unit step of each
+    // cardinal. `+row` is toward the camera, so S must be (0, +1) and N (0, -1);
+    // `+col` is rightward, so E is (+1, 0) and W (-1, 0). A flip of either pair
+    // in `src/grid.rs` lands here.
+    assert_eq!(Dir8::N.delta(), (0, -1), "N steps AWAY from the camera (row--)");
+    assert_eq!(Dir8::S.delta(), (0, 1), "S steps TOWARD the camera (row++)");
+    assert_eq!(Dir8::E.delta(), (1, 0), "E increases col (rightward)");
+    assert_eq!(Dir8::W.delta(), (-1, 0), "W decreases col (leftward)");
+    // And the four diagonals are the exact componentwise combination of their
+    // cardinal parts under that same frame (so a diagonal can't be flipped on
+    // one axis independently).
+    assert_eq!(Dir8::NE.delta(), (1, -1), "NE = E + N");
+    assert_eq!(Dir8::SE.delta(), (1, 1), "SE = E + S");
+    assert_eq!(Dir8::SW.delta(), (-1, 1), "SW = W + S");
+    assert_eq!(Dir8::NW.delta(), (-1, -1), "NW = W + N");
+}
+
+#[test]
+fn stepping_south_increases_row_toward_the_camera_and_north_decreases_it() {
+    // Expressed through `offset` (the function callers actually use to move), not
+    // just `delta`, so the frame is pinned at the API the resolver/AI call.
+    // From every cell with room ahead, S lands one row nearer the camera.
+    for p in every_cell() {
+        if p.row + 1 < ROWS {
+            assert_eq!(
+                offset(p, Dir8::S, 1),
+                Some(Pos::new(p.col, p.row + 1)),
+                "S from {p:?} moves toward the camera (row+1)"
+            );
+        }
+        if p.row >= 1 {
+            assert_eq!(
+                offset(p, Dir8::N, 1),
+                Some(Pos::new(p.col, p.row - 1)),
+                "N from {p:?} moves away from the camera (row-1)"
+            );
+        }
+        if p.col + 1 < COLS {
+            assert_eq!(
+                offset(p, Dir8::E, 1),
+                Some(Pos::new(p.col + 1, p.row)),
+                "E from {p:?} moves right (col+1)"
+            );
+        }
+        if p.col >= 1 {
+            assert_eq!(
+                offset(p, Dir8::W, 1),
+                Some(Pos::new(p.col - 1, p.row)),
+                "W from {p:?} moves left (col-1)"
+            );
+        }
+    }
+}
+
+#[test]
+fn an_enemy_at_the_back_closing_on_a_front_player_steps_south() {
+    // The concrete gameplay reading of the frame: an enemy spawned at the back
+    // (low row) closing on the player at the front (high row) must head SOUTH
+    // (toward the camera). If the N/S frame were flipped, `from_to` would report
+    // N here and the AI's "close the distance" would walk enemies off the back
+    // wall — this asserts the sign that prevents that.
+    let enemy = Pos::new(2, 0); // back row, centre column
+    let player = Pos::new(2, ROWS - 1); // front row, same column
+    assert_eq!(from_to(enemy, player), Some(Dir8::S), "back→front bears S");
+    // And the reciprocal: the player bears N to the enemy.
+    assert_eq!(from_to(player, enemy), Some(Dir8::N), "front→back bears N");
+    // A diagonal close from a back corner toward a front-centre player bears a
+    // southerly (camera-ward) diagonal, never a northerly one.
+    let corner = Pos::new(0, 0);
+    let bearing = from_to(corner, player).expect("distinct");
+    assert!(
+        matches!(bearing, Dir8::SE | Dir8::S),
+        "back-left → front-centre bears camera-ward (got {bearing:?})"
+    );
+}
+
+#[test]
+fn dir4_cardinals_inherit_the_same_absolute_frame_via_dir8() {
+    // The stance/facing cardinals must share the board frame, otherwise a
+    // Bow(S) ship would face away from the camera while the world's S points
+    // toward it. Dir4 has no `delta` of its own, so pin it through `to_dir8`.
+    assert_eq!(Dir4::N.to_dir8().delta(), (0, -1), "Dir4::N is world N (row--)");
+    assert_eq!(Dir4::S.to_dir8().delta(), (0, 1), "Dir4::S is world S (row++)");
+    assert_eq!(Dir4::E.to_dir8().delta(), (1, 0), "Dir4::E is world E (col++)");
+    assert_eq!(Dir4::W.to_dir8().delta(), (-1, 0), "Dir4::W is world W (col--)");
+    // The "positive" direction of each axis (used by `Axis::dirs`) is the one
+    // whose delta has a +1 component — S on NorthSouth, E on EastWest. This ties
+    // the Axis::dirs ordering (tested elsewhere structurally) to the ABSOLUTE
+    // sign, closing the loop between the axis API and the board frame.
+    let (ns_pos, _) = Axis::NorthSouth.dirs();
+    let (ew_pos, _) = Axis::EastWest.dirs();
+    assert_eq!(ns_pos.to_dir8().delta(), (0, 1), "NorthSouth positive is +row (S)");
+    assert_eq!(ew_pos.to_dir8().delta(), (1, 0), "EastWest positive is +col (E)");
+}
+
 #[test]
 fn in_bounds_is_true_exactly_inside_the_grid() {
     // Inside.
