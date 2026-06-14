@@ -977,10 +977,12 @@ pub fn apply_effect(
                     id: format!("{}@{}", a.id, c),
                     kind,
                     cell: c,
-                    // v2 (A3 EXPAND): the flat index `c` maps to its Pos via the
-                    // grid's canonical inverse (the carry-over access pattern V1
-                    // endorsed). Falls back to origin only if out of range.
-                    pos: crate::grid::Pos::from_index(c).unwrap_or(crate::grid::Pos::new(0, 0)),
+                    // v2 (A3 EXPAND): 2-D pos left at the transitional default —
+                    // the 1-D lane index `c` and a 2-D grid Pos are different
+                    // spaces with no valid bijection (lead ruling), so we do NOT
+                    // derive one from the other. The resolver sets a real Pos
+                    // when DEPLOY migrates to 2-D (R-series).
+                    pos: crate::grid::Pos::new(0, 0),
                     payload: Vec::new(),
                     ttl: None,
                 });

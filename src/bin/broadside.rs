@@ -555,11 +555,11 @@ fn make_ship(id: &str, faction: Faction, cell: usize, orientation: Orientation) 
         id: id.into(),
         faction,
         cell,
-        // v2 (A3 EXPAND): demo-scene transitional 2-D values; the renderer's
-        // D-series rebuilds this scene on the 5×4 grid. `pos` mirrors the flat
-        // cell via the grid's canonical inverse; `facing` defaults.
-        pos: broadside_engine::grid::Pos::from_index(cell)
-            .unwrap_or(broadside_engine::grid::Pos::new(0, 0)),
+        // v2 (A3 EXPAND): transitional 2-D defaults. The 1-D lane index and a
+        // 2-D grid Pos are different spaces with no valid bijection (lead
+        // ruling) — don't derive pos from cell. The renderer's D-series rebuilds
+        // this demo scene natively on the 5×4 grid.
+        pos: broadside_engine::grid::Pos::new(0, 0),
         orientation,
         facing: broadside_engine::grid::Facing::Bow(broadside_engine::grid::Dir4::S),
         hull: 5,
