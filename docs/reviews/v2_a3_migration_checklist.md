@@ -14,6 +14,45 @@ numbers below are pre-migration (`v2` @ `066f9a6`-era) and WILL drift — re-gre
 
 ---
 
+## Per-commit verdict log
+
+### `e2d0403` — A3.1 EXPAND (additive 2D fields) — **APPROVE**
+
+Additive-only: Ship `+pos/+facing`, Projectile `+pos/+heading8`, Hazard `+pos`, FireEvent
+`+from_pos/+to_pos`, ShipSpawn `+pos/+facing`, HookContext `+source_pos/+target_pos`, Targeting
+`+range_band/+optimal_range`, new `Threat`/`ThreatKind`. Nothing deleted. Verified:
+- §0 green: **614 tests pass** (343 lib + 271 integration), 0 failed. clippy `--all-targets`'s
+  7 warnings are **provably NOT in this commit** — all in `src/geometry2d.rs:227,251-256` (R1's
+  lane). A3.1's files are clean.
+- §6 fixtures: `catalog_example` + `catalog_smoke` green — pre-v2 JSON parses unchanged. serde
+  renames (`rangeBand`/`optimalRange`/`heading8`) are on NEW fields only; the 1-D
+  `band`/`optimalBand`/`heading` wire keys are untouched → byte-stable for surviving fields. ✓
+- Threat transient (NOT in `BoardSnapshot`): correct, matches the `fire_events` precedent and
+  the blueprint's "recomputed each turn from `resolve_targeting(queued)`". `Board.threats`
+  rightly deferred (no consumer until R8). ✓
+- Construction fills audited: **genuine carry-throughs where a pos exists** — `apply_effect`
+  uses `Pos::from_index(c).unwrap_or(origin)` (the real V1-endorsed inverse, not a blind
+  placeholder); `runs.rs` `boss/fallback_ship_for_spawn` carry `spawn.pos`/`spawn.facing`;
+  `input.rs` projectile spawn carries `owner.pos`. Transitional `(0,0)`/`Bow(Dir4::S)` defaults
+  only at true source points (the `spawn()` helper, placeholder sectors → deferred to C4). ✓
+- No premature reader: grep confirms `.range_band`/`.optimal_range` have **no resolver reader**
+  yet (targeting still gates on 1-D `band`), so the `#[serde(default)]` → **empty** `range_band`
+  Vec is inert and cannot make weapons fire-at-no-range. ✓
+
+**Forward-notes carried to MIGRATE/CONTRACT (not A3.1 blockers):**
+1. **`facing` ⇄ `orientation` will DISAGREE mid-migrate.** Every spawn currently gets
+   `default_facing = Bow(Dir4::S)` regardless of its 1-D `orientation` (so a `Broadside` ship
+   has `facing: Bow(S)`). Fine now (no one reads `facing`), but the MIGRATE commit that first
+   reads `facing` MUST derive it from `orientation` (or vice versa) at the same time — do NOT
+   leave both independently defaulted once a consumer exists. **Watch this at the facing-reader
+   migrate commit.**
+2. **Deferred items to not-forget at CONTRACT:** `Board.threats`, `Board.level`,
+   `DISPLACE_SELF.dir8`, the temp suffixes (`heading8`→`heading`, `range_band`→`band`,
+   `optimal_range`→`optimal_band`), and removal of all four `default_*` fns + the 1-D
+   fields/enums (`LaneEnd`/`Orientation`/`RangeBand`). Cross-checked against §1/§2/§8.
+
+---
+
 ## 0. Green-at-every-commit (expand-contract invariant)
 
 - [ ] Each commit compiles the **whole crate** (`cargo build` + `cargo build --features render`).
