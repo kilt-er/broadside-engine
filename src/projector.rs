@@ -82,17 +82,38 @@ impl Point2 {
 /// that bracket the cell, so adjacent rows' quads tile without a gap.
 ///
 /// `center` is the cell's center point (where a ship sprite / threat marker
-/// pivots). `depth_scale` is the per-cell foreshortening factor (1.0 at the
-/// nearest row, shrinking with depth) the renderer applies to sprite sizes and
-/// the loft dest-quad (D4).
+/// pivots). `depth_scale` is the per-cell foreshortening factor the renderer
+/// applies to sprite sizes and the loft dest-quad (D4) — see the field doc for
+/// its exact numeric meaning.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CellQuad {
     /// `[top-left, top-right, bottom-right, bottom-left]` in virtual-pixel space.
     pub corners: [[f32; 2]; 4],
     /// The cell center in virtual-pixel space.
     pub center: [f32; 2],
-    /// Foreshortening factor: `1.0` at the nearest row, `< 1.0` farther back.
-    /// Drives sprite half-size and the loft dest-quad scale.
+    /// **Absolute** per-cell foreshortening multiplier — NOT a ratio against a
+    /// reference row. `depth_scale = z_near / z(cell_center)`, i.e. `1/z`
+    /// normalized so the **near plane** (`z = z_near`, `d = 0`) would read
+    /// exactly `1.0`. It is sampled at the cell's **center** depth, so a real
+    /// cell is always `< 1.0` (its center sits behind the near plane).
+    ///
+    /// Concretely, with the [`ProjectorConfig::default`] (`z_near = 1.0`,
+    /// `z_far = 2.4`, `ROWS = 4`) it is, by row:
+    ///
+    /// | `row` | position      | `depth_scale` |
+    /// |-------|---------------|---------------|
+    /// | 3     | front / near  | ≈ **0.851**   |
+    /// | 2     |               | ≈ 0.656       |
+    /// | 1     |               | ≈ 0.533       |
+    /// | 0     | back / far    | ≈ **0.449**   |
+    ///
+    /// (Grows monotonically with `row` — the grid.rs contract "the renderer's
+    /// per-row depth scale grows with row".) D4 multiplies the loft dest-quad's
+    /// on-screen size by this directly; the same absolute factor scales sprite
+    /// half-sizes / HUD markers so a ship at the back row reads ~half the size
+    /// of one at the front. The exact numbers move if Bruce retunes
+    /// `z_near`/`z_far`; the *meaning* (absolute `z_near/z`, near-plane-anchored,
+    /// center-sampled) is stable.
     pub depth_scale: f32,
 }
 

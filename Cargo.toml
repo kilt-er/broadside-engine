@@ -92,6 +92,19 @@ name = "loft_poc"
 path = "src/bin/loft_poc.rs"
 required-features = ["render", "runtime"]
 
+# Visual harness for the v2 5×4 board geometry: renders the empty grid through
+# the D2 perspective projector over a parallax-style backdrop, plus mock ships
+# (with bow-direction arrows) and mock threats (red move-fill + gold shield
+# pips). Depends ONLY on the renderer modules already green over the frozen
+# grid.rs (projector / gfx / atlas / background / grid) — NOT types/resolve/hud
+# (mid-A3), so it can't collide with the type migration. Stages the D3/D4 draw
+# logic for lift into hud.rs once A3.1 lands. Run:
+# `cargo run --bin grid_preview --features render,runtime`.
+[[bin]]
+name = "grid_preview"
+path = "src/bin/grid_preview.rs"
+required-features = ["render", "runtime"]
+
 [dev-dependencies]
 # Property-based testing for the band_falloff overflow / clamp invariant
 # and the absorb_shield (dmg, armour, charge) state machine. Avoid using
