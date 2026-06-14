@@ -30,11 +30,25 @@ Additive-only: Ship `+pos/+facing`, Projectile `+pos/+heading8`, Hazard `+pos`, 
 - Threat transient (NOT in `BoardSnapshot`): correct, matches the `fire_events` precedent and
   the blueprint's "recomputed each turn from `resolve_targeting(queued)`". `Board.threats`
   rightly deferred (no consumer until R8). ✓
-- Construction fills audited: **genuine carry-throughs where a pos exists** — `apply_effect`
-  uses `Pos::from_index(c).unwrap_or(origin)` (the real V1-endorsed inverse, not a blind
-  placeholder); `runs.rs` `boss/fallback_ship_for_spawn` carry `spawn.pos`/`spawn.facing`;
-  `input.rs` projectile spawn carries `owner.pos`. Transitional `(0,0)`/`Bow(Dir4::S)` defaults
-  only at true source points (the `spawn()` helper, placeholder sectors → deferred to C4). ✓
+- Construction fills audited: **genuine carry-throughs where a pos exists** — `runs.rs`
+  `boss/fallback_ship_for_spawn` carry `spawn.pos`/`spawn.facing`; `input.rs` projectile spawn
+  carries `owner.pos`. Transitional `(0,0)`/`Bow(Dir4::S)` defaults at true source points (the
+  `spawn()` helper, placeholder sectors → deferred to C4). ✓
+
+  **CORRECTION (supersedes my e2d0403 take — `ba7d68f`):** In my e2d0403 review I praised
+  `apply_effect`'s `Hazard.pos = Pos::from_index(c).unwrap_or(origin)` (and the bin's `make_ship`
+  `Ship.pos`) as "the V1-endorsed inverse." **I was wrong**, and the lead overruled it. V1
+  endorsed `from_index` as the inverse of `to_index` **within the 2-D grid's own flat-index
+  space** (a `CELLS`-length board). It is NOT a valid map from a **1-D lane index** (`cell:
+  usize`, lane length 5/7/9) to a 2-D `Pos` — those are different coordinate spaces, so
+  `from_index(lane_cell)` encodes a meaningless position (lane cell 7 → `{col:2,row:1}`). The
+  lead ruled "no valid bijection — don't derive one from the other (that fiction bites
+  mid-migrate)," and `ba7d68f` replaced both derivations with plain transitional defaults
+  (`Pos::new(0,0)`). **Strictly safer** (no implied mapping); producers set a real `Pos` when
+  they migrate (R/D-series). Tests still green. The carry-throughs above (`spawn.pos`/`owner.pos`)
+  are unchanged — those pass through an already-2-D value, they don't fake a 1-D→2-D map. My
+  overall e2d0403 APPROVE stands (the fiction was inert — nothing reads `pos` yet), but this
+  one line of my *reasoning* was mistaken; HEAD = e2d0403 + ba7d68f is the correct state.
 - No premature reader: grep confirms `.range_band`/`.optimal_range` have **no resolver reader**
   yet (targeting still gates on 1-D `band`), so the `#[serde(default)]` → **empty** `range_band`
   Vec is inert and cannot make weapons fire-at-no-range. ✓
@@ -215,9 +229,25 @@ Blueprint A3: "Update every JSON fixture in the same commit." Saves are WIPED fo
 
 Specific 1-D behaviors that are easy to lose in a mechanical swap — each needs a conscious 2-D
 decision, flag if dropped without one:
+
+> **Firing-direction contract (resolver-confirmed, 2026-06-14 — the V4/V5 authority).** Two
+> direction notions with different arities, reconciled, no second targeting path:
+> - **Firing-ray direction = cardinal (4-way):** `first_target_toward` walks a cardinal,
+>   `arc_bears` gates a cardinal cone (consistent with decision #9's 4-cardinal facing).
+> - **Damage `incoming_from` = 8-way** via `direction_to`. For every DIRECT hit (beam / spinal /
+>   broadside) the target sits ON the cardinal firing ray, so `incoming_from = opposite(firing-
+>   cardinal)` — **always a cardinal** (proof: cardinal step keeps same col or same row, so the
+>   back-direction is the exact opposite cardinal). The diagonal cases of `direction_to` are
+>   exercised ONLY by **BLAST splash** (neighbour cells off the firing ray) and **ordnance
+>   impacts** (own `heading8` geometry) — and that's **intended**: `facing_zone` is total over all
+>   8, so an off-axis splash legitimately lands on whatever face the diagonal presents (a BLAST can
+>   hit the primary on one face and a splashed neighbour on another). V4 confirms `resolve_targeting`
+>   stays the SOLE cell-selection path; V5 confirms the `direction_to → incoming_from` wiring at R4.
+
 - [ ] **`direction_to(a,b)` equal-cells → Fore** (1-D quirk, `geometry.rs:20`). The 2-D
-      `from_to(a,a) → None`. Anywhere the 1-D code relied on equal→Fore (e.g. self-target bears)
-      must handle the new `None` explicitly — don't let `None` silently become "no bearing."
+      `direction_to(a,a) → None` (and `from_to(a,a) → None`). Anywhere the 1-D code relied on
+      equal→Fore (e.g. self-target bears) must handle the new `None` explicitly — don't let
+      `None` silently become "no bearing."
 - [ ] **`distance` metric change**: 1-D `abs_diff` → 2-D **Chebyshev**. Any code comparing raw
       distances (AI closing logic, ordnance range) must use the new metric consistently.
 - [ ] **Range band count 5→3**: `pointBlank/close/mid/long/extreme` → `Adjacent/Near/Far`. Any
@@ -225,7 +255,11 @@ decision, flag if dropped without one:
       but V2 flags un-remapped refs that would fail to deserialize).
 - [ ] **±1 adjacency → 8-neighbour**: ReactorBreach splash, BLAST pattern "first + two
       neighbours", any `cell±1` arithmetic. 1-D had exactly 2 neighbours; 2-D has up to 8.
-      Confirm each is a deliberate widening (and BLAST's "3 contiguous cells" gets a 2-D shape).
+      Confirm each is a deliberate widening. **BLAST is resolved:** the resolver confirms BLAST
+      splash hitting off-ray neighbours with a diagonal `incoming_from` is INTENDED (per the
+      firing-direction contract above) — a BLAST may land its splash on a different face than the
+      primary. Still confirm ReactorBreach splash + BLAST's "3 contiguous cells" get a deliberate
+      2-D footprint shape (4- vs 8-neighbour) at the R-series commit.
 - [ ] **Projectile multi-cell speed**: 1-D `speed` cells/turn along the lane → 2-D along a
       `Dir8`. Confirm the path-walk + shoot-down-mid-flight still works per cell stepped.
 
