@@ -1,8 +1,11 @@
 # V3 reference — the correct `facing_zone(Facing, Dir8) -> HullZone` table
 
-**Status:** PINNED authority for the V3 review (resolver R2). PRE-STAGED — resolver implements
-to this; V3 checks the resolver's `facing_zone` against THIS table, not the blueprint's old
-line-30 wording.
+**Status:** ✅ **V3 COMPLETE — APPROVE.** The resolver's `facing_zone` landed at `9ca7a9e`
+(`src/geometry2d.rs`) and matches this pinned table exactly. Verdict log at the bottom. This
+doc remains the authority; A3 wires the (stable, now-verified) table into the damage pipeline.
+
+> ⚠️ This table was the authority resolver implemented to; V3 checked the impl against THIS,
+> not the blueprint's old (inverted) line-30 wording.
 
 > ⚠️ **The original blueprint line 30 was INVERTED** (lead's ruling, 2026-06-14, line corrected
 > in the blueprint). For the **Broadside** case it had the on-axis/off-axis assignment
@@ -101,26 +104,63 @@ lands on a flank, which is the intended new richness (decision: facing matters i
 
 ## V3 checklist (against the resolver's R2 `facing_zone`)
 
-- [ ] Signature is `facing_zone(facing: Facing, incoming_from: Dir8) -> HullZone` (Facing + Dir8,
-      not the old `Orientation` + `LaneEnd`).
-- [ ] **Broadside on-axis → Bow/Stern, perpendicular → Port/Starboard** (Table 1 — the
-      corrected, NON-line-30 orientation). Both `EastWest` and `NorthSouth` covered.
-- [ ] Broadside Bow-vs-Stern tiebreak is deterministic (positive-dir → Bow per `Axis::dirs()`?)
-      and pinned by a test.
-- [ ] Broadside Port-vs-Starboard handedness deterministic + pinned. **Lead-confirmed rule
+- [x] Signature is `facing_zone(facing: Facing, incoming_from: Dir8) -> HullZone` (Facing + Dir8,
+      not the old `Orientation` + `LaneEnd`). ✓
+- [x] **Broadside on-axis → Bow/Stern, perpendicular → Port/Starboard** (Table 1 — the
+      corrected, NON-line-30 orientation). Both `EastWest` and `NorthSouth` covered. ✓
+- [x] Broadside Bow-vs-Stern tiebreak deterministic (pseudo-forward = `Axis::dirs().0` → Bow)
+      and pinned by `..._cardinals` tests. ✓
+- [x] Broadside Port-vs-Starboard handedness deterministic + pinned. **Lead-confirmed rule
       (2026-06-14):** pseudo-forward = `Axis::dirs().0` → Bow; right-of-pseudo-forward → Starboard.
-      Confirm R2 uses this and T2 pins it.
-- [ ] **Bow(dir) is 3/3/1/1, ±45° INCLUSIVE** (Table 2): `s∈{7,0,1}→Bow`, `s∈{3,4,5}→Stern`,
-      `s=2→Starboard`, `s=6→Port`. The ±45° diagonals snap to the END, NOT the flank.
-- [ ] **Only exact ±90° hits a flank**; the four diagonals (`s∈{1,3,5,7}`) snap to Bow/Stern by
-      nearest-end — no unhandled exactly-between case.
-- [ ] **Total**: every `Dir8 × Facing` (8 × {4 Bow dirs + 2 Broadside axes} = 48 combos) returns
+      R2 uses exactly this; T2's partition test pins it. ✓
+- [x] **Bow(dir) is 3/3/1/1, ±45° INCLUSIVE** (Table 2): `s∈{7,0,1}→Bow`, `s∈{3,4,5}→Stern`,
+      `s=2→Starboard`, `s=6→Port`. The ±45° diagonals snap to the END, NOT the flank. ✓
+- [x] **Only exact ±90° hits a flank**; the four diagonals (`s∈{1,3,5,7}`) snap to Bow/Stern by
+      nearest-end — no unhandled exactly-between case. (Bow stance only; Broadside diagonals are
+      a true tie and snap 45° CW — see verdict.)
+- [x] **Total**: every `Dir8 × Facing` (8 × {4 Bow dirs + 2 Broadside axes} = 48 combos) returns
       a defined zone. Exhaustive table test (this is T2's `facing_zone` coverage).
-- [ ] **Self-consistent with `forward_axis()`**: the axis the ends lie on == `facing.forward_axis()`.
-- [ ] Wired into `apply_damage` step 4 (`resolve.rs:837-841`) feeding `absorb_shield` — the
-      damage-pipeline ORDER unchanged (V5 overlap; see V2 checklist §3).
+- [x] **Self-consistent with `forward_axis()`**: the axis the ends lie on == `facing.forward_axis()`.
+- [ ] Wired into `apply_damage` step 4 feeding `absorb_shield` — the damage-pipeline ORDER
+      unchanged. **Deferred to A3/R4** (correctly NOT in this commit); re-check at the damage-wiring
+      commit (V5 overlap; see V2 checklist §3).
+
+---
+
+## V3 verdict — `9ca7a9e` (`src/geometry2d.rs`) — **APPROVE**
+
+The resolver's `facing_zone`/`bow_zone`/`broadside_zone` match this table line-for-line.
+Verified against the impl (`rel = (incoming.step + 8 − anchor.step) % 8`):
+
+- **Bow** (`bow_zone`): `rel∈{7,0,1}→Bow`, `rel=2→Starboard`, `rel∈{3,4,5}→Stern`, `rel=6→Port`.
+  Exactly the pinned **3/3/1/1, ±45° inclusive** split. ✓
+- **Broadside** (`broadside_zone`, anchor = pseudo-forward = `axis.dirs().0`):
+  `rel∈{7,0}→Bow`, `rel∈{1,2}→Starboard`, `rel∈{3,4}→Stern`, `rel∈{5,6}→Port`. Clean **2/2/2/2**:
+  on-axis ends → Bow/Stern, perpendicular flanks → Port/Starboard, diagonals snap 45° CW. ✓
+- **Handedness verified physically, not just internally:** "CW-in-step = physical right =
+  Starboard" holds for all four bow cardinals (N→right=E, E→right=S, S→right=W, W→right=N). The
+  NorthSouth-vs-EastWest "flip" the resolver's test comments note is **correct, not a bug** —
+  facing S your right hand is W, so W=Starboard is right. Same uniform rule, opposite facing.
+- **Totality:** both partition tests (`..._three_three_one_one`, `..._two_two_two_two`) iterate
+  all 48 `Dir8 × Facing` combos; the `unreachable!` arms are genuinely unreachable (`% 8`). ✓
+- **`forward_axis()` consistency:** Broadside ends lie on `axis`; `forward_axis(Broadside(axis))
+  = axis` — consistent, so the renderer's bow-arrow (D4) and this table agree. ✓
+- **25 tests pass; `clippy --all-targets` clean** (the 7 warnings I'd seen at the A3.1 snapshot
+  were pre-`9ca7a9e` and are now gone — the current tree has zero).
+
+Beyond strict V3 scope but noted (this commit is the whole R1 surface; deep coverage is T2):
+`direction_to` magnitude-aware snap with the documented lower-`step` tiebreak is sound and
+deterministic (load-bearing for telegraph≡shot); `band_falloff [1.0,0.6,0.3]` is correctly keyed
+on the **actual** band (absolute curve per decision #6, distinct from the 1-D distance-from-
+optimal delta); `in_band` enforces the decision-#7 deadzone; `arc_bears` cones reuse the same
+±45° model as `facing_zone` (one consistent angular model for "my gun bears" and "my face is hit").
+
+**Wiring into `apply_damage` step 4 is correctly NOT in this commit** — it's A3/R4, where the
+attacker→target `direction_to` will feed `incoming_from`. The table is stable + verified now, as
+the blueprint mandated ("pin + unit-test BEFORE the rewrite").
 
 ---
 
 *Authority: `grid.rs::Axis` + lead ruling 2026-06-14. Supersedes blueprint line 30
-pre-correction. Cross-ref: V2 checklist §4 (facing faithfulness), T2 (exhaustive table test).*
+pre-correction. Cross-ref: V2 checklist §4 (facing faithfulness), T2 (exhaustive table test),
+V4 (resolve_targeting single-source — R3/#9, not in this commit). V3 done @ `9ca7a9e`.*
