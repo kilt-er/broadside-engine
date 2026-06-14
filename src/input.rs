@@ -255,6 +255,10 @@ pub fn synthetic_move_left() -> Action {
             mode: MovementMode::THRUST,
             distance: 1,
             direction: Some(crate::types::LaneEnd::Aft),
+            // v2: 2-D lateral override left None for now — content's player-2D-
+            // movement task sets Some(Dir4::W) (move-left = decreasing col) once
+            // resolver R6's resolve_self_move reads direction_2d.
+            direction_2d: None,
         }],
         r#mod: None,
         icon: None,
@@ -276,6 +280,10 @@ pub fn synthetic_move_right() -> Action {
             mode: MovementMode::THRUST,
             distance: 1,
             direction: Some(crate::types::LaneEnd::Fore),
+            // v2: 2-D lateral override left None for now — content sets
+            // Some(Dir4::E) (move-right = increasing col) at the player-2D-
+            // movement task.
+            direction_2d: None,
         }],
         r#mod: None,
         icon: None,

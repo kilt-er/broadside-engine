@@ -326,7 +326,7 @@ pub fn synthetic_slip() -> Action {
         "Slip",
         1,
         5,
-        Effect::DISPLACE_SELF { mode: MovementMode::TRACTOR_SWAP, distance: 1, direction: None },
+        Effect::DISPLACE_SELF { mode: MovementMode::TRACTOR_SWAP, distance: 1, direction: None, direction_2d: None },
     )
 }
 
@@ -339,7 +339,7 @@ pub fn synthetic_ram() -> Action {
         "Ram",
         2,
         6,
-        Effect::DISPLACE_SELF { mode: MovementMode::BURN, distance: 2, direction: None },
+        Effect::DISPLACE_SELF { mode: MovementMode::BURN, distance: 2, direction: None, direction_2d: None },
     )
 }
 
@@ -352,7 +352,7 @@ pub fn synthetic_phase() -> Action {
         "Phase",
         1,
         5,
-        Effect::DISPLACE_SELF { mode: MovementMode::SLIP, distance: 2, direction: None },
+        Effect::DISPLACE_SELF { mode: MovementMode::SLIP, distance: 2, direction: None, direction_2d: None },
     )
 }
 
@@ -369,6 +369,7 @@ pub fn synthetic_throw() -> Action {
             mode: MovementMode::BURN,
             distance: 2,
             direction: Some(LaneEnd::Aft),
+            direction_2d: None,
         },
     )
 }
@@ -383,7 +384,7 @@ pub fn synthetic_swap_toss() -> Action {
         "Swap Toss",
         2,
         7,
-        Effect::DISPLACE_SELF { mode: MovementMode::TRACTOR_SWAP, distance: 1, direction: None },
+        Effect::DISPLACE_SELF { mode: MovementMode::TRACTOR_SWAP, distance: 1, direction: None, direction_2d: None },
     )
 }
 

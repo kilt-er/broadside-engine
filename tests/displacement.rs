@@ -129,7 +129,7 @@ fn carrier() -> Action {
 
 /// Fire a DISPLACE_SELF effect at `source_cell`.
 fn self_move(board: &mut Board, source_cell: usize, mode: MovementMode, distance: i32, dir: Option<LaneEnd>) {
-    let fx = Effect::DISPLACE_SELF { mode, distance, direction: dir };
+    let fx = Effect::DISPLACE_SELF { mode, distance, direction: dir, direction_2d: None };
     apply_effect(&fx, &carrier(), source_cell, &[], board, &NoContent);
 }
 

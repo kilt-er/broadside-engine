@@ -1170,7 +1170,10 @@ pub fn apply_effect(
             board.ordnance.push(p);
         }
 
-        Effect::DISPLACE_SELF { mode, distance, direction } => {
+        Effect::DISPLACE_SELF { mode, distance, direction, direction_2d: _ } => {
+            // v2: `direction_2d` (the 2-D Dir4 override) is ignored here for now —
+            // resolver R6 wires it into the 2-D resolve_self_move. The 1-D path
+            // stays behavior-unchanged during the migration.
             resolve_self_move(source_cell, *mode, *distance, *direction, board, content);
         }
 
@@ -1647,6 +1650,9 @@ fn resolver_ai_move(action_id: &str) -> Option<Action> {
             mode: MovementMode::THRUST,
             distance: 1,
             direction: Some(direction),
+            // v2: 2-D override left None; resolver R6 sets Some(Dir4) once
+            // resolver_ai_move derives the cardinal from the synthetic move id.
+            direction_2d: None,
         }],
         r#mod: None,
         icon: None,
@@ -2642,6 +2648,7 @@ mod tests {
                 mode: MovementMode::THRUST,
                 distance: 1,
                 direction: None,
+                direction_2d: None,
             }],
             r#mod: None,
             icon: None,
@@ -2704,6 +2711,7 @@ mod tests {
                 mode: MovementMode::THRUST,
                 distance: 1,
                 direction: None,
+                direction_2d: None,
             }],
             r#mod: None,
             icon: None,
@@ -2768,6 +2776,7 @@ mod tests {
                 mode: MovementMode::THRUST,
                 distance: 1,
                 direction: None,
+                direction_2d: None,
             }],
             r#mod: None,
             icon: None,

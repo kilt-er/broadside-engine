@@ -208,6 +208,7 @@ fn step_forward() -> Action {
             mode: MovementMode::THRUST,
             distance: 1,
             direction: None,
+            direction_2d: None,
         }],
         r#mod: None,
         icon: None,

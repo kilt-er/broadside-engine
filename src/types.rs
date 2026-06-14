@@ -706,6 +706,19 @@ pub enum Effect {
         /// bow-relative.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         direction: Option<LaneEnd>,
+        /// **v2 additive** (A3 MIGRATE, for resolver R6): the 2-D analog of
+        /// [`direction`], replacing the 1-D [`LaneEnd`] override. `Some(dir)`
+        /// forces an absolute 4-cardinal step ([`Dir4`], one cell/step via
+        /// `grid::offset`); `None` defers to the ship-`Facing`-derived direction
+        /// (the 2-D analog of today's orientation-derived default). [`Dir4`] not
+        /// [`Dir8`] because movement is 4-cardinal (decision #9; matches the
+        /// `__move_up/down/left/right` = N/S/E/W input ids).
+        ///
+        /// Temp name (`direction` is still the live 1-D field); CONTRACT deletes
+        /// `direction` and renames this → `direction`. `#[serde(default,
+        /// skip_serializing_if)]` so no fixture needs it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        direction_2d: Option<Dir4>,
     },
     REORIENT {
         to: ReorientTo,
@@ -1627,6 +1640,7 @@ mod tests {
                 mode: MovementMode::THRUST,
                 distance: 2,
                 direction: None,
+                direction_2d: None,
             }
         );
     }
@@ -1640,6 +1654,7 @@ mod tests {
             mode: MovementMode::THRUST,
             distance: 1,
             direction: Some(LaneEnd::Aft),
+            direction_2d: None,
         };
         let s = serde_json::to_string(&with_dir).unwrap();
         assert_eq!(s, r#"{"kind":"DISPLACE_SELF","mode":"THRUST","distance":1,"direction":"aft"}"#);
@@ -1650,11 +1665,12 @@ mod tests {
             mode: MovementMode::THRUST,
             distance: 1,
             direction: None,
+            direction_2d: None,
         };
         let s2 = serde_json::to_string(&without).unwrap();
         assert!(
             !s2.contains("direction"),
-            "None direction must serialize to absent field, got {s2}",
+            "None direction (and direction_2d) must serialize to absent field, got {s2}",
         );
     }
 
