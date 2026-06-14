@@ -67,23 +67,30 @@ which uses `forward_axis`, points along the same axis the ends lie on).
 ## Table 2 — `Bow(dir)`
 
 The nose points at cardinal `dir`; there IS a forward vector, so handedness is well-defined.
+**The split is 3/3/1/1, ±45° INCLUSIVE** (lead correction 2026-06-14): "perpendicular" =
+±90° **only** (exactly one incoming each), so Port/Starboard get the single perpendicular
+direction each and the ±45° **diagonals belong to Bow/Stern**.
 
-| incoming_from vs `dir`            | HullZone                          |
-|-----------------------------------|-----------------------------------|
-| within ±45° of `dir`              | **Bow**                           |
-| within ±45° of `opposite(dir)`    | **Stern**                         |
-| perpendicular, clockwise/right of `dir` | **Starboard**               |
-| perpendicular, counter-clockwise/left of `dir` | **Port**               |
-| diagonals                         | snap to nearest face by signed angle (clockwise step) |
+| incoming_from vs `dir`                          | HullZone        |
+|-------------------------------------------------|-----------------|
+| within ±45° of `dir` **inclusive** (3 sectors)  | **Bow**         |
+| within ±45° of `opposite(dir)` **inclusive** (3 sectors) | **Stern** |
+| exactly perpendicular (±90°), clockwise/right of `dir`   | **Starboard** (1 sector) |
+| exactly perpendicular (±90°), counter-clockwise/left of `dir` | **Port** (1 sector) |
 
 Mechanically, with `dir` widened to `Dir8` and `s = (incoming.step() − dir.to_dir8().step()) mod 8`:
-- `s == 0` → Bow; `s == 4` → Stern.
-- `s ∈ {1, 2, 3}` → **Starboard** (clockwise / right side).
-- `s ∈ {5, 6, 7}` → **Port** (counter-clockwise / left side).
-- The exact diagonals `s ∈ {1,3,5,7}` are the "snap by signed angle" cases — they land on the
-  flank on their side (1,3 → Starboard; 5,7 → Port). **V3 confirms R2's snap rule matches this
-  handedness** and that a diagonal exactly between bow and a flank resolves deterministically
-  (no 50/50 ambiguity left unhandled).
+- `s ∈ {7, 0, 1}` → **Bow** (the cardinal `dir` plus the two ±45° diagonals flanking it).
+- `s ∈ {3, 4, 5}` → **Stern** (`opposite(dir)` plus its two ±45° diagonals).
+- `s == 2` → **Starboard** (the single clockwise/right perpendicular).
+- `s == 6` → **Port** (the single counter-clockwise/left perpendicular).
+
+So the four ±45° diagonals **snap to the END (Bow/Stern), not the flank**: `s=1` and `s=7` →
+Bow (the two diagonals adjacent to `dir`), `s=3` and `s=5` → Stern (the two adjacent to
+`opposite(dir)`). This is the "snap to nearest face by signed angle" rule resolving in favour of
+the nearer end, because a ±45° offset is closer to the on-axis end than to the ±90° flank. Only
+the exact ±90° directions (`s=2`, `s=6`) hit the flanks. **V3 confirms R2 implements this
+3/3/1/1 split** (the resolver's impl is already 3/3/1/1 — correct) and that every `s ∈ 0..8` is
+handled with no ambiguity.
 
 Sanity vs the 1-D engine: 1-D `Bow{bow:Fore}` with a fore hit → Bow, aft hit → Stern. In 2-D
 that's `Bow(dir)` with on-axis-forward → Bow, on-axis-back → Stern — consistent. The 1-D flanks
@@ -100,11 +107,13 @@ lands on a flank, which is the intended new richness (decision: facing matters i
       corrected, NON-line-30 orientation). Both `EastWest` and `NorthSouth` covered.
 - [ ] Broadside Bow-vs-Stern tiebreak is deterministic (positive-dir → Bow per `Axis::dirs()`?)
       and pinned by a test.
-- [ ] Broadside Port-vs-Starboard handedness is deterministic + pinned (the open question above).
-- [ ] **Bow(dir)**: ±45° → Bow, ±45°-of-opposite → Stern, clockwise-perp → Starboard,
-      ccw-perp → Port (Table 2).
-- [ ] **Diagonals snap by signed angle**, deterministically, with the handedness above — no
-      unhandled exactly-between case.
+- [ ] Broadside Port-vs-Starboard handedness deterministic + pinned. **Lead-confirmed rule
+      (2026-06-14):** pseudo-forward = `Axis::dirs().0` → Bow; right-of-pseudo-forward → Starboard.
+      Confirm R2 uses this and T2 pins it.
+- [ ] **Bow(dir) is 3/3/1/1, ±45° INCLUSIVE** (Table 2): `s∈{7,0,1}→Bow`, `s∈{3,4,5}→Stern`,
+      `s=2→Starboard`, `s=6→Port`. The ±45° diagonals snap to the END, NOT the flank.
+- [ ] **Only exact ±90° hits a flank**; the four diagonals (`s∈{1,3,5,7}`) snap to Bow/Stern by
+      nearest-end — no unhandled exactly-between case.
 - [ ] **Total**: every `Dir8 × Facing` (8 × {4 Bow dirs + 2 Broadside axes} = 48 combos) returns
       a defined zone. Exhaustive table test (this is T2's `facing_zone` coverage).
 - [ ] **Self-consistent with `forward_axis()`**: the axis the ends lie on == `facing.forward_axis()`.
