@@ -161,6 +161,35 @@ the blueprint mandated ("pin + unit-test BEFORE the rewrite").
 
 ---
 
+## V3 amendment — `arc_bears` cardinal-exact fix (`f1db141`)
+
+**At `9ca7a9e` I approved `arc_bears` with a ±45° cone (`within_45`) and praised it for "reusing
+the same angular model as `facing_zone`." That was a mistake** — the tester's T2 caught it. Firing
+and receiving have DIFFERENT arities (the firing-direction contract): `arc_bears` is the FIRING
+gate (cardinal-exact, 4-way), `facing_zone` is the RECEIVING table (8-way). The cone let a
+`Broadside(NorthSouth)` battery "bear" toward SE while `facing_zone` snaps SE to a bow/stern face
+(not a flank) — an inconsistency. `f1db141` changed `within_45` → exact cardinal match in
+`arc_bears` (Forward `toward==dir`, Rear `==opposite`, BroadsideArc `==either flank cardinal`;
+Turret always; all diagonals → false) and removed the dead `within_45`. **`facing_zone` itself is
+UNCHANGED** — the V3 table above stands.
+
+**Consistency property — VERIFIED BY FULL ENUMERATION** (all 6 facings × 4 cardinals = 24 cases):
+at every cardinal `C`, `arc_bears(facing, arc, C)` is true for the arc whose face equals
+`facing_zone(facing, C)`, and false otherwise:
+- `facing_zone → Bow`  ⇔ `Forward` bears (Bow stance).
+- `facing_zone → Stern` ⇔ `Rear` bears (Bow stance).
+- `facing_zone → Port/Starboard (flank)` ⇔ `BroadsideArc` bears (Broadside stance).
+- `facing_zone → an END on a Broadside` ⇔ NO arc bears (a broadside can't fire out its ends).
+
+No contradiction in any case. The diagonal divergence is intended: `facing_zone` is total over 8
+(receives off-axis BLAST splash / ordnance), `arc_bears` is cardinal-only (you can't FIRE
+diagonally). T2 pins this as invariants (`firing_arcs_are_strictly_narrower_than_the_receiving_
+sectors`, `no_arc_ever_bears_on_a_diagonal_under_cardinals_only_firing`). 25 unit + 42 T2 green;
+clippy clean. **arc_bears↔facing_zone consistency item: CLOSED — re-bless granted.**
+
+---
+
 *Authority: `grid.rs::Axis` + lead ruling 2026-06-14. Supersedes blueprint line 30
 pre-correction. Cross-ref: V2 checklist §4 (facing faithfulness), T2 (exhaustive table test),
-V4 (resolve_targeting single-source — R3/#9, not in this commit). V3 done @ `9ca7a9e`.*
+V4 (resolve_targeting single-source — R3/#9, not in this commit). V3 done @ `9ca7a9e`;
+arc_bears amendment @ `f1db141`.*
