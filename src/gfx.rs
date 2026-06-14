@@ -3,9 +3,11 @@
 //! Ported from `GameEngine/mvp/src/gfx.rs` and adapted for Broadside.
 //! Structural changes from the source:
 //!
-//! 1. Virtual resolution is **1320×480** (2× of the design doc's 660×240).
-//!    Integer-scales cleanly on a 2560×1440 monitor (1× and 2×); keeps the
-//!    `perspective::DEFAULT_LANE` coordinates usable after a uniform 2× map.
+//! 1. Virtual resolution is **480×270** (v2 decision #1, 2026-06-14): a 16:9
+//!    pixel-art canvas that upscales by a FIXED ×4 NEAREST factor to exactly
+//!    1920×1080. This re-founds the resolution from the old 1320×480-LINEAR
+//!    board; the 1D HUD/loft positioning built for 1320×480 looks wrong until
+//!    the v2 board lands — expected during the rebuild, not a regression.
 //! 2. The view uniform projects ONTO the virtual-pixel grid: world is
 //!    `[0, VIRTUAL_W] × [0, VIRTUAL_H]` with y-down to match `perspective`'s
 //!    screen-space convention. The source engine used a NDC-half-size world;
@@ -18,11 +20,12 @@
 //!
 //! Two passes per frame, unchanged in spirit from the source:
 //!
-//!   1. **Sprite pass** — instanced colored quads drawn into the 1320×480
+//!   1. **Sprite pass** — instanced colored quads drawn into the 480×270
 //!      offscreen target. Every game pixel is one texel here.
 //!   2. **Blit pass** — the offscreen texture is sampled with
-//!      nearest-neighbor filtering and drawn to the swapchain at the largest
-//!      integer scale that fits the window. The leftover area is letterboxed.
+//!      nearest-neighbor filtering and drawn to the swapchain at a FIXED ×4
+//!      integer scale (→ 1920×1080), centered with black letterboxing on any
+//!      other window size, for the crisp pixel look.
 //!
 //! Sprite content (the actual `Vec<SpriteInstance>` for a frame) lives in
 //! [`crate::hud`]; this module is the pipeline scaffold only.
@@ -36,9 +39,18 @@ use winit::window::Window;
 use crate::atlas;
 
 /// Virtual canvas size — every drawn sprite is in this coordinate space.
-/// `2 × 660 × 240` for crisp 2× scaling of the perspective design coords.
-pub const VIRTUAL_W: u32 = 1320;
-pub const VIRTUAL_H: u32 = 480;
+/// 480×270 (16:9) is the v2 pixel-art canvas (decision #1); it upscales by a
+/// fixed ×[`FIXED_UPSCALE`] NEAREST factor to exactly 1920×1080.
+pub const VIRTUAL_W: u32 = 480;
+pub const VIRTUAL_H: u32 = 270;
+
+/// Fixed integer upscale from the [`VIRTUAL_W`]×[`VIRTUAL_H`] offscreen to the
+/// reference window: 480×270 × 4 = 1920×1080. The final blit always snaps to
+/// this multiple (never a continuous fit-scale) so every offscreen texel maps
+/// to an exact 4×4 block of window pixels — crisp, shimmer-free pixel art.
+/// Windows larger than 1920×1080 letterbox the remainder; smaller windows fall
+/// back to the largest integer scale that still fits (see `update_blit_uniform`).
+pub const FIXED_UPSCALE: u32 = 4;
 
 /// Maximum sprite instances in a frame. 4096 covers a worst-case scene
 /// (lane plate + parallax + 9 ships × ~8 composed sprites + ordnance +
@@ -1287,32 +1299,39 @@ impl Gfx {
         self.ship_bg_cache.insert(key, bg);
     }
 
-    /// Compute the aspect-preserving, letterboxed NDC quad that maps the
+    /// Compute the integer-scaled, letterboxed NDC quad that maps the
     /// virtual-resolution offscreen target into the swapchain. Recomputed on
     /// every resize so the letterboxing tracks window changes.
     ///
-    /// **Continuous fit-scale, not integer-floor.** The original integer-only
-    /// scale (`min(w/VIRTUAL_W, h/VIRTUAL_H)` floored, clamped to ≥1) snapped
-    /// the whole canvas to 1× unless the window was a full ≥2× multiple of the
-    /// virtual size on BOTH axes. On a 2560×1080 monitor (canvas 1320×480)
-    /// width gives 2560/1320 = 1.94 → floor 1×, so a maximized window rendered
-    /// at native 1320×480 in a black letterbox and nothing scaled up — the
-    /// real cause of "ships look too small". We now scale by the continuous
-    /// limiting-axis factor (here ~1.94×, ≈2562×931 inside 2560×1080) and
-    /// letterbox only the aspect-ratio remainder, so every window size scales
-    /// smoothly and maximize fills the screen.
+    /// **Fixed ×[`FIXED_UPSCALE`] integer scale (v2 decision #1).** The canvas
+    /// is 480×270 and the reference window is 1920×1080, so the intended scale
+    /// is exactly ×4: every offscreen texel becomes a 4×4 block of window
+    /// pixels with NEAREST sampling — crisp, shimmer-free pixel art. We pick
+    /// `min(FIXED_UPSCALE, w/VIRTUAL_W floored, h/VIRTUAL_H floored)` clamped to
+    /// ≥1, so the common 1920×1080 (and any larger) window renders at the full
+    /// ×4 and letterboxes the remainder, while a smaller window falls back to
+    /// the largest integer scale that still fits rather than clipping. The
+    /// scaled canvas is centered; the leftover on each axis is black letterbox.
     fn update_blit_uniform(&self) {
-        let wf = self.config.width as f32;
-        let hf = self.config.height as f32;
+        let w = self.config.width;
+        let h = self.config.height;
 
-        // Limiting-axis scale, preserving the virtual canvas's aspect ratio.
-        let scale = (wf / VIRTUAL_W as f32).min(hf / VIRTUAL_H as f32).max(1.0);
-        let scaled_w = VIRTUAL_W as f32 * scale;
-        let scaled_h = VIRTUAL_H as f32 * scale;
-        // Center the scaled canvas; the leftover on the non-limiting axis is
-        // the (aspect-ratio) letterbox.
-        let offset_x = (wf - scaled_w) / 2.0;
-        let offset_y = (hf - scaled_h) / 2.0;
+        // Largest integer scale that fits, capped at the fixed ×4 target.
+        let scale = FIXED_UPSCALE
+            .min(w / VIRTUAL_W)
+            .min(h / VIRTUAL_H)
+            .max(1);
+        let scaled_w = VIRTUAL_W * scale;
+        let scaled_h = VIRTUAL_H * scale;
+
+        let wf = w as f32;
+        let hf = h as f32;
+        // Center the scaled canvas; integer-floor the offset so the canvas
+        // origin lands on a whole window pixel (no half-pixel seam).
+        let offset_x = ((w.saturating_sub(scaled_w)) / 2) as f32;
+        let offset_y = ((h.saturating_sub(scaled_h)) / 2) as f32;
+        let scaled_w = scaled_w as f32;
+        let scaled_h = scaled_h as f32;
 
         let ndc_x_min = (offset_x / wf) * 2.0 - 1.0;
         let ndc_x_max = ((offset_x + scaled_w) / wf) * 2.0 - 1.0;
@@ -2257,23 +2276,20 @@ impl BlitPipeline {
             mapped_at_creation: false,
         });
 
-        // LINEAR for the final canvas→window blit. The blit is now a
-        // CONTINUOUS fit-scale (see `update_blit_uniform`), not an integer
-        // multiple — e.g. ~1.94× when maximized on 2560×1080. NEAREST at a
-        // non-integer scale unevenly doubles source texels (some 1 px, some
-        // 2 px wide), which shimmers on motion and looks chunky on bruce's
-        // hand-painted (non-pixel-art) ship PNGs. LINEAR resamples smoothly
-        // for consistent edges. (The offscreen scene itself is still drawn
-        // 1 texel = 1 virtual pixel; this softening only happens once, on the
-        // upscale to the window.) Bruce can flip this back to Nearest if he
-        // prefers crisp-but-uneven.
+        // NEAREST for the final canvas→window blit (v2 decision #1). The blit
+        // is now a FIXED ×4 INTEGER scale (see `update_blit_uniform`): 480×270
+        // → 1920×1080, so every offscreen texel maps to an exact 4×4 block of
+        // window pixels with no fractional coverage — nearest is crisp and
+        // shimmer-free, the intended pixel-art look. (At the integer-floor
+        // fallback scale used on sub-1080p windows the mapping stays integer,
+        // so nearest is still exact.)
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("blit linear sampler"),
+            label: Some("blit nearest sampler"),
             address_mode_u: wgpu::AddressMode::ClampToEdge,
             address_mode_v: wgpu::AddressMode::ClampToEdge,
             address_mode_w: wgpu::AddressMode::ClampToEdge,
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
+            mag_filter: wgpu::FilterMode::Nearest,
+            min_filter: wgpu::FilterMode::Nearest,
             mipmap_filter: wgpu::FilterMode::Nearest,
             ..Default::default()
         });
