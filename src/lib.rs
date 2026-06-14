@@ -10,6 +10,10 @@
 //!   `engine/types.ts`).
 //! - [`catalog`] — loader for `assets/broadside.catalog.json` (the JSON
 //!   emitted by the analysis doc's "Copy JSON" button).
+//! - [`grid`] — v2 2D spatial type surface for the 5×4 grid: `Pos`,
+//!   `Dir8`, `Facing{Bow(Dir4)/Broadside(Axis)}`, `Range`, plus index /
+//!   offset / from_to / neighbors helpers. Lands standalone ahead of the
+//!   atomic `cell:usize→Pos` migration (blueprint lane task A2). Pure data.
 //! - [`geometry`] — spatial primitives: orientation, arcs, range bands,
 //!   directional shield absorption (mirrors `engine/geometry.ts`).
 //! - [`resolve`] — the combat resolver: four-phase round, arc/heat/cooldown
@@ -71,6 +75,7 @@ pub mod catalog;
 pub mod catalog_canonical;
 pub mod classes;
 pub mod geometry;
+pub mod grid;
 pub mod input;
 pub mod loft;
 pub mod mesh_import;
