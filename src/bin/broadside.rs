@@ -449,7 +449,9 @@ fn defeat_cause(board: &Board) -> Option<String> {
 /// the startup scene and the Restart target.
 fn render_example_board() -> Board {
     let size = 7usize;
-    let mut cells: Vec<Option<Ship>> = (0..size).map(|_| None).collect();
+    // v2 (A3 Board EXPAND): len-CELLS backing Vecs so Board::ship_at works over
+    // the 5×4 grid; the 1-D demo placement below only touches cells[0..size].
+    let mut cells: Vec<Option<Ship>> = (0..broadside_engine::grid::CELLS).map(|_| None).collect();
 
     cells[0] = Some(player_ship(0));
     // Each enemy gets one Forward pulse_laser so the AI has something to
@@ -465,8 +467,10 @@ fn render_example_board() -> Board {
         size,
         cells,
         ordnance: Vec::new(),
-        hazards: (0..size).map(|_| Vec::new()).collect(),
+        hazards: (0..broadside_engine::grid::CELLS).map(|_| Vec::new()).collect(),
         patrol: 1,
+        level: 0,
+        threats: Vec::new(),
         bus: EventBus::default(),
         destroys_this_window: 0,
         fire_events: vec![],

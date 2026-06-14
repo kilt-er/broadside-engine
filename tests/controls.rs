@@ -101,6 +101,8 @@ fn solo_board() -> Board {
         ordnance: Vec::new(),
         hazards: (0..7).map(|_| Vec::new()).collect(),
         patrol: 1,
+        level: 0,
+        threats: Vec::new(),
         bus: EventBus::default(),
         destroys_this_window: 0,
         fire_events: vec![],

@@ -244,8 +244,14 @@ where
         .max(player.cell);
     let size = canonical_lane_size(max_cell);
 
-    let mut cells: Vec<Option<Ship>> = (0..size).map(|_| None).collect();
-    let mut hazards: Vec<Vec<crate::types::Hazard>> = (0..size).map(|_| Vec::new()).collect();
+    // v2 (A3 Board EXPAND): the backing Vecs are fixed len-CELLS (20) so the 2-D
+    // occupancy view (Board::ship_at(pos) = cells[pos.to_index()]) is valid over
+    // the whole 5×4 grid. The 1-D placement below still uses `size` for its
+    // bounds and only populates cells[0..size]; content's C4 rewrites this to
+    // place ships 2-D-natively at cells[spawn.pos.to_index()].
+    let mut cells: Vec<Option<Ship>> = (0..crate::grid::CELLS).map(|_| None).collect();
+    let mut hazards: Vec<Vec<crate::types::Hazard>> =
+        (0..crate::grid::CELLS).map(|_| Vec::new()).collect();
 
     // #72: place the player at the MIDDLE of the lane, not the edge. A
     // mid-lane player can be threatened from BOTH ends — they must rotate to
@@ -292,6 +298,8 @@ where
         ordnance: Vec::new(),
         hazards,
         patrol: 1,
+        level: 0,
+        threats: Vec::new(),
         bus: EventBus::default(),
         destroys_this_window: 0,
         fire_events: Vec::new(),
@@ -1064,6 +1072,8 @@ mod tests {
             ordnance: vec![],
             hazards: (0..size).map(|_| vec![]).collect(),
             patrol: 1,
+            level: 0,
+            threats: vec![],
             bus: EventBus::default(),
             destroys_this_window: 0,
             fire_events: vec![],

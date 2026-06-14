@@ -700,8 +700,16 @@ fn build_board_and_first_resolve_round_does_not_panic() {
     // One round. Just must not panic.
     resolve_round(&mut board, &content);
 
-    // And the board is still coherent: player present, size preserved.
-    assert_eq!(board.size, board.cells.len(), "board cell vector matches its declared size");
+    // And the board is still coherent: player present, grid shape intact.
+    // v2 (A3 Board EXPAND): the cell vector is now the fixed-size 5×4 grid
+    // (`grid::CELLS` = 20), no longer `size`-length — `build_encounter_board`
+    // builds len-CELLS backing Vecs so the 2-D occupancy view works. `size`
+    // is the (transitional) logical lane length, dropped at CONTRACT.
+    assert_eq!(
+        board.cells.len(),
+        broadside_engine::grid::CELLS,
+        "board cell vector is the fixed 5×4 grid (len CELLS)",
+    );
     assert!(
         board.cells.iter().flatten().any(|s| s.faction == Faction::Player),
         "player ship still on the board after one round",

@@ -70,6 +70,8 @@ fn board_with(size: usize, ships: Vec<Ship>) -> Board {
         ordnance: Vec::new(),
         hazards: (0..size).map(|_| Vec::new()).collect(),
         patrol: 1,
+        level: 0,
+        threats: Vec::new(),
         bus: EventBus::default(),
         destroys_this_window: 0,
         fire_events: vec![],

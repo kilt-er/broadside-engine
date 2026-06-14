@@ -105,6 +105,8 @@ fn board(size: usize, cells: Vec<Option<Ship>>, ordnance: Vec<Projectile>) -> Bo
         ordnance,
         hazards: (0..size).map(|_| Vec::new()).collect(),
         patrol: 1,
+        level: 0,
+        threats: Vec::new(),
         bus: EventBus::default(),
         destroys_this_window: 0,
         fire_events: vec![],

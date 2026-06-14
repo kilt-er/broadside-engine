@@ -228,6 +228,17 @@ pub struct Board {
     pub hazards: Vec<Vec<Hazard>>,
     /// 1..=7 global difficulty tier.
     pub patrol: u8,
+    /// **v2 additive** (A3 Board EXPAND): campaign-level cursor (0..19) — the
+    /// background parallax `focus_target` AND campaign progress index
+    /// (blueprint decision #3). `0` until the run loop sets it. Persistable
+    /// (mirrored in [`BoardSnapshot`]).
+    pub level: usize,
+    /// **v2 additive** (A3 Board EXPAND): the telegraph map — cells the player
+    /// will be hit on next turn, recomputed each phase by the resolver (R8) from
+    /// each enemy's QUEUED action via `resolve_targeting` (blueprint "single best
+    /// idea"). Like [`Board::fire_events`], this is **transient runtime state**:
+    /// it does NOT round-trip through [`BoardSnapshot`] (recomputed on load).
+    pub threats: Vec<Threat>,
     /// Pub/sub for subsystem hooks.
     pub bus: EventBus,
     /// Ships destroyed during the current chain-kill window. Resolver-managed.
@@ -239,6 +250,48 @@ pub struct Board {
     /// per-resolution render state — like `destroys_this_window`, it does
     /// **not** round-trip through [`BoardSnapshot`].
     pub fire_events: Vec<FireEvent>,
+}
+
+impl Board {
+    /// Borrow the ship occupying `pos`, or `None` if the cell is empty / `pos`
+    /// is out of range (**v2, A3 Board EXPAND** — the 2-D occupancy query).
+    ///
+    /// O(1): indexes [`Board::cells`] at [`Pos::to_index`]. Uses `get` (not `[]`)
+    /// so an out-of-range `pos` — or a query against a short legacy 1-D test
+    /// board — yields `None` rather than panicking.
+    ///
+    /// # Invariant
+    ///
+    /// Relies on the **slot==pos** invariant: a ship stored at `cells[i]` has
+    /// `pos.to_index() == i`. Spawn placement ([`crate::runs`], C4) establishes
+    /// it (a ship goes into `cells[ship.pos.to_index()]`); movement (resolver
+    /// R6) maintains it (updating the slot and `Ship::pos` together). Until a
+    /// producer populates real positions, ships carry the transitional default
+    /// [`Pos`] and live at their legacy 1-D slot, so `ship_at` is only
+    /// meaningful on a board whose ships have been placed 2-D-natively.
+    pub fn ship_at(&self, pos: Pos) -> Option<&Ship> {
+        self.cells.get(pos.to_index()).and_then(|c| c.as_ref())
+    }
+
+    /// Mutably borrow the ship occupying `pos` (the `mut` companion to
+    /// [`Board::ship_at`]; used by the resolver's `apply_damage` in R4). Same
+    /// O(1) `get_mut` + slot==pos invariant.
+    pub fn ship_at_mut(&mut self, pos: Pos) -> Option<&mut Ship> {
+        self.cells.get_mut(pos.to_index()).and_then(|c| c.as_mut())
+    }
+
+    /// Find the [`Pos`] of the ship with `id`, or `None` if absent
+    /// (**v2, A3 Board EXPAND** — the 2-D replacement for the resolver's
+    /// 1-D `find_cell_by_id`). Scans [`Board::cells`] (`O(CELLS)`); returns the
+    /// slot's [`Pos`] (which equals the ship's `pos` under the slot==pos
+    /// invariant).
+    pub fn find_pos_by_id(&self, id: &str) -> Option<Pos> {
+        self.cells.iter().enumerate().find_map(|(i, c)| {
+            c.as_ref()
+                .filter(|s| s.id == id)
+                .and_then(|_| Pos::from_index(i))
+        })
+    }
 }
 
 /// One attacker→target shot, recorded on [`Board::fire_events`] so the
@@ -1369,6 +1422,12 @@ pub struct BoardSnapshot {
     pub ordnance: Vec<Projectile>,
     pub hazards: Vec<Vec<Hazard>>,
     pub patrol: u8,
+    /// **v2 additive** (A3 Board EXPAND): persisted campaign cursor, mirroring
+    /// [`Board::level`]. `#[serde(default)]` (→ 0) so pre-v2 saves still parse.
+    /// (`Board::threats` is deliberately NOT mirrored — it's transient, like
+    /// `fire_events`, recomputed on load.)
+    #[serde(default)]
+    pub level: usize,
 }
 
 impl From<&Board> for BoardSnapshot {
@@ -1382,6 +1441,7 @@ impl From<&Board> for BoardSnapshot {
             ordnance: board.ordnance.clone(),
             hazards: board.hazards.clone(),
             patrol: board.patrol,
+            level: board.level,
         }
     }
 }
@@ -1398,10 +1458,14 @@ impl BoardSnapshot {
             ordnance: self.ordnance,
             hazards: self.hazards,
             patrol: self.patrol,
+            level: self.level,
             bus,
             destroys_this_window: 0,
             // Transient render state; a loaded board starts with none.
             fire_events: Vec::new(),
+            // Transient telegraph state; the resolver recomputes on the next
+            // world phase (not persisted — see Board::threats).
+            threats: Vec::new(),
         }
     }
 }
@@ -1760,6 +1824,8 @@ mod tests {
             ordnance: vec![],
             hazards: vec![vec![]],
             patrol: 1,
+            level: 0,
+            threats: Vec::new(),
             bus: EventBus::default(),
             destroys_this_window: 0,
             fire_events: Vec::new(),
@@ -1977,6 +2043,8 @@ mod tests {
             ordnance: vec![],
             hazards: vec![vec![], vec![], vec![]],
             patrol: 1,
+            level: 0,
+            threats: Vec::new(),
             bus: EventBus::default(),
             destroys_this_window: 7,  // runtime junk that must NOT round-trip
             fire_events: vec![FireEvent {
