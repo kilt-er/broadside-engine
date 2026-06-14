@@ -1228,6 +1228,8 @@ impl ApplicationHandler for App {
                 // salvage in their own banners.
                 if matches!(demo_state, DemoState::Playing) {
                     push_salvage_hud(&mut instances, salvage);
+                    // Minimalist controls legend, bottom-left (#82).
+                    hud::push_controls_overlay(&mut instances);
                     // Player ability tiles (#64): resting row below the lane,
                     // queued ones animated up into the above-ship stack.
                     if let Some(px) = player_lane_x(&self.board, &self.lane) {
