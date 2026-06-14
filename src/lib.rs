@@ -22,6 +22,11 @@
 //! - [`perspective`] — screen-space lane projection, ship sprite polygons,
 //!   beam endpoints. The only module that knows about screen coordinates;
 //!   consumed by the renderer (mirrors `engine/perspective.ts`).
+//! - [`projector`] — v2 5×4 perspective projector: maps a [`grid::Pos`] to a
+//!   screen-space [`projector::CellQuad`] in 480×270 frame space with
+//!   Star-Wars-crawl foreshortening (rows recede, columns fan). The v2 spatial
+//!   replacement for the flat-strip `perspective` lane; pure over `grid`
+//!   (blueprint lane task D2).
 //! - [`atlas`]    — procedural sprite atlas (ship faces, bow chevron,
 //!   ordnance, HUD glyphs, parallax art).
 //! - [`background`] — the 20-layer parallax space background (depth queue +
@@ -102,6 +107,8 @@ pub mod gfx;
 pub mod hud;
 #[cfg(feature = "render")]
 pub mod loft_gpu;
+#[cfg(feature = "render")]
+pub mod projector;
 #[cfg(feature = "render")]
 pub mod vfx;
 #[cfg(all(feature = "render", feature = "runtime"))]
