@@ -226,7 +226,11 @@ pub fn ship_from_enemy_def_at_tier(
         id: format!("{}@{}", def.id, spawn.cell),
         faction: Faction::Enemy,
         cell: spawn.cell,
+        // v2 (A3 EXPAND): carry the spawn's 2-D pos/facing through. Both default
+        // until content's spawn-gen (C4) sets real grid coordinates.
+        pos: spawn.pos,
         orientation: spawn.orientation,
+        facing: spawn.facing,
         hull,
         max_hull: hull,
         heat: 0,
@@ -401,7 +405,9 @@ mod tests {
         ShipSpawn {
             class_id: class_id.into(),
             cell,
+            pos: crate::grid::Pos::new(0, 0),
             orientation: Orientation::BowOn { bow: LaneEnd::Aft },
+            facing: crate::grid::Facing::Bow(crate::grid::Dir4::S),
             hp_override: None,
         }
     }

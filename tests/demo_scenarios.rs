@@ -40,7 +40,9 @@ fn ship(id: &str, faction: Faction, cell: usize, hull: i32, bow: LaneEnd) -> Shi
         id: id.into(),
         faction,
         cell,
+        pos: broadside_engine::grid::Pos::new(0, 0),
         orientation: Orientation::BowOn { bow },
+        facing: broadside_engine::grid::Facing::Bow(broadside_engine::grid::Dir4::S),
         hull,
         max_hull: hull,
         heat: 0,
@@ -76,6 +78,8 @@ fn pulse_laser() -> Action {
         archetype: WeaponArchetype::Beam,
         cost: ActionCost { heat: 1, cooldown_max: 0, advances_turn: true },
         targeting: Targeting {
+            range_band: vec![broadside_engine::grid::Range::Adjacent, broadside_engine::grid::Range::Near, broadside_engine::grid::Range::Far],
+            optimal_range: broadside_engine::grid::Range::Adjacent,
             pattern: TargetingPattern::BEAM,
             band: vec![RangeBand::PointBlank, RangeBand::Close, RangeBand::Mid],
             optimal_band: RangeBand::Close,

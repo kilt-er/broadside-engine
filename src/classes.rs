@@ -305,6 +305,9 @@ fn self_move_signature(
             pattern: TargetingPattern::SELF,
             band: vec![RangeBand::PointBlank],
             optimal_band: RangeBand::PointBlank,
+            // v2 (A3 EXPAND): 2-D range mirror of the 1-D band above.
+            range_band: vec![crate::grid::Range::Adjacent],
+            optimal_range: crate::grid::Range::Adjacent,
             requires_arc: None,
             facing_relative: true,
             hits_all: false,
@@ -409,6 +412,9 @@ pub fn synthetic_broadside_sweep() -> Action {
             pattern: TargetingPattern::BROADSIDE,
             band: vec![RangeBand::Close, RangeBand::Mid],
             optimal_band: RangeBand::Close,
+            // v2 (A3 EXPAND): 2-D range mirror (Close→Near, Mid→Far).
+            range_band: vec![crate::grid::Range::Near, crate::grid::Range::Far],
+            optimal_range: crate::grid::Range::Near,
             requires_arc: Some(TArc::BroadsideArc),
             facing_relative: false,
             hits_all: false,

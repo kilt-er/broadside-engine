@@ -58,7 +58,9 @@ fn player_frigate(cell: usize, hull: i32) -> Ship {
         id: "player".into(),
         faction: Faction::Player,
         cell,
+        pos: broadside_engine::grid::Pos::new(0, 0),
         orientation: Orientation::BowOn { bow: LaneEnd::Fore },
+        facing: broadside_engine::grid::Facing::Bow(broadside_engine::grid::Dir4::S),
         hull,
         max_hull: hull,
         heat: 0,
@@ -93,7 +95,9 @@ fn weak_enemy(id: &str, cell: usize, hull: i32) -> Ship {
         id: id.into(),
         faction: Faction::Enemy,
         cell,
+        pos: broadside_engine::grid::Pos::new(0, 0),
         orientation: Orientation::BowOn { bow: LaneEnd::Fore },
+        facing: broadside_engine::grid::Facing::Bow(broadside_engine::grid::Dir4::S),
         hull,
         max_hull: hull,
         heat: 0,
@@ -142,6 +146,8 @@ fn siege_beam() -> Action {
         archetype: WeaponArchetype::Beam,
         cost: ActionCost { heat: 1, cooldown_max: 0, advances_turn: true },
         targeting: Targeting {
+            range_band: vec![broadside_engine::grid::Range::Adjacent, broadside_engine::grid::Range::Near, broadside_engine::grid::Range::Far],
+            optimal_range: broadside_engine::grid::Range::Adjacent,
             pattern: TargetingPattern::BEAM,
             band: vec![RangeBand::PointBlank, RangeBand::Close, RangeBand::Mid],
             optimal_band: RangeBand::PointBlank,
@@ -165,6 +171,8 @@ fn flip_facing() -> Action {
         archetype: WeaponArchetype::Movement,
         cost: ActionCost { heat: 0, cooldown_max: 0, advances_turn: true },
         targeting: Targeting {
+            range_band: vec![broadside_engine::grid::Range::Adjacent, broadside_engine::grid::Range::Near, broadside_engine::grid::Range::Far],
+            optimal_range: broadside_engine::grid::Range::Adjacent,
             pattern: TargetingPattern::SELF,
             band: vec![RangeBand::PointBlank],
             optimal_band: RangeBand::PointBlank,
@@ -187,6 +195,8 @@ fn step_forward() -> Action {
         archetype: WeaponArchetype::Movement,
         cost: ActionCost { heat: 0, cooldown_max: 0, advances_turn: true },
         targeting: Targeting {
+            range_band: vec![broadside_engine::grid::Range::Adjacent, broadside_engine::grid::Range::Near, broadside_engine::grid::Range::Far],
+            optimal_range: broadside_engine::grid::Range::Adjacent,
             pattern: TargetingPattern::SELF,
             band: vec![RangeBand::PointBlank],
             optimal_band: RangeBand::PointBlank,
@@ -241,7 +251,9 @@ fn spawn(class_id: &str, cell: usize, hull: i32, bow: LaneEnd) -> ShipSpawn {
     ShipSpawn {
         class_id: class_id.into(),
         cell,
+        pos: broadside_engine::grid::Pos::new(0, 0),
         orientation: Orientation::BowOn { bow },
+        facing: broadside_engine::grid::Facing::Bow(broadside_engine::grid::Dir4::S),
         hp_override: Some(hull),
     }
 }

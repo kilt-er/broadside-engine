@@ -55,7 +55,9 @@ fn ship_with_armour(id: &str, cell: usize, hull: i32, bow_armour: i32, stern_arm
         id: id.into(),
         faction: Faction::Enemy,
         cell,
+        pos: broadside_engine::grid::Pos::new(0, 0),
         orientation: Orientation::BowOn { bow: LaneEnd::Fore },
+        facing: broadside_engine::grid::Facing::Bow(broadside_engine::grid::Dir4::S),
         hull,
         max_hull: hull,
         heat: 0,
@@ -182,6 +184,8 @@ fn inert_action() -> Action {
         archetype: WeaponArchetype::Defensive,
         cost: ActionCost { heat: 0, cooldown_max: 0, advances_turn: true },
         targeting: Targeting {
+            range_band: vec![broadside_engine::grid::Range::Adjacent, broadside_engine::grid::Range::Near, broadside_engine::grid::Range::Far],
+            optimal_range: broadside_engine::grid::Range::Adjacent,
             pattern: TargetingPattern::SELF,
             band: vec![RangeBand::PointBlank],
             optimal_band: RangeBand::PointBlank,

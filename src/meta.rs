@@ -419,7 +419,9 @@ mod tests {
             id: id.into(),
             faction: Faction::Enemy,
             cell: 1,
+            pos: crate::grid::Pos::new(0, 0),
             orientation: Orientation::BowOn { bow: LaneEnd::Aft },
+            facing: crate::grid::Facing::Bow(crate::grid::Dir4::S),
             hull,
             max_hull: hull,
             heat: 0,
@@ -474,17 +476,23 @@ mod tests {
             enemy_ships: vec![
                 ShipSpawn {
                     class_id: "skiff".into(), cell: 2,
+                    pos: crate::grid::Pos::new(0, 0),
                     orientation: Orientation::BowOn { bow: LaneEnd::Aft },
+                    facing: crate::grid::Facing::Bow(crate::grid::Dir4::S),
                     hp_override: None,
                 },
                 ShipSpawn {
                     class_id: "skiff".into(), cell: 4,
+                    pos: crate::grid::Pos::new(0, 0),
                     orientation: Orientation::BowOn { bow: LaneEnd::Aft },
+                    facing: crate::grid::Facing::Bow(crate::grid::Dir4::S),
                     hp_override: None,
                 },
                 ShipSpawn {
                     class_id: "warlord".into(), cell: 6,
+                    pos: crate::grid::Pos::new(0, 0),
                     orientation: Orientation::BowOn { bow: LaneEnd::Aft },
+                    facing: crate::grid::Facing::Bow(crate::grid::Dir4::S),
                     hp_override: Some(7),
                 },
             ],
@@ -506,7 +514,9 @@ mod tests {
             enemy_ships: vec![ShipSpawn {
                 class_id: "warlord".into(),
                 cell: 3,
+                pos: crate::grid::Pos::new(0, 0),
                 orientation: Orientation::BowOn { bow: LaneEnd::Aft },
+                facing: crate::grid::Facing::Bow(crate::grid::Dir4::S),
                 hp_override: Some(10),
             }],
             hazards: vec![],
@@ -528,7 +538,9 @@ mod tests {
             enemy_ships: vec![ShipSpawn {
                 class_id: "skiff".into(),
                 cell: 2,
+                pos: crate::grid::Pos::new(0, 0),
                 orientation: Orientation::BowOn { bow: LaneEnd::Aft },
+                facing: crate::grid::Facing::Bow(crate::grid::Dir4::S),
                 hp_override: None,
             }],
             hazards: vec![],
@@ -548,7 +560,9 @@ mod tests {
             enemy_ships: vec![ShipSpawn {
                 class_id: "skiff".into(),
                 cell: 2,
+                pos: crate::grid::Pos::new(0, 0),
                 orientation: Orientation::BowOn { bow: LaneEnd::Aft },
+                facing: crate::grid::Facing::Bow(crate::grid::Dir4::S),
                 hp_override: None,
             }],
             hazards: vec![],
@@ -773,7 +787,9 @@ mod tests {
             enemy_ships: vec![ShipSpawn {
                 class_id: capital_name.into(), // capital_spawn sets class_id = capital NAME
                 cell: 3,
+                pos: crate::grid::Pos::new(0, 0),
                 orientation: Orientation::BowOn { bow: LaneEnd::Aft },
+                facing: crate::grid::Facing::Bow(crate::grid::Dir4::S),
                 hp_override: None,
             }],
             hazards: vec![],
@@ -821,7 +837,9 @@ mod tests {
             id: "e".into(),
             enemy_ships: vec![ShipSpawn {
                 class_id: "skiff".into(), cell: 2,
+                pos: crate::grid::Pos::new(0, 0),
                 orientation: Orientation::BowOn { bow: LaneEnd::Aft },
+                facing: crate::grid::Facing::Bow(crate::grid::Dir4::S),
                 hp_override: None,
             }],
             hazards: vec![],

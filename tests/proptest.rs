@@ -222,7 +222,9 @@ mod heat {
             id: id.into(),
             faction,
             cell,
+            pos: broadside_engine::grid::Pos::new(0, 0),
             orientation: Orientation::BowOn { bow },
+            facing: broadside_engine::grid::Facing::Bow(broadside_engine::grid::Dir4::S),
             hull,
             max_hull: hull,
             heat: 0,
@@ -247,6 +249,8 @@ mod heat {
             archetype: WeaponArchetype::Beam,
             cost: ActionCost { heat, cooldown_max: 0, advances_turn: true },
             targeting: Targeting {
+                range_band: vec![broadside_engine::grid::Range::Adjacent, broadside_engine::grid::Range::Near, broadside_engine::grid::Range::Far],
+                optimal_range: broadside_engine::grid::Range::Adjacent,
                 pattern: TargetingPattern::BEAM,
                 band: vec![
                     RangeBand::PointBlank, RangeBand::Close, RangeBand::Mid,

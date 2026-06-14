@@ -207,11 +207,22 @@ fn all_bands() -> Vec<RangeBand> {
     ]
 }
 
+/// v2 (A3 EXPAND): 2-D all-band coverage, the [`crate::grid::Range`] mirror of
+/// [`all_bands`]. Used to fill the additive `Targeting::range_band` on the demo
+/// actions during the migration.
+fn all_ranges() -> Vec<crate::grid::Range> {
+    use crate::grid::Range;
+    vec![Range::Adjacent, Range::Near, Range::Far]
+}
+
 fn self_targeting() -> Targeting {
     Targeting {
         pattern: TargetingPattern::SELF,
         band: all_bands(),
         optimal_band: RangeBand::PointBlank,
+        // v2 (A3 EXPAND): 2-D range mirror of the 1-D bands above.
+        range_band: all_ranges(),
+        optimal_range: crate::grid::Range::Adjacent,
         requires_arc: None,
         facing_relative: false,
         hits_all: false,
@@ -450,6 +461,9 @@ impl Default for DemoContent {
                 pattern: TargetingPattern::BEAM,
                 band: vec![RangeBand::PointBlank, RangeBand::Close, RangeBand::Mid],
                 optimal_band: RangeBand::Close,
+                // v2 (A3 EXPAND): 2-D range mirror of the 1-D bands above.
+                range_band: vec![crate::grid::Range::Adjacent, crate::grid::Range::Near],
+                optimal_range: crate::grid::Range::Adjacent,
                 requires_arc: Some(TArc::Forward),
                 facing_relative: true,
                 hits_all: false,
@@ -469,6 +483,9 @@ impl Default for DemoContent {
                 pattern: TargetingPattern::ORDNANCE,
                 band: vec![RangeBand::PointBlank, RangeBand::Close, RangeBand::Mid, RangeBand::Long],
                 optimal_band: RangeBand::Mid,
+                // v2 (A3 EXPAND): 2-D range mirror of the 1-D bands above.
+                range_band: vec![crate::grid::Range::Adjacent, crate::grid::Range::Near, crate::grid::Range::Far],
+                optimal_range: crate::grid::Range::Near,
                 requires_arc: Some(TArc::Forward),
                 facing_relative: true,
                 hits_all: false,
@@ -530,10 +547,14 @@ impl Content for DemoContent {
                 id: format!("{}-torp-{}", owner.id, owner.cell),
                 kind: "torpedo".into(),
                 cell: owner.cell,
+                // v2 (A3 EXPAND): carry the owner's 2-D pos; the real 2-D heading
+                // is derived by the resolver's ordnance projector (R5).
+                pos: owner.pos,
                 heading: match owner.orientation {
                     crate::types::Orientation::BowOn { bow } => bow,
                     crate::types::Orientation::Broadside => crate::types::LaneEnd::Fore,
                 },
+                heading8: crate::grid::Dir8::N,
                 speed: 1,
                 hull: 1,
                 payload: vec![Effect::DAMAGE { amount: 4, band_falloff: Some(false) }],
@@ -543,10 +564,12 @@ impl Content for DemoContent {
                 id: format!("{}-msl-{}", owner.id, owner.cell),
                 kind: "missile".into(),
                 cell: owner.cell,
+                pos: owner.pos,
                 heading: match owner.orientation {
                     crate::types::Orientation::BowOn { bow } => bow,
                     crate::types::Orientation::Broadside => crate::types::LaneEnd::Fore,
                 },
+                heading8: crate::grid::Dir8::N,
                 speed: 2,
                 hull: 1,
                 payload: vec![Effect::DAMAGE { amount: 2, band_falloff: Some(false) }],
@@ -556,7 +579,9 @@ impl Content for DemoContent {
                 id: format!("{}-unknown-{}", owner.id, owner.cell),
                 kind: kind.into(),
                 cell: owner.cell,
+                pos: owner.pos,
                 heading: crate::types::LaneEnd::Fore,
+                heading8: crate::grid::Dir8::N,
                 speed: 1,
                 hull: 1,
                 payload: vec![],
@@ -614,7 +639,9 @@ mod tests {
             id: "p".into(),
             faction: Faction::Player,
             cell: 0,
+            pos: crate::grid::Pos::new(0, 0),
             orientation: Orientation::BowOn { bow: LaneEnd::Fore },
+            facing: crate::grid::Facing::Bow(crate::grid::Dir4::S),
             hull: 10,
             max_hull: 10,
             heat: 0,

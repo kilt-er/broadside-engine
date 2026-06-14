@@ -356,7 +356,11 @@ pub fn boss_ship_for_spawn(spawn: &ShipSpawn) -> Ship {
         id: format!("{}@{}", spawn.class_id, spawn.cell),
         faction: Faction::Enemy,
         cell: spawn.cell,
+        // v2 (A3 EXPAND): carry the spawn's 2-D pos/facing through (both default
+        // until content's spawn-gen C4 sets real grid coordinates).
+        pos: spawn.pos,
         orientation: spawn.orientation,
+        facing: spawn.facing,
         hull: 14,
         max_hull: 14,
         heat: 0,
@@ -445,7 +449,11 @@ pub fn fallback_ship_for_spawn(spawn: &ShipSpawn) -> Ship {
         id: format!("{}@{}", spawn.class_id, spawn.cell),
         faction: Faction::Enemy,
         cell: spawn.cell,
+        // v2 (A3 EXPAND): carry the spawn's 2-D pos/facing through (both default
+        // until content's spawn-gen C4 sets real grid coordinates).
+        pos: spawn.pos,
         orientation: spawn.orientation,
+        facing: spawn.facing,
         hull: 3,
         max_hull: 3,
         heat: 0,
@@ -503,7 +511,11 @@ fn spawn(class_id: &str, cell: usize, bow: LaneEnd, hp_override: Option<i32>) ->
     ShipSpawn {
         class_id: class_id.into(),
         cell,
+        // v2 (A3 EXPAND): 2-D pos/facing default until content's spawn-gen (C4)
+        // re-keys the placeholder/generated sectors onto the 5×4 grid.
+        pos: crate::grid::Pos::new(0, 0),
         orientation: Orientation::BowOn { bow },
+        facing: crate::grid::Facing::Bow(crate::grid::Dir4::S),
         hp_override,
     }
 }
@@ -627,7 +639,9 @@ fn sector_citadel_approach() -> Sector {
                     ShipSpawn {
                         class_id: "voidrunner".into(),
                         cell: 3,
+                        pos: crate::grid::Pos::new(0, 0),
                         orientation: Orientation::BowOn { bow: LaneEnd::Aft },
+                        facing: crate::grid::Facing::Bow(crate::grid::Dir4::S),
                         hp_override: None,
                     },
                     // The warlord itself — mid-board, bow facing the
@@ -637,7 +651,9 @@ fn sector_citadel_approach() -> Sector {
                     ShipSpawn {
                         class_id: "warlord".into(),
                         cell: 5,
+                        pos: crate::grid::Pos::new(0, 0),
                         orientation: Orientation::BowOn { bow: LaneEnd::Aft },
+                        facing: crate::grid::Facing::Bow(crate::grid::Dir4::S),
                         hp_override: None,
                     },
                     // Aft escort — covers the warlord's stern; the
@@ -645,7 +661,9 @@ fn sector_citadel_approach() -> Sector {
                     ShipSpawn {
                         class_id: "voidrunner".into(),
                         cell: 6,
+                        pos: crate::grid::Pos::new(0, 0),
                         orientation: Orientation::BowOn { bow: LaneEnd::Aft },
+                        facing: crate::grid::Facing::Bow(crate::grid::Dir4::S),
                         hp_override: None,
                     },
                 ],
@@ -910,7 +928,10 @@ fn sample_encounter_spawns(
         spawns.push(ShipSpawn {
             class_id,
             cell,
+            // v2 (A3 EXPAND): default until content's 2-D spawn-gen (C4).
+            pos: crate::grid::Pos::new(0, 0),
             orientation: Orientation::BowOn { bow },
+            facing: crate::grid::Facing::Bow(crate::grid::Dir4::S),
             hp_override: None,
         });
     }
@@ -947,7 +968,10 @@ fn capital_spawn(capital_name: &str, lane: u8, catalog: &Catalog) -> Option<Ship
         // future content+architect follow-up.
         class_id: capital_name.to_string(),
         cell: mid,
+        // v2 (A3 EXPAND): default until content's 2-D spawn-gen (C4).
+        pos: crate::grid::Pos::new(0, 0),
         orientation: Orientation::BowOn { bow: LaneEnd::Aft },
+        facing: crate::grid::Facing::Bow(crate::grid::Dir4::S),
         hp_override: None,
     })
 }
@@ -987,7 +1011,9 @@ mod tests {
             id: "player".into(),
             faction: Faction::Player,
             cell,
+            pos: crate::grid::Pos::new(0, 0),
             orientation: Orientation::BowOn { bow: LaneEnd::Fore },
+            facing: crate::grid::Facing::Bow(crate::grid::Dir4::S),
             hull,
             max_hull: 10,
             heat: 0,
@@ -1012,7 +1038,9 @@ mod tests {
             id: id.into(),
             faction: Faction::Enemy,
             cell,
+            pos: crate::grid::Pos::new(0, 0),
             orientation: Orientation::BowOn { bow: LaneEnd::Aft },
+            facing: crate::grid::Facing::Bow(crate::grid::Dir4::S),
             hull: 3,
             max_hull: 3,
             heat: 0,
@@ -1286,7 +1314,9 @@ mod tests {
             enemy_ships: vec![ShipSpawn {
                 class_id: "skiff".into(),
                 cell: 4,
+                pos: crate::grid::Pos::new(0, 0),
                 orientation: Orientation::BowOn { bow: LaneEnd::Aft },
+                facing: crate::grid::Facing::Bow(crate::grid::Dir4::S),
                 hp_override: None,
             }],
             hazards: vec![],
@@ -1317,13 +1347,17 @@ mod tests {
                 ShipSpawn {
                     class_id: "skiff".into(),
                     cell: 1,
+                    pos: crate::grid::Pos::new(0, 0),
                     orientation: Orientation::BowOn { bow: LaneEnd::Fore },
+                    facing: crate::grid::Facing::Bow(crate::grid::Dir4::S),
                     hp_override: None,
                 },
                 ShipSpawn {
                     class_id: "lancer".into(),
                     cell: 4,
+                    pos: crate::grid::Pos::new(0, 0),
                     orientation: Orientation::Broadside,
+                    facing: crate::grid::Facing::Bow(crate::grid::Dir4::S),
                     hp_override: Some(7),
                 },
             ],
@@ -1351,13 +1385,17 @@ mod tests {
                 ShipSpawn {
                     class_id: "skiff".into(),
                     cell: 2, // tries to spawn ON the mid-lane player
+                    pos: crate::grid::Pos::new(0, 0),
                     orientation: Orientation::BowOn { bow: LaneEnd::Aft },
+                    facing: crate::grid::Facing::Bow(crate::grid::Dir4::S),
                     hp_override: None,
                 },
                 ShipSpawn {
                     class_id: "skiff".into(),
                     cell: 4, // keeps lane size at 5
+                    pos: crate::grid::Pos::new(0, 0),
                     orientation: Orientation::BowOn { bow: LaneEnd::Aft },
+                    facing: crate::grid::Facing::Bow(crate::grid::Dir4::S),
                     hp_override: None,
                 },
             ],
@@ -1386,7 +1424,9 @@ mod tests {
         let spawn = ShipSpawn {
             class_id: "warlord".into(),
             cell: 5,
+            pos: crate::grid::Pos::new(0, 0),
             orientation: Orientation::BowOn { bow: LaneEnd::Aft },
+            facing: crate::grid::Facing::Bow(crate::grid::Dir4::S),
             hp_override: None,
         };
         let s = boss_ship_for_spawn(&spawn);
@@ -1423,7 +1463,9 @@ mod tests {
         let spawn = ShipSpawn {
             class_id: "warlord".into(),
             cell: 5,
+            pos: crate::grid::Pos::new(0, 0),
             orientation: Orientation::BowOn { bow: LaneEnd::Aft },
+            facing: crate::grid::Facing::Bow(crate::grid::Dir4::S),
             hp_override: Some(20),
         };
         let s = boss_ship_for_spawn(&spawn);
@@ -1559,7 +1601,9 @@ mod tests {
         let sp = ShipSpawn {
             class_id: "The Dasher".into(),
             cell: 3,
+            pos: crate::grid::Pos::new(0, 0),
             orientation: Orientation::BowOn { bow: LaneEnd::Aft },
+            facing: crate::grid::Facing::Bow(crate::grid::Dir4::S),
             hp_override: None,
         };
         let boss = capital_boss_ship_for_spawn(&sp, &cat);

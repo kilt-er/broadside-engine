@@ -56,6 +56,57 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
+use crate::grid::{Dir4, Dir8, Facing, Pos, Range};
+
+/* =========================================================================
+ * 0. v2 spatial migration — additive 2D fields (blueprint lane task A3)
+ *
+ * The v2 rebuild replaces the 1-D spatial layer (`cell: usize`, `LaneEnd`,
+ * `Orientation`, `RangeBand`) with the [`crate::grid`] vocabulary
+ * (`Pos`/`Dir8`/`Facing`/`Range`). Per the team's parallel-change ruling, the
+ * migration is **expand → migrate → contract**: this phase (EXPAND) ADDS the
+ * 2-D fields **alongside** the surviving 1-D fields so every commit keeps the
+ * shared tree green. The 1-D fields and the `LaneEnd`/`Orientation`/`RangeBand`
+ * enums are deleted in the later CONTRACT commit, once every consumer lane has
+ * migrated off them.
+ *
+ * Each additive 2-D field is `#[serde(default = "…")]` against one of the
+ * helpers below so existing JSON fixtures — which predate these fields — still
+ * deserialize, and the round-trip tests still pass. (grid types intentionally
+ * derive no `Default`, and `grid.rs` is frozen post-review, so the transitional
+ * defaults live here as local fns that the CONTRACT commit removes wholesale.)
+ *
+ * Where the canonical field name is still taken by the live 1-D field, the 2-D
+ * field uses a temporary suffix (`heading8`, `dir8`, `range_band`,
+ * `optimal_range`); CONTRACT renames them back to the canonical names.
+ * ====================================================================== */
+
+/// Transitional serde default for an additive [`Pos`] field: the grid origin
+/// (`col 0, row 0`). Removed at CONTRACT when the 1-D `cell` fields are deleted
+/// and the 2-D fields become required.
+fn default_pos() -> Pos {
+    Pos::new(0, 0)
+}
+
+/// Transitional serde default for an additive [`Dir8`] field: `N` (away from
+/// the player; see [`crate::grid`] frame). Removed at CONTRACT.
+fn default_dir8() -> Dir8 {
+    Dir8::N
+}
+
+/// Transitional serde default for an additive [`Facing`] field: bow pointed at
+/// the player (`Bow(Dir4::S)`), the most common spawn stance. Removed at
+/// CONTRACT when `facing` becomes required.
+fn default_facing() -> Facing {
+    Facing::Bow(Dir4::S)
+}
+
+/// Transitional serde default for an additive single-[`Range`] field
+/// (`optimal_range`): `Adjacent`. Removed at CONTRACT.
+fn default_range() -> Range {
+    Range::Adjacent
+}
+
 /* =========================================================================
  * 1. Geometry
  * ====================================================================== */
@@ -166,6 +217,16 @@ pub struct FireEvent {
     pub from_cell: usize,
     /// Lane cell the shot targets (the target's cell).
     pub to_cell: usize,
+    /// **v2 additive** (A3 EXPAND): 2-D origin cell, replacing
+    /// [`FireEvent::from_cell`]. `#[serde(default)]` for fixture compatibility
+    /// during the migration; the renderer's whiff beam (`hit:false`) draws
+    /// between `from_pos`/`to_pos` at CONTRACT.
+    #[serde(default = "default_pos")]
+    pub from_pos: Pos,
+    /// **v2 additive** (A3 EXPAND): 2-D target cell, replacing
+    /// [`FireEvent::to_cell`]. See [`FireEvent::from_pos`].
+    #[serde(default = "default_pos")]
+    pub to_pos: Pos,
     /// Firing weapon's archetype — drives per-weapon beam styling.
     pub archetype: WeaponArchetype,
     /// Faction of the firing ship — for the renderer's side tint.
@@ -181,6 +242,10 @@ pub struct Hazard {
     pub id: String,
     pub kind: HazardKind,
     pub cell: usize,
+    /// **v2 additive** (A3 EXPAND): 2-D cell, replacing [`Hazard::cell`].
+    /// `#[serde(default)]` for fixture compatibility during the migration.
+    #[serde(default = "default_pos")]
+    pub pos: Pos,
     pub payload: Vec<Effect>,
     /// Optional lifespan in turns; `None` = persistent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -195,6 +260,58 @@ pub enum HazardKind {
     Debris,
 }
 
+/* -------------------------------------------------------------------------
+ * Threat — the v2 telegraph map (blueprint "single best idea")
+ *
+ * NEW in v2. A `Threat` is one cell the player will be hit on next turn,
+ * computed by running the REAL `resolve_targeting` against each enemy's QUEUED
+ * action — so the painted threat set cannot desync from where the shot
+ * actually lands (correctness from reuse). The resolver (R8) populates
+ * [`Board::threats`] after `decide_enemy_action` and clears it at the phase-0
+ * boundary; the renderer (D6) draws a red fill under each threatened cell,
+ * styled by [`ThreatKind`], with a lethal flash. When the player vacates a
+ * threatened cell the queued shot resolves to empty → a `hit:false` whiff beam
+ * (R7). This is **transient runtime/telegraph state**, like
+ * [`Board::fire_events`]: it does NOT round-trip through [`BoardSnapshot`].
+ * ---------------------------------------------------------------------- */
+
+/// What a telegraphed [`Threat`] will do to its cell next turn — drives the
+/// renderer's threat-fill styling (blueprint: "red fill under a ship = positional
+/// threat ... by ThreatKind + lethal flash"). Mirrors the effect families the
+/// AI can queue; `Damage` is the common case and carries the projected amount
+/// so the renderer can flag a lethal hit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ThreatKind {
+    /// A damaging shot. `amount` is the projected pre-mitigation damage so the
+    /// renderer can flash cells where it would be lethal.
+    Damage { amount: i32 },
+    /// A displacement (push / pull / swap) — the cell's occupant gets moved.
+    Displace,
+    /// A debuff (status) application.
+    Status,
+    /// Any other queued effect with a cell footprint but no damage/displacement
+    /// (e.g. a deploy onto the cell). Kept as a catch-all so the telegraph is
+    /// total without enumerating every effect.
+    Other,
+}
+
+/// One telegraphed threatened cell for the next turn (see the module section
+/// comment above [`ThreatKind`]). Produced by the resolver's R8 ThreatMap pass
+/// from the enemy's queued action; consumed by the renderer (D6) and the
+/// dodge-whiff emission (R7).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct Threat {
+    /// The cell that will be hit.
+    pub pos: Pos,
+    /// What will happen to it.
+    pub kind: ThreatKind,
+    /// The cell of the enemy whose queued action produces this threat — lets the
+    /// renderer draw the telegraph beam from the right ship and lets R7 know
+    /// whose shot whiffs when the player vacates `pos`.
+    pub source: Pos,
+}
+
 /* =========================================================================
  * 3. Ship
  * ====================================================================== */
@@ -206,7 +323,17 @@ pub struct Ship {
     pub id: String,
     pub faction: Faction,
     pub cell: usize,
+    /// **v2 additive** (A3 EXPAND): 2-D grid position, replacing [`Ship::cell`].
+    /// `#[serde(default)]` so pre-v2 fixtures (which carry only `cell`) still
+    /// parse during the migration; the resolver writes both during transition.
+    /// Becomes the sole position field at CONTRACT (and `cell` is deleted).
+    #[serde(default = "default_pos")]
+    pub pos: Pos,
     pub orientation: Orientation,
+    /// **v2 additive** (A3 EXPAND): 2-D hull stance, replacing
+    /// [`Ship::orientation`]. See [`Ship::pos`] for the transition contract.
+    #[serde(default = "default_facing")]
+    pub facing: Facing,
     pub hull: i32,
     #[serde(rename = "maxHull")]
     pub max_hull: i32,
@@ -383,6 +510,18 @@ pub struct Targeting {
     /// Peak-damage band; outside it band falloff applies.
     #[serde(rename = "optimalBand")]
     pub optimal_band: RangeBand,
+    /// **v2 additive** (A3 EXPAND): 3-band Chebyshev ranges the weapon may fire
+    /// at, replacing [`Targeting::band`]. `#[serde(default)]` (→ empty) so pre-v2
+    /// catalogs still parse; the resolver reads this once content re-authors the
+    /// catalog. Temporary name: `band` is still the live 1-D field — renamed to
+    /// `band` at CONTRACT.
+    #[serde(rename = "rangeBand", default)]
+    pub range_band: Vec<Range>,
+    /// **v2 additive** (A3 EXPAND): peak-damage [`Range`] band, replacing
+    /// [`Targeting::optimal_band`]. Temporary name (renamed to `optimal_band` at
+    /// CONTRACT). See [`Targeting::range_band`].
+    #[serde(rename = "optimalRange", default = "default_range")]
+    pub optimal_range: Range,
     /// Mount must bear this arc given the firing ship's orientation. `None`
     /// = arc-less action (SELF, DEPLOYED_CELL).
     #[serde(rename = "requiresArc")]
@@ -553,7 +692,16 @@ pub struct Projectile {
     pub id: String,
     pub kind: String,
     pub cell: usize,
+    /// **v2 additive** (A3 EXPAND): 2-D position, replacing [`Projectile::cell`].
+    /// `#[serde(default)]` for fixture compatibility during the migration.
+    #[serde(default = "default_pos")]
+    pub pos: Pos,
     pub heading: LaneEnd,
+    /// **v2 additive** (A3 EXPAND): 2-D heading, replacing [`Projectile::heading`].
+    /// Temporary name (`heading` is the live 1-D field) — renamed to `heading`
+    /// at CONTRACT. The ordnance projector (R5) steps along this each phase.
+    #[serde(rename = "heading8", default = "default_dir8")]
+    pub heading8: Dir8,
     /// Cells advanced per turn.
     pub speed: u32,
     /// Hull points — point-defense damages this until the projectile breaks up.
@@ -658,6 +806,14 @@ pub struct HookContext<'b> {
     pub board: &'b mut Board,
     pub source_cell: Option<usize>,
     pub target_cell: Option<usize>,
+    /// **v2 additive** (A3 EXPAND): 2-D source cell, replacing
+    /// [`HookContext::source_cell`]. Not serialized (the bus is runtime-only),
+    /// so no fixture concern — purely a parallel field the resolver populates
+    /// during the migration. Becomes the sole field at CONTRACT.
+    pub source_pos: Option<Pos>,
+    /// **v2 additive** (A3 EXPAND): 2-D target cell, replacing
+    /// [`HookContext::target_cell`]. See [`HookContext::source_pos`].
+    pub target_pos: Option<Pos>,
     pub amount: Option<i32>,
     pub extras: HashMap<String, serde_json::Value>,
 }
@@ -669,6 +825,8 @@ impl<'b> HookContext<'b> {
             board,
             source_cell: None,
             target_cell: None,
+            source_pos: None,
+            target_pos: None,
             amount: None,
             extras: HashMap::new(),
         }
@@ -1095,7 +1253,17 @@ pub struct EncounterDef {
 pub struct ShipSpawn {
     pub class_id: String,
     pub cell: usize,
+    /// **v2 additive** (A3 EXPAND): 2-D spawn position, replacing
+    /// [`ShipSpawn::cell`]. `#[serde(default)]` for fixture compatibility; the
+    /// spawn builders ([`crate::runs`]) carry it onto the materialized
+    /// [`Ship::pos`] during the migration.
+    #[serde(default = "default_pos")]
+    pub pos: Pos,
     pub orientation: Orientation,
+    /// **v2 additive** (A3 EXPAND): 2-D spawn stance, replacing
+    /// [`ShipSpawn::orientation`]. See [`ShipSpawn::pos`].
+    #[serde(default = "default_facing")]
+    pub facing: Facing,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hp_override: Option<i32>,
 }
@@ -1410,7 +1578,9 @@ mod tests {
             id: "frigate".into(),
             faction: Faction::Player,
             cell: 0,
+            pos: Pos::new(0, 0),
             orientation: Orientation::BowOn { bow: LaneEnd::Fore },
+            facing: Facing::Bow(Dir4::S),
             hull: 10, max_hull: 10,
             heat: 0, heat_max: 6, locked_out: false,
             shield_profile: ShieldProfile {
@@ -1618,13 +1788,16 @@ mod tests {
             enemy_ships: vec![ShipSpawn {
                 class_id: "wanderer".into(),
                 cell: 3,
+                pos: Pos::new(0, 0),
                 orientation: Orientation::BowOn { bow: LaneEnd::Aft },
+                facing: Facing::Bow(Dir4::S),
                 hp_override: Some(4),
             }],
             hazards: vec![Hazard {
                 id: "mine_a".into(),
                 kind: HazardKind::Mine,
                 cell: 2,
+                pos: Pos::new(0, 0),
                 payload: vec![Effect::DAMAGE { amount: 2, band_falloff: Some(false) }],
                 ttl: None,
             }],
@@ -1644,7 +1817,9 @@ mod tests {
         let ship_spawn_no_hp = ShipSpawn {
             class_id: "wanderer".into(),
             cell: 0,
+            pos: Pos::new(0, 0),
             orientation: Orientation::Broadside,
+            facing: Facing::Bow(Dir4::S),
             hp_override: None,
         };
         let s = serde_json::to_string(&ship_spawn_no_hp).unwrap();
@@ -1660,7 +1835,9 @@ mod tests {
             id: "player".into(),
             faction: Faction::Player,
             cell: 0,
+            pos: Pos::new(0, 0),
             orientation: Orientation::BowOn { bow: LaneEnd::Fore },
+            facing: Facing::Bow(Dir4::S),
             hull: 4, max_hull: 5,
             heat: 1, heat_max: 6, locked_out: false,
             shield_profile: ShieldProfile {
@@ -1702,7 +1879,9 @@ mod tests {
             id: "p".into(),
             faction: Faction::Player,
             cell: 0,
+            pos: Pos::new(0, 0),
             orientation: Orientation::BowOn { bow: LaneEnd::Fore },
+            facing: Facing::Bow(Dir4::S),
             hull: 5, max_hull: 5,
             heat: 0, heat_max: 6, locked_out: false,
             shield_profile: ShieldProfile {
@@ -1742,7 +1921,9 @@ mod tests {
             id: "frigate".into(),
             faction: Faction::Player,
             cell: 0,
+            pos: Pos::new(0, 0),
             orientation: Orientation::BowOn { bow: LaneEnd::Fore },
+            facing: Facing::Bow(Dir4::S),
             hull: 10, max_hull: 10,
             heat: 2, heat_max: 6, locked_out: false,
             shield_profile: shield,
@@ -1764,6 +1945,8 @@ mod tests {
             fire_events: vec![FireEvent {
                 from_cell: 0,
                 to_cell: 2,
+                from_pos: Pos::new(0, 0),
+                to_pos: Pos::new(0, 0),
                 archetype: WeaponArchetype::Beam,
                 attacker_faction: Faction::Player,
                 hit: true,
