@@ -1082,6 +1082,116 @@ pub fn apply_damage(
     }
 }
 
+/// 2-D damage pipeline (blueprint R4). The v2 port of [`apply_damage`] above,
+/// wiring the 2-D `geometry2d` Range falloff (step 1) + 2-D `facing_zone` (step
+/// 4) into the **UNCHANGED, load-bearing ORDER**:
+///
+///   1. band falloff  ->  2. subsystem modifiers  ->  3. target-lock 2x  ->
+///   4. directional shield  ->  5. hull + emit + destroy
+///
+/// Reviewer V5 guards this ORDER + the `direction_to -> incoming_from` wiring.
+/// Expand-contract like the rest of the R-series: the 1-D [`apply_damage`] stays
+/// (its fixture tests) until CONTRACT; only the live callers (the `DAMAGE`
+/// effect arm + the R6 collision) switch to this.
+///
+/// `atk_pos` is the firing/colliding cell, `target_pos` the cell hit. For every
+/// DIRECT fired hit the target sits ON the cardinal firing ray, so
+/// `direction_to(target_pos, atk_pos)` is the exact opposite cardinal; BLAST
+/// splash + ordnance can yield a diagonal `incoming_from`, which `facing_zone`
+/// handles (it is total over all 8) — the documented arity seam. This also
+/// makes the R6 collision shield-zone correct (it was provisional on the 1-D
+/// path, which mis-read the flat index as a lane position).
+pub fn apply_damage_2d(
+    target_pos: Pos,
+    raw: i32,
+    atk_pos: Pos,
+    weapon: &Action,
+    board: &mut Board,
+    content: &dyn Content,
+) {
+    let target_idx = target_pos.to_index();
+    // Bail if the target cell is empty (matches the 1-D guard).
+    if board.ship_at(target_pos).is_none() {
+        return;
+    }
+
+    // 1. Range band (2-D Chebyshev) + optional falloff. Same disable predicate
+    //    as 1-D (one DAMAGE effect with `band_falloff: Some(false)` disables it
+    //    for the whole call). The 2-D `band_falloff` is the ABSOLUTE
+    //    [1.0, 0.6, 0.3] curve (decision #6), keyed on the actual band — it does
+    //    NOT take `optimal_band` (that was the 1-D distance-from-optimal model).
+    let band = crate::geometry2d::range_band(atk_pos, target_pos);
+    let falloff_disabled = weapon.effects.iter().any(
+        |e| matches!(e, Effect::DAMAGE { band_falloff: Some(false), .. }),
+    );
+    let mut dmg = if falloff_disabled {
+        raw
+    } else {
+        crate::geometry2d::band_falloff(raw, band)
+    };
+
+    // 2. Subsystem damage modifiers (ATTACKER-side: look up by the attacker's
+    //    cell). `apply_modifiers`/`Content::damage_modifier` still take the 1-D
+    //    `RangeBand`, so map the 2-D `Range` -> `RangeBand` at the boundary (a
+    //    documented transition shim; `damage_modifier` is a no-op stub today).
+    //    Migrate the trait to `Range` when real subsystems land + drop the shim.
+    dmg = apply_modifiers(dmg, atk_pos.to_index(), range_to_rangeband(band), board, content);
+
+    // 3. Target-lock doubles the hit and is consumed.
+    if let Some(target) = board.ship_at_mut(target_pos) {
+        if let Some(p) = target.statuses.iter().position(|s| s.kind == StatusKind::TargetLock) {
+            dmg *= 2;
+            target.statuses.swap_remove(p);
+        }
+    }
+
+    // 4. Directional shield. `incoming_from` points back at the gun:
+    //    `direction_to(target, attacker)`. A same-cell hit (`None`) has no
+    //    meaningful incoming direction — treat as a zone-less hit on the bow
+    //    (only a degenerate self-collision reaches this). Real hits give a
+    //    cardinal (direct) or diagonal (splash/ordnance); `facing_zone` is total.
+    let post_shield_dmg = if let Some(target) = board.ship_at_mut(target_pos) {
+        let zone = match crate::geometry2d::direction_to(target_pos, atk_pos) {
+            Some(incoming_from) => crate::geometry2d::facing_zone(target.facing, incoming_from),
+            None => crate::types::HullZone::Bow,
+        };
+        let face = target.shield_profile.face_mut(zone);
+        absorb_shield(face, dmg)
+    } else {
+        return;
+    };
+    let final_dmg = post_shield_dmg;
+
+    // 5. Hull subtraction + emit + destroy check.
+    let killed = if let Some(target) = board.ship_at_mut(target_pos) {
+        target.hull -= final_dmg;
+        target.hull <= 0
+    } else {
+        return;
+    };
+    if final_dmg > 0 {
+        emit(board, Hook::OnDamageTaken, |ctx| {
+            ctx.target_cell = Some(target_idx);
+            ctx.amount = Some(final_dmg);
+        });
+    }
+    if killed {
+        destroy(target_idx, board, content);
+    }
+}
+
+/// Map a 2-D [`crate::grid::Range`] to the 1-D [`RangeBand`] for the (still-1-D)
+/// `Content::damage_modifier` trait seam (R4 transition shim only — removed when
+/// `damage_modifier` migrates to `Range`). The 3 v2 bands collapse onto the
+/// nearest 1-D band: `Adjacent -> PointBlank`, `Near -> Close`, `Far -> Mid`.
+fn range_to_rangeband(r: crate::grid::Range) -> RangeBand {
+    match r {
+        crate::grid::Range::Adjacent => RangeBand::PointBlank,
+        crate::grid::Range::Near => RangeBand::Close,
+        crate::grid::Range::Far => RangeBand::Mid,
+    }
+}
+
 /* =============================================================================
  * Effect dispatch.
  * ========================================================================== */
@@ -1107,7 +1217,16 @@ pub fn apply_effect(
             let has_on_hit_mod = WeaponMod::of(a).is_some();
             for &c in cells {
                 if board.cells[c].is_some() {
-                    apply_damage(c, *amount, source_cell, a, board, content);
+                    // R4: live damage path -> 2-D pipeline. cells came from
+                    // resolve_targeting_2d (Pos->to_index shim) + source_cell is
+                    // the attacker's slot, so under invariant (A) both recover
+                    // their Pos exactly. apply_damage_2d wires the 2-D Range
+                    // falloff + facing_zone, KEEPING the ORDER.
+                    if let (Some(tp), Some(ap)) =
+                        (Pos::from_index(c), Pos::from_index(source_cell))
+                    {
+                        apply_damage_2d(tp, *amount, ap, a, board, content);
+                    }
                     // On-hit weapon mod (flak/incendiary/emp/targeting_laser/
                     // precision_core). The target was present pre-hit (the
                     // `is_some` gate above), so the shot CONNECTED — riders
@@ -2193,19 +2312,14 @@ fn self_move_2d_commit(
     if collision_dmg > 0 {
         // Collision arrives from beyond the landing cell along the travel
         // direction; the phantom attacker is one step further (clamped to `to`
-        // if that is off-grid).
+        // if that is off-grid, so direction_to(to, phantom) still yields the
+        // travel axis -> the collision hits the face toward `dir`).
         //
-        // LIMITATION until R4: apply_damage is still 1-D — it takes usize cells
-        // and computes the shield-zone direction via the 1-D direction_to on the
-        // FLAT indices, which is NOT the true 2-D collision direction (a flat
-        // row*COLS+col index isn't a lane position). So the collision AMOUNT
-        // lands on the correct SHIP (to.to_index() is exact under invariant A),
-        // but which directional-shield ZONE absorbs it is provisional until R4
-        // migrates apply_damage to take `Pos` + the 2-D facing_zone (then the
-        // collision will correctly hit the face toward `dir`). Tracked as part of
-        // R4's apply_damage 2-D wiring.
+        // R4: now routes through the 2-D apply_damage_2d, so the directional-
+        // shield ZONE is the TRUE 2-D collision face (was provisional on the 1-D
+        // path, which mis-read the flat index as a lane position).
         let phantom = crate::grid::offset(to, dir, 1).unwrap_or(to);
-        apply_damage(to.to_index(), collision_dmg, phantom.to_index(), &dummy_weapon(), board, content);
+        apply_damage_2d(to, collision_dmg, phantom, &dummy_weapon(), board, content);
     }
 }
 
@@ -2423,11 +2537,12 @@ fn resolve_target_move_2d(
 
             // Collision damage if blocked. The collision arrives from beyond the
             // landing cell along the travel direction; phantom attacker one step
-            // further (clamped to `cur` if off-grid). Provisional shield-zone via
-            // 1-D apply_damage until R4 -> apply_damage_2d (see doc).
+            // further (clamped to `cur` if off-grid). R4: routes through the 2-D
+            // apply_damage_2d, so the directional-shield ZONE is the true 2-D
+            // collision face (direction_to(cur, phantom) yields the travel axis).
             if remaining > 0 {
                 let phantom = crate::grid::offset(cur, dir, 1).unwrap_or(cur);
-                apply_damage(cur.to_index(), remaining, phantom.to_index(), &dummy_weapon(), board, content);
+                apply_damage_2d(cur, remaining, phantom, &dummy_weapon(), board, content);
             }
         }
     }
@@ -3660,8 +3775,14 @@ mod tests {
     }
 
     /// AI doesn't queue an out-of-band action (range it can't reach).
+    // #[ignore]: stale 1-D fixture, NOT a C1 bug. make_ship/make_board leave
+    // ship.pos=(0,0); C1's 2-D decide_enemy_action reads pos, so player+enemy
+    // co-located at (0,0) → from_to=None → no maneuver (got [] where the 1-D
+    // test expected a move). The 8 sibling ai_* tests prove the 2-D ladder is
+    // correct on invariant-A boards. Restore via board_2d/ship_2d 2-D fixtures
+    // (real pos + bearing facings) — task #30.
+    #[ignore = "stale 1-D fixture (pos (0,0)); C1 AI is 2-D — restore at 2-D ai_* fixture migration #30"]
     #[test]
-    #[ignore = "C1-flipped: stale 1D make_ship fixture vs 2D fire-gate; tester migrates to ai.rs + 2D invariant-A fixtures (#33)"]
     fn ai_skips_out_of_band_action() {
         let player = make_ship("p", Faction::Player, 0, 10, LaneEnd::Fore);
         // Enemy at cell 6, bow=aft. Distance 6 is long; the weapon only
@@ -3742,8 +3863,8 @@ mod tests {
     /// bin's case). This is the fix for "enemies never move" — live enemies
     /// carry only weapon mounts, so the AI must reach for the same synthetic
     /// __move_* actions the player uses.
+    #[ignore = "stale 1-D fixture (pos (0,0)); C1 AI is 2-D — restore at 2-D ai_* fixture migration #30"]
     #[test]
-    #[ignore = "C1-flipped: stale 1D make_ship fixture vs 2D fire-gate; tester migrates to ai.rs + 2D invariant-A fixtures (#33)"]
     fn ai_closes_via_synthetic_move_when_cannot_fire() {
         // Enemy at cell 6 (far fore), bow=Aft so its forward gun points
         // down-lane at the player at cell 0 — but distance 6 = Long, and
