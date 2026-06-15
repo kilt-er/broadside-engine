@@ -537,8 +537,50 @@ fn run_action(
     // targeting + 1-D cell application address the same slots. Removed when R4
     // takes `apply_effect`/`apply_damage` to `Pos`.
     let ship_pos = ship.pos;
+    // Capture the firer's faction here (releases the `ship` borrow before the
+    // R7 whiff block mutates `board.fire_events`).
+    let ship_faction = ship.faction;
     let target_positions = resolve_targeting_2d(action, board, ship_pos);
     let cells: Vec<usize> = target_positions.iter().map(|p| p.to_index()).collect();
+
+    // R7 — DODGE WHIFF. Before the "nothing bore" gate can swallow a vacated
+    // shot, draw the miss. This ship telegraphed a threat set last phase
+    // (`board.threats` painted by R8, `source == ship_pos`); if the player has
+    // since VACATED a threatened cell, the queued shot now finds it empty and
+    // would otherwise vanish silently. We emit a `hit: false` FireEvent
+    // (ship_pos -> the now-empty telegraphed cell) so the renderer draws the
+    // beam firing into the space the target just left. A threatened cell that
+    // is STILL occupied resolves normally below (the `hit: true` path), so we
+    // whiff ONLY telegraphed cells that are now empty. Additive render state,
+    // like the hit:true emit — it changes no mechanic and runs regardless of
+    // the nothing-bore gate (the enemy visibly fires even when it connects with
+    // nothing; the gate only governs heat/cooldown). Fires-only: a non-DAMAGE
+    // queued action (move/vent/reorient) telegraphs no Damage threat to whiff.
+    let fires_damage_whiff = action
+        .effects
+        .iter()
+        .any(|e| matches!(e, Effect::DAMAGE { .. }));
+    if fires_damage_whiff {
+        // Telegraphed cells from THIS ship that are now empty (player vacated).
+        let whiffed: Vec<Pos> = board
+            .threats
+            .iter()
+            .filter(|th| th.source == ship_pos && board.ship_at(th.pos).is_none())
+            .map(|th| th.pos)
+            .collect();
+        for pos in whiffed {
+            board.fire_events.push(crate::types::FireEvent {
+                from_cell: ship_pos.to_index(),
+                to_cell: pos.to_index(),
+                from_pos: ship_pos,
+                to_pos: pos,
+                archetype: action.archetype,
+                attacker_faction: ship_faction,
+                hit: false,
+            });
+        }
+    }
+
     // The "nothing bore" gate: arc-required actions with no targets eat
     // nothing — cooldown is NOT reset and heat is NOT spent. Mirrors the
     // TS `if (a.targeting.requiresArc !== null && cells.length === 0) continue`.
@@ -5632,5 +5674,96 @@ mod tests {
         let mut other = pulse_laser();
         other.effects = vec![Effect::VENT_HEAT { amount: 2, recharge_cooldowns: None }];
         assert_eq!(threat_kind(&other), ThreatKind::Other);
+    }
+
+    /* =====================================================================
+     * R7 — dodge whiff (hit:false). A telegraphed shot whose target cell the
+     * player has VACATED emits a hit:false FireEvent so the renderer draws the
+     * beam firing into the now-empty cell. Reads the R8 telegraph
+     * (board.threats, source == firer). Sanity coverage.
+     * ================================================================== */
+
+    #[test]
+    fn r7_whiff_emitted_when_player_vacated_a_telegraphed_cell() {
+        // Enemy at (2,1) Bow(S) telegraphed a hit on (2,3) last phase. The
+        // player has since moved off (2,3) — that cell is now empty. Firing the
+        // queued beam this phase: no target on the S ray -> nothing-bore, but
+        // the whiff draws first: a hit:false FireEvent (2,1) -> (2,3).
+        let enemy = ship_2d("e", Faction::Enemy, Pos::new(2, 1), Facing::Bow(Dir4::S), Arc::Forward);
+        let mut board = board_2d(vec![enemy]); // (2,3) deliberately EMPTY now
+        board.threats.push(crate::types::Threat {
+            pos: Pos::new(2, 3),
+            kind: crate::types::ThreatKind::Damage { amount: 4 },
+            source: Pos::new(2, 1),
+        });
+        let weapon = action_2d(TargetingPattern::BEAM, Some(Arc::Forward), false);
+        let content = OneAction("w".into(), weapon.clone());
+        run_action("e", "w", &weapon, &mut board, &content);
+        let whiffs: Vec<_> = board.fire_events.iter().filter(|f| !f.hit).collect();
+        assert_eq!(whiffs.len(), 1, "exactly one whiff");
+        assert_eq!(whiffs[0].from_pos, Pos::new(2, 1));
+        assert_eq!(whiffs[0].to_pos, Pos::new(2, 3));
+        assert!(!whiffs[0].hit, "hit:false");
+    }
+
+    #[test]
+    fn r7_no_whiff_when_telegraphed_cell_still_occupied() {
+        // Same telegraph, but the player is STILL on (2,3). The shot connects
+        // normally (hit:true) and there is NO whiff.
+        let enemy = ship_2d("e", Faction::Enemy, Pos::new(2, 1), Facing::Bow(Dir4::S), Arc::Forward);
+        let player = ship_2d("p", Faction::Player, Pos::new(2, 3), Facing::Bow(Dir4::N), Arc::Turret);
+        let mut board = board_2d(vec![enemy, player]);
+        board.threats.push(crate::types::Threat {
+            pos: Pos::new(2, 3),
+            kind: crate::types::ThreatKind::Damage { amount: 4 },
+            source: Pos::new(2, 1),
+        });
+        let weapon = action_2d(TargetingPattern::BEAM, Some(Arc::Forward), false);
+        let content = OneAction("w".into(), weapon.clone());
+        run_action("e", "w", &weapon, &mut board, &content);
+        assert!(board.fire_events.iter().all(|f| f.hit), "occupied target -> no whiff, only hit:true");
+        assert!(board.fire_events.iter().any(|f| f.hit && f.to_pos == Pos::new(2, 3)), "the connecting hit is recorded");
+    }
+
+    #[test]
+    fn r7_no_whiff_for_a_non_damage_action() {
+        // A queued non-DAMAGE action (here a SELF vent) does not whiff even if a
+        // stale threat exists — only DAMAGE-bearing shots draw a miss.
+        let mut enemy = ship_2d("e", Faction::Enemy, Pos::new(2, 1), Facing::Bow(Dir4::S), Arc::Forward);
+        enemy.heat = 3; // so the vent does something; irrelevant to the whiff gate
+        let mut board = board_2d(vec![enemy]);
+        board.threats.push(crate::types::Threat {
+            pos: Pos::new(2, 3),
+            kind: crate::types::ThreatKind::Damage { amount: 4 },
+            source: Pos::new(2, 1),
+        });
+        let mut vent = pulse_laser();
+        vent.targeting.pattern = TargetingPattern::SELF;
+        vent.targeting.requires_arc = None;
+        vent.effects = vec![Effect::VENT_HEAT { amount: 2, recharge_cooldowns: None }];
+        let content = OneAction("vent".into(), vent.clone());
+        run_action("e", "vent", &vent, &mut board, &content);
+        assert!(board.fire_events.is_empty(), "a non-DAMAGE action emits no FireEvent (hit or whiff)");
+    }
+
+    #[test]
+    fn r7_whiff_only_for_this_firers_telegraph() {
+        // Two enemies telegraphed different cells; firing enemy A must only
+        // whiff A's vacated cell, not B's (filtered by Threat.source).
+        let a = ship_2d("a", Faction::Enemy, Pos::new(2, 1), Facing::Bow(Dir4::S), Arc::Forward);
+        let b = ship_2d("b", Faction::Enemy, Pos::new(0, 1), Facing::Bow(Dir4::S), Arc::Forward);
+        let mut board = board_2d(vec![a, b]); // (2,3) and (0,3) both empty
+        board.threats.push(crate::types::Threat {
+            pos: Pos::new(2, 3), kind: crate::types::ThreatKind::Damage { amount: 4 }, source: Pos::new(2, 1),
+        });
+        board.threats.push(crate::types::Threat {
+            pos: Pos::new(0, 3), kind: crate::types::ThreatKind::Damage { amount: 4 }, source: Pos::new(0, 1),
+        });
+        let weapon = action_2d(TargetingPattern::BEAM, Some(Arc::Forward), false);
+        let content = OneAction("w".into(), weapon.clone());
+        run_action("a", "w", &weapon, &mut board, &content);
+        let whiffs: Vec<_> = board.fire_events.iter().filter(|f| !f.hit).collect();
+        assert_eq!(whiffs.len(), 1, "only A's telegraph whiffs");
+        assert_eq!(whiffs[0].to_pos, Pos::new(2, 3), "A's vacated cell, not B's");
     }
 }
