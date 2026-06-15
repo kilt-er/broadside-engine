@@ -1316,7 +1316,13 @@ impl ApplicationHandler for App {
                 }
                 match gfx.render(&instances) {
                     Ok(()) => {}
-                    Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
+                    Err(e @ (wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated)) => {
+                        // (#43-followup diag) If this fires EVERY frame, the
+                        // surface is going Outdated→reconfigure in a loop, which
+                        // presents black frames between reconfigures = the
+                        // "fade-to-black → snap-to-grey" pulse. A one-shot here
+                        // is normal (resize); a per-frame flood is the bug.
+                        log::warn!("surface {e:?} → reconfigure (per-frame flood = the pulse bug)");
                         gfx.reconfigure();
                     }
                     Err(wgpu::SurfaceError::OutOfMemory) => {
@@ -1325,20 +1331,30 @@ impl ApplicationHandler for App {
                     }
                     Err(e) => log::warn!("surface error: {e:?}"),
                 }
-                // Keep redrawing while a turn tween is in flight, the loft ship
-                // is animating (idle breathing + reorient tweens), combat juice
-                // is still playing, OR an ability tile is mid-queue-animation —
-                // so all animate to completion. Otherwise sleep until next input.
-                // During Playing we keep redrawing so the #67 telegraph spinner /
-                // move-arrow / incoming-attack pulse + hit-flash animate
-                // continuously; otherwise sleep until the next input.
-                let telegraph_animating = matches!(demo_state, DemoState::Playing) || flash_active;
-                if active_tween
-                    || loft_animating
-                    || vfx_active
-                    || ability_active
-                    || telegraph_animating
-                {
+                // (#43-followup) Re-request a redraw ONLY while something that is
+                // ACTUALLY IN THE 2-D DRAW LIST is still animating — currently
+                // just the screen hit-flash (`flash_active`). The old condition
+                // also spun on active_tween / loft_animating / vfx_active /
+                // ability_active and on `matches!(Playing)` (the 1-D telegraph
+                // spinner/pulse), but NONE of those are drawn on the #43 2-D path
+                // (compose_scene_2d renders a static board; the lane-keyed vfx /
+                // telegraph / ability tiles / loft ships were dropped). Spinning
+                // request_redraw for undrawn animation pegged the FPS uncapped —
+                // which, under RAM/GPU pressure, hitched present → SurfaceError::
+                // Outdated → reconfigure → black frame ("fade to black, snap to
+                // grey"). Gating on the real drawn animation makes an idle static
+                // board sleep until input/state-change, killing the flicker AND
+                // the machine-pegging spin. The animation calls still RUN (their
+                // state must advance) — only their now-undrawn liveness flags are
+                // dropped from the redraw gate.
+                //
+                // WHEN THE 2-D ANIMATIONS RETURN (the 2-D tween layer + D4/D6
+                // overlays: telegraph, ability tiles, hull bar, loft seating),
+                // re-add their liveness flags to THIS condition — gate on "is an
+                // animated thing actually in the draw list," never on a
+                // computed-but-undrawn flag.
+                let _ = (active_tween, vfx_active, ability_active, loft_animating);
+                if flash_active {
                     if let Some(w) = self.window.as_ref() {
                         w.request_redraw();
                     }

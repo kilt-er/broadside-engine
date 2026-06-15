@@ -1483,7 +1483,23 @@ impl Gfx {
             }
         }
 
-        let frame = self.surface.get_current_texture()?;
+        // Acquire the swapchain image. On a STALE surface (Outdated/Lost — from a
+        // resize, a compositor change, or GPU/memory pressure) reconfigure and
+        // re-acquire ONCE in place, rather than letting `?` propagate and the
+        // caller DROP the frame: a dropped frame presents nothing (the previous
+        // backbuffer / a black image), so a run of Outdated frames reads as the
+        // "fade to black → snap to grey" flicker (#47). Re-acquiring here renders
+        // this frame instead — the offscreen scene is already composited above, so
+        // we only needed the swap image for the final blit. Only a SECOND failure
+        // (or a non-stale error) propagates to the caller's fallback.
+        let frame = match self.surface.get_current_texture() {
+            Ok(f) => f,
+            Err(wgpu::SurfaceError::Outdated | wgpu::SurfaceError::Lost) => {
+                self.surface.configure(&self.device, &self.config);
+                self.surface.get_current_texture()?
+            }
+            Err(e) => return Err(e),
+        };
         let swap_view = frame
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
