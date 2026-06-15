@@ -1185,8 +1185,15 @@ pub fn apply_effect(
         }
 
         Effect::DISPLACE_TARGET { mode, distance } => {
-            for &c in cells {
-                resolve_target_move(c, source_cell, *mode, *distance, board, content);
+            // R6b: live path -> 2-D. cells came from resolve_targeting_2d
+            // (Pos->to_index shim) + source_cell is the actor's slot, so under
+            // invariant (A) both recover their Pos exactly.
+            if let Some(source_pos) = Pos::from_index(source_cell) {
+                for &c in cells {
+                    if let Some(target_pos) = Pos::from_index(c) {
+                        resolve_target_move_2d(target_pos, source_pos, *mode, *distance, board, content);
+                    }
+                }
             }
         }
 
@@ -2220,6 +2227,11 @@ fn self_move_2d_commit(
 ///
 /// Mirrors what would have been `resolveTargetMove` in `resolve.ts` — the TS
 /// body was a stub.
+///
+/// **Dead-for-live (R6b):** the live `apply_effect` DISPLACE_TARGET arm now calls
+/// [`resolve_target_move_2d`]; this 1-D version is retained only for its own 1-D
+/// fixture tests until CONTRACT (Shape 2, like `resolve_self_move`).
+#[allow(dead_code)]
 fn resolve_target_move(
     target_cell: usize,
     source_cell: usize,
@@ -2311,6 +2323,111 @@ fn resolve_target_move(
             if remaining > 0 {
                 let phantom_atk = (c + step).clamp(0, size - 1) as usize;
                 apply_damage(landing, remaining, phantom_atk, &dummy_weapon(), board, content);
+            }
+        }
+    }
+}
+
+/// 2-D `resolve_target_move` (blueprint R6b). The v2 port of [`resolve_target_move`]
+/// above — the DISPLACE_TARGET (push / pull / swap) mover — over the grid + the
+/// Board invariant (A). Same expand-contract shape as the rest of the R-series:
+/// the 1-D version stays (its fixture tests) until CONTRACT; the live
+/// `apply_effect` DISPLACE_TARGET arm switches here.
+///
+/// Direction is derived 2-D: PUSH moves the target AWAY from the source
+/// (`direction_to(source_pos, target_pos)`), PULL TOWARD the source
+/// (`direction_to(target_pos, source_pos)` = the opposite), via `grid::offset`
+/// cardinal/diagonal walks. Stops at the first occupant ([`Board::ship_at`]) or
+/// off-grid; Pull crashing the target into the operator is the canonical
+/// collision (source counts as an occupant). Moves update the target's slot AND
+/// `.pos`/`.cell` together (invariant A); bounds-safe (no OOB panic on short
+/// boards). Collision routes through [`apply_damage`] for now (provisional
+/// shield-zone, like R6's self-move was) — R4 switches it to `apply_damage_2d`
+/// for the true 2-D collision face.
+fn resolve_target_move_2d(
+    target_pos: Pos,
+    source_pos: Pos,
+    mode: crate::types::DisplaceMode,
+    distance: i32,
+    board: &mut Board,
+    content: &dyn Content,
+) {
+    use crate::types::DisplaceMode;
+    if board.ship_at(target_pos).is_none() {
+        return;
+    }
+
+    match mode {
+        DisplaceMode::Swap => {
+            // Trade cells. Degenerate (source == target) = no-op.
+            if source_pos == target_pos {
+                return;
+            }
+            let (i, j) = (target_pos.to_index(), source_pos.to_index());
+            if i >= board.cells.len() || j >= board.cells.len() {
+                return; // off-board (short test board) — can't swap
+            }
+            let mut t = board.cells[i].take();
+            let mut s = board.cells[j].take();
+            if let Some(t) = t.as_mut() {
+                t.cell = j;
+                t.pos = source_pos;
+            }
+            if let Some(s) = s.as_mut() {
+                s.cell = i;
+                s.pos = target_pos;
+            }
+            board.cells[j] = t;
+            board.cells[i] = s;
+        }
+
+        DisplaceMode::Push | DisplaceMode::Pull => {
+            // Push: away from source. Pull: toward source (opposite). Same-cell
+            // source/target is degenerate -> no meaningful direction; bail.
+            let dir = match mode {
+                DisplaceMode::Push => crate::geometry2d::direction_to(source_pos, target_pos),
+                DisplaceMode::Pull => crate::geometry2d::direction_to(target_pos, source_pos),
+                _ => unreachable!(),
+            };
+            let Some(dir) = dir else {
+                return; // source == target, no direction
+            };
+
+            // Walk step-by-step from the target; stop at first occupant or wall.
+            // (For Pull, the source ship is an occupant -> the target crashes
+            // into the operator, the canonical collision.)
+            let mut cur = target_pos;
+            let mut steps_taken = 0;
+            for _ in 0..distance {
+                let Some(next) = crate::grid::offset(cur, dir, 1) else { break };
+                if board.ship_at(next).is_some() {
+                    break;
+                }
+                cur = next;
+                steps_taken += 1;
+            }
+            let remaining = distance - steps_taken;
+
+            // Move the target if it actually moved (slot + pos together).
+            if cur != target_pos {
+                let (from_i, to_i) = (target_pos.to_index(), cur.to_index());
+                if to_i < board.cells.len() && from_i < board.cells.len() {
+                    let mut t = board.cells[from_i]
+                        .take()
+                        .expect("target still occupied at move start");
+                    t.cell = to_i;
+                    t.pos = cur;
+                    board.cells[to_i] = Some(t);
+                }
+            }
+
+            // Collision damage if blocked. The collision arrives from beyond the
+            // landing cell along the travel direction; phantom attacker one step
+            // further (clamped to `cur` if off-grid). Provisional shield-zone via
+            // 1-D apply_damage until R4 -> apply_damage_2d (see doc).
+            if remaining > 0 {
+                let phantom = crate::grid::offset(cur, dir, 1).unwrap_or(cur);
+                apply_damage(cur.to_index(), remaining, phantom.to_index(), &dummy_weapon(), board, content);
             }
         }
     }
@@ -4845,5 +4962,82 @@ mod tests {
             }
         }
         assert!(resolver_ai_move("not_a_move").is_none());
+    }
+
+    /* =====================================================================
+     * resolve_target_move_2d (R6b) — push / pull / swap over a real 2-D board.
+     * ================================================================== */
+
+    #[test]
+    fn rtm2d_push_moves_target_away_from_source() {
+        // Source at (1,1), target at (2,1) (E of source). Push 2 -> target
+        // moves E (away) to (4,1)? offset E by 2 from (2,1) = (4,1) (cols 3,4
+        // free). Lands (4,1).
+        let mut board = board_2d(vec![
+            ship_2d("src", Faction::Player, Pos::new(1, 1), Facing::Bow(Dir4::E), Arc::Turret),
+            ship_2d("tgt", Faction::Enemy, Pos::new(2, 1), Facing::Bow(Dir4::W), Arc::Turret),
+        ]);
+        resolve_target_move_2d(Pos::new(2, 1), Pos::new(1, 1), crate::types::DisplaceMode::Push, 2, &mut board, &NoContent);
+        assert_ship_at(&board, "tgt", Pos::new(4, 1)); // pushed E by 2
+        assert_ship_at(&board, "src", Pos::new(1, 1)); // source unmoved
+    }
+
+    #[test]
+    fn rtm2d_push_blocked_by_occupant_stops_and_collides() {
+        // Source (0,1), target (1,1), blocker (3,1). Push 3 E: target walks
+        // (2,1) then stops before blocker (3,1). Lands (2,1). Shieldless target
+        // so the collision (remaining 2) is observable on hull.
+        let zero = ShieldProfile {
+            bow: crate::types::ShieldFace { armour: 0, charge: 0 },
+            stern: crate::types::ShieldFace { armour: 0, charge: 0 },
+            port: crate::types::ShieldFace { armour: 0, charge: 0 },
+            starboard: crate::types::ShieldFace { armour: 0, charge: 0 },
+        };
+        let mut tgt = ship_2d("tgt", Faction::Enemy, Pos::new(1, 1), Facing::Bow(Dir4::W), Arc::Turret);
+        tgt.shield_profile = zero;
+        let mut board = board_2d(vec![
+            ship_2d("src", Faction::Player, Pos::new(0, 1), Facing::Bow(Dir4::E), Arc::Turret),
+            tgt,
+            ship_2d("blk", Faction::Enemy, Pos::new(3, 1), Facing::Bow(Dir4::W), Arc::Turret),
+        ]);
+        let hull_before = board.ship_at(Pos::new(1, 1)).unwrap().hull;
+        resolve_target_move_2d(Pos::new(1, 1), Pos::new(0, 1), crate::types::DisplaceMode::Push, 3, &mut board, &NoContent);
+        assert_ship_at(&board, "tgt", Pos::new(2, 1)); // stopped before blocker
+        assert_ship_at(&board, "blk", Pos::new(3, 1));
+        assert_eq!(board.ship_at(Pos::new(2, 1)).unwrap().hull, hull_before - 2, "remaining-2 collision");
+    }
+
+    #[test]
+    fn rtm2d_pull_moves_target_toward_source() {
+        // Source (0,1), target (3,1). Pull 2 -> target moves W (toward source)
+        // to (1,1) (cols 2,1 free), stopping short of source.
+        let mut board = board_2d(vec![
+            ship_2d("src", Faction::Player, Pos::new(0, 1), Facing::Bow(Dir4::E), Arc::Turret),
+            ship_2d("tgt", Faction::Enemy, Pos::new(3, 1), Facing::Bow(Dir4::W), Arc::Turret),
+        ]);
+        resolve_target_move_2d(Pos::new(3, 1), Pos::new(0, 1), crate::types::DisplaceMode::Pull, 2, &mut board, &NoContent);
+        assert_ship_at(&board, "tgt", Pos::new(1, 1)); // pulled W by 2
+        assert_ship_at(&board, "src", Pos::new(0, 1));
+    }
+
+    #[test]
+    fn rtm2d_swap_trades_source_and_target_cells() {
+        // Swap source (1,2) <-> target (3,0): both pos+slot swap, invariant kept.
+        let mut board = board_2d(vec![
+            ship_2d("src", Faction::Player, Pos::new(1, 2), Facing::Bow(Dir4::N), Arc::Turret),
+            ship_2d("tgt", Faction::Enemy, Pos::new(3, 0), Facing::Bow(Dir4::S), Arc::Turret),
+        ]);
+        resolve_target_move_2d(Pos::new(3, 0), Pos::new(1, 2), crate::types::DisplaceMode::Swap, 1, &mut board, &NoContent);
+        assert_ship_at(&board, "src", Pos::new(3, 0)); // source now where target was
+        assert_ship_at(&board, "tgt", Pos::new(1, 2)); // target now where source was
+    }
+
+    #[test]
+    fn rtm2d_empty_target_cell_is_noop() {
+        // No ship at the target pos -> no-op (no panic).
+        let mut board = board_2d(vec![ship_2d("src", Faction::Player, Pos::new(0, 0), Facing::Bow(Dir4::E), Arc::Turret)]);
+        resolve_target_move_2d(Pos::new(2, 2), Pos::new(0, 0), crate::types::DisplaceMode::Push, 1, &mut board, &NoContent);
+        assert!(board.ship_at(Pos::new(2, 2)).is_none());
+        assert_ship_at(&board, "src", Pos::new(0, 0));
     }
 }
