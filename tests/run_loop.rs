@@ -44,7 +44,12 @@ use broadside_engine::types::{
     Orientation, Projectile, RangeBand, ReorientTo, Run, Sector, ShieldFace, ShieldProfile, Ship,
     ShipSpawn, Targeting, TargetingPattern, WeaponArchetype,
 };
+use broadside_engine::grid::{Dir4, Facing, Pos};
 use std::collections::HashMap;
+
+/// Shared 2-D invariant-A fixture builders (used by the #25 2-D kill probe; the
+/// rest of this file is mid-migration on the 1-D harness — tracks #22/#25).
+mod common;
 
 /* =========================================================================
  * Fixtures — small, reusable ship + content builders.
@@ -415,6 +420,63 @@ fn bow_facing_nearest(board: &Board, pcell: usize) -> LaneEnd {
         .min_by_key(|&e| e.abs_diff(pcell))
         .map(|e| if e >= pcell { LaneEnd::Fore } else { LaneEnd::Aft })
         .unwrap_or(LaneEnd::Fore)
+}
+
+/* =========================================================================
+ * 0. #25/#41 CANARY DISAMBIGUATOR — the campaign-terminating mechanic in 2D.
+ *
+ * The single green test that answers "is the 2D campaign winnable": a 2D-aimed
+ * player FIRES through resolve_round and KILLS one enemy end-to-end, so the
+ * encounter resolves Won. If THIS is green, the generated_spawn_pool cap-timeout
+ * was the 1-D test player-driver (it can't aim/close in 2D), NOT the engine —
+ * confirming the stalemate diagnosis. (If a real 2D-driven campaign later still
+ * cap-timeouts despite THIS being green, that's a separate resolver bug.)
+ * ====================================================================== */
+
+#[test]
+fn player_fires_and_kills_one_enemy_in_2d_ends_the_encounter() {
+    // Player at (0,0) bow EAST (Forward gun bears down row 0), armed with the
+    // all-band siege_beam (range_band [Adjacent,Near,Far]). A weak naked enemy
+    // at (2,0) — distance 2 = Near, in band, on the East ray → the shot bears.
+    // siege_beam 6 raw * 0.6 Near = floor 3 onto the stern (armour 0) → kills the
+    // hull-3 enemy. Drive resolve_round re-arming the shot; the encounter resolves
+    // Won within a couple of rounds. This is the literal "2D campaign-terminating
+    // kill works" proof (#41).
+    let player = common::ship_2d("p", Faction::Player, Pos::new(0, 0), 30, Facing::Bow(Dir4::E), Arc::Forward, "siege_beam");
+    // Weak naked enemy, bow West (weak stern toward the incoming East shot).
+    let mut enemy = common::ship_2d("e", Faction::Enemy, Pos::new(2, 0), 3, Facing::Bow(Dir4::W), Arc::Forward, "siege_beam");
+    enemy.shield_profile = common::naked_shields();
+    let mut board = common::board_2d(vec![player, enemy]);
+    let content = LoopContent::new();
+
+    let mut outcome = EncounterOutcome::InProgress;
+    let mut rounds = 0;
+    while outcome == EncounterOutcome::InProgress && rounds < 8 {
+        // Re-arm the player's siege_beam each round (the bin re-arms each turn),
+        // finding it by id wherever it sits.
+        if let Some(slot) = board.cells.iter().position(|c| c.as_ref().map(|s| s.id == "p").unwrap_or(false)) {
+            if let Some(p) = board.cells[slot].as_mut() {
+                p.queue = vec!["siege_beam".into()];
+            }
+        }
+        resolve_round(&mut board, &content);
+        outcome = encounter_outcome(&board);
+        rounds += 1;
+    }
+
+    assert_eq!(
+        outcome,
+        EncounterOutcome::Won,
+        "#41: a 2D-aimed player fires + kills the enemy end-to-end → encounter Won (got {outcome:?} after {rounds} rounds)",
+    );
+    assert!(
+        !board.cells.iter().flatten().any(|s| s.faction == Faction::Enemy),
+        "the enemy is destroyed",
+    );
+    assert!(
+        board.cells.iter().flatten().any(|s| s.faction == Faction::Player),
+        "the player survives the kill",
+    );
 }
 
 /* =========================================================================
