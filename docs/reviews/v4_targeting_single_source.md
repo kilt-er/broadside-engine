@@ -1,8 +1,9 @@
 # V4 review — `resolve_targeting_2d` single-source targeting path (`59c0baa`)
 
-**Status:** ✅ **APPROVE** of the single-source FIRING/telegraph property, **with one load-bearing
-caveat** (the live 1-D AI gate — see §3). The caveat is C1's lane, not an R3 defect, but it is
-flagged as **live-and-wrong, NOT dead-for-live** — the resolver's handoff understated it.
+**Status:** ✅ **APPROVE** (R3 firing/telegraph single-source) — and the §3 caveat (the live 1-D
+AI gate) is now **RESOLVED at C1 (`070afab`); V4-at-C1 verdict appended at the bottom.** The whole
+live targeting surface (AI decision + firing + the eventual ThreatMap) is single-source
+`resolve_targeting_2d`.
 
 **Mandate (blueprint):** "enforce: NO second targeting path for telegraphs." The ThreatMap (R8)
 must paint cells by running the *same* `resolve_targeting` the real shot uses, so painted threat
@@ -98,6 +99,45 @@ rt2d_* tests + 443 lib green; clippy clean. **Caveat carried forward (not blocki
 `decide_enemy_action`'s 1-D `resolve_targeting` is LIVE-and-wrong on the 2-D board (not dead) —
 C1 must converge it onto `resolve_targeting_2d`, and R8's ThreatMap must reuse the same call, or
 the telegraph will desync. **Holding this as the single-source seam for V4-at-C1 and V4-at-R8.**
+
+---
+
+## V4-at-C1 — AI fire-gate convergence (`070afab`, `src/ai.rs`) — **APPROVE, caveat RESOLVED**
+
+The §3 caveat is closed. C1 extracted `decide_enemy_action` into `src/ai.rs` and **replaced** its
+1-D `resolve_targeting` gate with `resolve_targeting_2d`. Verified, not taken on description:
+
+- **Lead's acceptance check — PASSES.** Grep `\bresolve_targeting\s*\(` across all of `src/`:
+  the ONLY hits are `resolve.rs:703` (the 1-D fn *definition*, dead-for-live, deleted at CONTRACT)
+  + `resolve.rs:3018/3035` (its own `#[cfg(test)]` spinal fixtures). **Zero live callers of the
+  1-D path remain.** In `ai.rs` the only `resolve_targeting` token is `resolve_targeting_2d`
+  (import `:38`, call `:101`) + doc-comment mentions of the 1-D name explaining its deliberate
+  absence.
+- **The old live call is GONE, not alongside.** The pre-C1 `decide_enemy_action` (which lived in
+  resolve.rs and called 1-D `resolve_targeting`) no longer exists in resolve.rs; the new one is
+  `ai.rs:48`, and the live call site `run_world_phase` (resolve.rs:355) now calls
+  `crate::ai::decide_enemy_action`. So the live world phase routes through the 2-D-gated AI.
+- **Fire-gate is genuinely the 2-D single source** (`ai.rs:101`): `resolve_targeting_2d(action,
+  board, enemy_pos)` is the arc+band+deadzone gate, then friendly-fire filter + score — same gate
+  semantics as the old 1-D version, now on the 2-D path.
+- **`choose_maneuver_dir` is NOT a second targeting path** (`ai.rs:215`): it reads `grid::from_to`
+  / `grid::range_band` to pick a movement *direction* only — it never calls `resolve_targeting*`.
+  Sound logic: in-band-but-can't-fire → returns `None` → falls through to reorient (directly the
+  `enemy_fires_and_holds` "don't march when arc-blocked" behavior).
+
+**The single-source seam now holds end-to-end: AI elects via `resolve_targeting_2d` → fires via
+`resolve_targeting_2d` → R8 will paint via `resolve_targeting_2d`.** No live 1-D targeting
+anywhere. The V4-at-C1 gate is CLOSED.
+
+**Still open: V4-at-R8** — when R8 lands, confirm the ThreatMap caches that same
+`resolve_targeting_2d(queued_action)` verbatim (no separate selection). The resolver has
+committed to building R8 this way.
+
+**Red ai_* tests (7 of 14):** content's flagged 1-D-fixture-vs-2D mismatch (tester #30) — the
+SAME stale-fixture class as my RED-triage (`a5daf64`), independent of the single-source property.
+Does not affect this verdict; tracked for green-restoration there. `enemy_fires_and_holds`
+(combat_loop) specifically is now unblocked on the C1 side — it still needs its fixture moved to
+real `pos`, then it should go green (I'll confirm at the fixture rewrite).
 
 ---
 
