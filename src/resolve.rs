@@ -305,7 +305,8 @@ pub fn run_world_phase(board: &mut Board, content: &dyn Content) {
     board.destroys_this_window = 0;
     let projectile_ids: Vec<String> = board.ordnance.iter().map(|p| p.id.clone()).collect();
     for id in projectile_ids {
-        advance_projectile(&id, board, content);
+        // R5: live ordnance phase steps across the 2-D grid (invariant A).
+        advance_projectile_2d(&id, board, content);
     }
 
     // 3 - enemy phase, in telegraphed initiative order. Snapshot ids up
@@ -355,8 +356,113 @@ pub fn run_world_phase(board: &mut Board, content: &dyn Content) {
         crate::ai::decide_enemy_action(enemy_cell, board, content);
     }
 
+    // R8 — TELEGRAPH PAINT. Now that every enemy has decided + queued its next
+    // action, rebuild `board.threats` from those queues so the renderer (D4)
+    // and the dodge-whiff (R7) read a threat set that CANNOT desync from where
+    // the shots will actually land — it is computed by the SAME
+    // `resolve_targeting_2d` spine the AI elected with and the firing phase will
+    // resolve with (single-source, V4-at-R8). Runs after the whole decide loop
+    // (not per-enemy) so cross-enemy threats reflect the fully-telegraphed
+    // board. Cleared-and-rebuilt each phase (the old telegraph is stale once
+    // queues change).
+    paint_threats(board, content);
+
     // 4 - end of turn.
     end_of_turn(board, content);
+}
+
+/// R8 — paint [`Board::threats`] from the enemies' currently-queued actions.
+///
+/// The telegraph "single best idea" (blueprint): a `Threat` is one cell the
+/// player will be hit on next turn, and it is computed by running the **REAL**
+/// [`resolve_targeting_2d`] against each enemy's QUEUED action — the identical
+/// cell-selection spine used by the AI's fire election ([`crate::ai::decide_enemy_action`])
+/// and by the firing phase ([`fire_player_queue`]). Reusing that one path is the
+/// V4-at-R8 invariant: AI elects -> paints -> fires, all through `_2d`, so the
+/// painted set provably equals the fired set (correctness from reuse, never a
+/// second telegraph selection).
+///
+/// Rebuilds the whole list (clear + repopulate). Each enemy's queue holds at
+/// most one telegraphed action (every `decide_enemy_action` rung pushes one id
+/// then returns). The queued id is resolved to its [`Action`] the SAME way
+/// `fire_player_queue` does — `content.action(id)` with the resolver-served
+/// `resolver_ai_move` fallback for the synthetic move ids — so a queued maneuver
+/// is handled identically here and at fire time. A move/vent/reorient produces
+/// no hostile-cell footprint (its `resolve_targeting_2d` is empty or self), so
+/// it paints nothing; only cell-targeting effects telegraph a threat.
+///
+/// `Threat.source` is the enemy's own [`Pos`] (invariant A: `cell.to_index() ==
+/// pos`), so the renderer can draw the telegraph beam from the right ship and
+/// R7 knows whose shot whiffs if the player vacates the threatened cell.
+pub fn paint_threats(board: &mut Board, content: &dyn Content) {
+    board.threats.clear();
+
+    // Snapshot (enemy_pos, queued action ids) up front so we don't hold a board
+    // borrow while resolving/ pushing threats. Only enemies telegraph.
+    let queued: Vec<(Pos, Vec<String>)> = board
+        .cells
+        .iter()
+        .filter_map(|c| c.as_ref())
+        .filter(|s| s.faction == Faction::Enemy && !s.queue.is_empty())
+        .map(|s| (s.pos, s.queue.clone()))
+        .collect();
+
+    for (enemy_pos, queue) in queued {
+        for action_id in &queue {
+            // Resolve the queued id -> Action exactly as fire_player_queue does:
+            // the catalog first, then the resolver-owned synthetic-move fallback
+            // (#68). An id neither serves is skipped (matches the firing path).
+            let action = match content.action(action_id) {
+                Some(a) => a.clone(),
+                None => match resolver_ai_move(action_id) {
+                    Some(a) => a,
+                    None => continue,
+                },
+            };
+            // SAME cell-selection spine as election + firing.
+            let cells = resolve_targeting_2d(&action, board, enemy_pos);
+            let kind = threat_kind(&action);
+            for pos in cells {
+                // A SELF-targeting action (move/vent/reorient resolves to the
+                // firer's own cell) is not a threat against another cell — skip
+                // the self-paint so a queued maneuver doesn't flag its own cell.
+                if pos == enemy_pos {
+                    continue;
+                }
+                board.threats.push(crate::types::Threat { pos, kind, source: enemy_pos });
+            }
+        }
+    }
+}
+
+/// Classify a queued [`Action`] into the renderer's [`crate::types::ThreatKind`]
+/// by its effect family (blueprint: "styled by ThreatKind + lethal flash").
+/// `Damage` carries the projected PRE-mitigation total so the renderer can flash
+/// cells where the hit would be lethal; the falloff/shield mitigation is NOT
+/// applied here (the telegraph shows the raw threat, and the player's defensive
+/// facing is exactly what they reposition to change). Precedence Damage >
+/// Displace > Status > Other: a shot that also pushes reads as Damage (the
+/// dangerous part), matching how the AI scores it.
+fn threat_kind(action: &Action) -> crate::types::ThreatKind {
+    use crate::types::ThreatKind;
+    let raw_damage: i32 = action
+        .effects
+        .iter()
+        .filter_map(|e| match e {
+            Effect::DAMAGE { amount, .. } => Some(*amount),
+            _ => None,
+        })
+        .sum();
+    if raw_damage > 0 {
+        return ThreatKind::Damage { amount: raw_damage };
+    }
+    if action.effects.iter().any(|e| matches!(e, Effect::DISPLACE_TARGET { .. })) {
+        return ThreatKind::Displace;
+    }
+    if action.effects.iter().any(|e| matches!(e, Effect::APPLY_STATUS { .. })) {
+        return ThreatKind::Status;
+    }
+    ThreatKind::Other
 }
 
 /* =============================================================================
@@ -600,6 +706,11 @@ fn find_cell_by_id(board: &Board, ship_id: &str) -> Option<usize> {
 /// Step a single projectile by its speed, resolving impacts. Mirrors
 /// `advanceProjectile` in `resolve.ts`. Identified by id rather than `&mut`
 /// because the projectile may remove itself from `board.ordnance` on impact.
+///
+/// `#[allow(dead_code)]` after R5: the live ordnance phase calls
+/// [`advance_projectile_2d`]; this 1-D version is retained for its fixture
+/// tests until CONTRACT — superseded on the live path, not unused.
+#[allow(dead_code)]
 pub fn advance_projectile(projectile_id: &str, board: &mut Board, content: &dyn Content) {
     let Some(idx) = board.ordnance.iter().position(|p| p.id == projectile_id) else {
         return;
@@ -646,6 +757,74 @@ pub fn advance_projectile(projectile_id: &str, board: &mut Board, content: &dyn 
                         }
                         Effect::APPLY_STATUS { status, duration } => {
                             add_status(impact_cell, *status, *duration, board);
+                        }
+                        _ => {} // TS only handles these two on impact.
+                    }
+                }
+                board.ordnance.retain(|p| p.id != projectile_id);
+                return;
+            }
+        }
+    }
+}
+
+/// 2-D `advance_projectile` (blueprint R5). The v2 port of [`advance_projectile`]
+/// above — steps a projectile `speed` cells along its [`Projectile::heading8`]
+/// (a `Dir8`) via `grid::offset`, resolving the first non-owner impact. Same
+/// expand-contract shape: the 1-D version stays (its fixture tests) until
+/// CONTRACT; the live ordnance phase switches here.
+///
+/// Per step: `grid::offset(pos, heading8, 1)` — off-grid (`None`) removes the
+/// projectile (flew off the board); otherwise update `pos`+`cell` (invariant A)
+/// and, if a non-owner ship occupies the new cell, drop the payload
+/// (DAMAGE -> [`apply_damage_2d`], APPLY_STATUS -> [`add_status`]) and remove
+/// the projectile.
+///
+/// Impact direction: the projectile arrives FROM the cell behind it along its
+/// heading, so the damage `incoming_from` is `opposite(heading8)` — i.e. the
+/// phantom attacker is one cell back along the heading. This is more correct
+/// than the 1-D version (which passed `impact_cell` as both target and
+/// attacker, so `direction_to(c,c)` always read the bow); the 2-D shot now hits
+/// the hull face the projectile actually came at.
+pub fn advance_projectile_2d(projectile_id: &str, board: &mut Board, content: &dyn Content) {
+    let Some(idx) = board.ordnance.iter().position(|p| p.id == projectile_id) else {
+        return;
+    };
+    let speed = board.ordnance[idx].speed;
+    for _ in 0..speed {
+        // Re-find each step (the projectile may move within the vec).
+        let Some(idx) = board.ordnance.iter().position(|p| p.id == projectile_id) else {
+            return;
+        };
+        let heading = board.ordnance[idx].heading8;
+        let cur = board.ordnance[idx].pos;
+        // Step one cell along the heading; off-grid removes the projectile.
+        let Some(new_pos) = crate::grid::offset(cur, heading, 1) else {
+            board.ordnance.retain(|p| p.id != projectile_id);
+            return;
+        };
+        board.ordnance[idx].pos = new_pos;
+        board.ordnance[idx].cell = new_pos.to_index(); // keep 1-D mirror in sync (invariant A)
+
+        // Hit a non-owner occupant?
+        let owner_faction = board.ordnance[idx].owner_faction;
+        let occ_faction = board.ship_at(new_pos).map(|s| s.faction);
+        if let Some(occ_faction) = occ_faction {
+            if occ_faction != owner_faction {
+                // Drop the payload through the 2-D damage pipeline / status apply.
+                // Cloned out because we mutate the board next. The shot arrives
+                // from behind along the heading -> phantom attacker one cell back
+                // (clamped to new_pos if that's off-grid).
+                let payload = board.ordnance[idx].payload.clone();
+                let from = crate::grid::offset(new_pos, heading.opposite(), 1).unwrap_or(new_pos);
+                let dummy = dummy_weapon();
+                for fx in &payload {
+                    match fx {
+                        Effect::DAMAGE { amount, .. } => {
+                            apply_damage_2d(new_pos, *amount, from, &dummy, board, content);
+                        }
+                        Effect::APPLY_STATUS { status, duration } => {
+                            add_status(new_pos.to_index(), *status, *duration, board);
                         }
                         _ => {} // TS only handles these two on impact.
                     }
@@ -5160,5 +5339,298 @@ mod tests {
         resolve_target_move_2d(Pos::new(2, 2), Pos::new(0, 0), crate::types::DisplaceMode::Push, 1, &mut board, &NoContent);
         assert!(board.ship_at(Pos::new(2, 2)).is_none());
         assert_ship_at(&board, "src", Pos::new(0, 0));
+    }
+
+    /* =====================================================================
+     * advance_projectile_2d (R5) — ordnance steps across the 2-D grid.
+     * Sanity coverage: clean travel + off-grid removal, non-owner impact
+     * through the 2-D damage pipeline (directional!), owner pass-through,
+     * APPLY_STATUS payload. Deeper coverage is the tester's lane.
+     * ================================================================== */
+
+    /// A projectile at `pos` heading `heading8` with `speed` and a payload.
+    /// `cell` mirrors `pos.to_index()` (invariant A); `heading` (1-D) is set
+    /// to a coherent LaneEnd but is unused on the 2-D path.
+    fn proj_2d(
+        id: &str,
+        pos: Pos,
+        heading8: crate::grid::Dir8,
+        speed: u32,
+        owner: Faction,
+        payload: Vec<Effect>,
+    ) -> Projectile {
+        Projectile {
+            id: id.into(),
+            kind: "torpedo".into(),
+            cell: pos.to_index(),
+            pos,
+            heading: LaneEnd::Fore,
+            heading8,
+            speed,
+            hull: 1,
+            payload,
+            owner_faction: owner,
+        }
+    }
+
+    #[test]
+    fn ap2d_travels_speed_cells_and_keeps_invariant() {
+        // A torpedo at (0,1) heading E, speed 2, no occupant in its path:
+        // walks to (2,1) and stays live with pos+cell in sync (invariant A).
+        let mut board = board_2d(vec![]);
+        board.ordnance.push(proj_2d(
+            "t",
+            Pos::new(0, 1),
+            crate::grid::Dir8::E,
+            2,
+            Faction::Player,
+            vec![Effect::DAMAGE { amount: 3, band_falloff: None }],
+        ));
+        advance_projectile_2d("t", &mut board, &NoContent);
+        let p = board.ordnance.iter().find(|p| p.id == "t").expect("still in flight");
+        assert_eq!(p.pos, Pos::new(2, 1), "advanced 2 cells E");
+        assert_eq!(p.cell, Pos::new(2, 1).to_index(), "cell mirror in sync (invariant A)");
+    }
+
+    #[test]
+    fn ap2d_off_grid_removes_projectile() {
+        // At (4,1) (east edge) heading E: the next step is off-grid -> the
+        // projectile flies off the board and is removed.
+        let mut board = board_2d(vec![]);
+        board.ordnance.push(proj_2d(
+            "t",
+            Pos::new(4, 1),
+            crate::grid::Dir8::E,
+            1,
+            Faction::Player,
+            vec![Effect::DAMAGE { amount: 3, band_falloff: None }],
+        ));
+        advance_projectile_2d("t", &mut board, &NoContent);
+        assert!(board.ordnance.iter().all(|p| p.id != "t"), "off-grid projectile removed");
+    }
+
+    #[test]
+    fn ap2d_impact_on_enemy_applies_damage_and_removes() {
+        // Player torpedo at (0,1) heading E, speed 3; a shieldless enemy sits
+        // at (2,1). The projectile reaches (2,1), drops its DAMAGE payload
+        // through apply_damage_2d, and is consumed. Shieldless so the hit is
+        // observable on hull regardless of which face it lands on.
+        let zero = ShieldProfile {
+            bow: crate::types::ShieldFace { armour: 0, charge: 0 },
+            stern: crate::types::ShieldFace { armour: 0, charge: 0 },
+            port: crate::types::ShieldFace { armour: 0, charge: 0 },
+            starboard: crate::types::ShieldFace { armour: 0, charge: 0 },
+        };
+        let mut tgt = ship_2d("e", Faction::Enemy, Pos::new(2, 1), Facing::Bow(Dir4::W), Arc::Turret);
+        tgt.shield_profile = zero;
+        let hull_before = tgt.hull;
+        let mut board = board_2d(vec![tgt]);
+        board.ordnance.push(proj_2d(
+            "t",
+            Pos::new(0, 1),
+            crate::grid::Dir8::E,
+            3,
+            Faction::Player,
+            vec![Effect::DAMAGE { amount: 5, band_falloff: None }],
+        ));
+        advance_projectile_2d("t", &mut board, &NoContent);
+        // Adjacent-band falloff factor 1.0 on the (1,1)->(2,1) impact step:
+        // floor(5 * 1.0) = 5 lands on a shieldless hull.
+        assert_eq!(board.ship_at(Pos::new(2, 1)).unwrap().hull, hull_before - 5, "payload landed");
+        assert!(board.ordnance.iter().all(|p| p.id != "t"), "consumed on impact");
+    }
+
+    #[test]
+    fn ap2d_impact_hits_the_face_the_shot_came_at() {
+        // The 2-D improvement over the 1-D path: incoming_from is opposite the
+        // heading, so the projectile strikes the hull face it actually flew at.
+        // Torpedo heading E impacts a ship whose BOW faces W (toward the
+        // incoming shot) -> the bow armour soaks it. Same ship, same payload,
+        // but the strong bow now absorbs where a stern would not.
+        let mut tgt = ship_2d("e", Faction::Enemy, Pos::new(2, 1), Facing::Bow(Dir4::W), Arc::Turret);
+        // default_shield_profile: bow armour 2, stern 0. Shot from W hits bow.
+        tgt.shield_profile = default_shield_profile();
+        let hull_before = tgt.hull;
+        let mut board = board_2d(vec![tgt]);
+        board.ordnance.push(proj_2d(
+            "t",
+            Pos::new(0, 1),
+            crate::grid::Dir8::E,
+            3,
+            Faction::Player,
+            vec![Effect::DAMAGE { amount: 2, band_falloff: None }],
+        ));
+        advance_projectile_2d("t", &mut board, &NoContent);
+        // incoming_from = opposite(E) = W; facing Bow(W) -> bow zone, armour 2.
+        // floor(2 * 1.0) = 2 raw, max(0, 2 - 2) = 0 lands. Bow soaks it.
+        assert_eq!(board.ship_at(Pos::new(2, 1)).unwrap().hull, hull_before, "bow soaked the head-on shot");
+    }
+
+    #[test]
+    fn ap2d_passes_through_own_faction_occupant() {
+        // A projectile does NOT detonate on a same-faction ship. Player torpedo
+        // heading E over a friendly Player ship at (2,1): it keeps going (here
+        // speed 3 carries it past to (3,1)) rather than impacting.
+        let friendly = ship_2d("f", Faction::Player, Pos::new(2, 1), Facing::Bow(Dir4::W), Arc::Turret);
+        let mut board = board_2d(vec![friendly]);
+        board.ordnance.push(proj_2d(
+            "t",
+            Pos::new(0, 1),
+            crate::grid::Dir8::E,
+            3,
+            Faction::Player,
+            vec![Effect::DAMAGE { amount: 5, band_falloff: None }],
+        ));
+        advance_projectile_2d("t", &mut board, &NoContent);
+        // Friendly unharmed; projectile flew past to (3,1).
+        assert_eq!(board.ship_at(Pos::new(2, 1)).unwrap().hull, 10, "friendly untouched");
+        let p = board.ordnance.iter().find(|p| p.id == "t").expect("still flying past friendly");
+        assert_eq!(p.pos, Pos::new(3, 1), "passed through to (3,1)");
+    }
+
+    #[test]
+    fn ap2d_apply_status_payload_lands_on_impact() {
+        // An APPLY_STATUS payload is applied to the impacted enemy on contact.
+        let tgt = ship_2d("e", Faction::Enemy, Pos::new(1, 1), Facing::Bow(Dir4::W), Arc::Turret);
+        let mut board = board_2d(vec![tgt]);
+        board.ordnance.push(proj_2d(
+            "t",
+            Pos::new(0, 1),
+            crate::grid::Dir8::E,
+            1,
+            Faction::Player,
+            vec![Effect::APPLY_STATUS { status: StatusKind::TargetLock, duration: 2 }],
+        ));
+        advance_projectile_2d("t", &mut board, &NoContent);
+        let e = board.ship_at(Pos::new(1, 1)).expect("enemy present");
+        assert!(
+            e.statuses.iter().any(|s| s.kind == StatusKind::TargetLock),
+            "status applied on impact"
+        );
+        assert!(board.ordnance.iter().all(|p| p.id != "t"), "consumed on impact");
+    }
+
+    /* =====================================================================
+     * paint_threats (R8) — ThreatMap painted via the SAME resolve_targeting_2d
+     * spine the AI elects + fires with (single-source, V4-at-R8). Sanity
+     * coverage; deeper coverage is the tester's lane.
+     * ================================================================== */
+
+    /// Content serving one named action (for queued-threat resolution).
+    struct OneAction(String, Action);
+    impl Content for OneAction {
+        fn action(&self, id: &str) -> Option<&Action> {
+            (id == self.0).then_some(&self.1)
+        }
+        fn spawn_projectile(&self, _: &str, _: &Ship) -> Projectile {
+            panic!("spawn_projectile not used in this test");
+        }
+    }
+
+    /// An enemy at `pos`/`facing` with one mount + a single queued action id.
+    fn enemy_queued_2d(id: &str, pos: Pos, facing: Facing, arc: Arc, queued: &str) -> Ship {
+        let mut s = ship_2d(id, Faction::Enemy, pos, facing, arc);
+        s.queue = vec![queued.to_string()];
+        s
+    }
+
+    #[test]
+    fn pt2d_paints_damage_threat_on_the_targeted_cell() {
+        // Enemy at (2,1) Bow(S) with a queued forward beam; player at (2,3) is
+        // down the S column. The threat paints on the player's cell, kind
+        // Damage{4} (pulse_laser's raw), source = the enemy's pos.
+        let player = ship_2d("p", Faction::Player, Pos::new(2, 3), Facing::Bow(Dir4::N), Arc::Turret);
+        let enemy = enemy_queued_2d("e", Pos::new(2, 1), Facing::Bow(Dir4::S), Arc::Forward, "pulse_laser");
+        let mut board = board_2d(vec![player, enemy]);
+        // pulse_laser with the full band so it bears at this range.
+        let weapon = action_2d(TargetingPattern::BEAM, Some(Arc::Forward), false);
+        let content = OneAction("pulse_laser".into(), weapon);
+        paint_threats(&mut board, &content);
+        assert_eq!(board.threats.len(), 1, "exactly one threatened cell");
+        let t = board.threats[0];
+        assert_eq!(t.pos, Pos::new(2, 3), "threat on the player's cell");
+        assert_eq!(t.source, Pos::new(2, 1), "source is the firing enemy");
+        assert_eq!(t.kind, crate::types::ThreatKind::Damage { amount: 4 }, "raw pulse damage");
+    }
+
+    #[test]
+    fn pt2d_threat_set_equals_resolve_targeting_2d_single_source() {
+        // THE V4-at-R8 invariant: the painted cell set is exactly what
+        // resolve_targeting_2d returns for the same queued action + enemy pos.
+        let player = ship_2d("p", Faction::Player, Pos::new(2, 3), Facing::Bow(Dir4::N), Arc::Turret);
+        let enemy = enemy_queued_2d("e", Pos::new(2, 1), Facing::Bow(Dir4::S), Arc::Forward, "pulse_laser");
+        let mut board = board_2d(vec![player, enemy]);
+        let weapon = action_2d(TargetingPattern::BEAM, Some(Arc::Forward), false);
+        let content = OneAction("pulse_laser".into(), weapon.clone());
+        // The spine, called directly.
+        let fired = resolve_targeting_2d(&weapon, &board, Pos::new(2, 1));
+        paint_threats(&mut board, &content);
+        let painted: Vec<Pos> = board.threats.iter().map(|t| t.pos).collect();
+        assert_eq!(painted, fired, "painted threats must equal the fired cell set");
+    }
+
+    #[test]
+    fn pt2d_empty_queue_paints_nothing() {
+        // An enemy with no queued action telegraphs no threat.
+        let player = ship_2d("p", Faction::Player, Pos::new(2, 3), Facing::Bow(Dir4::N), Arc::Turret);
+        let enemy = ship_2d("e", Faction::Enemy, Pos::new(2, 1), Facing::Bow(Dir4::S), Arc::Forward);
+        let mut board = board_2d(vec![player, enemy]);
+        let content = OneAction("pulse_laser".into(), pulse_laser());
+        paint_threats(&mut board, &content);
+        assert!(board.threats.is_empty(), "no queue -> no threat");
+    }
+
+    #[test]
+    fn pt2d_clears_stale_threats_each_pass() {
+        // paint_threats rebuilds: a pre-populated stale threat is cleared even
+        // when the current queues paint nothing.
+        let enemy = ship_2d("e", Faction::Enemy, Pos::new(2, 1), Facing::Bow(Dir4::S), Arc::Forward);
+        let mut board = board_2d(vec![enemy]);
+        board.threats.push(crate::types::Threat {
+            pos: Pos::new(0, 0),
+            kind: crate::types::ThreatKind::Other,
+            source: Pos::new(2, 1),
+        });
+        let content = OneAction("pulse_laser".into(), pulse_laser());
+        paint_threats(&mut board, &content);
+        assert!(board.threats.is_empty(), "stale threat cleared on rebuild");
+    }
+
+    #[test]
+    fn pt2d_does_not_paint_when_player_off_the_ray() {
+        // Player not on the enemy's forward column -> the queued beam bears on
+        // nothing -> no threat (the deterministic basis for R7's whiff: the
+        // shot will find an empty cell).
+        let player = ship_2d("p", Faction::Player, Pos::new(0, 3), Facing::Bow(Dir4::N), Arc::Turret);
+        let enemy = enemy_queued_2d("e", Pos::new(2, 1), Facing::Bow(Dir4::S), Arc::Forward, "pulse_laser");
+        let mut board = board_2d(vec![player, enemy]);
+        let weapon = action_2d(TargetingPattern::BEAM, Some(Arc::Forward), false);
+        let content = OneAction("pulse_laser".into(), weapon);
+        paint_threats(&mut board, &content);
+        assert!(board.threats.is_empty(), "off-ray queued shot paints no threat");
+    }
+
+    #[test]
+    fn threat_kind_classifies_by_effect_family() {
+        use crate::types::ThreatKind;
+        // Damage wins even if combined with displace.
+        let mut dmg = pulse_laser();
+        dmg.effects = vec![
+            Effect::DISPLACE_TARGET { mode: crate::types::DisplaceMode::Push, distance: 1 },
+            Effect::DAMAGE { amount: 3, band_falloff: None },
+        ];
+        assert_eq!(threat_kind(&dmg), ThreatKind::Damage { amount: 3 });
+
+        let mut disp = pulse_laser();
+        disp.effects = vec![Effect::DISPLACE_TARGET { mode: crate::types::DisplaceMode::Pull, distance: 2 }];
+        assert_eq!(threat_kind(&disp), ThreatKind::Displace);
+
+        let mut status = pulse_laser();
+        status.effects = vec![Effect::APPLY_STATUS { status: StatusKind::TargetLock, duration: 3 }];
+        assert_eq!(threat_kind(&status), ThreatKind::Status);
+
+        let mut other = pulse_laser();
+        other.effects = vec![Effect::VENT_HEAT { amount: 2, recharge_cooldowns: None }];
+        assert_eq!(threat_kind(&other), ThreatKind::Other);
     }
 }
