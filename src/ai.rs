@@ -1,47 +1,66 @@
-//! Enemy AI decision layer.
+//! Enemy AI decision layer — the 2-D ladder (blueprint C1).
 //!
-//! Extracted from [`crate::resolve`] (blueprint R-setup) so the resolver lane
-//! (R4/R5/R7/R8 in `resolve.rs`) and the content lane (the C1 2-D AI ladder
-//! rewrite, here) don't edit `resolve.rs` at the same time. This is a
-//! **mechanical move** of `decide_enemy_action` + `queue_purposeful_maneuver`
-//! out of `resolve.rs` — NO behaviour change. The four-phase round in
-//! `resolve.rs` calls [`decide_enemy_action`] once per living enemy.
+//! Extracted from [`crate::resolve`] (blueprint R-setup, commit 1654e67) so the
+//! resolver lane (R4/R5/R7/R8 in `resolve.rs`) and the content lane (this 2-D AI
+//! rewrite) don't edit `resolve.rs` at the same time. The four-phase round in
+//! `resolve.rs` calls [`decide_enemy_action`] once per living enemy, in
+//! `enemy_initiative` order, during the world phase.
 //!
-//! ## v2 status (the C1 rewrite lands here)
+//! ## The ladder (C1, `docs/design/C1_AI_LADDER_2D.md`)
 //!
-//! These bodies are still the **1-D** AI (they read `Ship::cell` as a lane
-//! index and gate firing via the 1-D `crate::resolve::resolve_targeting`). On a
-//! 2-D board that geometry is wrong — the AI *picks* via the 1-D gate while the
-//! shot *fires* via the 2-D `resolve_targeting_2d` (the reviewer's V4 caveat).
-//! Content's C1 rewrites these for the 2-D ladder and, critically, routes the
-//! fire-gate through `crate::resolve::resolve_targeting_2d` (the single-source
-//! targeting path) so the AI's intent matches where the shot lands and the
-//! ThreatMap (R8) paints. This module exists so that rewrite is content's lane,
-//! not a `resolve.rs` co-edit.
+//! Per enemy, first match wins: **FIRE → CLOSE/HOLD-RANGE → REORIENT → VENT →
+//! empty**. The AI is a *decision layer that only builds the enemy's queue* —
+//! it never bypasses `execute_queue` / the damage pipeline (hard boundary). It
+//! queues actions (real mounts or the resolver-served synthetic moves) and lets
+//! the resolver run them next world phase.
+//!
+//! ### Single-source fire-gate (V4-at-C1)
+//!
+//! The FIRE rung's "can I fire?" test IS [`crate::resolve::resolve_targeting_2d`]
+//! — the SAME 2-D targeting path the shot fires through and the ThreatMap (R8)
+//! caches. So what the AI elects to fire == what the telegraph paints == where
+//! the shot lands; there is NO second targeting path (the 1-D
+//! `resolve_targeting` is never called here — reviewer V4 greps this file for
+//! `resolve_targeting(` and must find zero). This also gives over-extension for
+//! free: a Far weapon's `range_band` excludes `Adjacent`, so when the player has
+//! closed to distance 1 the gate returns empty → the enemy is correctly inert
+//! (blueprint decision #7); Rung 2 then backs it off to re-open range rather
+//! than charging in.
+//!
+//! ### Telegraph / cross-turn
+//!
+//! Whatever this queues stays in `enemy.queue` until the NEXT world phase fires
+//! it, so on the player's turn the renderer's per-enemy telegraph always has the
+//! enemy's next intent to show (a pending shot, a close/back-off arrow, a
+//! reorient, or a vent) — the read-and-react loop.
 
-use crate::resolve::{resolve_targeting, Content};
-use crate::types::{Board, Effect, Faction, LaneEnd};
+use crate::grid::{self, Dir8, Pos, Range};
+use crate::resolve::{resolve_targeting_2d, Content};
+use crate::types::{Board, Effect, Faction, Trait};
 
-/// Choose and queue the enemy at `enemy_cell`'s action for this world phase.
-/// Mirrors what would be `decideEnemyAction` in `resolve.ts` (the TS body was a
-/// stub). Fire-else-maneuver-else-reorient-else-vent ladder.
-///
-/// Under the fire-then-decide world phase (#67), whatever this function queues
-/// stays in `enemy.queue` until the NEXT world phase fires it — so the
-/// renderer's per-enemy telegraph always has something to show (a pending shot,
-/// a close arrow, a reorient, or a vent).
+/// Choose and queue the enemy at `enemy_cell`'s action for this world phase
+/// (the 2-D C1 ladder). `enemy_cell` is the flat board index the resolver's
+/// world-phase loop holds; under the board's slot==pos invariant (A) it equals
+/// the enemy's [`Pos::to_index`], so we recover the 2-D position with
+/// [`Pos::from_index`] and work in `Pos`/`Dir8` from here. Keeping the `usize`
+/// entry point means the resolver's call site in `run_world_phase` is unchanged
+/// (no `resolve.rs` co-edit).
 pub fn decide_enemy_action(enemy_cell: usize, board: &mut Board, content: &dyn Content) {
-    // 1. Locate the player. The TS uses `cells.find(s => s?.faction ===
-    //    "player")`; we mirror.
-    let Some(player_cell) = board.cells.iter().find_map(|c| {
-        c.as_ref().and_then(|s| (s.faction == Faction::Player).then_some(s.cell))
+    // Recover the enemy's 2-D position (invariant A: slot == pos.to_index()).
+    let Some(enemy_pos) = Pos::from_index(enemy_cell) else {
+        return; // out-of-grid index — nothing to decide
+    };
+
+    // 1. Locate the player's 2-D position.
+    let Some(player_pos) = board.cells.iter().find_map(|c| {
+        c.as_ref().and_then(|s| (s.faction == Faction::Player).then_some(s.pos))
     }) else {
         return;
     };
 
-    // Snapshot the enemy's gating state. We borrow read-only so the scoring
-    // loop can also borrow the board for resolve_targeting.
-    let Some(enemy) = board.cells[enemy_cell].as_ref() else {
+    // Snapshot the enemy's gating state (read-only borrow released before the
+    // scoring loop, which also borrows the board for resolve_targeting_2d).
+    let Some(enemy) = board.ship_at(enemy_pos) else {
         return;
     };
     let heat = enemy.heat;
@@ -49,31 +68,19 @@ pub fn decide_enemy_action(enemy_cell: usize, board: &mut Board, content: &dyn C
     let locked_out = enemy.locked_out;
     let cooldowns = enemy.cooldowns.clone();
     let mount_weapons: Vec<String> = enemy.mounts.iter().map(|m| m.weapon.clone()).collect();
-    let traits: Vec<crate::types::Trait> = enemy.traits.clone();
+    let traits: Vec<Trait> = enemy.traits.clone();
 
-    let has_trait = |t: crate::types::Trait| traits.contains(&t);
-    let burn_hard = has_trait(crate::types::Trait::BurnHard);
-    let pursuit = has_trait(crate::types::Trait::Pursuit);
+    let has_trait = |t: Trait| traits.contains(&t);
+    let burn_hard = has_trait(Trait::BurnHard);
+    let pursuit = has_trait(Trait::Pursuit);
+    let anchored = has_trait(Trait::Anchored);
 
-    // 2. Enumerate this enemy's available threatening actions and score
-    //    them. We collect (score, action_id) tuples; the best wins.
-    //
-    // NOTE (#74): there used to be a per-enemy "lane-end diversity" pass here
-    // — a `covered_ends` set + a `+6` score bonus for threatening the player
-    // from an end no earlier-queued ally already covered. It was removed as
-    // VESTIGIAL: the +6 was provably a no-op on the QUEUED pick
-    // (`my_end_from_player` is constant across one enemy's candidates, so the
-    // bonus is added to all of them or none — argmax-preserving), and #71
-    // dropped the only thing that ever made it behavioral (the
-    // covered-end -> reposition-instead-of-fire suppression, which caused the
-    // "march in a line, don't shoot, die" bug). True cross-enemy threat
-    // coordination (an enemyInitiative pass assigning enemies to distinct
-    // lane-ends) was never built; current lane-end diversity is emergent from
-    // geometry. If explicit coordination is wanted later, it's a real
-    // resolver feature, not a dead scoring term — so the term is gone rather
-    // than left to mislead.
+    /* -- RUNG 1: FIRE (commit when able) --------------------------------- */
+    // Score every affordable, in-arc, in-band, hostile-targeting weapon and fire
+    // the best. The gate IS resolve_targeting_2d (the single source — V4); empty
+    // result = can't fire (off-arc, out-of-band, or the #7 deadzone when the
+    // player closed on a long-range gun).
     let mut best: Option<(i32, String)> = None;
-
     for weapon_id in &mount_weapons {
         let Some(action) = content.action(weapon_id) else {
             continue;
@@ -82,116 +89,75 @@ pub fn decide_enemy_action(enemy_cell: usize, board: &mut Board, content: &dyn C
         if cooldowns.get(weapon_id).copied().unwrap_or(0) > 0 {
             continue;
         }
-        // Heat / lockout gate: if locked out, only zero-heat actions fire;
-        // otherwise the action must not push us PAST heat_max (we are happy
-        // to overheat exactly once per turn).
+        // Heat / lockout gate: locked out -> only zero-heat; else don't push
+        // more than 1 past heat_max (a whole turn lost to venting otherwise).
         if locked_out && action.cost.heat > 0 {
             continue;
         }
         if heat + action.cost.heat > heat_max + 1 {
-            // Conservative: pushing more than 1 above heat_max means an
-            // entire turn wasted to vent. Skip this action this turn.
             continue;
         }
-        // Arc / band gate: does this action actually have something to
-        // resolve against today? `resolve_targeting` checks arc, band, and
-        // returns the cells it would hit.
-        //
-        // v2 CAVEAT (V4): this is the 1-D `resolve_targeting` — wrong geometry
-        // on a 2-D board. C1's rewrite must use `resolve_targeting_2d` here so
-        // the AI's fire-gate matches the 2-D shot + the ThreatMap.
-        let cells = resolve_targeting(action, board, enemy_cell);
+        // Arc + band + deadzone gate, via the 2-D single source (V4-at-C1).
+        let cells = resolve_targeting_2d(action, board, enemy_pos);
         if cells.is_empty() {
             continue;
         }
-        // Friendly-fire filter (task #49): if every hostile-occupied cell
-        // in the target set is empty or holds a same-faction ship, skip
-        // this action. The geometry / damage pipeline still PERMITS
-        // friendly fire — the analysis doc's "Unfriendly Fire" subsystem
-        // makes player-forced friendly fire a designed mechanic — but
-        // the AI shouldn't elect to fire on allies unprompted. This
-        // filter catches the gunboat-fires-at-scout case in
-        // tests/demo_scenarios.rs (scenario B) without breaking the
-        // through-an-ally-to-hit-the-player case (which still keeps the
-        // action eligible because at least one target cell is hostile).
-        let any_hostile_target = cells.iter().any(|&c| {
-            board.cells[c]
-                .as_ref()
-                .map(|s| s.faction != Faction::Enemy)
-                .unwrap_or(false)
+        // Friendly-fire filter (#49): the target set must contain >=1 non-enemy.
+        let any_hostile = cells.iter().any(|&p| {
+            board.ship_at(p).map(|s| s.faction != Faction::Enemy).unwrap_or(false)
         });
-        if !any_hostile_target {
+        if !any_hostile {
             continue;
         }
-
-        // 3. Score.
-        let raw_damage: i32 = action.effects.iter().filter_map(|e| match e {
-            Effect::DAMAGE { amount, .. } => Some(*amount),
-            _ => None,
-        }).sum();
-        let hits_player = cells.contains(&player_cell);
+        // Score: player-hit + raw damage - heat (halved for BurnHard) + Pursuit.
+        let raw_damage: i32 = action
+            .effects
+            .iter()
+            .filter_map(|e| match e {
+                Effect::DAMAGE { amount, .. } => Some(*amount),
+                _ => None,
+            })
+            .sum();
+        let hits_player = cells.contains(&player_pos);
         let mut score: i32 = 0;
         if hits_player {
             score += 10;
-            // (#74: the +6 lane-end-diversity bonus that used to live here was
-            // removed as vestigial — see the note at the top of the scoring
-            // section.)
         }
         score += raw_damage;
-        // Heat is the tempo brake; cheaper actions preferred at equal
-        // threat. Burn-Hard ships are less heat-averse.
         score -= if burn_hard { action.cost.heat / 2 } else { action.cost.heat };
-        // Pursuit small bonus for any threatening action — the trait says
-        // "after firing, moves toward the player," and the AI should
-        // commit to firing rather than positioning when both are
-        // available.
         if pursuit && hits_player {
             score += 2;
         }
-
         if best.as_ref().is_none_or(|(s, _)| score > *s) {
             best = Some((score, weapon_id.clone()));
         }
     }
-
-    // 4. FIRE when we can (#71). If the scoring loop found ANY in-band,
-    //    bearing, affordable, hostile-targeting action, FIRE it — full stop.
-    //    Firing from a good position is the point of the AI; it must actually
-    //    happen.
-    //
-    //    This deliberately DROPS the old "if my end is already covered by an
-    //    ally, reposition instead of firing" detour (#41 O1). That detour
-    //    caused bruce's "march in a line, never shoot, die": with the live
-    //    spawn shape (all enemies on ONE side of the player) every enemy but
-    //    the first sees its end "covered", so every one of them maneuvered
-    //    instead of firing — and since they're all on the same side, none
-    //    ever reached an "uncovered" end, so they marched into the player and
-    //    died without firing a shot. Repositioning to a fresh lane-end is
-    //    rarely achievable on a 1-D lane, and "fire when in position" must
-    //    win over "hold fire to maybe pressure a different end". The +6
-    //    diversity term still shapes WHICH weapon an enemy picks (in the
-    //    score above), it just no longer SUPPRESSES firing.
-    if let Some((_, id)) = best.clone() {
-        if let Some(s) = board.cells[enemy_cell].as_mut() {
+    // FIRE when we can — full stop (#71: "fire when in position" beats holding).
+    if let Some((_, id)) = best {
+        if let Some(s) = board.ship_at_mut(enemy_pos) {
             s.queue.push(id);
         }
         return;
     }
 
-    // 5. Cannot fire effectively this turn -> maneuver toward an optimal
-    //    firing position (#41 O1 "optimal position" / #68 anti-camp), then
-    //    reorient, then vent. The close is a zero-heat synthetic move, so it
-    //    is always "affordable" — but an OVERHEATED enemy must not mindlessly
-    //    advance while it can't shoot; a locked-out ship prefers to VENT
-    //    (handled below) so it can fire again. So only close when NOT locked
-    //    out. (A heat-locked enemy that's also out of range will vent now and
-    //    close once cool — still progresses, just not into a useless overheat.)
-    if !locked_out && queue_purposeful_maneuver(enemy_cell, player_cell, board) {
-        return;
+    /* -- RUNG 2: CLOSE / HOLD-RANGE (the 2-D over-extension decision) ----- */
+    // Only when we couldn't fire AND aren't locked out (a locked-out enemy
+    // prefers to VENT below so it can fire again, not maneuver uselessly).
+    // Anchored ships skip this rung (immune to self-displacement).
+    if !locked_out && !anchored {
+        if let Some(dir) = choose_maneuver_dir(&mount_weapons, enemy_pos, player_pos, content) {
+            if let Some(synth_id) = synthetic_move_for_dir(dir) {
+                if let Some(s) = board.ship_at_mut(enemy_pos) {
+                    s.queue.push(synth_id.to_string());
+                    return;
+                }
+            }
+        }
     }
 
-    // 5b. Try a reorient action — the flip might bring the player into a
-    //     forward arc next turn.
+    /* -- RUNG 3: REORIENT ------------------------------------------------- */
+    // Turning the bow/broadside may bring the player into a forward/broadside
+    // arc next phase. The AI just picks the reorient; arc math is the resolver's.
     for weapon_id in &mount_weapons {
         let Some(action) = content.action(weapon_id) else {
             continue;
@@ -203,74 +169,133 @@ pub fn decide_enemy_action(enemy_cell: usize, board: &mut Board, content: &dyn C
             continue;
         }
         if action.effects.iter().any(|e| matches!(e, Effect::REORIENT { .. })) {
-            if let Some(s) = board.cells[enemy_cell].as_mut() {
+            if let Some(s) = board.ship_at_mut(enemy_pos) {
                 s.queue.push(weapon_id.clone());
             }
             return;
         }
     }
 
-    // 5c. Last resort: a vent action — at least clears heat so next turn
-    //     is viable. Searches for an action with a VENT_HEAT effect.
+    /* -- RUNG 4: VENT ----------------------------------------------------- */
     for weapon_id in &mount_weapons {
         let Some(action) = content.action(weapon_id) else {
             continue;
         };
         if action.effects.iter().any(|e| matches!(e, Effect::VENT_HEAT { .. })) {
-            if let Some(s) = board.cells[enemy_cell].as_mut() {
+            if let Some(s) = board.ship_at_mut(enemy_pos) {
                 s.queue.push(weapon_id.clone());
             }
             return;
         }
     }
 
-    // 5d. If even that fails, leave the queue empty. The resolver will
-    //     no-op the turn. A correctly-configured enemy with at least one
-    //     valid mount weapon should never reach this branch.
+    /* -- RUNG 5: empty queue (misconfigured enemy with no valid mount) ---- */
+    // The world phase no-ops the turn. A correctly-configured enemy never
+    // reaches here. (Liveness holds for the other rungs: a queued move /
+    // reorient / vent is a visible non-damage telegraph.)
 }
 
-/// Queue a PURPOSEFUL maneuver that CLOSES the enemy toward the player (#41
-/// O1 "optimal position" / #68 anti-camp). Returns `true` and pushes the
-/// closing-move id onto the enemy's queue; `false` only in the degenerate
-/// case where the enemy is already on the player's cell.
+/// Pick a one-step [`Dir8`] for the CLOSE/HOLD-RANGE rung, or `None` to hold.
+/// The 2-D over-extension decision (blueprint §3): reads the SAME
+/// `range_band` band classification the fire-gate uses — never a parallel
+/// targeting path — only to decide WHICH WAY to move, never whether to fire.
 ///
-/// # Why the SYNTHETIC lane-relative move
+/// Keyed on the enemy's dominant (highest-raw-damage) weapon:
+///   - inert because the player is TOO CLOSE (player at a band nearer than the
+///     weapon's nearest firing band — the #7 deadzone): step AWAY to re-open
+///     range so the gun re-arms next phase (the active back-off that keeps
+///     over-extension a real threat; never a charge-in).
+///   - inert because the player is TOO FAR: step TOWARD the player to close into
+///     the weapon's band window.
+///   - in band but couldn't fire (an ARC problem): hold (`None`) and let Rung 3
+///     (reorient) try to bring the arc to bear.
 ///
-/// Live enemies carry NO movement action in their mounts — catalog enemies'
-/// mounts are built purely from `def.weapons` (combat weapons) and the
-/// fallback ship has a single `pulse_laser`. So an AI that only queued
-/// *mounted* DISPLACE_SELF actions could never move — that was bruce's
-/// "enemies never move" bug (the prior helper scanned mounts for a
-/// DISPLACE_SELF that simply isn't there).
-///
-/// The PLAYER moves via SYNTHETIC lane-relative actions (`__move_left` /
-/// `__move_right`); the AI now issues the SAME ids toward the player —
-/// `__move_left` when the player is AFT of the enemy (lower cell),
-/// `__move_right` when the player is FORE (higher cell). These carry
-/// `direction: Some(LaneEnd::…)`, so `resolve_self_move` steps in the ABSOLUTE
-/// lane direction independent of orientation — the enemy closes whichever way
-/// its bow points, with no reorient dance and no "decline forever" trap.
-///
-/// The id is queued UNCONDITIONALLY (no `content.action` check): the resolver
-/// serves these ids itself via `crate::resolve::resolver_ai_move` (used by
-/// `fire_player_queue` when `content.action()` returns `None`), so the enemy
-/// closes even when the running `Content` doesn't register the synthetic moves
-/// — no DemoContent dependency.
-///
-/// v2 note: `direction_to`/the synthetic LEFT/RIGHT ids are the 1-D close;
-/// C1's 2-D ladder will pick the cardinal (incl. the N/S depth-axis
-/// `__move_up`/`__move_down` ids the resolver now serves) toward the player.
-fn queue_purposeful_maneuver(enemy_cell: usize, player_cell: usize, board: &mut Board) -> bool {
-    if enemy_cell == player_cell {
-        return false; // degenerate; nothing to close
+/// `None` (hold) also when there is no dominant weapon or the enemy is on the
+/// player's cell.
+fn choose_maneuver_dir(
+    mount_weapons: &[String],
+    enemy_pos: Pos,
+    player_pos: Pos,
+    content: &dyn Content,
+) -> Option<Dir8> {
+    // Dominant weapon = the mount with the highest summed DAMAGE amount; its
+    // band set drives close-vs-open (a long gun holds distance; a short gun
+    // closes).
+    let dominant = mount_weapons
+        .iter()
+        .filter_map(|id| content.action(id))
+        .max_by_key(|a| {
+            a.effects
+                .iter()
+                .filter_map(|e| match e {
+                    Effect::DAMAGE { amount, .. } => Some(*amount),
+                    _ => None,
+                })
+                .sum::<i32>()
+        })?;
+
+    let toward = grid::from_to(enemy_pos, player_pos)?; // None only if co-located
+    let away = toward.opposite();
+
+    // The dominant weapon's allowed 2-D bands. During the EXPAND window the
+    // catalog may not have re-authored `range_band` yet (empty set); treat empty
+    // as "no band preference" and close (the v1 behavior) so transition catalogs
+    // still produce a sensible advance rather than freezing.
+    let bands = &dominant.targeting.range_band;
+    if bands.is_empty() {
+        return Some(toward);
     }
-    let synth_id = match crate::geometry::direction_to(enemy_cell, player_cell) {
-        LaneEnd::Aft => crate::input::SYNTHETIC_MOVE_LEFT,
-        LaneEnd::Fore => crate::input::SYNTHETIC_MOVE_RIGHT,
+    let cur = grid::range_band(enemy_pos, player_pos);
+    if bands.contains(&cur) {
+        // In band but Rung 1 couldn't fire -> almost certainly an arc problem;
+        // hold here (don't wander out of band) and fall through to reorient.
+        return None;
+    }
+    // Out of band: open if the player is nearer than the nearest firing band,
+    // else close.
+    let cur_o = band_ordinal(cur);
+    let min_allowed = bands.iter().map(|b| band_ordinal(*b)).min().unwrap_or(cur_o);
+    let max_allowed = bands.iter().map(|b| band_ordinal(*b)).max().unwrap_or(cur_o);
+    if cur_o < min_allowed {
+        Some(away) // player too close -> back off
+    } else if cur_o > max_allowed {
+        Some(toward) // player too far -> close
+    } else {
+        None // gapped band set; hold rather than guess
+    }
+}
+
+/// Ordinal of a [`Range`] band for near/far comparison (`Adjacent` < `Near` <
+/// `Far`). Local to the AI's maneuver heuristic — not a geometry seam.
+fn band_ordinal(r: Range) -> u8 {
+    match r {
+        Range::Adjacent => 0,
+        Range::Near => 1,
+        Range::Far => 2,
+    }
+}
+
+/// Map a chosen [`Dir8`] step to the resolver-served synthetic move id. The AI
+/// closes/opens via the SAME synthetic moves the player uses (resolver-served
+/// through `resolver_ai_move`, so no `Content` dependency). All four cardinals
+/// are served as of R6. A diagonal step prefers its LATERAL (column) component —
+/// lateral is the dodge axis and the move resolves one cell, so the next phase
+/// re-decides and the depth component follows. `None` only for the zero vector
+/// (co-located, already excluded upstream by `from_to`).
+fn synthetic_move_for_dir(dir: Dir8) -> Option<&'static str> {
+    use crate::input::{
+        SYNTHETIC_MOVE_DOWN, SYNTHETIC_MOVE_LEFT, SYNTHETIC_MOVE_RIGHT, SYNTHETIC_MOVE_UP,
     };
-    if let Some(s) = board.cells[enemy_cell].as_mut() {
-        s.queue.push(synth_id.to_string());
-        return true;
+    let (dc, dr) = dir.delta();
+    if dc < 0 {
+        Some(SYNTHETIC_MOVE_LEFT) // W: decreasing col
+    } else if dc > 0 {
+        Some(SYNTHETIC_MOVE_RIGHT) // E: increasing col
+    } else if dr < 0 {
+        Some(SYNTHETIC_MOVE_UP) // N: toward row 0 / away from the player (back off)
+    } else if dr > 0 {
+        Some(SYNTHETIC_MOVE_DOWN) // S: toward the player (close)
+    } else {
+        None
     }
-    false
 }
