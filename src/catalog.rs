@@ -82,12 +82,59 @@ pub fn load_from_path(path: impl AsRef<Path>) -> Result<Catalog, LoadError> {
 /// Same auto-detect dispatch as [`load_from_path`].
 pub fn load_from_bytes(bytes: &[u8]) -> Result<Catalog, LoadError> {
     // Strict shape first — fast path for engine-emitted JSON.
-    if let Ok(c) = serde_json::from_slice::<Catalog>(bytes) {
-        return Ok(c);
+    let mut catalog = match serde_json::from_slice::<Catalog>(bytes) {
+        Ok(c) => c,
+        // Fallback: parse to a loose Value and run the canonical transformer.
+        Err(_) => {
+            let v: serde_json::Value = serde_json::from_slice(bytes)?;
+            crate::catalog_canonical::from_canonical_value(v)?
+        }
+    };
+    // v2 (#28): guarantee every action has 2-D Range bands, on BOTH load paths.
+    // The canonical transformer derives them inline; a STRICT-shape catalog that
+    // carries only the 1-D `band` would otherwise deserialize `range_band` EMPTY
+    // (its serde default) → `resolve_targeting_2d`'s `in_band` over an empty set
+    // is ALWAYS false → no weapon fires in 2-D. This post-parse pass derives the
+    // 2-D bands from the 1-D `band` for any action still missing them, so the
+    // silent-inert bug can't recur regardless of which shape was loaded.
+    normalize_2d_bands(&mut catalog);
+    Ok(catalog)
+}
+
+/// Fill each action's 2-D [`crate::grid::Range`] bands from its 1-D
+/// [`crate::types::RangeBand`] when they're absent (#28). Idempotent: actions
+/// that already carry a non-empty `range_band` (e.g. a future CONTRACT-era
+/// catalog with explicit 2-D bands) are left untouched. The 1-D→2-D mapping is
+/// the same distance-equivalence collapse the canonical transformer uses
+/// (blueprint decision #6): `PointBlank→Adjacent`, `Close→Near`,
+/// `Mid|Long|Extreme→Far`. Keeping the over-extension deadzone (decision #7):
+/// long-range guns become `Far` (no `Adjacent`), inert when closed upon.
+fn normalize_2d_bands(catalog: &mut Catalog) {
+    use crate::grid::Range;
+    use crate::types::RangeBand;
+    fn to_2d(b: RangeBand) -> Range {
+        match b {
+            RangeBand::PointBlank => Range::Adjacent,
+            RangeBand::Close => Range::Near,
+            RangeBand::Mid | RangeBand::Long | RangeBand::Extreme => Range::Far,
+        }
     }
-    // Fallback: parse to a loose Value and run the canonical transformer.
-    let v: serde_json::Value = serde_json::from_slice(bytes)?;
-    Ok(crate::catalog_canonical::from_canonical_value(v)?)
+    for action in &mut catalog.actions {
+        let t = &mut action.targeting;
+        if t.range_band.is_empty() {
+            // Derive the allowed 2-D set from the 1-D allowed set (dedup-preserving).
+            let mut seen = Vec::new();
+            for &b in &t.band {
+                let r = to_2d(b);
+                if !seen.contains(&r) {
+                    seen.push(r);
+                }
+            }
+            t.range_band = seen;
+            // Optimal: derive from the 1-D optimal band (it's a single value).
+            t.optimal_range = to_2d(t.optimal_band);
+        }
+    }
 }
 
 /* =========================================================================
