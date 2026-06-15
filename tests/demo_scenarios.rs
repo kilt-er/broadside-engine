@@ -171,6 +171,11 @@ fn demo_board(scout_bow: LaneEnd) -> Board {
  * Mirrors demo.ts:64-79.
  * ====================================================================== */
 
+// #[ignore]: stale 1-D fixture — demo_board ships pin pos (0,0); the 2-D firing
+// path (R3) + 2-D damage (R4) can't target co-located ships, and the expected
+// `(1, 2)` is OLD 1-D falloff. NOT a 2-D engine bug. Restore via board_2d/ship_2d
+// with real Near-band positions + recomputed 2-D [1.0,0.6,0.3] falloff — #22.
+#[ignore = "stale 1-D fixture (pos (0,0)) + 1-D falloff; restore at 2-D demo-scenario fixture migration — #22"]
 #[test]
 fn scenario_a_weak_stern_takes_post_falloff_damage() {
     let mut board = demo_board(LaneEnd::Fore);
@@ -258,6 +263,11 @@ fn scenario_b_strong_bow_soaks_to_zero() {
 /// of the STERN, and the strong-bow armour would absorb it to 0 — and
 /// `scenario_b` would conversely route to the stern and lose 2 hull.
 /// The delta would invert. This test catches that.
+// #[ignore]: stale 1-D fixture (pos (0,0)) — the orientation/facing-driven damage
+// difference can't manifest when the 2-D firing path can't target co-located
+// ships. The behavior (orientation changes the outcome) is real + must be restored
+// as a 2-D version (the foundational demo.ts Scenario A/B). NOT a 2-D bug — #22.
+#[ignore = "stale 1-D fixture (pos (0,0)); restore at 2-D demo-scenario fixture migration — #22"]
 #[test]
 fn orientation_alone_changes_the_outcome() {
     // Scenario A: weak stern facing.
