@@ -60,8 +60,23 @@ re-run targeting to ask "what would I have hit"; this correctly reuses the paint
   ship (e.g. an ally that drifted in) now sits on the telegraphed cell, R7 emits no whiff and the
   shot resolves `hit:true` against whoever is there. That's a reasonable reading ("the shot hits
   whatever's in the cell now"), consistent with "whiff only empty cells." Neither a clean whiff nor
-  the originally-telegraphed target, but a coherent design choice, not a bug. Flagging only so it's
-  a conscious call — fine as-is.
+  the originally-telegraphed target, but a coherent design choice, not a bug. R7 introduces ZERO
+  new behavior in that branch — it adds ONLY the empty-cell whiff; the occupied-cell case resolves
+  through the UNCHANGED pre-R7 firing path. Fine as-is.
+
+- **Pre-existing telegraph-vs-AI-friendly-fire edge (NOT R7's, surfaced from this review — flagged
+  to lead for a conscious call).** Verified in source: the friendly-fire guard is **election-only**
+  (`decide_enemy_action`'s `any_hostile` check; test `ai_skips_friendly_fire_only_target`
+  `:4186`). The **fire-time** path (`apply_effect` DAMAGE arm → `apply_damage_2d`) has **no**
+  friendly-fire filter — it applies to whatever `resolve_targeting_2d` returns (first occupant,
+  any faction; the `occ_faction != owner_faction` checks at `:789`/`:855` are projectile-detonation
+  only, not beam targeting). So a shot **telegraphed last turn** (election guard ran against last
+  turn's board) can hit an **ally that drifted onto the ray this turn**. Pre-existing (the 1-D
+  engine had the same election-only guard), independent of R7/R-series, and partly intersects the
+  intended "Unfriendly Fire" design (player-*forced* friendly fire is a feature, `:4177-4178`).
+  Whether an **AI** enemy accidentally hitting its **own ally** via a stale telegraph is intended
+  is the lead's call; if addressed it'd be a fire-time friendly-fire guard = a NEW task, not a
+  resolver R-series fix. NOT blocking; tracked for decision.
 
 ---
 
