@@ -196,27 +196,30 @@ fn commit_turn_on_empty_queue_runs_only_end_of_turn() {
  * 2. QueueAction(pulse_laser) -> CommitTurn -> fires once
  * ====================================================================== */
 
-// #[ignore]: stale 1-D fixture — target pinned at pos (0,0) (distinct 1-D cell),
-// so the now-2D firing path (R3) + 2D damage (R4) can't target it (left: [] — no
-// shot fired). Plus the expected `(1, 2)` is OLD 1-D falloff (floor(4*0.66)); the
-// 2-D model is [1.0,0.6,0.3] over Range. NOT a 2-D engine bug. Restore via the
-// board_2d/ship_2d helper with a real Near-band target + recomputed 2-D falloff —
-// tracks #22 (combat 2-D fixture migration).
-#[ignore = "stale 1-D fixture (pos (0,0)) + 1-D falloff value; restore at 2-D combat-fixture migration — #22"]
 #[test]
 fn queue_pulse_laser_then_commit_fires_once_against_a_target() {
+    // v2 (#40 restore): REAL 2-D fixture. solo_board's player is at pos (0,0);
+    // turn its bow EAST so the Forward gun bears down row 0, and place a
+    // zero-armour target at (2,0) = Near band (pulse_laser "close" → Near, dist 2
+    // per #28). Cell index 2 = Pos(2,0).to_index() (invariant A). The 2-D damage
+    // is floor(raw * 0.6) (Near falloff [1.0,0.6,0.3]) onto the stern (armour 0);
+    // the exact value is asserted from the live result below, not the old 1-D
+    // floor(raw*0.66). Does NOT touch solo_board or the movement tests (their
+    // lone player is unchanged; the target is local to this test).
     let mut board = solo_board();
-    // Place a zero-armour target at cell 1, bow=Fore so the stern faces
-    // the player at cell 0. Per demo.ts scenario A math: pointBlank,
-    // optimal=close, delta 1 -> floor(4 * 0.66) = 2 damage lands on the
-    // stern (armour 0) -> hull 10 -> 8.
+    if let Some(p) = board.cells[0].as_mut() {
+        p.facing = broadside_engine::grid::Facing::Bow(broadside_engine::grid::Dir4::E);
+    }
+    let target_pos = broadside_engine::grid::Pos::new(2, 0);
     let target = Ship {
         id: "target".into(),
         faction: Faction::Enemy,
-        cell: 1,
-        pos: broadside_engine::grid::Pos::new(0, 0),
+        cell: target_pos.to_index(),
+        pos: target_pos,
         orientation: Orientation::BowOn { bow: LaneEnd::Fore },
-        facing: broadside_engine::grid::Facing::Bow(broadside_engine::grid::Dir4::S),
+        // Bow West: nose toward the player at (0,0), so the weak stern faces the
+        // incoming East-bound shot (armour 0 → full post-falloff damage lands).
+        facing: broadside_engine::grid::Facing::Bow(broadside_engine::grid::Dir4::W),
         hull: 10,
         max_hull: 10,
         heat: 0,
@@ -235,7 +238,7 @@ fn queue_pulse_laser_then_commit_fires_once_against_a_target() {
         traits: vec![],
         klass: None,
     };
-    board.cells[1] = Some(target);
+    board.cells[target_pos.to_index()] = Some(target);
 
     let log = wire_damage_log(&mut board);
     let content = DemoContent::default();
@@ -243,10 +246,13 @@ fn queue_pulse_laser_then_commit_fires_once_against_a_target() {
     apply_intent_lib(Intent::QueueAction("pulse_laser".into()), &mut board, &content);
     apply_intent_lib(Intent::CommitTurn, &mut board, &content);
 
+    // Exactly one OnDamageTaken on the target's cell, with the 2-D post-falloff
+    // amount (2: floor(4 raw * 0.6 Near) = 2 — coincidentally the same integer as
+    // the old 1-D floor(4*0.66), since both floor to 2).
     assert_eq!(
         *log.borrow(),
-        vec![(1, 2)],
-        "exactly one OnDamageTaken emit for cell 1 with the post-falloff 2 damage",
+        vec![(target_pos.to_index(), 2)],
+        "exactly one OnDamageTaken emit for the target cell with the 2-D post-falloff 2 damage",
     );
     let p = board.cells[0].as_ref().unwrap();
     assert!(p.queue.is_empty(), "queue should be drained after resolve_round");
