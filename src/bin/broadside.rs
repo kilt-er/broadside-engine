@@ -60,6 +60,7 @@ use broadside_engine::input::{
 use broadside_engine::catalog::{enemy_ship_from_catalog_at_tier, load_from_path};
 use broadside_engine::meta::{salvage_for_capital_encounter, salvage_for_encounter_win};
 use broadside_engine::perspective::{fractional_cell_to_screen, LaneGeometry, DEFAULT_LANE};
+use broadside_engine::projector::ProjectorConfig;
 use broadside_engine::resolve::{
     apply_instant_action, find_player_id, fire_player_queue, run_world_phase, Content,
 };
@@ -269,6 +270,13 @@ fn append_to_player_queue(board: &mut Board, action_id: String) -> bool {
 /// Demo lane: just `DEFAULT_LANE`. The flat horizontal model has no
 /// foreshortening so no per-binary tuning is needed; the lane spans the
 /// canvas width centered vertically.
+///
+/// (#43 pass-1) Unused now that the render path is the 2-D
+/// [`hud::compose_scene_2d`]; retained — with the `App::lane` field,
+/// [`player_lane_x`] and [`enemy_telegraph_kind`] — for the lane-keyed overlays
+/// (telegraph / ability tiles / hull bar) that return as 2-D overlays on the
+/// projector. Delete once those are all reborn on the 2-D path.
+#[allow(dead_code)]
 fn demo_lane() -> LaneGeometry {
     DEFAULT_LANE
 }
@@ -319,6 +327,9 @@ fn load_catalog() -> Option<broadside_engine::types::Catalog> {
  * ============================================================================= */
 
 /// Screen-x of a faction's first ship on the lane, or `None`.
+///
+/// (#43 pass-1) Unused on the 2-D render path; see [`demo_lane`].
+#[allow(dead_code)]
 fn player_lane_x(board: &Board, lane: &LaneGeometry) -> Option<f32> {
     board
         .cells
@@ -401,6 +412,10 @@ fn build_ship_tiles(ship: &Ship, content: &dyn Content) -> Vec<hud::AbilityTile>
 /// `Ability` (icon + amount), a DISPLACE_SELF → a `Move` (its lane direction),
 /// a REORIENT → a turn cue. Returns `None` for actions with none of those
 /// (nothing worth telegraphing). Read-only over the ship + content.
+///
+/// (#43 pass-1) Unused on the 2-D render path; see [`demo_lane`]. Returns with
+/// the 2-D enemy-telegraph overlay (D4's staged channels).
+#[allow(dead_code)]
 fn enemy_telegraph_kind(action_id: &str, content: &dyn Content) -> Option<hud::TelegraphKind> {
     let action = content.action(action_id)?;
     // Damage takes precedence (it's the threat the player most needs to read).
@@ -639,6 +654,10 @@ struct App {
     window: Option<Arc<Window>>,
     gfx: Option<Gfx>,
     board: Board,
+    /// (#43 pass-1) The legacy 1-D flat lane. No longer read by the render path
+    /// (now [`hud::compose_scene_2d`]); kept (still constructed in `App::new`)
+    /// for the lane-keyed overlays that return as 2-D overlays. See [`demo_lane`].
+    #[allow(dead_code)]
     lane: LaneGeometry,
     content: DemoContent,
     /// Canonical catalog (assets/broadside.catalog.json), loaded once at
@@ -1162,11 +1181,13 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::RedrawRequested => {
-                let angle = CAMERA_ANGLE_STEPS_DEG[self.camera_angle_idx].to_radians();
                 let now = Instant::now();
-                // Build the tween + draw list FIRST, while we hold
-                // only `&self`. Then borrow gfx mutably to render.
-                let tween = self.tween_state(now);
+                // (#43) `angle` (legacy camera-revolve) and the per-ship `tween`
+                // fed the 1-D compose_scene_tweened; the 2-D path
+                // (compose_scene_2d) takes neither in pass 1. `active_tween` is
+                // still read below to keep the redraw loop alive while a logical
+                // turn-tween is in flight (re-applied visually with the 2-D tween
+                // layer follow-up).
                 let active_tween = self.has_active_tween(now);
                 let demo_state = self.demo_state;
                 let sector_idx = self.run.current_sector_idx;
@@ -1190,11 +1211,12 @@ impl ApplicationHandler for App {
                 // safe — it only spawns on an actual state change.
                 self.vfx.observe(&self.board);
                 let vfx_active = self.vfx.advance(1.0 / 60.0);
-                // Free-running animation clock for the #67 telegraph spinner /
-                // move-arrow / incoming pulse. Wrap at TAU so it stays precise.
+                // Free-running animation clock kept advancing for the #67
+                // telegraph spinner / move-arrow / incoming pulse — consumed by
+                // the lane-keyed overlays that are dropped in the #43 pass-1 2-D
+                // switch and return as 2-D overlays (the `spin`/`pulse` readers
+                // come back with them). Wrap at TAU so it stays precise.
                 self.frame_clock = (self.frame_clock + 1.0 / 60.0) % std::f32::consts::TAU;
-                let spin = self.frame_clock * 3.0; // spinner angular speed
-                let pulse = 0.5 + 0.5 * (self.frame_clock * 4.0).sin(); // 0..1
                 // Player danger legibility (#67): read the player's current hull
                 // and flash the screen red when it drops. The flash decays ~2/s.
                 let player_hull = self
@@ -1234,88 +1256,34 @@ impl ApplicationHandler for App {
                 let live_ids: Vec<String> = loft_ships.iter().map(|(id, _)| id.clone()).collect();
                 gfx.retain_loft_poses(&live_ids);
                 let loft_animating = gfx.advance_loft_poses(1.0 / 60.0);
-                let mut instances = hud::compose_scene_tweened(&self.board, &self.lane, angle, gfx, &tween);
-                // Combat-juice effects sit above ships/ordnance, below the
-                // salvage HUD + modal overlays (pushed next).
-                self.vfx.emit(&mut instances, &self.board, &self.lane);
-                // In-game salvage counter (top-right) — only shown
-                // during Playing state. The modal overlays surface
-                // salvage in their own banners.
+                // v2 render path (#43): the playable bin now composes the 2-D
+                // perspective scene (the SAME hud::compose_scene_2d encounter_
+                // preview uses) instead of the legacy 1-D flat-lane
+                // compose_scene_tweened — so it renders the real ship.pos/facing
+                // board, not 1-D noise. Pass-1 trade-off (lead-approved): a
+                // static-but-correct 2-D board beats an animated-but-wrong legacy
+                // one, so per-ship turn TWEENING and the 3-D LOFT ships drop here
+                // for now (compose_scene_2d takes board+cfg, no tween/gfx) — both
+                // return as a follow-up (a 2-D tween layer + loft seating driven
+                // by CellQuad::depth_scale, D4/D6). The lane-keyed overlays
+                // (vfx, the enemy-telegraph badges/arrows, ability tiles, hull
+                // bar) are ALSO dropped this pass: they position by
+                // fractional_cell_to_screen / &self.lane, which don't match the
+                // 2-D board (they were the source of the overlapping-label mess);
+                // they come back as 2-D overlays on the projector (telegraph =
+                // D4's staged channels). Screen-space HUD (salvage, legend, the
+                // hit-flash, the modal state overlays) is unaffected and stays.
+                let mut instances =
+                    hud::compose_scene_2d(&self.board, &ProjectorConfig::default());
+                // In-game salvage counter (top-right) + controls legend
+                // (bottom-left) — both screen-space, independent of the board
+                // projection. The modal overlays surface salvage in their banners.
                 if matches!(demo_state, DemoState::Playing) {
                     push_salvage_hud(&mut instances, salvage);
                     // Minimalist controls legend, bottom-left (#82).
                     hud::push_controls_overlay(&mut instances);
-                    // Player ability tiles (#64): resting row below the lane,
-                    // queued ones animated up into the above-ship stack.
-                    if let Some(px) = player_lane_x(&self.board, &self.lane) {
-                        self.ability_hud
-                            .emit_player(&mut instances, &player_tiles, px, &self.lane);
-                    }
-                    // Enemy telegraph (#67, bruce's refined spec): per enemy,
-                    // its persistent queue (resolver telegraph, b9268c4) →
-                    //   - ABILITY / REORIENT → a stacked red badge above the
-                    //     ship, with a SPINNY "pending" slot at the head so the
-                    //     player sees it winding up;
-                    //   - MOVE → a directional arrow ENCIRCLING the ship instead
-                    //     of an icon, pointing the way it will go;
-                    //   - an ABILITY aimed at the player also draws an
-                    //     incoming-attack line so the threat reads.
-                    let player_x = player_lane_x(&self.board, &self.lane);
-                    for enemy in self
-                        .board
-                        .cells
-                        .iter()
-                        .flatten()
-                        .filter(|s| s.faction == Faction::Enemy)
-                    {
-                        let ex = fractional_cell_to_screen(enemy.cell as f32, &self.lane).x;
-                        // Categorise each queued action; route moves to the
-                        // encircling arrow, everything else to the badge stack.
-                        let mut slots: Vec<hud::TelegraphSlot> = Vec::new();
-                        // The head slot is the "winding up" pending cue.
-                        slots.push(hud::TelegraphSlot::Pending);
-                        for action_id in &enemy.queue {
-                            match enemy_telegraph_kind(action_id, &self.content) {
-                                Some(hud::TelegraphKind::Move { dir }) => {
-                                    hud::push_move_arrow_around(
-                                        &mut instances,
-                                        ex,
-                                        dir,
-                                        &self.lane,
-                                        pulse,
-                                    );
-                                }
-                                Some(kind) => {
-                                    slots.push(hud::TelegraphSlot::Ready(kind));
-                                    // Incoming-attack line for a damaging action.
-                                    if let (hud::TelegraphKind::Ability { .. }, Some(px)) =
-                                        (kind, player_x)
-                                    {
-                                        hud::push_incoming_attack(
-                                            &mut instances,
-                                            ex,
-                                            px,
-                                            &self.lane,
-                                            pulse,
-                                        );
-                                    }
-                                }
-                                None => {}
-                            }
-                        }
-                        hud::push_enemy_telegraph_stack(
-                            &mut instances,
-                            &slots,
-                            ex,
-                            &self.lane,
-                            spin,
-                        );
-                    }
-                    // Player danger legibility (#67): prominent hull bar +
-                    // hit-flash on damage.
-                    if let Some((hull, max_hull)) = player_hull {
-                        hud::push_player_hull_bar(&mut instances, hull, max_hull);
-                    }
+                    // Player danger legibility (#67): screen hit-flash on damage.
+                    // (The lane-anchored hull bar returns as a 2-D overlay.)
                     hud::push_player_hit_flash(&mut instances, self.hit_flash);
                 }
                 // Push the appropriate demo-state overlay on top.
