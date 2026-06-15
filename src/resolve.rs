@@ -1170,11 +1170,18 @@ pub fn apply_effect(
             board.ordnance.push(p);
         }
 
-        Effect::DISPLACE_SELF { mode, distance, direction, direction_2d: _ } => {
-            // v2: `direction_2d` (the 2-D Dir4 override) is ignored here for now —
-            // resolver R6 wires it into the 2-D resolve_self_move. The 1-D path
-            // stays behavior-unchanged during the migration.
-            resolve_self_move(source_cell, *mode, *distance, *direction, board, content);
+        Effect::DISPLACE_SELF { mode, distance, direction: _, direction_2d } => {
+            // R6: the LIVE path is now 2-D. Convert source_cell -> Pos (exact
+            // under Board invariant (A): source_cell == ship.pos.to_index()) and
+            // move via resolve_self_move_2d, reading the 2-D `direction_2d`
+            // override (the 1-D `direction` is ignored on the live path; the 1-D
+            // resolve_self_move + its fixture tests stay until CONTRACT). On a
+            // real 2-D board (ships placed at cells[pos.to_index()]) this moves
+            // correctly; the legacy 1-D resolve_self_move would mis-step a flat
+            // 2-D index as a lane position.
+            if let Some(source_pos) = Pos::from_index(source_cell) {
+                resolve_self_move_2d(source_pos, *mode, *distance, *direction_2d, board, content);
+            }
         }
 
         Effect::DISPLACE_TARGET { mode, distance } => {
@@ -1625,9 +1632,19 @@ fn flip_orientation(o: Orientation) -> Orientation {
 /// enemies close. Used by [`fire_player_queue`] when `content.action()`
 /// returns `None` for one of these ids.
 fn resolver_ai_move(action_id: &str) -> Option<Action> {
-    let direction = match action_id {
-        crate::input::SYNTHETIC_MOVE_LEFT => LaneEnd::Aft,
-        crate::input::SYNTHETIC_MOVE_RIGHT => LaneEnd::Fore,
+    // R6: serve all four cardinal synthetic-move ids. The 1-D `direction`
+    // (LaneEnd) stays for the dead-for-live 1-D path; `direction_2d` (Dir4) is
+    // the 2-D override the live `resolve_self_move_2d` reads. self-derive both
+    // from the id (no dependency on content's DemoContent builder — the
+    // resolver makes movement resolve identically whether or not Content
+    // registers these). The N/S ids have no 1-D LaneEnd analog (the 1-D lane
+    // had no depth axis), so they map to the closest 1-D direction for the
+    // legacy fallback while carrying the real Dir4 for 2-D.
+    let (direction, direction_2d) = match action_id {
+        crate::input::SYNTHETIC_MOVE_LEFT => (LaneEnd::Aft, Dir4::W),
+        crate::input::SYNTHETIC_MOVE_RIGHT => (LaneEnd::Fore, Dir4::E),
+        crate::input::SYNTHETIC_MOVE_UP => (LaneEnd::Aft, Dir4::N),
+        crate::input::SYNTHETIC_MOVE_DOWN => (LaneEnd::Fore, Dir4::S),
         _ => return None,
     };
     Some(Action {
@@ -1650,9 +1667,9 @@ fn resolver_ai_move(action_id: &str) -> Option<Action> {
             mode: MovementMode::THRUST,
             distance: 1,
             direction: Some(direction),
-            // v2: 2-D override left None; resolver R6 sets Some(Dir4) once
-            // resolver_ai_move derives the cardinal from the synthetic move id.
-            direction_2d: None,
+            // R6: the real 2-D cardinal, self-derived from the id; the live
+            // resolve_self_move_2d moves 1 cell along it via grid::offset.
+            direction_2d: Some(direction_2d),
         }],
         r#mod: None,
         icon: None,
@@ -1800,6 +1817,13 @@ fn apply_modifiers(
 /// AI / scripted moves pass `direction: None` so behaviour matches the TS
 /// engine bit-for-bit. Player synthetic Left/Right actions pass
 /// `Some(Aft)` / `Some(Fore)` so the arrow keys are lane-relative.
+///
+/// **Dead-for-live (R6):** the live `apply_effect` DISPLACE_SELF arm now calls
+/// [`resolve_self_move_2d`]; this 1-D version is retained only for its own 1-D
+/// fixture tests (`self_move_*`) until CONTRACT deletes it (same expand-contract
+/// shape as the 1-D `resolve_targeting`). `#[allow(dead_code)]` because it has no
+/// non-test caller now — not unused, just superseded on the live path.
+#[allow(dead_code)]
 fn resolve_self_move(
     ship_cell: usize,
     mode: MovementMode,
@@ -1979,6 +2003,202 @@ fn resolve_self_move(
     if collision_dmg > 0 {
         let phantom_atk = (landing + step).clamp(0, size - 1) as usize;
         apply_damage(final_cell, collision_dmg, phantom_atk, &dummy_weapon(), board, content);
+    }
+}
+
+/// 2-D `resolve_self_move` (blueprint R6). The v2 port of the 1-D
+/// [`resolve_self_move`] above, over the real grid + the Board EXPAND occupancy
+/// seam. Same expand-contract shape as `resolve_targeting_2d`: the 1-D fn stays
+/// (its fixture tests untouched) until CONTRACT; only the live `apply_effect`
+/// arm + `resolver_ai_move` switch to this.
+///
+/// ## Direction
+///
+/// `direction_2d` is the 2-D analog of the 1-D `direction: Option<LaneEnd>`
+/// override:
+/// - `Some(dir)` — move along that exact cardinal (player UX / the AI's
+///   synthetic close-move set its cardinal here).
+/// - `None` — derive from the ship's [`Facing`]: `Bow(d)` -> `d`;
+///   `Broadside(axis)` -> the axis's increasing-coordinate direction
+///   (`dirs().0`), mirroring the 1-D `Broadside -> step +1` default (a broadside
+///   ship rarely self-moves; this is a stable convention, not a physical claim).
+///
+/// All movement is a **cardinal** `grid::offset` walk (decision #9; the
+/// `Dir4 -> Dir8` is always a cardinal). Bounds = off-grid (`offset` -> `None`);
+/// occupancy = [`Board::ship_at`]. On a real move the ship's slot AND `.pos` are
+/// updated together to preserve Board invariant (A) (`slot == pos.to_index()`).
+/// Collision damage routes through the unchanged 1-D `apply_damage` via
+/// `to_index()` (correct under invariant (A); migrates to `Pos` with the
+/// damage pipeline).
+fn resolve_self_move_2d(
+    ship_pos: Pos,
+    mode: MovementMode,
+    distance: i32,
+    direction_2d: Option<Dir4>,
+    board: &mut Board,
+    content: &dyn Content,
+) {
+    let Some(ship) = board.ship_at(ship_pos) else {
+        return;
+    };
+    // Resolve the cardinal move direction (override, else facing-derived).
+    let dir: Dir8 = match direction_2d {
+        Some(d) => d.to_dir8(),
+        None => match ship.facing {
+            Facing::Bow(d) => d.to_dir8(),
+            Facing::Broadside(axis) => axis.dirs().0.to_dir8(),
+        },
+    };
+
+    // Per-mode landing computation. `landing` is the destination cell;
+    // `collision_dmg` is non-zero when a wall/occupant capped the move.
+    // (Mirrors the 1-D modes, with grid::offset walks replacing start+step*k.)
+    let (landing, collision_dmg): (Pos, i32) = match mode {
+        MovementMode::THRUST => {
+            // Always one cardinal step; distance ignored (THRUST is 1).
+            match crate::grid::offset(ship_pos, dir, 1) {
+                None => (ship_pos, 1),                              // wall: stop, 1 collision
+                Some(next) if board.ship_at(next).is_some() => (ship_pos, 1), // occupant: stop, 1
+                Some(next) => (next, 0),
+            }
+        }
+
+        MovementMode::BURN => {
+            // Walk one cell at a time, stop at first occupant or wall.
+            let mut cur = ship_pos;
+            let mut steps_taken = 0;
+            for _ in 0..distance {
+                let Some(next) = crate::grid::offset(cur, dir, 1) else { break };
+                if board.ship_at(next).is_some() {
+                    break;
+                }
+                cur = next;
+                steps_taken += 1;
+            }
+            (cur, (distance - steps_taken).max(0))
+        }
+
+        MovementMode::SLIP => {
+            // Pass THROUGH `distance` cells, then keep going to the first free
+            // cell (or the edge). Lands beyond start+distance if that range is
+            // all occupied.
+            let mut cur = ship_pos;
+            let mut scanned = 0;
+            while scanned < distance {
+                let Some(next) = crate::grid::offset(cur, dir, 1) else { break };
+                cur = next;
+                scanned += 1;
+            }
+            // Now walk to the first free cell.
+            loop {
+                if board.ship_at(cur).is_none() {
+                    return self_move_2d_commit(ship_pos, cur, 0, dir, board, content);
+                }
+                let Some(next) = crate::grid::offset(cur, dir, 1) else {
+                    // Ran off the lane before a free cell — clamp at `cur` (last
+                    // in-bounds, occupied) is wrong; the 1-D version clamps to the
+                    // edge it reached. `cur` IS the last in-bounds cell; bill 1
+                    // collision (no free landing). Settle on the last free cell
+                    // we passed is not tracked, so stay put (no valid landing).
+                    return self_move_2d_commit(ship_pos, ship_pos, 1, dir, board, content);
+                };
+                cur = next;
+            }
+        }
+
+        MovementMode::JUMP => {
+            // Blink: compute the target directly, no path scan.
+            match crate::grid::offset(ship_pos, dir, distance) {
+                None => {
+                    // Off-board: 1-D clamps to the edge + bills overflow. In 2-D
+                    // "the edge along `dir`" isn't a single cell; settle on the
+                    // farthest in-bounds cell along `dir` and bill the shortfall.
+                    let mut cur = ship_pos;
+                    let mut adv = 0;
+                    while let Some(next) = crate::grid::offset(cur, dir, 1) {
+                        cur = next;
+                        adv += 1;
+                    }
+                    (cur, (distance - adv).max(1))
+                }
+                Some(target) if board.ship_at(target).is_some() => (ship_pos, 0), // occupied: jump fails
+                Some(target) => (target, 0),
+            }
+        }
+
+        MovementMode::TRACTOR_SWAP => {
+            // Swap with the first adjacent occupant along `dir`.
+            let Some(adj) = crate::grid::offset(ship_pos, dir, 1) else {
+                return;
+            };
+            if board.ship_at(adj).is_none() {
+                return;
+            }
+            let i = ship_pos.to_index();
+            let j = adj.to_index();
+            let mut source_ship = board.cells[i].take();
+            let mut other_ship = board.cells[j].take();
+            if let Some(s) = source_ship.as_mut() {
+                s.cell = j;
+                s.pos = adj;
+            }
+            if let Some(o) = other_ship.as_mut() {
+                o.cell = i;
+                o.pos = ship_pos;
+            }
+            board.cells[j] = source_ship;
+            board.cells[i] = other_ship;
+            return;
+        }
+    };
+
+    self_move_2d_commit(ship_pos, landing, collision_dmg, dir, board, content);
+}
+
+/// Commit a 2-D self-move: relocate the ship `from`->`to` (updating slot AND
+/// `.pos`/`.cell` together for invariant (A)), then bill any collision damage
+/// from one cell beyond `to` along `dir`. Factored out so the SLIP early-returns
+/// share the move+collision tail with the fall-through modes.
+fn self_move_2d_commit(
+    from: Pos,
+    to: Pos,
+    collision_dmg: i32,
+    dir: Dir8,
+    board: &mut Board,
+    content: &dyn Content,
+) {
+    if to != from {
+        // Bounds-safe: a real board is len CELLS (grid::offset never escapes
+        // 0..CELLS), but defensively never panic — if `to`'s slot is past the
+        // board's actual `cells` length (a short legacy/test board), the move
+        // can't land, so leave the ship in place rather than index OOB.
+        let (fi, ti) = (from.to_index(), to.to_index());
+        if ti >= board.cells.len() || fi >= board.cells.len() {
+            return;
+        }
+        let mut ship = board.cells[fi]
+            .take()
+            .expect("source still occupied at move start");
+        ship.cell = ti;
+        ship.pos = to;
+        board.cells[ti] = Some(ship);
+    }
+    if collision_dmg > 0 {
+        // Collision arrives from beyond the landing cell along the travel
+        // direction; the phantom attacker is one step further (clamped to `to`
+        // if that is off-grid).
+        //
+        // LIMITATION until R4: apply_damage is still 1-D — it takes usize cells
+        // and computes the shield-zone direction via the 1-D direction_to on the
+        // FLAT indices, which is NOT the true 2-D collision direction (a flat
+        // row*COLS+col index isn't a lane position). So the collision AMOUNT
+        // lands on the correct SHIP (to.to_index() is exact under invariant A),
+        // but which directional-shield ZONE absorbs it is provisional until R4
+        // migrates apply_damage to take `Pos` + the 2-D facing_zone (then the
+        // collision will correctly hit the face toward `dir`). Tracked as part of
+        // R4's apply_damage 2-D wiring.
+        let phantom = crate::grid::offset(to, dir, 1).unwrap_or(to);
+        apply_damage(to.to_index(), collision_dmg, phantom.to_index(), &dummy_weapon(), board, content);
     }
 }
 
@@ -2440,9 +2660,17 @@ mod tests {
         // E-W axis (cells 0..4 -> cols 0..4) and SATISFIES invariant (A)
         // (`pos.to_index() == cell`, the slot make_board places the ship at).
         // `bow` Fore/Aft -> Bow(E)/Bow(W) so a Forward-arc attacker at the low
-        // cell bears E along the lane exactly as the 1-D tests expect. (The
-        // proper multi-row 2-D fixtures + real-target asserts are the tester's
-        // T-follow #20; this is the minimal green-keep, not the full rewrite.)
+        // cell bears E along the lane exactly as the 1-D tests expect.
+        //
+        // !! TEST-ONLY ROTATION — NOT the canonical orientation->facing map !!
+        // Fore->Bow(E) here is a FIXTURE CONVENIENCE rotating the 1-D lane onto
+        // the row-0 E-W axis so legacy Forward shots keep bearing. It is
+        // DELIBERATELY DIFFERENT from the real spawn mapping
+        // `types::facing_from_orientation` (Fore->Bow(S), toward the player down
+        // the depth axis). Do NOT read Fore->E as canonical facing — the live
+        // game uses facing_from_orientation / C4's position-derived facing.
+        // (The proper multi-row 2-D fixtures + real-target asserts are the
+        // tester's T-follow #20; this is the minimal green-keep, not the rewrite.)
         let pos = crate::grid::Pos::from_index(cell).unwrap_or(crate::grid::Pos::new(0, 0));
         let facing = match bow {
             LaneEnd::Fore => crate::grid::Facing::Bow(crate::grid::Dir4::E),
@@ -4753,5 +4981,160 @@ mod tests {
         let board = board_2d(vec![ship, n]);
         let a = action_2d(TargetingPattern::BROADSIDE, Some(Arc::BroadsideArc), false);
         assert!(resolve_targeting_2d(&a, &board, Pos::new(2, 2)).is_empty());
+    }
+
+    /* =====================================================================
+     * resolve_self_move_2d (R6) — sanity coverage over a real 2-D board.
+     * One+ per mode + the invariant-(A) slot==pos maintenance. Deeper
+     * coverage is the tester's lane.
+     * ================================================================== */
+
+    /// Assert the ship `id` is at `pos` AND invariant (A) holds for it
+    /// (slot == pos.to_index(), pos == cell-as-index).
+    fn assert_ship_at(board: &Board, id: &str, pos: Pos) {
+        let s = board.ship_at(pos).unwrap_or_else(|| panic!("{id} not at {pos:?}"));
+        assert_eq!(s.id, id, "wrong ship at {pos:?}");
+        assert_eq!(s.pos, pos, "{id}.pos mismatch");
+        assert_eq!(s.cell, pos.to_index(), "{id}.cell != pos.to_index (invariant A)");
+    }
+
+    #[test]
+    fn rsm2d_thrust_moves_one_cell_along_direction_2d_override() {
+        // Override N from (2,2): move to (2,1), slot+pos updated, old cell empty.
+        let mut board = board_2d(vec![ship_2d("p", Faction::Player, Pos::new(2, 2), Facing::Bow(Dir4::S), Arc::Turret)]);
+        resolve_self_move_2d(Pos::new(2, 2), MovementMode::THRUST, 1, Some(Dir4::N), &mut board, &NoContent);
+        assert_ship_at(&board, "p", Pos::new(2, 1));
+        assert!(board.ship_at(Pos::new(2, 2)).is_none(), "old cell vacated");
+    }
+
+    #[test]
+    fn rsm2d_thrust_none_derives_direction_from_facing() {
+        // No override: a Bow(N) ship thrusts N (toward row 0). From (2,2)->(2,1).
+        let mut board = board_2d(vec![ship_2d("p", Faction::Player, Pos::new(2, 2), Facing::Bow(Dir4::N), Arc::Turret)]);
+        resolve_self_move_2d(Pos::new(2, 2), MovementMode::THRUST, 1, None, &mut board, &NoContent);
+        assert_ship_at(&board, "p", Pos::new(2, 1));
+    }
+
+    #[test]
+    fn rsm2d_thrust_wall_blocks_stays_and_takes_collision() {
+        // Bow(N) at (2,0) (back row): N is off-grid -> stay, take 1 collision.
+        // Use a SHIELDLESS hull so the 1 collision reaches hull (the directional
+        // shield would otherwise mediate it — a bow-first wall hit lands on the
+        // strong bow armour, which is its own behavior, not what this asserts).
+        let zero = ShieldProfile {
+            bow: crate::types::ShieldFace { armour: 0, charge: 0 },
+            stern: crate::types::ShieldFace { armour: 0, charge: 0 },
+            port: crate::types::ShieldFace { armour: 0, charge: 0 },
+            starboard: crate::types::ShieldFace { armour: 0, charge: 0 },
+        };
+        let mut p = ship_2d("p", Faction::Player, Pos::new(2, 0), Facing::Bow(Dir4::N), Arc::Turret);
+        p.shield_profile = zero;
+        let mut board = board_2d(vec![p]);
+        let hull_before = board.ship_at(Pos::new(2, 0)).unwrap().hull;
+        resolve_self_move_2d(Pos::new(2, 0), MovementMode::THRUST, 1, None, &mut board, &NoContent);
+        assert_ship_at(&board, "p", Pos::new(2, 0)); // didn't move
+        assert_eq!(board.ship_at(Pos::new(2, 0)).unwrap().hull, hull_before - 1, "wall collision = 1 (shieldless)");
+    }
+
+    #[test]
+    fn rsm2d_thrust_occupant_blocks_stays_and_takes_collision() {
+        // Mover at (2,2) Bow(N); blocker at (2,1). Mover stays, takes 1.
+        // Shieldless mover so the collision reaches hull regardless of which
+        // zone absorbs it (the collision DIRECTION->zone is provisional until
+        // R4 migrates apply_damage to 2D; this asserts the collision happened +
+        // the block, not the zone).
+        let zero = ShieldProfile {
+            bow: crate::types::ShieldFace { armour: 0, charge: 0 },
+            stern: crate::types::ShieldFace { armour: 0, charge: 0 },
+            port: crate::types::ShieldFace { armour: 0, charge: 0 },
+            starboard: crate::types::ShieldFace { armour: 0, charge: 0 },
+        };
+        let mut p = ship_2d("p", Faction::Player, Pos::new(2, 2), Facing::Bow(Dir4::N), Arc::Turret);
+        p.shield_profile = zero;
+        let mut board = board_2d(vec![
+            p,
+            ship_2d("b", Faction::Enemy, Pos::new(2, 1), Facing::Bow(Dir4::S), Arc::Turret),
+        ]);
+        let hull_before = board.ship_at(Pos::new(2, 2)).unwrap().hull;
+        resolve_self_move_2d(Pos::new(2, 2), MovementMode::THRUST, 1, None, &mut board, &NoContent);
+        assert_ship_at(&board, "p", Pos::new(2, 2)); // blocked
+        assert_ship_at(&board, "b", Pos::new(2, 1)); // blocker unmoved
+        assert_eq!(board.ship_at(Pos::new(2, 2)).unwrap().hull, hull_before - 1);
+    }
+
+    #[test]
+    fn rsm2d_burn_walks_until_occupant() {
+        // BURN W distance 3 from (4,1): walks (3,1),(2,1) then stops before
+        // blocker at (1,1). Lands (2,1).
+        let mut board = board_2d(vec![
+            ship_2d("p", Faction::Player, Pos::new(4, 1), Facing::Bow(Dir4::W), Arc::Turret),
+            ship_2d("b", Faction::Enemy, Pos::new(1, 1), Facing::Bow(Dir4::E), Arc::Turret),
+        ]);
+        resolve_self_move_2d(Pos::new(4, 1), MovementMode::BURN, 3, Some(Dir4::W), &mut board, &NoContent);
+        assert_ship_at(&board, "p", Pos::new(2, 1));
+        assert_ship_at(&board, "b", Pos::new(1, 1));
+    }
+
+    #[test]
+    fn rsm2d_jump_blinks_to_target_cell() {
+        // JUMP S distance 2 from (0,0): direct to (0,2), no path scan.
+        let mut board = board_2d(vec![ship_2d("p", Faction::Player, Pos::new(0, 0), Facing::Bow(Dir4::S), Arc::Turret)]);
+        resolve_self_move_2d(Pos::new(0, 0), MovementMode::JUMP, 2, Some(Dir4::S), &mut board, &NoContent);
+        assert_ship_at(&board, "p", Pos::new(0, 2));
+    }
+
+    #[test]
+    fn rsm2d_jump_fails_on_occupied_target() {
+        // JUMP S dist 2 from (0,0) but (0,2) occupied -> jump fails, stay.
+        let mut board = board_2d(vec![
+            ship_2d("p", Faction::Player, Pos::new(0, 0), Facing::Bow(Dir4::S), Arc::Turret),
+            ship_2d("x", Faction::Enemy, Pos::new(0, 2), Facing::Bow(Dir4::N), Arc::Turret),
+        ]);
+        resolve_self_move_2d(Pos::new(0, 0), MovementMode::JUMP, 2, Some(Dir4::S), &mut board, &NoContent);
+        assert_ship_at(&board, "p", Pos::new(0, 0)); // stayed
+        assert_ship_at(&board, "x", Pos::new(0, 2));
+    }
+
+    #[test]
+    fn rsm2d_tractor_swap_trades_with_adjacent_and_keeps_invariant() {
+        // SWAP E from (1,1): trade with occupant at (2,1). Both pos+slot swap.
+        let mut board = board_2d(vec![
+            ship_2d("p", Faction::Player, Pos::new(1, 1), Facing::Bow(Dir4::E), Arc::Turret),
+            ship_2d("o", Faction::Enemy, Pos::new(2, 1), Facing::Bow(Dir4::W), Arc::Turret),
+        ]);
+        resolve_self_move_2d(Pos::new(1, 1), MovementMode::TRACTOR_SWAP, 1, Some(Dir4::E), &mut board, &NoContent);
+        assert_ship_at(&board, "o", Pos::new(1, 1)); // other now where p was
+        assert_ship_at(&board, "p", Pos::new(2, 1)); // p now where other was
+    }
+
+    #[test]
+    fn rsm2d_tractor_swap_no_adjacent_is_noop() {
+        // SWAP E from (4,3) (col 4 = E edge): nothing adjacent -> no-op.
+        let mut board = board_2d(vec![ship_2d("p", Faction::Player, Pos::new(4, 3), Facing::Bow(Dir4::E), Arc::Turret)]);
+        resolve_self_move_2d(Pos::new(4, 3), MovementMode::TRACTOR_SWAP, 1, Some(Dir4::E), &mut board, &NoContent);
+        assert_ship_at(&board, "p", Pos::new(4, 3)); // unmoved
+    }
+
+    #[test]
+    fn resolver_ai_move_serves_all_four_cardinals_with_real_dir4() {
+        // The resolver-owned fallback maps each synthetic id to a 1-cell
+        // DISPLACE_SELF carrying the right Dir4 in direction_2d.
+        for (id, want) in [
+            (crate::input::SYNTHETIC_MOVE_UP, Dir4::N),
+            (crate::input::SYNTHETIC_MOVE_DOWN, Dir4::S),
+            (crate::input::SYNTHETIC_MOVE_LEFT, Dir4::W),
+            (crate::input::SYNTHETIC_MOVE_RIGHT, Dir4::E),
+        ] {
+            let a = resolver_ai_move(id).unwrap_or_else(|| panic!("no action for {id}"));
+            match &a.effects[0] {
+                Effect::DISPLACE_SELF { direction_2d, mode, distance, .. } => {
+                    assert_eq!(*direction_2d, Some(want), "{id} dir");
+                    assert_eq!(*mode, MovementMode::THRUST);
+                    assert_eq!(*distance, 1);
+                }
+                other => panic!("expected DISPLACE_SELF, got {other:?}"),
+            }
+        }
+        assert!(resolver_ai_move("not_a_move").is_none());
     }
 }
