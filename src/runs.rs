@@ -1695,6 +1695,168 @@ mod tests {
         }
     }
 
+    /* ---- #17: 2-D spawn-distribution coverage (the back-row fan) ---------
+     *
+     * The four build_board_* tests above pin PLACEMENT (a ship lands at
+     * cells[pos.to_index()]). These pin GENERATION — the private helpers C4
+     * uses to choose where enemies go: the centre-out column order, the
+     * row-fill walk, the placeholder cell re-key, and that a generated
+     * encounter's spawns are a mutually-disjoint back-row set that never
+     * touches the front-centre player. (`use super::*` brings the private
+     * helpers into scope; they have no external test surface.)
+     * ------------------------------------------------------------------ */
+
+    #[test]
+    fn back_row_column_order_is_centre_out() {
+        // Centre first, then alternate out: the small-encounter clustering that
+        // puts the first enemies dead in front of the front-centre player.
+        assert_eq!(back_row_column_order(), vec![2, 1, 3, 0, 4]);
+        // It is a permutation of every column (no column dropped or repeated).
+        let mut sorted = back_row_column_order();
+        sorted.sort_unstable();
+        assert_eq!(sorted, (0..crate::grid::COLS).collect::<Vec<_>>());
+        assert_eq!(back_row_column_order().len(), crate::grid::COLS);
+    }
+
+    #[test]
+    fn enemy_spawn_pos_fills_row_zero_centre_out_then_row_one() {
+        // i 0..COLS fills row 0 in centre-out order; the next COLS fills row 1
+        // in the same column order. This is the wall-with-depth (decision #8).
+        let order = [2usize, 1, 3, 0, 4];
+        for (i, &col) in order.iter().enumerate() {
+            assert_eq!(enemy_spawn_pos(i), Some(crate::grid::Pos::new(col, 0)), "row-0 slot {i}");
+        }
+        for (k, &col) in order.iter().enumerate() {
+            let i = crate::grid::COLS + k;
+            assert_eq!(enemy_spawn_pos(i), Some(crate::grid::Pos::new(col, 1)), "row-1 slot {i}");
+        }
+    }
+
+    #[test]
+    fn enemy_spawn_pos_never_lands_on_the_front_player_row() {
+        // Every Some(pos) is on a back row (row < ROWS-1), so an enemy can never
+        // be generated onto the player's front row. Walk well past the cap.
+        for i in 0..(crate::grid::CELLS * 2) {
+            if let Some(pos) = enemy_spawn_pos(i) {
+                assert!(pos.in_bounds(), "slot {i} pos {pos:?} in bounds");
+                assert!(pos.row < crate::grid::ROWS - 1, "slot {i} pos {pos:?} is a back row");
+            }
+        }
+    }
+
+    #[test]
+    fn enemy_spawn_pos_exhausts_after_the_back_rows() {
+        // The back rows hold (ROWS-1) full rows of COLS = the only Some slots;
+        // the first index past them is None. (Encounters cap at 4 enemies, so
+        // this None is a guard, but pin the exact boundary so a row-count change
+        // is a visible break.)
+        let back_slots = (crate::grid::ROWS - 1) * crate::grid::COLS;
+        assert!(enemy_spawn_pos(back_slots - 1).is_some(), "last back-row slot is Some");
+        assert_eq!(enemy_spawn_pos(back_slots), None, "first slot past the back rows is None");
+        assert_eq!(enemy_spawn_pos(back_slots + 1), None);
+    }
+
+    #[test]
+    fn enemy_spawn_pos_slots_are_mutually_distinct_within_the_back_rows() {
+        // No two distinct in-range slots share a cell — a generated encounter
+        // never double-books a back-row cell.
+        let back_slots = (crate::grid::ROWS - 1) * crate::grid::COLS;
+        let mut seen = std::collections::HashSet::new();
+        for i in 0..back_slots {
+            let pos = enemy_spawn_pos(i).expect("in-range slot is Some");
+            assert!(seen.insert(pos), "slot {i} pos {pos:?} duplicated");
+        }
+        assert_eq!(seen.len(), back_slots, "every back-row cell used exactly once");
+    }
+
+    #[test]
+    fn placeholder_cell_to_pos_rekeys_onto_the_back_rows() {
+        // 1-D placeholder cells fan across columns (mod COLS), dropping a row per
+        // full wrap, clamped to the back rows (row <= ROWS-2).
+        assert_eq!(placeholder_cell_to_pos(0), crate::grid::Pos::new(0, 0));
+        assert_eq!(placeholder_cell_to_pos(2), crate::grid::Pos::new(2, 0));
+        assert_eq!(placeholder_cell_to_pos(crate::grid::COLS - 1), crate::grid::Pos::new(crate::grid::COLS - 1, 0));
+        // Wrapping past COLS drops to row 1.
+        assert_eq!(placeholder_cell_to_pos(crate::grid::COLS), crate::grid::Pos::new(0, 1));
+        assert_eq!(placeholder_cell_to_pos(crate::grid::COLS + 3), crate::grid::Pos::new(3, 1));
+        // A large cell clamps the row to the last back row (ROWS-2), never the
+        // player's front row.
+        let big = placeholder_cell_to_pos(crate::grid::CELLS * 3);
+        assert!(big.row <= crate::grid::ROWS - 2, "clamped off the front row: {big:?}");
+        assert!(big.in_bounds());
+    }
+
+    #[test]
+    fn placeholder_cell_to_pos_never_returns_the_front_player_row() {
+        // Over a wide sweep of placeholder cells, none re-keys onto row ROWS-1.
+        for cell in 0..(crate::grid::CELLS * 4) {
+            let pos = placeholder_cell_to_pos(cell);
+            assert!(pos.in_bounds(), "cell {cell} -> {pos:?} in bounds");
+            assert!(pos.row < crate::grid::ROWS - 1, "cell {cell} -> {pos:?} stays off the front row");
+        }
+    }
+
+    #[test]
+    fn generated_encounter_spawns_are_a_disjoint_back_row_set_clear_of_the_player() {
+        // End-to-end on the generation path: every non-boss encounter's spawns
+        // occupy DISTINCT back-row cells, none on the front-centre player. This
+        // is the property the build-board placement relies on (no two enemies
+        // collide, player cell stays free) — asserted on real generated data.
+        let cat = gen_catalog();
+        let pool = SpawnPool::accumulate(&cat.sectors, 1, &cat);
+        let sector = generate_sector(&cat.sectors[1], &pool, 1, &cat);
+        let ppos = player_start_pos();
+        for e in sector.encounters.iter().filter(|e| !e.is_boss) {
+            let mut seen = std::collections::HashSet::new();
+            for sp in &e.enemy_ships {
+                assert!(sp.pos.in_bounds(), "spawn {sp:?} in bounds");
+                assert!(sp.pos.row < crate::grid::ROWS - 1, "spawn on a back row: {:?}", sp.pos);
+                assert_ne!(sp.pos, ppos, "spawn never on the player cell");
+                assert!(seen.insert(sp.pos), "two spawns share cell {:?}", sp.pos);
+            }
+        }
+    }
+
+    #[test]
+    fn build_board_fans_a_full_encounter_across_distinct_back_row_cells() {
+        // Drive build_encounter_board with the centre-out enemy_spawn_pos slots
+        // for a max-size (4) encounter: all four land at their distinct back-row
+        // cells (invariant A), and the player holds the front-centre cell. Pins
+        // that placement preserves the generated fan without collision.
+        let n: usize = 4;
+        let enemy_ships: Vec<ShipSpawn> = (0..n)
+            .map(|i| {
+                let pos = enemy_spawn_pos(i).expect("slots 0..4 are Some");
+                ShipSpawn {
+                    class_id: "skiff".into(),
+                    cell: pos.to_index(),
+                    pos,
+                    orientation: Orientation::BowOn { bow: LaneEnd::Aft },
+                    facing: enemy_spawn_facing(),
+                    hp_override: None,
+                }
+            })
+            .collect();
+        let board = build_encounter_board(
+            &EncounterDef { id: "fan".into(), enemy_ships, hazards: vec![], is_boss: false },
+            make_player(0, 10),
+            |spawn| Some(fallback_ship_for_spawn(spawn)),
+        );
+        // Player at front-centre.
+        assert_eq!(board.ship_at(player_start_pos()).unwrap().faction, Faction::Player);
+        // All four enemies present, each at its slot's cell (invariant A).
+        let mut enemy_cells = std::collections::HashSet::new();
+        for i in 0..n {
+            let pos = enemy_spawn_pos(i).unwrap();
+            let ship = board.ship_at(pos).unwrap_or_else(|| panic!("enemy missing at slot {i} {pos:?}"));
+            assert_eq!(ship.faction, Faction::Enemy, "slot {i}");
+            assert_eq!(ship.cell, pos.to_index(), "invariant A at slot {i}");
+            assert_eq!(ship.facing, enemy_spawn_facing(), "enemy bow S at slot {i}");
+            assert!(enemy_cells.insert(pos), "slot {i} cell {pos:?} double-booked");
+        }
+        assert_eq!(enemy_cells.len(), n, "four distinct enemy cells");
+    }
+
     /* ---- #69: capitals synthesize as ARMED bosses, not popguns -------- */
 
     #[test]
