@@ -30,13 +30,20 @@
 //!    must not panic (lane-index under/overflow in targeting, movement,
 //!    ordnance, or splash is the class of bug this guards).
 
+use broadside_engine::grid::{Dir4, Facing, Pos};
 use broadside_engine::resolve::{find_player_id, resolve_round, run_world_phase, Content};
 use broadside_engine::types::{
     Action, ActionCost, Arc, Board, Effect, EventBus, Faction, LaneEnd, Mount, Orientation,
     Projectile, RangeBand, ShieldFace, ShieldProfile, Ship, Targeting, TargetingPattern,
-    WeaponArchetype,
+    Trait, WeaponArchetype,
 };
 use std::collections::HashMap;
+
+/// Shared 2-D invariant-A fixture builders. The pulse_laser heat tests below are
+/// migrated onto these (now that #28 derives 2-D Range bands from the 1-D catalog
+/// band, so the live pulse_laser fires in 2-D); the rest of this file still uses
+/// the local 1-D ship()/board() until their 2-D rewrite — tracks #22.
+mod common;
 
 /* =========================================================================
  * Fixtures.
@@ -521,12 +528,6 @@ impl OneWeaponLike for OneWeapon {
     }
 }
 
-// #[ignore]: stale 1-D fixture, NOT a heat-economy regression. The dummy sits at
-// pos (0,0) same as the firer, so resolve_targeting_2d returns empty and the
-// requires_arc-but-no-target gate returns BEFORE heat is spent → heat never climbs.
-// #73 heat-gate + the catalog pulse_laser.cost.heat==2 are intact (reviewer-confirmed).
-// Restore by giving the dummy a real distinct Close-band pos — tracks #22.
-#[ignore = "stale 1-D fixture (pos (0,0)); #73 heat-gate intact, restore at 2-D combat_loop fixture rewrite — #22"]
 #[test]
 fn pulse_laser_sustained_fire_overheats_into_lockout() {
     let Some(pulse) = live_pulse_laser() else {
@@ -538,20 +539,21 @@ fn pulse_laser_sustained_fire_overheats_into_lockout() {
     assert_eq!(pulse.cost.heat, 2, "#73: pulse_laser heat must be 2 (the spam-gate value)");
     assert_eq!(pulse.cost.cooldown_max, 0, "#73: pulse_laser stays cd 0 (bruce's baseline-shot constraint)");
 
-    // Player fires pulse_laser each turn at a hull-99 dummy that never dies,
-    // so we observe the heat curve, not a kill. heat_max 6 (the canonical
-    // ship default). Player bow=Fore so its forward gun bears up-lane.
-    // Catalog pulse_laser resolves to band [Close] (distance 2). Put the
-    // dummy at cell 2 so the player's forward beam BEARS (in-band) and the
-    // shot actually fires and spends heat.
-    let mut player = ship("p", Faction::Player, 0, 99, LaneEnd::Fore, "pulse_laser");
+    // v2 (#22 restore, unblocked by #28): REAL 2-D fixture. #28 derives the 2-D
+    // band from the 1-D catalog band — pulse_laser is "close" → Near → fires at
+    // Chebyshev distance 2. So player at (0,0) Bow(E) (forward gun bears East) +
+    // dummy at (2,0): distance 2 = Near, in band → the shot bears and spends
+    // heat. heat_max 6 (the canonical default the curve is tuned to). Same #73
+    // heat-gate assertion, now on an invariant-A board (the stale pos-(0,0)
+    // fixture couldn't target).
+    let mut player = common::ship_2d("p", Faction::Player, Pos::new(0, 0), 99, Facing::Bow(Dir4::E), Arc::Forward, "pulse_laser");
     player.heat_max = 6;
     player.heat = 0;
-    // Anchored + weaponless dummy: it can't fire and won't maneuver, so it
-    // stays at cell 2 (in Close band) every turn — a stable firing target.
-    let mut dummy = ship("d", Faction::Enemy, 2, 99, LaneEnd::Aft, "noop");
-    dummy.traits = vec![broadside_engine::types::Trait::Anchored];
-    let mut b = board(7, vec![Some(player), None, Some(dummy), None, None, None, None]);
+    // Anchored + weaponless dummy: can't fire, won't maneuver → holds (2,0)
+    // (Near band) every turn, a stable firing target.
+    let mut dummy = common::dummy_2d("d", Faction::Enemy, Pos::new(2, 0), 99, Facing::Bow(Dir4::W));
+    dummy.traits = vec![Trait::Anchored];
+    let mut b = common::board_2d(vec![player, dummy]);
     let content = OneWeapon { id: "pulse_laser".into(), action: pulse };
 
     // Per-turn: +2 heat on fire, -1 on EOT → net +1/turn. Heat after turn N:
@@ -583,7 +585,6 @@ fn pulse_laser_sustained_fire_overheats_into_lockout() {
     assert_eq!(p.heat, 0, "idle cooling drains heat back to 0");
 }
 
-#[ignore = "stale 1-D fixture (pos (0,0)); no shot fires so no heat; #73 intact, restore at 2-D combat_loop fixture rewrite — #22"]
 #[test]
 fn pulse_laser_three_shot_alpha_locks_out_instantly() {
     let Some(pulse) = live_pulse_laser() else {
@@ -593,14 +594,15 @@ fn pulse_laser_three_shot_alpha_locks_out_instantly() {
     // Three pulse_laser shots queued in ONE turn = 3 × heat 2 = +6 = heat_max,
     // which trips lockout immediately (a 3-laser broadside alpha overheats on
     // the spot, before any dissipation). Hull-99 dummy so nobody dies.
-    let mut player = ship("p", Faction::Player, 0, 99, LaneEnd::Fore, "pulse_laser");
+    // v2 (#22 restore, unblocked by #28): REAL 2-D fixture — player (0,0) Bow(E),
+    // dummy (2,0) = Near band (pulse_laser "close" → Near, dist 2), so each shot
+    // bears and spends heat.
+    let mut player = common::ship_2d("p", Faction::Player, Pos::new(0, 0), 99, Facing::Bow(Dir4::E), Arc::Forward, "pulse_laser");
     player.heat_max = 6;
     player.heat = 0;
     player.queue = vec!["pulse_laser".into(), "pulse_laser".into(), "pulse_laser".into()];
-    // Dummy at cell 2 = Close band (distance 2), so each pulse_laser bears and
-    // spends heat. fire_player_queue fires the whole 3-shot queue in one call.
-    let dummy = ship("d", Faction::Enemy, 2, 99, LaneEnd::Aft, "noop");
-    let mut b = board(7, vec![Some(player), None, Some(dummy), None, None, None, None]);
+    let dummy = common::dummy_2d("d", Faction::Enemy, Pos::new(2, 0), 99, Facing::Bow(Dir4::W));
+    let mut b = common::board_2d(vec![player, dummy]);
     let content = OneWeapon { id: "pulse_laser".into(), action: pulse };
 
     broadside_engine::resolve::fire_player_queue("p", &mut b, &content);
