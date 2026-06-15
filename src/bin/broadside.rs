@@ -1332,32 +1332,25 @@ impl ApplicationHandler for App {
                     Err(e) => log::warn!("surface error: {e:?}"),
                 }
                 // (#43-followup) Re-request a redraw ONLY while something that is
-                // ACTUALLY IN THE 2-D DRAW LIST is still animating — currently
-                // just the screen hit-flash (`flash_active`). The old condition
-                // also spun on active_tween / loft_animating / vfx_active /
-                // ability_active and on `matches!(Playing)` (the 1-D telegraph
-                // spinner/pulse), but NONE of those are drawn on the #43 2-D path
-                // (compose_scene_2d renders a static board; the lane-keyed vfx /
-                // telegraph / ability tiles / loft ships were dropped). Spinning
-                // request_redraw for undrawn animation pegged the FPS uncapped —
-                // which, under RAM/GPU pressure, hitched present → SurfaceError::
-                // Outdated → reconfigure → black frame ("fade to black, snap to
-                // grey"). Gating on the real drawn animation makes an idle static
-                // board sleep until input/state-change, killing the flicker AND
-                // the machine-pegging spin. The animation calls still RUN (their
-                // state must advance) — only their now-undrawn liveness flags are
-                // dropped from the redraw gate.
+                // (#47) Drive a CONTINUOUS render loop: re-request a redraw every
+                // frame. This is the standard game-loop cadence and is THROTTLED
+                // by vsync (present_mode = AutoVsync ≈ 60 fps) — it is NOT an
+                // uncapped spin. It MUST stay continuous: a winit window that
+                // stops presenting leaves a stale swapchain that Windows' DWM
+                // compositor degrades — pulsing the image through greys to black
+                // and periodically force-repainting it. That stale-swapchain
+                // degradation (not any draw content, not the surface, not monitor
+                // sleep) was the "fade to black → snap to grey" Bruce saw after a
+                // mistaken earlier attempt to gate redraws on
+                // flash_active-only — which rendered exactly ONE frame then went
+                // idle. Keeping the swapchain live every frame fixes it.
                 //
-                // WHEN THE 2-D ANIMATIONS RETURN (the 2-D tween layer + D4/D6
-                // overlays: telegraph, ability tiles, hull bar, loft seating),
-                // re-add their liveness flags to THIS condition — gate on "is an
-                // animated thing actually in the draw list," never on a
-                // computed-but-undrawn flag.
-                let _ = (active_tween, vfx_active, ability_active, loft_animating);
-                if flash_active {
-                    if let Some(w) = self.window.as_ref() {
-                        w.request_redraw();
-                    }
+                // The animation-liveness flags are consumed here only to advance
+                // their state each frame; redraw cadence no longer depends on
+                // them (we always redraw), so they no longer gate anything.
+                let _ = (active_tween, vfx_active, ability_active, loft_animating, flash_active);
+                if let Some(w) = self.window.as_ref() {
+                    w.request_redraw();
                 }
             }
             _ => {}
@@ -1365,14 +1358,72 @@ impl ApplicationHandler for App {
     }
 }
 
+/// Keep the DISPLAY awake for the lifetime of the session (#47 follow-up).
+///
+/// A winit/wgpu app does NOT inhibit Windows display power-management by default,
+/// and the monitor powers down on INPUT-idle (not GPU-idle) — so even a busy
+/// render loop won't stop it. After a few idle minutes the screen does its slow
+/// ~15 s analog fade to black, then snaps back the instant you touch a key: the
+/// symptom Bruce hit. The standard game fix is to assert `ES_DISPLAY_REQUIRED`
+/// while the app runs, so Windows treats the session as "display in use" and
+/// never sleeps the monitor mid-game.
+///
+/// `ES_CONTINUOUS` makes the state persist until changed; OR-ed with
+/// `ES_DISPLAY_REQUIRED` it holds the display on. We clear it on exit
+/// ([`release_display_keep_awake`], `ES_CONTINUOUS` alone) so normal power
+/// behaviour resumes once the game closes. No-op on non-Windows.
+#[cfg(windows)]
+fn keep_display_awake() {
+    // `EXECUTION_STATE = u32`. SetThreadExecutionState lives in kernel32.
+    const ES_CONTINUOUS: u32 = 0x8000_0000;
+    const ES_DISPLAY_REQUIRED: u32 = 0x0000_0002;
+    extern "system" {
+        fn SetThreadExecutionState(esFlags: u32) -> u32;
+    }
+    // SAFETY: a single FFI call to a documented kernel32 entry point with a valid
+    // flag bitmask; it has no memory effects and returns the previous state
+    // (ignored). Returns 0 only on an invalid flag, which these are not.
+    let prev = unsafe { SetThreadExecutionState(ES_CONTINUOUS | ES_DISPLAY_REQUIRED) };
+    if prev == 0 {
+        log::warn!("SetThreadExecutionState(ES_DISPLAY_REQUIRED) failed; monitor may sleep");
+    }
+}
+
+/// Restore default display power-management on exit (clears the
+/// [`keep_display_awake`] hold). No-op on non-Windows.
+#[cfg(windows)]
+fn release_display_keep_awake() {
+    const ES_CONTINUOUS: u32 = 0x8000_0000;
+    extern "system" {
+        fn SetThreadExecutionState(esFlags: u32) -> u32;
+    }
+    // SAFETY: same documented kernel32 call; ES_CONTINUOUS alone drops the
+    // display-required assertion so the monitor can sleep normally again.
+    unsafe {
+        SetThreadExecutionState(ES_CONTINUOUS);
+    }
+}
+
+#[cfg(not(windows))]
+fn keep_display_awake() {}
+#[cfg(not(windows))]
+fn release_display_keep_awake() {}
+
 fn main() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+
+    // Stop Windows sleeping the monitor mid-session (#47): the display powers
+    // down on input-idle regardless of render activity, producing the slow
+    // fade-to-black Bruce saw. Held for the session, cleared on exit.
+    keep_display_awake();
 
     let event_loop = EventLoop::new().expect("create event loop");
     event_loop.set_control_flow(ControlFlow::Poll);
 
     let mut app = App::new();
     event_loop.run_app(&mut app).expect("event loop");
+
+    release_display_keep_awake();
 }
 
 /* =============================================================================
