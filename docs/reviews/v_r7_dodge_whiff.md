@@ -77,6 +77,14 @@ re-run targeting to ask "what would I have hit"; this correctly reuses the paint
   Whether an **AI** enemy accidentally hitting its **own ally** via a stale telegraph is intended
   is the lead's call; if addressed it'd be a fire-time friendly-fire guard = a NEW task, not a
   resolver R-series fix. NOT blocking; tracked for decision.
+  - **LEAD RULING (2026-06-15): ACCEPT — INTENDED for now, NO fire-time FF guard. PLAYTEST-GATED.**
+    Reasoning: pre-existing (not a 2-D regression); intersects the deliberate "Unfriendly Fire"
+    design; a committed telegraphed shot resolving on whoever occupies the cell (any faction) is
+    coherent emergent depth (the player can even bait an enemy shot into another enemy), and a
+    fire-time fizzle would read as MORE broken; low-severity. **Revisit ONLY if playtest shows
+    enemies visibly fragging each other in a way that reads dumb rather than emergent → then spin a
+    new fire-time-FF-guard task in run_action. Until then, no code change.** Status: closed-accepted,
+    playtest-gated.
 
 ---
 
