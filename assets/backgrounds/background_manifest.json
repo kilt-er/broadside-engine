@@ -1,0 +1,172 @@
+{
+  "format": "broadside-background-manifest",
+  "v": 2,
+  "frame": {
+    "w": 480,
+    "h": 270,
+    "upscale": 4
+  },
+  "canvas": {
+    "w": 960,
+    "h": 270
+  },
+  "queue": {
+    "layerCount": 20,
+    "visible": 5,
+    "positions": 5
+  },
+  "parallax": {
+    "stepPx": 120,
+    "nearFactor": 1,
+    "farFactor": 0.18,
+    "nearScale": 1,
+    "farScale": 0.62,
+    "centerPosition": 2
+  },
+  "note": "layers[] is the depth queue, index 0 = nearest/front. Load each file as a texture (canvas.w x canvas.h, RGBA). See BROADSIDE_BACKGROUND_SPEC.md for the render math.",
+  "layers": [
+    {
+      "index": 0,
+      "name": "starfield + comets",
+      "visible": true,
+      "empty": false,
+      "file": "bg_layer_00_starfield_comets.png"
+    },
+    {
+      "index": 1,
+      "name": "nebula + comets",
+      "visible": true,
+      "empty": false,
+      "file": "bg_layer_01_nebula_comets.png"
+    },
+    {
+      "index": 2,
+      "name": "nebula wisp",
+      "visible": true,
+      "empty": false,
+      "file": "bg_layer_02_nebula_wisp.png"
+    },
+    {
+      "index": 3,
+      "name": "bright stars",
+      "visible": true,
+      "empty": false,
+      "file": "bg_layer_03_bright_stars.png"
+    },
+    {
+      "index": 4,
+      "name": "starfield",
+      "visible": true,
+      "empty": false,
+      "file": "bg_layer_04_starfield.png"
+    },
+    {
+      "index": 5,
+      "name": "nebula wisp",
+      "visible": true,
+      "empty": false,
+      "file": "bg_layer_05_nebula_wisp.png"
+    },
+    {
+      "index": 6,
+      "name": "starfield bright",
+      "visible": true,
+      "empty": false,
+      "file": "bg_layer_06_starfield_bright.png"
+    },
+    {
+      "index": 7,
+      "name": "nebula wisp",
+      "visible": true,
+      "empty": false,
+      "file": "bg_layer_07_nebula_wisp.png"
+    },
+    {
+      "index": 8,
+      "name": "debris field",
+      "visible": true,
+      "empty": false,
+      "file": "bg_layer_08_debris_field.png"
+    },
+    {
+      "index": 9,
+      "name": "asteroids mid",
+      "visible": true,
+      "empty": false,
+      "file": "bg_layer_09_asteroids_mid.png"
+    },
+    {
+      "index": 10,
+      "name": "dust haze",
+      "visible": true,
+      "empty": false,
+      "file": "bg_layer_10_dust_haze.png"
+    },
+    {
+      "index": 11,
+      "name": "starfield",
+      "visible": true,
+      "empty": false,
+      "file": "bg_layer_11_starfield.png"
+    },
+    {
+      "index": 12,
+      "name": "asteroid band",
+      "visible": true,
+      "empty": false,
+      "file": "bg_layer_12_asteroid_band.png"
+    },
+    {
+      "index": 13,
+      "name": "far rubble",
+      "visible": true,
+      "empty": false,
+      "file": "bg_layer_13_far_rubble.png"
+    },
+    {
+      "index": 14,
+      "name": "nebula wisp",
+      "visible": true,
+      "empty": false,
+      "file": "bg_layer_14_nebula_wisp.png"
+    },
+    {
+      "index": 15,
+      "name": "planet",
+      "visible": true,
+      "empty": false,
+      "file": "bg_layer_15_planet.png"
+    },
+    {
+      "index": 16,
+      "name": "starfield",
+      "visible": true,
+      "empty": false,
+      "file": "bg_layer_16_starfield.png"
+    },
+    {
+      "index": 17,
+      "name": "starfield far",
+      "visible": true,
+      "empty": false,
+      "file": "bg_layer_17_starfield_far.png"
+    },
+    {
+      "index": 18,
+      "name": "nebula far",
+      "visible": true,
+      "empty": false,
+      "file": "bg_layer_18_nebula_far.png"
+    },
+    {
+      "index": 19,
+      "name": "deep void",
+      "visible": true,
+      "empty": false,
+      "file": "bg_layer_19_deep_void.png"
+    }
+  ],
+  "sprites": [],
+  "placements": [],
+  "spriteNote": "sprite coords x,y are in canvas space (0..canvas.w, 0..canvas.h) on the attached layer; scale multiplies w,h; vx,vy are canvas px/sec."
+}
