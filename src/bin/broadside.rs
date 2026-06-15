@@ -176,7 +176,12 @@ pub fn apply_intent(
 
         // --- Instant intents: apply the synthetic action atomically, then
         // advance the world phase. ---
-        Intent::MoveLeft | Intent::MoveRight | Intent::Vent => {
+        // v2 (#18): MoveUp/MoveDown are the 2-D depth moves; they flow through
+        // the same instant-synthetic path as the lateral pair (intent_to_action_id
+        // maps them to __move_up/__move_down, registered in DemoContent). The
+        // Key->Intent BINDING for the depth keys is #18's bin/renderer half; this
+        // arm just makes the Intents resolvable so the surface compiles + works.
+        Intent::MoveLeft | Intent::MoveRight | Intent::MoveUp | Intent::MoveDown | Intent::Vent => {
             let Some(id) = intent_to_action_id(&intent) else {
                 return false;
             };

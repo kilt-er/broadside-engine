@@ -87,6 +87,13 @@ pub enum Intent {
     /// Push the synthetic `__move_right` action — DISPLACE_SELF in the
     /// `Fore` lane direction by 1 cell via THRUST.
     MoveRight,
+    /// v2 (#18): push the synthetic `__move_up` action — DISPLACE_SELF one cell
+    /// N (toward row 0 / the far enemies) via THRUST. Functional once resolver
+    /// R6's `resolve_self_move` reads `direction_2d`.
+    MoveUp,
+    /// v2 (#18): push the synthetic `__move_down` action — DISPLACE_SELF one
+    /// cell S (toward the player's front row) via THRUST.
+    MoveDown,
     /// Push the synthetic `__reorient_flip` action — REORIENT::Flip.
     ReorientFlip,
     /// Push the synthetic `__vent` action — VENT_HEAT 3, recharge cooldowns.
@@ -160,6 +167,8 @@ pub fn intent_to_action_id(intent: &Intent) -> Option<&str> {
         Intent::QueueAction(id) => Some(id.as_str()),
         Intent::MoveLeft => Some(SYNTHETIC_MOVE_LEFT),
         Intent::MoveRight => Some(SYNTHETIC_MOVE_RIGHT),
+        Intent::MoveUp => Some(SYNTHETIC_MOVE_UP),
+        Intent::MoveDown => Some(SYNTHETIC_MOVE_DOWN),
         Intent::ReorientFlip => Some(SYNTHETIC_REORIENT_FLIP),
         Intent::Vent => Some(SYNTHETIC_VENT),
         // PlayCard: caller validates + decrements via Content::try_play_card
@@ -192,6 +201,13 @@ pub fn synthetic_card_action_id(card_id: &str) -> String {
 
 pub const SYNTHETIC_MOVE_LEFT: &str = "__move_left";
 pub const SYNTHETIC_MOVE_RIGHT: &str = "__move_right";
+/// v2 (C1 infra + #18): move toward row 0 (away from the player / toward the
+/// far enemies). N on the grid (`Dir4::N`, decreasing row). Resolver-served via
+/// `resolver_ai_move` for AI, and the player's depth-up key.
+pub const SYNTHETIC_MOVE_UP: &str = "__move_up";
+/// v2 (C1 infra + #18): move toward the player's front row (increasing row).
+/// S on the grid (`Dir4::S`). The AI's primary CLOSE direction.
+pub const SYNTHETIC_MOVE_DOWN: &str = "__move_down";
 pub const SYNTHETIC_REORIENT_FLIP: &str = "__reorient_flip";
 pub const SYNTHETIC_VENT: &str = "__vent";
 
@@ -255,10 +271,10 @@ pub fn synthetic_move_left() -> Action {
             mode: MovementMode::THRUST,
             distance: 1,
             direction: Some(crate::types::LaneEnd::Aft),
-            // v2: 2-D lateral override left None for now — content's player-2D-
-            // movement task sets Some(Dir4::W) (move-left = decreasing col) once
-            // resolver R6's resolve_self_move reads direction_2d.
-            direction_2d: None,
+            // v2 (#18): move-left = decreasing column = Dir4::W. The 1-D
+            // `direction` stays as the transition fallback; `direction_2d` is
+            // the real 2-D direction resolver R6's resolve_self_move reads.
+            direction_2d: Some(crate::grid::Dir4::W),
         }],
         r#mod: None,
         icon: None,
@@ -280,10 +296,54 @@ pub fn synthetic_move_right() -> Action {
             mode: MovementMode::THRUST,
             distance: 1,
             direction: Some(crate::types::LaneEnd::Fore),
-            // v2: 2-D lateral override left None for now — content sets
-            // Some(Dir4::E) (move-right = increasing col) at the player-2D-
-            // movement task.
-            direction_2d: None,
+            // v2 (#18): move-right = increasing column = Dir4::E.
+            direction_2d: Some(crate::grid::Dir4::E),
+        }],
+        r#mod: None,
+        icon: None,
+    }
+}
+
+/// Synthetic "move one cell up" action (v2, #18 / C1 infra) — toward row 0
+/// (away from the player, toward the far enemies). `direction_2d: Some(Dir4::N)`
+/// is the real 2-D direction; the 1-D `direction` is a transition fallback (the
+/// lane had no depth axis, so Fore is an arbitrary stand-in there). Functional
+/// once resolver R6's `resolve_self_move` reads `direction_2d`; the AI's CLOSE/
+/// back-off (`__move_up` for back-off) and the player's depth-up key both use it.
+pub fn synthetic_move_up() -> Action {
+    Action {
+        id: SYNTHETIC_MOVE_UP.into(),
+        name: "Move Up".into(),
+        archetype: WeaponArchetype::Movement,
+        cost: zero_cost(),
+        targeting: self_targeting(),
+        effects: vec![Effect::DISPLACE_SELF {
+            mode: MovementMode::THRUST,
+            distance: 1,
+            direction: Some(crate::types::LaneEnd::Fore),
+            direction_2d: Some(crate::grid::Dir4::N),
+        }],
+        r#mod: None,
+        icon: None,
+    }
+}
+
+/// Synthetic "move one cell down" action (v2, #18 / C1 infra) — toward the
+/// player's front row (increasing row). `direction_2d: Some(Dir4::S)` is the
+/// real direction (1-D `direction` is the transition fallback). The AI's
+/// primary CLOSE direction; functional once resolver R6 reads `direction_2d`.
+pub fn synthetic_move_down() -> Action {
+    Action {
+        id: SYNTHETIC_MOVE_DOWN.into(),
+        name: "Move Down".into(),
+        archetype: WeaponArchetype::Movement,
+        cost: zero_cost(),
+        targeting: self_targeting(),
+        effects: vec![Effect::DISPLACE_SELF {
+            mode: MovementMode::THRUST,
+            distance: 1,
+            direction: Some(crate::types::LaneEnd::Aft),
+            direction_2d: Some(crate::grid::Dir4::S),
         }],
         r#mod: None,
         icon: None,
@@ -365,10 +425,13 @@ impl DemoContent {
         self.actions.insert(action.id.clone(), action);
     }
 
-    /// Register all four synthetic actions used by [`key_to_intent`].
+    /// Register the synthetic actions used by [`key_to_intent`] (the four
+    /// cardinal moves + reorient + vent).
     pub fn register_synthetics(&mut self) {
         self.insert(synthetic_move_left());
         self.insert(synthetic_move_right());
+        self.insert(synthetic_move_up());
+        self.insert(synthetic_move_down());
         self.insert(synthetic_reorient_flip());
         self.insert(synthetic_vent());
     }
