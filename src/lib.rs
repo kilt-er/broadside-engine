@@ -88,6 +88,7 @@
 //! teammates.
 
 pub mod types;
+pub mod ai;
 pub mod cards;
 pub mod catalog;
 pub mod catalog_canonical;
