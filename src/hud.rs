@@ -411,8 +411,15 @@ pub fn compose_scene_2d_with(
     }
     // Per-ship overlays LAST, so health bars + queue tiles sit on top of every
     // hull (incl. a nearer ship that overlaps a farther one). Same far→near order.
+    // (#62) The PLAYER's lane-anchored hull bar is SKIPPED — it's redundant with
+    // the screen-space bottom HUD health bar (push_bottom_hud_2d) and, at the
+    // hero hull's size, the small cell-anchored bar collided with the big hull.
+    // The player's health reads from the prominent bottom band; enemies (no
+    // bottom bar) keep their lane hull bars. Queue tiles stay for both.
     for ship in &ships {
-        push_hull_bar_2d(&mut out, ship, cfg);
+        if ship.faction != Faction::Player {
+            push_hull_bar_2d(&mut out, ship, cfg);
+        }
         push_queue_tiles_2d(&mut out, ship, cfg);
     }
     // Bottom HUD band LAST of all — a screen-space fixed (NOT projected) health
