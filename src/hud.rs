@@ -97,13 +97,15 @@ const HUD_TILE_COOLDOWN: [f32; 4] = [0.42, 0.45, 0.52, 0.9]; // dim = cooling
 
 const SHIELD_PIP_CHARGE: [f32; 4] = [0.329, 0.812, 0.788, 1.0];
 
-// Bow-direction chevron (#55): BOLD, high-contrast, faction-tinted near-white so
-// the bow reads at a glance against both the dark backdrop and the hull (the old
-// chevron used the hull STROKE colour, which blended into the hull). A dark
-// drop-shadow chevron is drawn behind it so it reads on any layer.
-const BOW_MARK_PLAYER: [f32; 4] = [0.74, 1.0, 0.98, 1.0]; // bright cyan-white
-const BOW_MARK_ENEMY: [f32; 4] = [1.0, 0.86, 0.55, 1.0]; // bright amber-white
-const BOW_MARK_SHADOW: [f32; 4] = [0.02, 0.03, 0.05, 0.85]; // dark backing
+// Bow-direction chevron (#55): BOLD, high-contrast so the bow reads at a glance
+// against both the dark backdrop and the hull (the old chevron used the hull
+// STROKE colour, which blended into the hull). The mark contrasts its OWN hull's
+// temperature: the player's hull is cool blue, so its chevron is WARM gold-white;
+// the enemy hull is warm orange, so its chevron is COOL cyan-white. A dark
+// drop-shadow chevron is drawn behind it so it reads on any backdrop layer.
+const BOW_MARK_PLAYER: [f32; 4] = [1.0, 0.91, 0.62, 1.0]; // warm gold-white (vs cool hull)
+const BOW_MARK_ENEMY: [f32; 4] = [0.72, 0.97, 1.0, 1.0]; // cool cyan-white (vs warm hull)
+const BOW_MARK_SHADOW: [f32; 4] = [0.02, 0.03, 0.05, 0.9]; // dark backing
 
 const WHITE: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
 const DEFEAT_TINT: [f32; 4] = [0.85, 0.08, 0.10, 0.55];
@@ -876,10 +878,15 @@ fn push_ship_arrow_and_pips_2d(
     // chevron sits behind it (offset toward the hull) so it reads on any layer.
     let (dx, dy) = bow_screen_dir(ship.facing);
     let rot = dy.atan2(dx);
-    let arrow_sz = (base * 0.55).max(5.0);
-    // Seat the chevron a touch beyond the hull edge plus its own half-size so the
-    // whole mark clears the hull and reads as "pointing away from" the ship.
-    let reach = base + 6.0 + arrow_sz;
+    // Size to survive the perspective shrink on the BACK row (far ships shrink
+    // most, so the floor matters more than the ratio): a generous fraction of the
+    // hull half-extent with a firm minimum so even the farthest ship's chevron
+    // reads as a clear pointer rather than a speck.
+    let arrow_sz = (base * 0.7).max(7.0);
+    // Seat the chevron clearly beyond the hull edge plus its own half-size so the
+    // whole mark CLEARS the hull (otherwise a far ship's short reach buries it
+    // under the hull) and reads as "pointing away from" the ship.
+    let reach = base + arrow_sz + 5.0;
     let tip = [center[0] + dx * reach, center[1] + dy * reach];
     let (uv0, uv1) = atlas::cell_uvs(atlas::BOW_CHEVRON);
     // Shadow first (pulled back toward the hull by ~1px so it haloes the mark).
