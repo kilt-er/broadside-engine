@@ -88,6 +88,13 @@ const HULL_BAR_HIGH: [f32; 4] = [0.353, 0.820, 0.553, 1.0]; // >60% green
 const HULL_BAR_MID: [f32; 4] = [0.878, 0.741, 0.235, 1.0]; // >30% amber
 const HULL_BAR_LOW: [f32; 4] = [0.878, 0.286, 0.235, 1.0]; // <=30% red
 
+// Screen-space bottom HUD band (`push_bottom_hud_2d`, #56): fixed health bar +
+// weapon-tile row (Shogun-Showdown style).
+const HUD_BAND_BG: [f32; 4] = [0.055, 0.067, 0.094, 0.92]; // dark panel
+const HUD_LABEL: [f32; 4] = [0.70, 0.78, 0.88, 0.9]; // small text
+const HUD_TILE_BG: [f32; 4] = [0.118, 0.137, 0.180, 0.95]; // tile fill
+const HUD_TILE_COOLDOWN: [f32; 4] = [0.42, 0.45, 0.52, 0.9]; // dim = cooling
+
 const SHIELD_PIP_CHARGE: [f32; 4] = [0.329, 0.812, 0.788, 1.0];
 
 const WHITE: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
@@ -380,7 +387,162 @@ pub fn compose_scene_2d_with(
         push_hull_bar_2d(&mut out, ship, cfg);
         push_queue_tiles_2d(&mut out, ship, cfg);
     }
+    // Bottom HUD band LAST of all — a screen-space fixed (NOT projected) health
+    // bar + large weapon-tile row, drawn on top of everything (Bruce: a fixed
+    // centered Shogun-Showdown-style bottom bar so health + abilities always read).
+    push_bottom_hud_2d(&mut out, board);
     out
+}
+
+/// Screen-space FIXED bottom HUD band (#56): the player's health bar + a row of
+/// large weapon tiles, pinned to the bottom of the 480×270 frame (NOT projected
+/// on the board), Shogun-Showdown style. Reads the player ship: hull/max_hull for
+/// the bar; `mounts` for the tiles (one per weapon, hotkey 1.. in mount order),
+/// each tinted by state — ready (player accent), heated (amber, scaled by
+/// heat/heat_max), locked-out (red), on-cooldown (dim) — with the hotkey digit +
+/// a weapon-archetype glyph. No-op if there's no player ship.
+fn push_bottom_hud_2d(out: &mut Vec<DrawCommand>, board: &Board) {
+    use crate::gfx::{VIRTUAL_H, VIRTUAL_W};
+    let Some(player) = board
+        .cells
+        .iter()
+        .flatten()
+        .find(|s| s.faction == Faction::Player)
+    else {
+        return;
+    };
+    let w = VIRTUAL_W as f32;
+    let h = VIRTUAL_H as f32;
+    let band_h = 40.0;
+    let band_top = h - band_h;
+
+    // Band background — a dark panel across the full width.
+    push_polygon(
+        out,
+        PolygonInstance::flat(
+            [[0.0, band_top], [w, band_top], [w, h], [0.0, h]],
+            HUD_BAND_BG,
+            atlas::cell_uvs(atlas::SOLID_WHITE),
+        ),
+    );
+
+    // --- Player HEALTH bar (left of the band) ---
+    let hp_x = 10.0;
+    let hp_y = band_top + 8.0;
+    let hp_w = 150.0;
+    let hp_h = 9.0;
+    // "HP" label above the bar.
+    push_text_left(out, "HULL", hp_x, hp_y - 8.0, 1.0, HUD_LABEL);
+    // Track.
+    push_polygon(
+        out,
+        PolygonInstance::flat(
+            [[hp_x, hp_y], [hp_x + hp_w, hp_y], [hp_x + hp_w, hp_y + hp_h], [hp_x, hp_y + hp_h]],
+            HULL_BAR_BG,
+            atlas::cell_uvs(atlas::SOLID_WHITE),
+        ),
+    );
+    if player.max_hull > 0 {
+        let frac = (player.hull as f32 / player.max_hull as f32).clamp(0.0, 1.0);
+        if frac > 0.0 {
+            let fw = hp_w * frac;
+            let color = if frac > 0.6 {
+                HULL_BAR_HIGH
+            } else if frac > 0.3 {
+                HULL_BAR_MID
+            } else {
+                HULL_BAR_LOW
+            };
+            push_polygon(
+                out,
+                PolygonInstance::flat(
+                    [[hp_x, hp_y], [hp_x + fw, hp_y], [hp_x + fw, hp_y + hp_h], [hp_x, hp_y + hp_h]],
+                    color,
+                    atlas::cell_uvs(atlas::SOLID_WHITE),
+                ),
+            );
+        }
+    }
+
+    // --- Weapon TILES (centered row, large) ---
+    let n = player.mounts.len();
+    if n == 0 {
+        return;
+    }
+    let tile = 30.0;
+    let gap = 8.0;
+    let row_w = n as f32 * tile + (n as f32 - 1.0) * gap;
+    // Center the tile row in the band's right portion (after the health bar).
+    let start_x = (w - row_w) / 2.0 + 60.0;
+    let tile_y = band_top + (band_h - tile) / 2.0;
+    for (i, mount) in player.mounts.iter().enumerate() {
+        let tx = start_x + i as f32 * (tile + gap);
+        // State tint: cooldown (dim) > locked-out (red) > heated (amber) > ready.
+        let on_cd = player.cooldowns.get(&mount.weapon).copied().unwrap_or(0) > 0;
+        let heat_frac = (player.heat as f32 / player.heat_max.max(1) as f32).clamp(0.0, 1.0);
+        let border = if on_cd {
+            HUD_TILE_COOLDOWN
+        } else if player.locked_out {
+            HEAT_LOCKOUT
+        } else if heat_frac > 0.5 {
+            HEAT_FILL
+        } else {
+            PLAYER_HULL_STROKE
+        };
+        // Tile background + border (4 edge lines).
+        push_polygon(
+            out,
+            PolygonInstance::flat(
+                [[tx, tile_y], [tx + tile, tile_y], [tx + tile, tile_y + tile], [tx, tile_y + tile]],
+                HUD_TILE_BG,
+                atlas::cell_uvs(atlas::SOLID_WHITE),
+            ),
+        );
+        let c = [
+            [tx, tile_y],
+            [tx + tile, tile_y],
+            [tx + tile, tile_y + tile],
+            [tx, tile_y + tile],
+        ];
+        for k in 0..4 {
+            push_line(out, pt(c[k]), pt(c[(k + 1) % 4]), 1.0, border);
+        }
+        // Hotkey digit (top-left of the tile).
+        let digit = [b'1' + i as u8];
+        if let Ok(s) = std::str::from_utf8(&digit) {
+            push_text_left(out, s, tx + 2.0, tile_y + 2.0, 1.0, HUD_LABEL);
+        }
+        // Weapon archetype glyph (centered in the tile).
+        let glyph = archetype_to_glyph(weapon_archetype(&mount.weapon));
+        push_sprite(
+            out,
+            SpriteInstance::axis_aligned(
+                [tx + tile / 2.0, tile_y + tile / 2.0 + 2.0],
+                [8.0, 8.0],
+                border,
+                atlas::cell_uvs(glyph),
+            ),
+        );
+    }
+}
+
+/// Map a weapon's action id to a [`WeaponArchetype`] for its HUD glyph, by id
+/// substring (the bin loadout: pulse_laser → Beam, torpedo/missile → Ordnance,
+/// broadside → Broadside). Falls back to `Beam`. A pragmatic stand-in until
+/// weapons carry an explicit archetype; keeps the bottom-HUD tile icons readable.
+fn weapon_archetype(weapon_id: &str) -> WeaponArchetype {
+    let id = weapon_id.to_ascii_lowercase();
+    if id.contains("torp") || id.contains("missile") || id.contains("ordnance") {
+        WeaponArchetype::Ordnance
+    } else if id.contains("broadside") {
+        WeaponArchetype::Broadside
+    } else if id.contains("displace") || id.contains("push") || id.contains("pull") {
+        WeaponArchetype::Displacement
+    } else if id.contains("vent") || id.contains("brace") || id.contains("shield") {
+        WeaponArchetype::Defensive
+    } else {
+        WeaponArchetype::Beam
+    }
 }
 
 /// Queued-action tiles above a ship on the 2D board — the v1 "tiles" Bruce
