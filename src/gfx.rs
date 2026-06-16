@@ -1093,6 +1093,21 @@ impl Gfx {
         true
     }
 
+    /// Drive the parallax background each frame (#57): set its horizontal target
+    /// to the player's column (`pos_target`, 0..positions-1) and its depth target
+    /// to the campaign `level` (`focus_target`), then ease both toward target by
+    /// `dt`. This is what makes the background PAN as the player moves side to
+    /// side — without it the layers are static (Bruce: "parallax isn't working").
+    /// The slot/parallax math lives in `background.rs` (spec §4, unit-tested); the
+    /// bin calls this once per redraw with the player's live column + level.
+    pub fn update_background(&mut self, focus_target: usize, pos_target: usize, dt: f32) {
+        if let Some(bg) = self.background.as_mut() {
+            bg.set_focus_target(focus_target);
+            bg.set_pos_target(pos_target);
+            bg.tween(dt);
+        }
+    }
+
     /// Begin a smooth reorient of one loft ship to `orientation`. No-op if that
     /// ship has no pose yet (use [`Self::sync_loft_pose`] to create + reorient
     /// in one call).

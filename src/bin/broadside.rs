@@ -1301,7 +1301,22 @@ impl ApplicationHandler for App {
                     .map(|p| build_ship_tiles(p, &self.content))
                     .unwrap_or_default();
                 let ability_active = self.ability_hud.advance(&player_tiles, 1.0 / 60.0);
+                // (#57) Player column + campaign level drive the parallax: the
+                // background pans horizontally with the player's lateral position
+                // and recedes with the campaign level. Read before the gfx borrow.
+                let player_col = self
+                    .board
+                    .cells
+                    .iter()
+                    .flatten()
+                    .find(|s| s.faction == Faction::Player)
+                    .map(|s| s.pos.col)
+                    .unwrap_or(broadside_engine::grid::COLS / 2);
+                let bg_level = self.board.level;
                 let Some(gfx) = self.gfx.as_mut() else { return };
+                // (#57) Pan/recede the parallax background toward the player's
+                // column + the campaign level, eased per frame.
+                gfx.update_background(bg_level, player_col, 1.0 / 60.0);
                 for (id, orient) in &loft_ships {
                     gfx.sync_loft_pose(id, *orient);
                 }
