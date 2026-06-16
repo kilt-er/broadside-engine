@@ -1767,11 +1767,16 @@ pub fn push_salvage_hud(out: &mut Vec<DrawCommand>, salvage: u32) {
 pub fn push_controls_overlay(out: &mut Vec<DrawCommand>) {
     use crate::gfx::VIRTUAL_H;
     const DIM: [f32; 4] = [0.62, 0.70, 0.80, 0.55];
-    let pixel = 2.0;
-    let line_h = 7.0 * pixel + 6.0; // glyph height + inter-line gap
+    // (#48) Shrunk to `pixel = 1.0` (one font-pixel = one virtual pixel) and
+    // tucked tight into the bottom-left corner. At pixel = 2.0 the 5-line legend
+    // ate ~1/3 of the screen (Bruce); at 1.0 each glyph is 5x7 px, the longest
+    // line ("TAB REORIENT") spans ~72 px of the 480 frame (~15% width) and the
+    // five lines ~45 px of 270 (~17% height) — a compact corner readout.
+    let pixel = 1.0;
+    let line_h = 7.0 * pixel + 2.0; // glyph height + tight inter-line gap
     let lines = ["1 2 3  QUEUE", "ARROWS MOVE", "TAB REORIENT", "V  VENT", "SPACE FIRE"];
-    let left_pad = 10.0;
-    let bottom_pad = 10.0;
+    let left_pad = 4.0;
+    let bottom_pad = 4.0;
     let start_y = VIRTUAL_H as f32 - line_h * lines.len() as f32 - bottom_pad;
     for (i, line) in lines.iter().enumerate() {
         push_text_left(out, line, left_pad, start_y + i as f32 * line_h, pixel, DIM);
