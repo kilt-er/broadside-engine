@@ -212,15 +212,18 @@ impl Default for ProjectorConfig {
             z_far: 6.0,
             // Horizon near mid-screen (was 70, high): the vanishing point sits at
             // ~45% down like the reference, leaving the top ~half for the
-            // starfield/nebula backdrop. Near row pinned to the bottom edge so the
-            // front lane (player) is large and low, road-style.
+            // starfield/nebula backdrop. Near row pinned to the VERY BOTTOM edge so
+            // the road dominates the lower screen and the front lane (player) is
+            // large + low, road-style (lead pass-2: was 252, still sat a touch high).
             horizon_y: 120.0,
-            near_row_y: 252.0,
-            // Near-row fan: at z_near=1 the on-screen half-width is fan_half_width
-            // (×1/1). 200 px each side of center = a 400 px-wide near row inside
-            // the 480 frame ⇒ 40 px margin per side for ship overhang. The deeper
-            // z_far makes the far rows converge to a tight central band.
-            fan_half_width: 200.0,
+            near_row_y: 268.0,
+            // Near-row fan WIDE (lead pass-2: the road was a small central trapezoid
+            // with empty starfield in the lower corners; the ref fans the near lanes
+            // out toward the bottom corners and fills the lower ~2/3). 290 px each
+            // side = a 580 px near row that spills past the 480 frame edges, so the
+            // outer lanes run off the bottom corners like the reference road. The
+            // deep z_far still converges the far rows to a tight central band.
+            fan_half_width: 290.0,
             cols: COLS,
             rows: ROWS,
         }
@@ -549,24 +552,34 @@ mod tests {
         assert!(q.corners[0][1] < q.corners[3][1], "top above bottom");
     }
 
-    /// The whole board fits inside the frame with the default config — no cell
-    /// corner spills past the frame edges (so corner ships don't clip).
+    /// VERTICAL bounds hold for every cell (no row spills above the top or below
+    /// the bottom). HORIZONTAL is deliberately NOT bounded for the near rows: the
+    /// #62 chase-cam fans the near lanes WIDE so the outer lanes run off the
+    /// bottom corners (the reference "road" filling the lower screen), so near-row
+    /// corners legitimately exceed [0, frame_w]. The FAR row (row 0, where enemies
+    /// read) must still fit horizontally so their silhouettes aren't clipped.
     #[test]
     fn default_board_fits_inside_frame() {
         let c = cfg();
         for q in project_all(&c) {
             for corner in q.corners {
                 assert!(
-                    corner[0] >= 0.0 && corner[0] <= c.frame_w,
-                    "corner x {} out of [0,{}]",
-                    corner[0],
-                    c.frame_w
-                );
-                assert!(
                     corner[1] >= 0.0 && corner[1] <= c.frame_h,
                     "corner y {} out of [0,{}]",
                     corner[1],
                     c.frame_h
+                );
+            }
+        }
+        // Far row (row 0) fits horizontally with margin — enemies read un-clipped.
+        for col in 0..COLS {
+            let q = grid_cell_quad(Pos::new(col, 0), &c);
+            for corner in q.corners {
+                assert!(
+                    corner[0] >= 0.0 && corner[0] <= c.frame_w,
+                    "far-row corner x {} out of [0,{}]",
+                    corner[0],
+                    c.frame_w
                 );
             }
         }

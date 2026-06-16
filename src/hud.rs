@@ -807,10 +807,19 @@ fn push_ship_2d(
     // (below), so orientation/buffer read on the 3-D hull too.
     let is_player = ship.faction == Faction::Player;
     if let Some(kind) = sprites.loft_kind(&ship.id, is_player) {
-        let w = (q.near_edge_width() * 1.15).max(16.0);
+        // (#62) The PLAYER is the hero foreground element — in Bruce's reference
+        // it's BIG at the bottom-centre, right up at the camera, slightly
+        // overlapping the near lanes. Upscale the player's loft quad well past its
+        // cell footprint (enemies stay cell-sized so they read small up-lane), and
+        // drop it toward the bottom edge so it sits in the foreground.
+        let hero = if is_player { 1.9 } else { 1.15 };
+        let w = (q.near_edge_width() * hero).max(16.0);
         let h = w / LOFT_TEXTURE_ASPECT;
+        // Bias the hero ship's centre DOWN so the enlarged hull sits at the
+        // foreground bottom rather than ballooning over the mid-road.
+        let cy = if is_player { center[1] + h * 0.18 } else { center[1] };
         let (l, r) = (center[0] - w * 0.5, center[0] + w * 0.5);
-        let (t, b) = (center[1] - h * 0.5, center[1] + h * 0.5);
+        let (t, b) = (cy - h * 0.5, cy + h * 0.5);
         out.push(DrawCommand::LoftShip(LoftShipInstance {
             p0: [l, t],
             p1: [r, t],
