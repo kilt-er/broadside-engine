@@ -1895,6 +1895,17 @@ impl Gfx {
                 let mesh = self.loft_meshes.get(&q.kind);
                 let yaw = self.loft_poses.get(q.ship_id.as_str()).map(|p| p.yaw_deg());
                 if let (Some(mesh), Some(yaw)) = (mesh, yaw) {
+                    // (#62) LANE-AIM NOSE-TURN: yaw the hull toward its lane so an
+                    // off-centre ship "aims down its lane" like Bruce's art-tool
+                    // reference (NOSE TURN 15). Derived from the quad's centre-x
+                    // offset from frame-centre (no need to thread the grid column
+                    // through the pose) — left lanes turn the nose left, right
+                    // lanes right; the centre lane stays at its stance yaw.
+                    const LANE_AIM_MAX_DEG: f32 = 15.0;
+                    let quad_cx = (q.p0[0] + q.p2[0]) * 0.5;
+                    let off = ((quad_cx - VIRTUAL_W as f32 * 0.5) / (VIRTUAL_W as f32 * 0.5))
+                        .clamp(-1.0, 1.0);
+                    let yaw = yaw + off * LANE_AIM_MAX_DEG;
                     // 1) Render the hull into the shared loft target (own passes).
                     let mut enc =
                         self.device
