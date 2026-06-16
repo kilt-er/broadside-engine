@@ -828,9 +828,16 @@ fn push_ship_2d(
     // double-lit it, so the Aegis "looked nothing like" the editor bake). Runtime
     // glows (engine/heat) still layer ON TOP per contract §1.
     let class = ship.klass.as_deref().unwrap_or("frigate");
+    // (#66) CHASE-CAM stance: the camera sits BEHIND the player looking up-lane, so
+    // the displayed view is the ship seen FROM the stern side. A ship whose bow
+    // points AWAY (into the screen — the player's normal BowOn{Fore}) shows its
+    // STERN → bowOnAft sprite (lead: "bowOnAft_top = stern-toward-camera, use it").
+    // A ship whose bow points TOWARD the camera (BowOn{Aft}, e.g. an oncoming
+    // enemy) shows its BOW → bowOnFore. Broadside → broadside. (This INVERTS the
+    // old top-down fore/aft pick, which assumed the camera looked straight down.)
     let stance = match ship.orientation {
-        Orientation::BowOn { bow: LaneEnd::Fore } => SpriteStance::BowOnFore,
-        Orientation::BowOn { bow: LaneEnd::Aft } => SpriteStance::BowOnAft,
+        Orientation::BowOn { bow: LaneEnd::Fore } => SpriteStance::BowOnAft,
+        Orientation::BowOn { bow: LaneEnd::Aft } => SpriteStance::BowOnFore,
         Orientation::Broadside => SpriteStance::Broadside,
     };
     if sprites.has_pair(class, stance) {
@@ -849,10 +856,10 @@ fn push_ship_2d(
         };
         let (l, r) = (center[0] - w * 0.5, center[0] + w * 0.5);
         let (t, b) = (cy - h * 0.5, cy + h * 0.5);
-        // blend_t selects between the baked SIDE (0) and TOP (1) views. The chase
-        // cam sits low (~20° above horizontal), so we mostly see the ship's
-        // profile → bias toward the side view, with a little top mixed in.
-        let blend_t = 0.30_f32;
+        // blend_t selects between the baked SIDE (0) and TOP (1) views. Lead: the
+        // chase-cam hero reads as bowOnAft_TOP (stern + deck seen from behind-above)
+        // — bias toward the top view, a little side mixed in for the low angle.
+        let blend_t = 0.70_f32;
         let side_slug = format!("{}_{}_{}", class, stance.slug(), SpriteView::Side.slug());
         let top_slug = format!("{}_{}_{}", class, stance.slug(), SpriteView::Top.slug());
         out.push(DrawCommand::TexturedShip(TexturedShipInstance {
