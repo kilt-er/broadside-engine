@@ -119,6 +119,8 @@ pub mod hud;
 #[cfg(feature = "render")]
 pub mod loft_gpu;
 #[cfg(feature = "render")]
+pub mod facing_wheel;
+#[cfg(feature = "render")]
 pub mod projector;
 #[cfg(feature = "render")]
 pub mod vfx;
