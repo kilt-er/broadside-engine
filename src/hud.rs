@@ -119,12 +119,6 @@ const BOW_MARK_SHADOW: [f32; 4] = [0.02, 0.03, 0.05, 0.9]; // dark backing
 const ENGINE_GLOW_CORE: [f32; 4] = [0.45, 0.95, 1.0, 1.0]; // bright cyan
 const ENGINE_GLOW_HALO: [f32; 4] = [0.30, 0.75, 1.0, 0.45]; // soft cyan halo
 
-// (#62) Player hull keel/outline stroke — a bright cool edge along the hero
-// hull's lower silhouette for shape-definition against the dark road (a full
-// quad box would read as a UI frame, so we stroke only the lower + side edges =
-// the hull's read silhouette, not the top).
-const HULL_KEEL_STROKE: [f32; 4] = [0.42, 0.74, 0.92, 0.9];
-
 const WHITE: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
 const DEFEAT_TINT: [f32; 4] = [0.85, 0.08, 0.10, 0.55];
 const VICTORY_TINT: [f32; 4] = [1.00, 0.80, 0.20, 0.45];
@@ -824,71 +818,60 @@ fn push_ship_2d(
     };
     let center = q.center;
 
-    // #51 loft body: if a 3-D mesh is installed for this ship, blit it into a
-    // cell-seated quad instead of the flat box. The loft texture is
-    // content-centred, so a quad centred on the cell seats the hull on the cell;
-    // size it from the cell's near-edge width × depth_scale so it fills the
-    // footprint and shrinks with depth. Bow arrow + shield pips still draw on top
-    // (below), so orientation/buffer read on the 3-D hull too.
     let is_player = ship.faction == Faction::Player;
-    if let Some(kind) = sprites.loft_kind(&ship.id, is_player) {
-        // (#62) The PLAYER is the hero foreground element — in Bruce's reference
-        // it's BIG at the bottom-centre, right up at the camera, slightly
-        // overlapping the near lanes. Upscale the player's loft quad well past its
-        // cell footprint (enemies stay cell-sized so they read small up-lane), and
-        // drop it toward the bottom edge so it sits in the foreground.
+
+    // (#66) BAKED SPRITE per the render contract: ships are flat 4-stance PNGs the
+    // editor baked (lighting/outline frozen in) and the engine draws UNLIT. If a
+    // sprite pair (side+top) is loaded for this ship's class+stance, draw the
+    // textured quad at the projected cell. This REPLACES the runtime loft (which
+    // was off-contract: it re-derived a crude 3-D hull from the design JSON +
+    // double-lit it, so the Aegis "looked nothing like" the editor bake). Runtime
+    // glows (engine/heat) still layer ON TOP per contract §1.
+    let class = ship.klass.as_deref().unwrap_or("frigate");
+    let stance = match ship.orientation {
+        Orientation::BowOn { bow: LaneEnd::Fore } => SpriteStance::BowOnFore,
+        Orientation::BowOn { bow: LaneEnd::Aft } => SpriteStance::BowOnAft,
+        Orientation::Broadside => SpriteStance::Broadside,
+    };
+    if sprites.has_pair(class, stance) {
+        // The PLAYER is the hero foreground element (big, bottom-centre); enemies
+        // stay cell-sized up-lane. Quad from the cell's near-edge width × a hero
+        // factor, clamped above the bottom HUD band so the ship clears the status
+        // strip (#64). Sprite aspect ~2:1 (the baked side/top art is wider than tall).
         let hero = if is_player { 1.9 } else { 1.15 };
         let w = (q.near_edge_width() * hero).max(16.0);
-        let h = w / LOFT_TEXTURE_ASPECT;
-        // Seat the hero hull so its centre sits a bit ABOVE the bottom HUD band
-        // (band top = frame_h - 40 = 230): the big hull + its stern engine glow must
-        // read clear of the HUD, not sink under it. Clamp the centre up if the cell
-        // projects low (the near row sits at the very bottom now).
+        let h = w * 0.5; // baked ship sprites read ~2:1 (length:height)
         let band_top = crate::gfx::VIRTUAL_H as f32 - 40.0;
         let cy = if is_player {
-            center[1].min(band_top - h * 0.30)
+            center[1].min(band_top - h * 0.5 - 2.0)
         } else {
             center[1]
         };
         let (l, r) = (center[0] - w * 0.5, center[0] + w * 0.5);
         let (t, b) = (cy - h * 0.5, cy + h * 0.5);
-        out.push(DrawCommand::LoftShip(LoftShipInstance {
+        // blend_t selects between the baked SIDE (0) and TOP (1) views. The chase
+        // cam sits low (~20° above horizontal), so we mostly see the ship's
+        // profile → bias toward the side view, with a little top mixed in.
+        let blend_t = 0.30_f32;
+        let side_slug = format!("{}_{}_{}", class, stance.slug(), SpriteView::Side.slug());
+        let top_slug = format!("{}_{}_{}", class, stance.slug(), SpriteView::Top.slug());
+        out.push(DrawCommand::TexturedShip(TexturedShipInstance {
             p0: [l, t],
             p1: [r, t],
             p2: [r, b],
             p3: [l, b],
-            ship_id: SpriteSlug::new(&ship.id),
-            kind,
+            blend_t,
+            side: SpriteSlug::new(&side_slug),
+            top: SpriteSlug::new(&top_slug),
         }));
-        // (#66) The loft hull renders CENTRED in its quad (bbox-centre camera), so
-        // the VISIBLE hull occupies the middle ~half of the quad — NOT down at the
-        // quad bottom `b`. Seat the keel-line + engine glow at the visible hull's
-        // lower edge (≈ cy + h*0.22) so they HUG the hull as one object, instead of
-        // floating in the empty quad space below it (Bruce: hull + a separate blob
-        // "floating above"). hull_bottom is the shared anchor for both.
-        let hull_bottom = cy + h * 0.22;
-        // Keel/outline stroke on the hero hull's LOWER silhouette (bottom + lower
-        // sides only — not a full box, which would read as a UI frame).
+        // Runtime engine glow ON TOP (contract: additive runtime effect, NOT baked)
+        // at the player's stern (the sprite's lower edge). Enemies up-lane skip it.
         if is_player {
-            let ix = w * 0.18; // horizontal inset → hug the hull, not the quad corners
-            let (kl, kr) = (l + ix, r - ix);
-            push_line(out, pt([kl, hull_bottom]), pt([kr, hull_bottom]), 1.0, HULL_KEEL_STROKE);
-            push_line(out, pt([kl, hull_bottom]), pt([kl, cy]), 1.0, HULL_KEEL_STROKE);
-            push_line(out, pt([kr, hull_bottom]), pt([kr, cy]), 1.0, HULL_KEEL_STROKE);
-        }
-        // (#66) Player engine glow at the stern — seated AT the visible hull's lower
-        // edge (hull_bottom) so the cyan thruster bank reads as the ship's engines,
-        // ONE object with the hull, not a blob floating below. Clamped clear of the
-        // bottom HUD band so it always reads.
-        if is_player {
-            let band_top = crate::gfx::VIRTUAL_H as f32 - 40.0;
-            let glow_y = (hull_bottom + 1.0).min(band_top - 4.0);
+            let glow_y = (b - h * 0.10).min(band_top - 4.0);
             push_engine_glow_2d(out, [center[0], glow_y], w);
         }
-        // Orientation + buffer cues on top of the 3-D hull. (#62) The player's bow
-        // chevron is DROPPED in the chase view — it's redundant clutter (the hull
-        // model carries the player's facing; the ref has no player arrow). Enemy
-        // chevrons stay (their facing varies + matters). Pips still draw on both.
+        // Pips/buffer cues on top; the baked sprite owns the hull + bow outline, so
+        // the player chevron stays dropped (enemy chevrons still draw for telegraph).
         push_ship_arrow_and_pips_2d(out, ship, center, 22.0 * q.depth_scale);
         return;
     }

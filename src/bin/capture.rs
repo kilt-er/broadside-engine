@@ -69,6 +69,9 @@ fn capture_board() -> Board {
         cells[idx] = Some(s);
     };
     let mut player = make_ship("player", Faction::Player, player_start_pos(), player_spawn_facing());
+    // (#66) class "aegis" so the baked aegis_* sprites are selected (the renderer
+    // keys sprite_path on klass); the bin sets the player class likewise.
+    player.klass = Some("aegis".to_string());
     player.shield_profile.bow.charge = 2;
     player.shield_profile.port.charge = 1;
     place(&mut cells, player);
@@ -99,25 +102,14 @@ fn main() {
 
     let mut gfx = pollster::block_on(Gfx::new_headless());
 
-    // Install the real ship hulls (same as the playable bin): player = Aegis loft,
-    // enemies = CAD. Fall back silently to the flat box if an install fails.
-    const SHIP_GLB: &[u8] = include_bytes!("../../assets/ships/broadside-ship.glb");
-    let _ = gfx.install_enemy_cad(SHIP_GLB);
-    const SHIP_LIBRARY_V2: &[u8] =
-        include_bytes!("../../assets/ships/broadside-ship-library_v2.json");
-    // Loft the Aegis exactly as the bin does (minimal-field parse, robust to the
-    // v2 settings schema), then install it as the player loft mesh.
-    if let Some(mesh) = loft_aegis(SHIP_LIBRARY_V2) {
-        gfx.install_player_loft_mesh(&mesh);
-    }
+    // (#66) Load the BAKED ship sprites exactly as the playable bin does
+    // (try_load_ship_sprites at broadside.rs:1085) so the capture faithfully shows
+    // the contract sprite path (editor-baked PNGs, drawn UNLIT) — NOT the dropped
+    // runtime loft. Aegis sprites live in assets/sprites/aegis_*.png.
+    let loaded = gfx.try_load_ship_sprites(std::path::Path::new("assets"));
+    log::info!("capture: loaded {loaded} ship sprite(s)");
 
-    // Sync loft poses to each ship's orientation so the hulls render at their
-    // stance (not the default), then compose + capture one frame.
     let board = capture_board();
-    for s in board.cells.iter().flatten() {
-        gfx.sync_loft_pose(&s.id, s.orientation);
-    }
-    gfx.advance_loft_poses(0.0);
 
     let cfg = ProjectorConfig::default();
     let commands = compose_scene_2d_with(&board, &cfg, &gfx);
@@ -128,57 +120,4 @@ fn main() {
             std::process::exit(1);
         }
     }
-}
-
-/// Loft the "Aegis" ship from the v2 library to a HullMesh (minimal-field parse,
-/// robust to the v2 editor settings schema — same approach as the bin).
-fn loft_aegis(library_bytes: &[u8]) -> Option<broadside_engine::loft::HullMesh> {
-    use broadside_engine::loft::{
-        loft_from_profiles, LoftParams, DEFAULT_SEC_N, PLAYER_LOFT_HSCALE_BOOST,
-    };
-    use broadside_engine::ship_design::Point2;
-    use serde::Deserialize;
-
-    #[derive(Deserialize)]
-    struct Library {
-        ships: Vec<LibShip>,
-    }
-    #[derive(Deserialize)]
-    struct LibShip {
-        name: String,
-        design: LibDesign,
-    }
-    #[derive(Deserialize)]
-    struct LibDesign {
-        plan: Vec<[f64; 2]>,
-        section: Vec<[f64; 2]>,
-        #[serde(default, rename = "heightProfile")]
-        height_profile: Option<Vec<[f64; 2]>>,
-        settings: LibSettings,
-    }
-    #[derive(Deserialize)]
-    struct LibSettings {
-        stretch: f64,
-        hscale: f64,
-        #[serde(default)]
-        secn: Option<usize>,
-    }
-
-    let library: Library = serde_json::from_slice(library_bytes).ok()?;
-    let ship = library.ships.into_iter().find(|s| s.name == "Aegis")?;
-    let d = ship.design;
-    let to_pts = |v: Vec<[f64; 2]>| v.into_iter().map(Point2).collect::<Vec<_>>();
-    let params = LoftParams {
-        stretch: d.settings.stretch as f32,
-        // #54: give the hull vertical mass for the steep in-game camera (the
-        // game bin applies the same boost, so the capture stays faithful).
-        hscale: d.settings.hscale as f32 * PLAYER_LOFT_HSCALE_BOOST,
-        sec_n: d.settings.secn.unwrap_or(DEFAULT_SEC_N).max(3),
-    };
-    Some(loft_from_profiles(
-        &to_pts(d.plan),
-        &to_pts(d.section),
-        d.height_profile.map(to_pts).as_deref(),
-        params,
-    ))
 }
