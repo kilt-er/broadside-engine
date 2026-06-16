@@ -44,7 +44,7 @@ use winit::window::{Window, WindowId};
 
 use broadside_engine::cards::PlayResult;
 use broadside_engine::geometry::default_shield_profile;
-use broadside_engine::gfx::{DrawCommand, Gfx, PolygonInstance, VIRTUAL_H, VIRTUAL_W};
+use broadside_engine::gfx::{Gfx, VIRTUAL_H, VIRTUAL_W};
 use broadside_engine::hud::{
     self, push_between_encounter_overlay, push_salvage_hud,
     win_state, BetweenEncounterChoice, TweenState, WinState,
@@ -61,8 +61,6 @@ use broadside_engine::catalog::{enemy_ship_from_catalog_at_tier, load_from_path}
 use broadside_engine::meta::{salvage_for_capital_encounter, salvage_for_encounter_win};
 use broadside_engine::perspective::{fractional_cell_to_screen, LaneGeometry, DEFAULT_LANE};
 use broadside_engine::projector::ProjectorConfig;
-use broadside_engine::background::{visible_layers, ParallaxParams};
-use broadside_engine::atlas;
 use broadside_engine::resolve::{
     apply_instant_action, find_player_id, fire_player_queue, run_world_phase, Content,
 };
@@ -1275,51 +1273,8 @@ impl ApplicationHandler for App {
                 // they come back as 2-D overlays on the projector (telegraph =
                 // D4's staged channels). Screen-space HUD (salvage, legend, the
                 // hit-flash, the modal state overlays) is unaffected and stays.
-                // (#50/#8) Parallax space backdrop FIRST so the board sits on a
-                // starfield, not a dead-black void (Bruce: "only using a fraction
-                // of the screen"). Band-parallax placeholder via the spec slot math
-                // (visible_layers); the painted PNG layers in assets/backgrounds
-                // swap in through the GPU Background path as a follow-up.
-                let bg_focus = self.run.current_sector_idx as f32;
-                let bg_player_pos = self
-                    .board
-                    .cells
-                    .iter()
-                    .flatten()
-                    .find(|s| s.faction == Faction::Player)
-                    .map(|s| s.pos.col as f32)
-                    .unwrap_or(2.0);
-                let mut instances: Vec<DrawCommand> = Vec::with_capacity(512);
-                {
-                    let bp = ParallaxParams::default();
-                    let fw = VIRTUAL_W as f32;
-                    let fh = VIRTUAL_H as f32;
-                    let canvas_w = fw * 2.0;
-                    let canvas_h = fh;
-                    let cxb = fw * 0.5;
-                    let cyb = fh * 0.5;
-                    for d in visible_layers(bg_focus, bg_player_pos, 20, &bp) {
-                        let half_w = canvas_w * d.scale * 0.5;
-                        let half_h = canvas_h * d.scale * 0.5;
-                        let lx = cxb - d.shift_px;
-                        let (left, right) = (lx - half_w, lx + half_w);
-                        let (top, bottom) = (cyb - half_h, cyb + half_h);
-                        let tband = (d.s / (bp.visible - 1.0)).clamp(0.0, 1.0);
-                        let near = [0.227_f32, 0.275, 0.376];
-                        let far = [0.039_f32, 0.055, 0.110];
-                        let rgb = [
-                            near[0] + (far[0] - near[0]) * tband,
-                            near[1] + (far[1] - near[1]) * tband,
-                            near[2] + (far[2] - near[2]) * tband,
-                        ];
-                        instances.push(DrawCommand::Polygon(PolygonInstance::flat(
-                            [[left, top], [right, top], [right, bottom], [left, bottom]],
-                            [rgb[0], rgb[1], rgb[2], d.alpha],
-                            atlas::cell_uvs(atlas::SOLID_WHITE),
-                        )));
-                    }
-                }
-                instances.extend(hud::compose_scene_2d(&self.board, &ProjectorConfig::default()));
+                let mut instances =
+                    hud::compose_scene_2d(&self.board, &ProjectorConfig::default());
                 // In-game salvage counter (top-right) + controls legend
                 // (bottom-left) — both screen-space, independent of the board
                 // projection. The modal overlays surface salvage in their banners.

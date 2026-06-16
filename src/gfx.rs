@@ -625,6 +625,11 @@ pub struct Gfx {
     /// renders each loft ship at its pose. Ships that leave the board are
     /// pruned by [`Gfx::retain_loft_poses`].
     loft_poses: std::collections::HashMap<String, crate::loft_gpu::ShipPose>,
+
+    /// Parallax space background: the 20-layer painted-PNG queue loaded from
+    /// `assets/backgrounds` (with a solid-ink fallback per slot). Drawn into the
+    /// offscreen FIRST each frame so the scene composites on top of it.
+    background: Option<crate::background::Background>,
 }
 
 /// One uploaded loft mesh + its vertex count, shared across every ship that
@@ -916,6 +921,15 @@ impl Gfx {
         let loft = crate::loft_gpu::LoftGpu::new(&device);
         let loft_blit = LoftShipBlit::new(&device);
 
+        // Parallax background: build the 20-slot queue (solid-ink fallbacks) then
+        // swap in Bruce's painted PNGs from assets/backgrounds. A missing/failed
+        // manifest keeps the fallback bands rather than blanking the screen.
+        let mut background = crate::background::Background::new(&device, &queue);
+        match background.load_manifest(&device, &queue, std::path::Path::new("assets/backgrounds")) {
+            Ok(n) => log::info!("background: loaded {n} painted layer(s) from assets/backgrounds"),
+            Err(e) => log::warn!("background: manifest load failed ({e}); using fallback bands"),
+        }
+
         let g = Self {
             surface,
             device,
@@ -932,6 +946,7 @@ impl Gfx {
             loft_blit,
             loft_meshes: std::collections::HashMap::new(),
             loft_poses: std::collections::HashMap::new(),
+            background: Some(background),
         };
 
         let view = ViewUniform {
@@ -1521,6 +1536,26 @@ impl Gfx {
         // what earlier segments drew), keeping the single-pass z-order intact
         // across the splits.
         let mut cleared = false;
+
+        // (#8/#50) Draw the parallax background into the offscreen FIRST, clearing
+        // it; the scene segments below then LOAD on top. Replaces the bin-side
+        // band placeholder with the real painted PNG layers.
+        if let Some(bg) = self.background.as_ref() {
+            let mut bg_encoder =
+                self.device
+                    .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                        label: Some("background to offscreen"),
+                    });
+            bg.draw(
+                &self.device,
+                &self.queue,
+                &mut bg_encoder,
+                &self.offscreen_view,
+                Some(CLEAR),
+            );
+            self.queue.submit(std::iter::once(bg_encoder.finish()));
+            cleared = true;
+        }
 
         // Draw a contiguous run of non-loft batches into the offscreen target.
         // Returns the index past the run. `cleared` selects clear-vs-load.
