@@ -1574,22 +1574,22 @@ impl Gfx {
         let w = self.config.width;
         let h = self.config.height;
 
-        // Largest integer scale that fits, capped at the fixed ×4 target.
-        let scale = FIXED_UPSCALE
-            .min(w / VIRTUAL_W)
-            .min(h / VIRTUAL_H)
-            .max(1);
-        let scaled_w = VIRTUAL_W * scale;
-        let scaled_h = VIRTUAL_H * scale;
-
+        // (#65) FILL the window — Bruce: "isn't taking up the full screen, it is
+        // framed." The old fixed-×4 INTEGER scale floored to ×3 on his ~1920×1040
+        // window → a 1440×810 canvas centred with big black margins. The board is
+        // 480×270 = 16:9, so an aspect-preserving FRACTIONAL scale-to-fit fills a
+        // 16:9 window edge-to-edge (and only thin bars on an off-aspect window),
+        // matching v1's full-screen feel. Trade: non-integer Nearest upscaling can
+        // shimmer slightly, but full-screen > pixel-perfect integer here (Bruce's
+        // call). Aspect preserved (fit, not crop) so nothing is cut off.
         let wf = w as f32;
         let hf = h as f32;
-        // Center the scaled canvas; integer-floor the offset so the canvas
-        // origin lands on a whole window pixel (no half-pixel seam).
-        let offset_x = ((w.saturating_sub(scaled_w)) / 2) as f32;
-        let offset_y = ((h.saturating_sub(scaled_h)) / 2) as f32;
-        let scaled_w = scaled_w as f32;
-        let scaled_h = scaled_h as f32;
+        let scale = (wf / VIRTUAL_W as f32).min(hf / VIRTUAL_H as f32).max(1.0);
+        let scaled_w = VIRTUAL_W as f32 * scale;
+        let scaled_h = VIRTUAL_H as f32 * scale;
+        // Center the scaled canvas; any leftover (off-aspect window) is letterbox.
+        let offset_x = (wf - scaled_w) * 0.5;
+        let offset_y = (hf - scaled_h) * 0.5;
 
         let ndc_x_min = (offset_x / wf) * 2.0 - 1.0;
         let ndc_x_max = ((offset_x + scaled_w) / wf) * 2.0 - 1.0;

@@ -212,11 +212,12 @@ impl Default for ProjectorConfig {
             z_far: 6.0,
             // Horizon near mid-screen (was 70, high): the vanishing point sits at
             // ~45% down like the reference, leaving the top ~half for the
-            // starfield/nebula backdrop. Near row pinned to the VERY BOTTOM edge so
-            // the road dominates the lower screen and the front lane (player) is
-            // large + low, road-style (lead pass-2: was 252, still sat a touch high).
+            // starfield/nebula backdrop. Near row pinned JUST ABOVE the bottom HUD
+            // band (band = frame_h-40 = y230..270): the road must end above the
+            // status area, NOT run behind it (#64, Bruce live: the board + hero ship
+            // were cut off by the gray band). 228 = near edge just clears the band.
             horizon_y: 120.0,
-            near_row_y: 268.0,
+            near_row_y: 226.0,
             // Near-row fan WIDE (lead pass-2: the road was a small central trapezoid
             // with empty starfield in the lower corners; the ref fans the near lanes
             // out toward the bottom corners and fills the lower ~2/3). 290 px each
