@@ -1385,8 +1385,8 @@ impl ApplicationHandler for App {
                 // projection. The modal overlays surface salvage in their banners.
                 if matches!(demo_state, DemoState::Playing) {
                     push_salvage_hud(&mut instances, salvage);
-                    // Minimalist controls legend, bottom-left (#82).
-                    hud::push_controls_overlay(&mut instances);
+                    // (#63) Controls legend removed — Bruce: the move-help text crowded
+                    // the screen. Keybinds are discoverable in-game; no on-screen overlay.
                     // Player danger legibility (#67): screen hit-flash on damage.
                     // (The lane-anchored hull bar returns as a 2-D overlay.)
                     hud::push_player_hit_flash(&mut instances, self.hit_flash);

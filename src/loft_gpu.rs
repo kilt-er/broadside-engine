@@ -53,13 +53,13 @@ const DEFAULT_HULL_ALBEDO: [f32; 3] = [0.706, 0.776, 0.878];
 const LOW_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
-/// Fixed look-down pitch (degrees). #47 raises this from the POC's 26° toward a
-/// more top-down "tactical-map" ¾: with the bow-on ships now PARALLEL to the
-/// lane (see the stance yaws below), the ¾ read comes from THIS pitch, not from
-/// yawing the ships to show a front/side. Higher = more overhead. 48° gives a
-/// clear top-down ¾ without flattening the hull to a plan view; bruce dials the
-/// exact amount on the angle-check.
-pub const CAMERA_PITCH_DEG: f32 = 48.0;
+/// Fixed look-down pitch (degrees). (#62) Bruce's art-tool chase-cam reference
+/// reads ~20° — a LOW behind-the-ship angle where the hull shows its stern +
+/// engine glow toward the camera and reads with real MASS (a 48° near-overhead
+/// view flattened the low-profile Aegis to a plank — proven inert to hscale).
+/// Lower = more behind/level; higher = more overhead. 20° matches the tool's
+/// PITCH slider; Bruce dials the exact amount on the angle-check.
+pub const CAMERA_PITCH_DEG: f32 = 20.0;
 
 /// The canonical stance yaws (degrees), keyed by [`Orientation`], fed to
 /// [`camera_view_proj`] as the CAMERA yaw with the model at IDENTITY.

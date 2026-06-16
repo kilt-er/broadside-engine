@@ -98,14 +98,14 @@ pub struct CellQuad {
     /// cell is always `< 1.0` (its center sits behind the near plane).
     ///
     /// Concretely, with the [`ProjectorConfig::default`] (`z_near = 1.0`,
-    /// `z_far = 2.4`, `ROWS = 4`) it is, by row:
+    /// `z_far = 6.0`, `ROWS = 4` — the #62 deep chase-cam) it is, by row:
     ///
     /// | `row` | position      | `depth_scale` |
     /// |-------|---------------|---------------|
-    /// | 3     | front / near  | ≈ **0.851**   |
-    /// | 2     |               | ≈ 0.656       |
-    /// | 1     |               | ≈ 0.533       |
-    /// | 0     | back / far    | ≈ **0.449**   |
+    /// | 3     | front / near  | ≈ **0.615**   |
+    /// | 2     |               | ≈ 0.348       |
+    /// | 1     |               | ≈ 0.242       |
+    /// | 0     | back / far    | ≈ **0.186**   |
     ///
     /// (Grows monotonically with `row` — the grid.rs contract "the renderer's
     /// per-row depth scale grows with row".) D4 multiplies the loft dest-quad's
@@ -202,18 +202,24 @@ impl Default for ProjectorConfig {
         Self {
             frame_w: crate::gfx::VIRTUAL_W as f32,
             frame_h: crate::gfx::VIRTUAL_H as f32,
-            // z_far / z_near = 2.4 ⇒ the far row draws at ~42% the size of the
-            // near row: clearly receding, but the back row is still big enough to
-            // read its silhouette / orientation arrow.
+            // (#62) Match Bruce's art-tool chase-cam reference: a LOW camera where
+            // the lanes recede like a road to a vanishing point near mid-screen
+            // (his tool reads ~20° pitch). Deep recession — z_far/z_near = 6.0 ⇒
+            // the back row draws at ~17% the near-row size, so the five lanes
+            // converge tightly toward the horizon instead of staying a shallow
+            // top-down board (was 2.4 = a flat ~42% overhead board).
             z_near: 1.0,
-            z_far: 2.4,
-            // Horizon high in the frame; near row low, leaving the bottom strip
-            // for the player's near row + its action-queue glyphs.
-            horizon_y: 70.0,
-            near_row_y: 244.0,
+            z_far: 6.0,
+            // Horizon near mid-screen (was 70, high): the vanishing point sits at
+            // ~45% down like the reference, leaving the top ~half for the
+            // starfield/nebula backdrop. Near row pinned to the bottom edge so the
+            // front lane (player) is large and low, road-style.
+            horizon_y: 120.0,
+            near_row_y: 252.0,
             // Near-row fan: at z_near=1 the on-screen half-width is fan_half_width
             // (×1/1). 200 px each side of center = a 400 px-wide near row inside
-            // the 480 frame ⇒ 40 px margin per side for ship overhang.
+            // the 480 frame ⇒ 40 px margin per side for ship overhang. The deeper
+            // z_far makes the far rows converge to a tight central band.
             fan_half_width: 200.0,
             cols: COLS,
             rows: ROWS,
@@ -398,12 +404,15 @@ mod tests {
             );
             last = q.depth_scale;
         }
-        // The nearest row is the largest cell and sits just under the near-plane
-        // anchor of 1.0 (its center is one half-row-depth back).
+        // The nearest row is the largest cell, in (0, 1] (its center sits one
+        // half-row-depth behind the near plane). The exact value tracks the
+        // perspective depth: with the #62 deep chase-cam (z_far/z_near = 6.0) the
+        // near-row centre is ~0.62; it was ~0.85 under the old shallow 2.4 board.
+        // Only the relative invariant (largest, < 1.0) is fixed — not a magic bound.
         let near = grid_cell_quad(Pos::new(2, ROWS - 1), &c);
         assert!(
-            near.depth_scale > 0.8 && near.depth_scale <= 1.0,
-            "near row depth_scale should be the largest, near 1.0, got {}",
+            near.depth_scale > 0.5 && near.depth_scale <= 1.0,
+            "near row depth_scale should be the largest, in (0.5, 1.0], got {}",
             near.depth_scale
         );
     }
