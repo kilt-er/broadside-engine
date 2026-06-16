@@ -1283,8 +1283,16 @@ impl ApplicationHandler for App {
                 // they come back as 2-D overlays on the projector (telegraph =
                 // D4's staged channels). Screen-space HUD (salvage, legend, the
                 // hit-flash, the modal state overlays) is unaffected and stays.
-                let mut instances =
-                    hud::compose_scene_2d(&self.board, &ProjectorConfig::default());
+                // (#51) Pass gfx as the SpriteRegistry so ships with an installed
+                // loft mesh (the player's Aegis CAD hull via install_player_cad)
+                // render as the real 3-D model, not the flat box. gfx already runs
+                // the loft pre-pass + blit for any LoftShip command, and the
+                // per-ship loft pose is synced/advanced above.
+                let mut instances = hud::compose_scene_2d_with(
+                    &self.board,
+                    &ProjectorConfig::default(),
+                    &*gfx,
+                );
                 // In-game salvage counter (top-right) + controls legend
                 // (bottom-left) — both screen-space, independent of the board
                 // projection. The modal overlays surface salvage in their banners.
