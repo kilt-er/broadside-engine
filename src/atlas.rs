@@ -174,24 +174,28 @@ const PAPER_DIM: [u8; 4] = [0x93, 0xa6, 0xbd, 255];
 /// direction.
 fn draw_bow_chevron(buf: &mut [u8], cell: (u32, u32)) {
     let (cx, cy) = cell_origin(cell);
-    let stroke = GOLD;
-    let glow = [GOLD[0] / 2, GOLD[1] / 2, GOLD[2] / 2, 200];
-    // Two stacked strokes form a > pointing right (tip at the right edge).
-    for i in 0..10u32 {
-        // upper diagonal
-        put_pixel(buf, cx + 6 + i, cy + 8 + i, stroke);
-        if i > 0 {
-            put_pixel(buf, cx + 6 + i - 1, cy + 8 + i, glow);
-        }
-        // lower diagonal
-        put_pixel(buf, cx + 6 + i, cy + 22 - i, stroke);
-        if i > 0 {
-            put_pixel(buf, cx + 6 + i - 1, cy + 22 - i, glow);
+    // A SOLID FILLED arrowhead pointing +x (tip at the right), drawn in WHITE so
+    // the sprite's per-instance `color` tints it cleanly to any faction hue. The
+    // old version was two 1px GOLD-coloured diagonals — a thin stroke that all
+    // but vanished once rotated + scaled to the on-lane sprite, and whose
+    // hardcoded colour fought the per-faction tint (#55: the player's gold mark
+    // produced ~0 opaque pixels). A solid fill survives nearest-neighbour
+    // rotation/scale, so the bow marker reads boldly at every stance.
+    let ink = [255, 255, 255, 255];
+    // Triangle: full-height base at x=cx+7, tapering to a point at x=cx+26 (the
+    // cell is 32x32, centred on y=16; the base spans y 4..28).
+    let (x0, x1) = (7u32, 26u32);
+    let (yc, half) = (16i32, 12i32); // half-height at the base
+    for x in x0..=x1 {
+        let t = (x - x0) as f32 / (x1 - x0) as f32; // 0 at base, 1 at tip
+        let h = (half as f32 * (1.0 - t)).round() as i32; // height shrinks to the tip
+        for dy in -h..=h {
+            let y = yc + dy;
+            if y >= 0 {
+                put_pixel(buf, cx + x, cy + y as u32, ink);
+            }
         }
     }
-    // Glow tip
-    put_pixel(buf, cx + 17, cy + 15, stroke);
-    put_pixel(buf, cx + 17, cy + 16, stroke);
 }
 
 /// Torpedo: a horizontal capsule with a bright nose and a tapering tail
