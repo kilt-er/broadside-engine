@@ -147,6 +147,35 @@ pub fn facing_slug(class: &str, facing: Facing15) -> String {
     format!("{class}_f{:02}", facing.index())
 }
 
+/// Map the PLAYER ship's board orientation + column to its baked facing
+/// (contract §5 wheel). Per the lead's calls:
+///   - **aim lane = the ship's OWN board `column`** (0..LANES-1): the hull banks
+///     to align with the lane it's IN as it moves left/right (position-driven,
+///     NOT target-driven).
+///   - **fan = the hull's own-forward board direction**: bow up-lane (`N`) =
+///     Forward; bow toward higher col (`E`) = Right; lower col (`W`) = Left.
+///     `Broadside` = the hull turned to a flank: along the lane axis
+///     (`NorthSouth`) reads Forward; across it (`EastWest`) = the turned (Right)
+///     fan. There is NO toward-camera/backward facing in the 15-set, so a bow
+///     pointing at the camera (`S`) defensively falls back to Forward (it should
+///     not occur for the player, who faces up-lane).
+///
+/// PLAYER ONLY: enemies face the camera (bow-toward-us), which the player-centric
+/// 15-set has no view for — they stay on the flat-box placeholder pending a
+/// separate enemy bake (lead escalated to Bruce). Do NOT route enemies here.
+pub fn player_facing15(facing: crate::grid::Facing, column: usize) -> Facing15 {
+    use crate::grid::{Axis, Dir4, Facing};
+    let fan = match facing {
+        Facing::Bow(Dir4::N) => Fan::Forward,
+        Facing::Bow(Dir4::E) => Fan::Right,
+        Facing::Bow(Dir4::W) => Fan::Left,
+        Facing::Bow(Dir4::S) => Fan::Forward, // no backward facing; shouldn't occur
+        Facing::Broadside(Axis::NorthSouth) => Fan::Forward, // hull aligned with the lane
+        Facing::Broadside(Axis::EastWest) => Fan::Right,     // turned across the lane
+    };
+    Facing15::new(fan, column)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -242,5 +271,44 @@ mod tests {
             facing_slug("aegis", Facing15::new(Fan::Right, 4)),
             "aegis_f14"
         );
+    }
+
+    #[test]
+    fn player_facing_uses_own_column_and_own_forward_fan() {
+        use crate::grid::{Axis, Dir4, Facing};
+        // Bow up-lane (N) → Forward fan, lane = own column.
+        assert_eq!(
+            player_facing15(Facing::Bow(Dir4::N), 2),
+            Facing15::new(Fan::Forward, 2)
+        );
+        assert_eq!(
+            player_facing15(Facing::Bow(Dir4::N), 0),
+            Facing15::new(Fan::Forward, 0)
+        );
+        // Bow toward higher col (E) → Right; lower col (W) → Left.
+        assert_eq!(
+            player_facing15(Facing::Bow(Dir4::E), 4),
+            Facing15::new(Fan::Right, 4)
+        );
+        assert_eq!(
+            player_facing15(Facing::Bow(Dir4::W), 1),
+            Facing15::new(Fan::Left, 1)
+        );
+        // Broadside: aligned with the lane (N-S) reads Forward; across (E-W) turned.
+        assert_eq!(
+            player_facing15(Facing::Broadside(Axis::NorthSouth), 3),
+            Facing15::new(Fan::Forward, 3)
+        );
+        assert_eq!(
+            player_facing15(Facing::Broadside(Axis::EastWest), 3),
+            Facing15::new(Fan::Right, 3)
+        );
+        // Bow toward camera (S) — no backward facing in the 15-set → Forward fallback.
+        assert_eq!(
+            player_facing15(Facing::Bow(Dir4::S), 2),
+            Facing15::new(Fan::Forward, 2)
+        );
+        // Column past the lane count clamps (defensive, via Facing15::new).
+        assert_eq!(player_facing15(Facing::Bow(Dir4::N), 99).lane, LANES - 1);
     }
 }
