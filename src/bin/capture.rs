@@ -5,7 +5,12 @@
 //! can't provide).
 //!
 //! Run: `cargo run --bin capture --features render,runtime -- bugs/current_state.png`
-//! (defaults to `bugs/current_state.png` if no path is given).
+//! With NO path arg it defaults to `<crate>/../bugs/current_state.png` (the
+//! Broadside-root `bugs/` dir), resolved from `CARGO_MANIFEST_DIR` so it works
+//! from ANY cwd — `cargo run --bin capture` argless lands the PNG in the right
+//! place whether launched from the workspace root or the engine crate. A passed
+//! path (relative or absolute) is used verbatim. The parent dir is created if
+//! missing, so capture never fails with a "path not found" os-error.
 //!
 //! Renders through the SAME path the game uses — [`Gfx::new_headless`] builds the
 //! identical sprite/polygon/loft pipelines + parallax background, the player gets
@@ -96,9 +101,18 @@ fn capture_board() -> Board {
 
 fn main() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
-    let path = std::env::args()
-        .nth(1)
-        .unwrap_or_else(|| "bugs/current_state.png".to_string());
+    // A passed path (relative or absolute) is used verbatim; with no arg, default
+    // to the Broadside-root `bugs/` dir resolved from the crate manifest so the
+    // capture lands in the right place from ANY cwd (the bin's cwd is the engine
+    // crate, which has no `bugs/` subdir — that was the os-error-3 on the argless
+    // run). `CARGO_MANIFEST_DIR` is `<…>/Broadside/engine`; `../bugs` is the dir
+    // every agent + the lead Reads.
+    let path = std::env::args().nth(1).unwrap_or_else(|| {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../bugs/current_state.png")
+            .to_string_lossy()
+            .into_owned()
+    });
 
     let mut gfx = pollster::block_on(Gfx::new_headless());
 
@@ -113,6 +127,15 @@ fn main() {
 
     let cfg = ProjectorConfig::default();
     let commands = compose_scene_2d_with(&board, &cfg, &gfx);
+    // Ensure the output dir exists so the save never trips os-error-3 on a fresh
+    // checkout / unusual cwd (the default `bugs/` dir, or any custom path).
+    if let Some(parent) = std::path::Path::new(&path).parent() {
+        if !parent.as_os_str().is_empty() {
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                log::warn!("capture: could not create {}: {e}", parent.display());
+            }
+        }
+    }
     match gfx.capture_png(&commands, std::path::Path::new(&path)) {
         Ok(()) => log::info!("capture: wrote {path}"),
         Err(e) => {
