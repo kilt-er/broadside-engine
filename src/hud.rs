@@ -76,6 +76,11 @@ const THREAT_FILL_STATUS: [f32; 4] = [0.608, 0.549, 0.859, 0.42]; // debuff
 const THREAT_FILL_OTHER: [f32; 4] = [0.55, 0.55, 0.55, 0.34]; // catch-all
 const THREAT_BEAM: [f32; 4] = [0.878, 0.300, 0.250, 0.50]; // source→target intent line
 
+// Player weapon-arc legibility (`push_weapon_arcs_2d`): a cool player-accent
+// outline on cells the player's weapons currently bear on (so "where can I fire"
+// reads, and the broadside gun's coverage visibly appears on reorient).
+const WEAPON_ARC_OUTLINE: [f32; 4] = [0.329, 0.812, 0.788, 0.55];
+
 // Per-ship 2D hull/health bar (`push_hull_bar_2d`): dark bg + fraction fill that
 // ramps green → amber → red as hull drops.
 const HULL_BAR_BG: [f32; 4] = [0.094, 0.094, 0.110, 0.85];
@@ -349,6 +354,13 @@ pub fn compose_scene_2d_with(
     let mut out = Vec::with_capacity(256);
     push_grid_2d(&mut out, cfg);
 
+    // Player weapon-arc legibility: outline the cells the PLAYER's weapons bear
+    // on (given the player's current facing) so the player reads WHICH cells they
+    // can fire along — and watches the coverage change as they REORIENT (the
+    // broadside gun only bears on the flanks when turned broadside). Drawn under
+    // the threat fills + ships. Single source: the resolver's `arc_bears`.
+    push_weapon_arcs_2d(&mut out, board, cfg);
+
     // D4 enemy-intent telegraph: paint threatened cells UNDER the ships (so the
     // ship draws on top of the red fill) from the resolver's ThreatMap
     // (`board.threats`, populated by R8 via resolve_targeting — the single
@@ -509,6 +521,54 @@ fn push_threats_2d(out: &mut Vec<DrawCommand>, board: &Board, cfg: &ProjectorCon
             let from = grid_cell_quad(threat.source, cfg).center;
             let to = q.center;
             push_line(out, pt(from), pt(to), 1.0, THREAT_BEAM);
+        }
+    }
+}
+
+/// Player weapon-arc legibility: outline every cell the PLAYER's weapons bear on
+/// from the player's current pos/facing, so the player reads WHERE they can fire
+/// — and sees the coverage shift as they reorient (the `BroadsideArc` gun only
+/// bears on the flank cardinals when turned broadside; `Forward`/`Rear` out the
+/// bow/stern cardinal; `Turret` everywhere). Uses the resolver's
+/// [`crate::geometry2d::arc_bears`] as the single source (firing is
+/// cardinal-exact, so only cells due-N/S/E/W bear unless a turret is mounted) — no
+/// re-derivation of the firing geometry in the renderer.
+///
+/// This is the ARC half; the per-weapon RANGE-band refinement (dimming
+/// out-of-band cells) needs each weapon's `Targeting.range_band` from the
+/// catalog, which `compose_scene_2d` doesn't hold — a follow-up that threads a
+/// `Content`/catalog lookup.
+fn push_weapon_arcs_2d(out: &mut Vec<DrawCommand>, board: &Board, cfg: &ProjectorConfig) {
+    use crate::geometry2d::arc_bears;
+    use crate::grid::{all_positions, from_to};
+
+    let Some(player) = board
+        .cells
+        .iter()
+        .flatten()
+        .find(|s| s.faction == Faction::Player)
+    else {
+        return;
+    };
+    if player.mounts.is_empty() {
+        return;
+    }
+    for cell in all_positions() {
+        if cell == player.pos {
+            continue;
+        }
+        // Direction player → cell (exact octant); arc_bears rejects diagonals for
+        // every non-turret arc, matching the cardinal-exact firing model.
+        let Some(dir) = from_to(player.pos, cell) else {
+            continue;
+        };
+        let bears = player
+            .mounts
+            .iter()
+            .any(|m| arc_bears(player.facing, m.arc, dir));
+        if bears {
+            let q = grid_cell_quad(cell, cfg);
+            outline_cell_2d(out, &q, WEAPON_ARC_OUTLINE);
         }
     }
 }
