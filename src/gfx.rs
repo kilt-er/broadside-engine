@@ -789,14 +789,19 @@ impl crate::sprites::SpriteRegistry for Gfx {
 
     fn loft_kind(&self, _ship_id: &str, is_player: bool) -> Option<crate::sprites::LoftMeshKind> {
         use crate::sprites::LoftMeshKind;
-        // Player → tinted CAD hull; enemies → authored-colour CAD hull. Only if
-        // that mesh is actually uploaded (else fall back to the 2D silhouette).
-        let kind = if is_player {
-            LoftMeshKind::PlayerCad
-        } else {
-            LoftMeshKind::EnemyCad
-        };
-        self.has_loft_mesh(kind).then_some(kind)
+        if is_player {
+            // Player → the lofted Aegis-class hull if installed (preferred), else
+            // the generic tinted CAD hull, else 2D silhouette.
+            if self.has_loft_mesh(LoftMeshKind::PlayerLoft) {
+                return Some(LoftMeshKind::PlayerLoft);
+            }
+            return self
+                .has_loft_mesh(LoftMeshKind::PlayerCad)
+                .then_some(LoftMeshKind::PlayerCad);
+        }
+        // Enemies → authored-colour CAD hull (only if uploaded; else 2D).
+        self.has_loft_mesh(LoftMeshKind::EnemyCad)
+            .then_some(LoftMeshKind::EnemyCad)
     }
 }
 
@@ -987,6 +992,37 @@ impl Gfx {
             LoftMesh { vbuf, vcount },
         );
         Ok(())
+    }
+
+    /// Base hull albedo the lofted player hull is tinted from — a neutral slate
+    /// that, multiplied by [`Self::PLAYER_TINT`], lands the cool player hue
+    /// (matches the look the CAD hull gets from `upload_imported_tinted`).
+    const LOFT_HULL_ALBEDO: [f32; 3] = [0.706, 0.776, 0.878];
+
+    /// Install the PLAYER's actual class hull as an already-LOFTED [`HullMesh`]
+    /// (the Aegis hull, lofted by the caller from the design in
+    /// `assets/ships/broadside-ship-library_v2.json`), recoloured the player hue.
+    /// Uploaded as [`LoftMeshKind::PlayerLoft`], which [`Self::loft_kind`] prefers
+    /// over the generic [`LoftMeshKind::PlayerCad`] — so the player renders as its
+    /// real Aegis-class hull, not the vendored CAD mesh (Bruce: "use the Aegis
+    /// there").
+    ///
+    /// Takes the lofted mesh (not the `ShipDesign`) so the GPU layer stays
+    /// decoupled from the design-file schema — the bin lofts via
+    /// [`crate::loft::loft_from_profiles`] from whatever design format it parsed.
+    /// Idempotent; per-ship pose is created lazily by [`Self::sync_loft_pose`].
+    pub fn install_player_loft_mesh(&mut self, mesh: &crate::loft::HullMesh) {
+        let tint = Self::PLAYER_TINT;
+        let base = Self::LOFT_HULL_ALBEDO;
+        let tinted = [base[0] * tint[0], base[1] * tint[1], base[2] * tint[2]];
+        // One tinted albedo per tri-soup vertex; no emissive (lofted hulls don't
+        // glow, unlike the CAD canopy/gun accents).
+        let colors = vec![tinted; mesh.positions.len()];
+        let (vbuf, vcount) = self.loft.upload_hull(&self.device, mesh, &colors, &[]);
+        self.loft_meshes.insert(
+            crate::sprites::LoftMeshKind::PlayerLoft,
+            LoftMesh { vbuf, vcount },
+        );
     }
 
     /// Install the enemy CAD loft mesh from glTF binary (`.glb`) bytes (the

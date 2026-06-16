@@ -1078,6 +1078,25 @@ impl ApplicationHandler for App {
                  affected ships fall back to 2D silhouettes"
             );
         }
+
+        // (#51 Aegis) Render the PLAYER as its actual Aegis-class hull: load the
+        // "Aegis" loft design from the v2 ship library and install it as the
+        // player loft mesh. loft_kind PREFERS this over the generic CAD hull
+        // above, so the player shows the real Aegis (the CAD install stays as the
+        // fallback if this fails). Embedded so it loads regardless of run dir.
+        const SHIP_LIBRARY_V2: &[u8] =
+            include_bytes!("../../assets/ships/broadside-ship-library_v2.json");
+        match loft_library_ship_by_name(SHIP_LIBRARY_V2, "Aegis") {
+            Some(mesh) => {
+                let tris = mesh.tri_count();
+                gfx.install_player_loft_mesh(&mesh);
+                log::info!("loft: player Aegis hull lofted from ship-library_v2 ({tris} tris)");
+            }
+            None => log::warn!(
+                "loft: Aegis design not found/parseable in ship-library_v2; player falls back to CAD hull"
+            ),
+        }
+
         self.window = Some(window);
         self.gfx = Some(gfx);
     }
@@ -1397,6 +1416,72 @@ impl ApplicationHandler for App {
             _ => {}
         }
     }
+}
+
+/// Find the ship named `name` in a `broadside-ship-library` JSON blob and LOFT
+/// its hull to a [`HullMesh`] (#51 Aegis). Deliberately parses only the MINIMAL
+/// fields the loft needs (plan / section / optional heightProfile + the
+/// stretch/hscale settings) into a local shape rather than the full
+/// `ship_design::ShipDesign` — the v2 editor's `settings`/`grade` schema has
+/// diverged from that struct (extra fields, different required set: it has
+/// wscale/noseTaper/secn/lights/… but not sup/greeb/laz/lel/res), so a strict
+/// `ShipDesign` parse FAILS on the v2 library. The loft itself only consumes
+/// plan/section/height + stretch/hscale, so this minimal parse is sufficient and
+/// robust to the format drift. Returns `None` (caller falls back to the CAD hull)
+/// if the JSON is malformed or no ship matches — never crashes startup.
+fn loft_library_ship_by_name(
+    library_bytes: &[u8],
+    name: &str,
+) -> Option<broadside_engine::loft::HullMesh> {
+    use broadside_engine::loft::{loft_from_profiles, LoftParams, DEFAULT_SEC_N};
+    use broadside_engine::ship_design::Point2;
+    use serde::Deserialize;
+
+    #[derive(Deserialize)]
+    struct Library {
+        ships: Vec<LibShip>,
+    }
+    #[derive(Deserialize)]
+    struct LibShip {
+        name: String,
+        design: LibDesign,
+    }
+    #[derive(Deserialize)]
+    struct LibDesign {
+        plan: Vec<[f64; 2]>,
+        section: Vec<[f64; 2]>,
+        #[serde(default, rename = "heightProfile")]
+        height_profile: Option<Vec<[f64; 2]>>,
+        settings: LibSettings,
+    }
+    #[derive(Deserialize)]
+    struct LibSettings {
+        stretch: f64,
+        hscale: f64,
+        /// Section ring resolution (the v2 editor's `secn`); default to the
+        /// engine's DEFAULT_SEC_N when absent.
+        #[serde(default)]
+        secn: Option<usize>,
+    }
+
+    let library: Library = serde_json::from_slice(library_bytes).ok()?;
+    let ship = library.ships.into_iter().find(|s| s.name == name)?;
+    let d = ship.design;
+    let to_pts = |v: Vec<[f64; 2]>| v.into_iter().map(Point2).collect::<Vec<_>>();
+    let plan = to_pts(d.plan);
+    let section = to_pts(d.section);
+    let height = d.height_profile.map(to_pts);
+    let params = LoftParams {
+        stretch: d.settings.stretch as f32,
+        hscale: d.settings.hscale as f32,
+        sec_n: d.settings.secn.unwrap_or(DEFAULT_SEC_N).max(3),
+    };
+    Some(loft_from_profiles(
+        &plan,
+        &section,
+        height.as_deref(),
+        params,
+    ))
 }
 
 /// Keep the DISPLAY awake for the lifetime of the session (#47 follow-up).

@@ -63,6 +63,12 @@ pub enum LoftMeshKind {
     /// a distinct cool/friendly hue for the PLAYER so it reads apart from the
     /// enemy fleet while sharing the same hull geometry.
     PlayerCad,
+    /// The PLAYER's actual class hull, LOFTED from a `ShipDesign` (the Aegis
+    /// design in `assets/ships/broadside-ship-library_v2.json`) via the
+    /// `loft.rs` path, tinted the player hue. Preferred over [`Self::PlayerCad`]
+    /// when installed, so the player renders as its real Aegis-class hull rather
+    /// than the generic vendored CAD mesh.
+    PlayerLoft,
     /// The vendored CAD ship import (`assets/ships/broadside-ship.glb`) — its
     /// authored colours (orange accent) — used for the enemy placeholders.
     EnemyCad,
