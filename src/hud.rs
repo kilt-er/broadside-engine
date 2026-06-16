@@ -345,12 +345,49 @@ pub fn compose_scene_2d(board: &Board, cfg: &ProjectorConfig) -> Vec<DrawCommand
     for ship in &ships {
         push_ship_2d(&mut out, ship, cfg);
     }
-    // Per-ship overlays LAST, so health bars sit on top of every hull (incl. a
-    // nearer ship that overlaps a farther one). Same far→near order.
+    // Per-ship overlays LAST, so health bars + queue tiles sit on top of every
+    // hull (incl. a nearer ship that overlaps a farther one). Same far→near order.
     for ship in &ships {
         push_hull_bar_2d(&mut out, ship, cfg);
+        push_queue_tiles_2d(&mut out, ship, cfg);
     }
     out
+}
+
+/// Queued-action tiles above a ship on the 2D board — the v1 "tiles" Bruce
+/// misses, showing what a ship has lined up. A horizontal row of small glyph
+/// icons (one per entry in `ship.queue`, in fire order, mapped to its weapon
+/// archetype glyph), centered over the ship's cell and floated above the hull
+/// bar. Shrinks with `depth_scale`; no-op when the queue is empty (most enemies
+/// most turns), so it only appears when a ship is actually readying something —
+/// a direct "this ship is about to act" cue complementing the threat telegraph.
+fn push_queue_tiles_2d(out: &mut Vec<DrawCommand>, ship: &Ship, cfg: &ProjectorConfig) {
+    if ship.queue.is_empty() {
+        return;
+    }
+    let q = grid_cell_quad(ship.pos, cfg);
+    let scale = q.depth_scale;
+    let base = 22.0 * scale;
+    let tile = (5.0 * scale).max(2.5); // glyph half-size
+    let gap = tile * 2.0 + 2.0 * scale;
+    let n = ship.queue.len() as f32;
+    let total_w = (n - 1.0).max(0.0) * gap;
+    let start_x = q.center[0] - total_w * 0.5;
+    // Above the hull bar (which sits at center.y − (base + 6*scale)).
+    let ty = q.center[1] - (base + 14.0 * scale);
+    for (i, action_id) in ship.queue.iter().enumerate() {
+        let archetype = archetype_of_mount(ship, action_id).unwrap_or(WeaponArchetype::Beam);
+        let cell_uv = archetype_to_glyph(archetype);
+        push_sprite(
+            out,
+            SpriteInstance::axis_aligned(
+                [start_x + i as f32 * gap, ty],
+                [tile, tile],
+                WHITE,
+                atlas::cell_uvs(cell_uv),
+            ),
+        );
+    }
 }
 
 /// A compact per-ship hull/health bar floating just above the ship's cell on the
