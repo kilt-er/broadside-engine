@@ -47,6 +47,10 @@ use crate::types::{
 pub enum Key {
     Left,
     Right,
+    /// Up arrow. Move one cell N (toward row 0 / the far enemies) — #18.
+    Up,
+    /// Down arrow. Move one cell S (toward the player's front row) — #18.
+    Down,
     Tab,
     /// Letter V. Vent heat.
     V,
@@ -120,6 +124,8 @@ pub enum Intent {
 /// |----------------|----------------------------------------------|
 /// | `Left`         | [`Intent::MoveLeft`]                         |
 /// | `Right`        | [`Intent::MoveRight`]                        |
+/// | `Up`           | [`Intent::MoveUp`] (N, toward the enemies)   |
+/// | `Down`         | [`Intent::MoveDown`] (S, toward the player)  |
 /// | `Tab`          | [`Intent::ReorientFlip`]                     |
 /// | `V`            | [`Intent::Vent`]                             |
 /// | `D1` / `D2` / `D3` | [`Intent::QueueAction`] of `ship.mounts[N].weapon`, **only if** `N < mounts.len()`. `None` otherwise. |
@@ -135,6 +141,8 @@ pub fn key_to_intent(key: Key, ship: &Ship, content: &dyn Content) -> Option<Int
     match key {
         Key::Left => Some(Intent::MoveLeft),
         Key::Right => Some(Intent::MoveRight),
+        Key::Up => Some(Intent::MoveUp),
+        Key::Down => Some(Intent::MoveDown),
         Key::Tab => Some(Intent::ReorientFlip),
         Key::V => Some(Intent::Vent),
         Key::D1 => mount_action(ship, 0).map(Intent::QueueAction),
@@ -566,6 +574,36 @@ impl Default for DemoContent {
             icon: None,
         });
 
+        // broadside_battery (#49) — the player's 3rd mount (key 3). A BROADSIDE-
+        // arc gun: only bears when the hull is turned broadside (teaches the
+        // REORIENT mechanic). Mirrors the canonical catalog `broadside_battery`
+        // exactly (no invented numbers): archetype broadside, heat 3 / cd 4,
+        // band close, pattern BROADSIDE, arc broadsideArc; DAMAGE amount = the
+        // loader's derivation for a heat-3 broadside gun (`heat + 2` = 5, see
+        // catalog_canonical::inflate_effect). 2-D band: close → Near (#28
+        // mapping). DemoContent must serve it or key 3 queues an unknown id and
+        // no-ops — this is the Content half of #49 (the mount is in
+        // broadside.rs::player_ship).
+        c.insert(Action {
+            id: "broadside_battery".into(),
+            name: "Broadside Battery".into(),
+            archetype: WeaponArchetype::Broadside,
+            cost: ActionCost { heat: 3, cooldown_max: 4, advances_turn: true },
+            targeting: Targeting {
+                pattern: TargetingPattern::BROADSIDE,
+                band: vec![RangeBand::Close],
+                optimal_band: RangeBand::Close,
+                range_band: vec![crate::grid::Range::Near],
+                optimal_range: crate::grid::Range::Near,
+                requires_arc: Some(TArc::BroadsideArc),
+                facing_relative: true,
+                hits_all: false,
+            },
+            effects: vec![Effect::DAMAGE { amount: 5, band_falloff: None }],
+            r#mod: None,
+            icon: None,
+        });
+
         c
     }
 }
@@ -675,7 +713,7 @@ impl Content for DemoContent {
 pub fn tutorial_lines() -> &'static [&'static str] {
     &[
         "every input advances time",
-        "[</>] move (instant)",
+        "[arrows] move (instant)",
         "[Tab] flip (instant)",
         "[V] vent (instant)",
         "[1/2/3] queue mount",
@@ -734,6 +772,9 @@ mod tests {
         let c = DemoContent::default();
         assert_eq!(key_to_intent(Key::Left, &p, &c), Some(Intent::MoveLeft));
         assert_eq!(key_to_intent(Key::Right, &p, &c), Some(Intent::MoveRight));
+        // #18: N/S movement keys.
+        assert_eq!(key_to_intent(Key::Up, &p, &c), Some(Intent::MoveUp));
+        assert_eq!(key_to_intent(Key::Down, &p, &c), Some(Intent::MoveDown));
     }
 
     #[test]
@@ -841,6 +882,8 @@ mod tests {
         let c = DemoContent::default();
         assert!(c.action("pulse_laser").is_some());
         assert!(c.action("torpedo").is_some());
+        // #49: the broadside-arc 3rd mount must be served or key 3 no-ops.
+        assert!(c.action("broadside_battery").is_some());
     }
 
     #[test]

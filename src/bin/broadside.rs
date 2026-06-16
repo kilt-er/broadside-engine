@@ -80,6 +80,8 @@ fn keycode_to_key(code: KeyCode) -> Option<Key> {
     Some(match code {
         KeyCode::ArrowLeft => Key::Left,
         KeyCode::ArrowRight => Key::Right,
+        KeyCode::ArrowUp => Key::Up,
+        KeyCode::ArrowDown => Key::Down,
         KeyCode::Tab => Key::Tab,
         KeyCode::KeyV => Key::V,
         KeyCode::Digit1 => Key::D1,
@@ -506,6 +508,14 @@ fn player_ship(cell: usize) -> Ship {
     player.mounts = vec![
         Mount { id: "m1".into(), arc: TArc::Forward, weapon: "pulse_laser".into() },
         Mount { id: "m2".into(), arc: TArc::Forward, weapon: "torpedo".into() },
+        // m3 (#49): a BROADSIDE-arc gun so key 3 is live AND it only bears when
+        // the player turns broadside — teaching the REORIENT mechanic (the point
+        // of a game called Broadside: forward guns for the bow-on approach, a
+        // broadside that rewards the turn). `broadside_battery` is an existing
+        // catalog gun (Arc::BroadsideArc, band close → 2D Near via #28); no
+        // invented numbers. A legibility cue ("this weapon needs you turned") is
+        // a renderer follow-up — for now the gun is wired.
+        Mount { id: "m3".into(), arc: TArc::BroadsideArc, weapon: "broadside_battery".into() },
     ];
     // "aegis" is the first broadside-native player class (bruce's
     // hand-painted PNGs under assets/sprites/aegis_*.png). The
@@ -1444,6 +1454,8 @@ mod tests {
     fn keycode_translation_covers_every_binding() {
         assert_eq!(keycode_to_key(KeyCode::ArrowLeft), Some(Key::Left));
         assert_eq!(keycode_to_key(KeyCode::ArrowRight), Some(Key::Right));
+        assert_eq!(keycode_to_key(KeyCode::ArrowUp), Some(Key::Up)); // #18
+        assert_eq!(keycode_to_key(KeyCode::ArrowDown), Some(Key::Down)); // #18
         assert_eq!(keycode_to_key(KeyCode::Tab), Some(Key::Tab));
         assert_eq!(keycode_to_key(KeyCode::KeyV), Some(Key::V));
         assert_eq!(keycode_to_key(KeyCode::Digit1), Some(Key::D1));
