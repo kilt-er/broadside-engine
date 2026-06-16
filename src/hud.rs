@@ -107,6 +107,12 @@ const BOW_MARK_PLAYER: [f32; 4] = [1.0, 0.91, 0.62, 1.0]; // warm gold-white (vs
 const BOW_MARK_ENEMY: [f32; 4] = [0.72, 0.97, 1.0, 1.0]; // cool cyan-white (vs warm hull)
 const BOW_MARK_SHADOW: [f32; 4] = [0.02, 0.03, 0.05, 0.9]; // dark backing
 
+// (#62) Player engine glow — the reference ship's signature read: a cluster of
+// bright cyan thruster lights at the stern (toward the camera). Bright core +
+// a dimmer halo behind it so the cluster reads as glowing engines, not flat dots.
+const ENGINE_GLOW_CORE: [f32; 4] = [0.45, 0.95, 1.0, 1.0]; // bright cyan
+const ENGINE_GLOW_HALO: [f32; 4] = [0.30, 0.75, 1.0, 0.45]; // soft cyan halo
+
 const WHITE: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
 const DEFEAT_TINT: [f32; 4] = [0.85, 0.08, 0.10, 0.55];
 const VICTORY_TINT: [f32; 4] = [1.00, 0.80, 0.20, 0.45];
@@ -828,6 +834,12 @@ fn push_ship_2d(
             ship_id: SpriteSlug::new(&ship.id),
             kind,
         }));
+        // (#62) Player engine glow at the stern (toward camera = the hull's lower
+        // edge): the reference ship's signature read. Clustered just inside the
+        // bottom of the hull, sized to the hull width.
+        if is_player {
+            push_engine_glow_2d(out, [center[0], b - h * 0.16], w);
+        }
         // Orientation + buffer cues on top of the 3-D hull.
         push_ship_arrow_and_pips_2d(out, ship, center, 22.0 * q.depth_scale);
         return;
@@ -925,6 +937,56 @@ fn push_ship_arrow_and_pips_2d(
     );
 
     push_shield_pips_2d(out, ship, center, base, (dx, dy));
+}
+
+/// (#62) The player's stern ENGINE-GLOW cluster — the reference ship's signature
+/// "it's a ship from behind" read. Drawn at `centre` (the hull's lower edge,
+/// toward the camera) sized to the hull width `hull_w`: a wider bottom row of
+/// thrusters plus a couple above, each a bright cyan CORE over a larger soft
+/// HALO so the cluster glows. Player-only (enemies are seen bow-on, up-lane).
+fn push_engine_glow_2d(out: &mut Vec<DrawCommand>, center: [f32; 2], hull_w: f32) {
+    // Thruster offsets (in units of hull half-width / a small vertical step),
+    // mimicking the reference cluster: 3 across the bottom, 2 tucked above.
+    let r = (hull_w * 0.5).max(8.0);
+    let step = r * 0.30;
+    let dots = [
+        (-2.0_f32, 0.35_f32, 1.15_f32), // (x in steps, y in steps, size mult)
+        (0.0, 0.6, 1.5),
+        (2.0, 0.35, 1.15),
+        (-1.0, -0.5, 1.0),
+        (1.0, -0.5, 1.0),
+    ];
+    let (uv0, uv1) = atlas::cell_uvs(atlas::SOLID_WHITE);
+    let base = (r * 0.16).max(1.6);
+    for (sx, sy, sz) in dots {
+        let pos = [center[0] + sx * step, center[1] + sy * step];
+        let core = base * sz;
+        // Halo first (bigger, dim), then the bright core on top.
+        push_sprite(
+            out,
+            SpriteInstance {
+                pos,
+                half_size: [core * 1.9, core * 1.9],
+                color: ENGINE_GLOW_HALO,
+                uv_min: uv0,
+                uv_max: uv1,
+                rotation_rad: 0.0,
+                _pad: [0.0; 3],
+            },
+        );
+        push_sprite(
+            out,
+            SpriteInstance {
+                pos,
+                half_size: [core, core],
+                color: ENGINE_GLOW_CORE,
+                uv_min: uv0,
+                uv_max: uv1,
+                rotation_rad: 0.0,
+                _pad: [0.0; 3],
+            },
+        );
+    }
 }
 
 /// The screen-space forward unit vector `(dx, dy)` the bow arrow points along,
