@@ -820,67 +820,65 @@ fn push_ship_2d(
 
     let is_player = ship.faction == Faction::Player;
 
-    // (#66) BAKED SPRITE per the render contract: ships are flat 4-stance PNGs the
-    // editor baked (lighting/outline frozen in) and the engine draws UNLIT. If a
-    // sprite pair (side+top) is loaded for this ship's class+stance, draw the
-    // textured quad at the projected cell. This REPLACES the runtime loft (which
-    // was off-contract: it re-derived a crude 3-D hull from the design JSON +
-    // double-lit it, so the Aegis "looked nothing like" the editor bake). Runtime
-    // glows (engine/heat) still layer ON TOP per contract §1.
+    // (#67) v2 15-FACING WHEEL per `BROADSIDE_RENDER_CONTRACT_v2.md` §5: a ship's
+    // visual orientation is one of 15 PRE-LIT baked PNG frames (3 hull fans × 5 lane
+    // aims), shot at the fixed pitch-20 chase camera. The engine SWAPS to the frame
+    // the wheel selects and draws it UNLIT — it never rotates the pixels (lights are
+    // baked in world space) and never re-lights (contract §3). This REPLACES the old
+    // 4-stance side/top path: Bruce confirmed the on-disk `aegis_bowOn*` 4-set is the
+    // WRONG ship (a 1D-era bake, not his v2-json Aegis), so a clean placeholder beats
+    // it until the correct `<class>_f00..f14` frames drop — at which point they
+    // auto-render here with no further wiring. Runtime glows still layer ON TOP (§1).
+    //
+    // PLAYER ONLY: the 15-set is player-centric (hull pointing up-lane / banked
+    // left-right) and has NO toward-camera view, so enemies (bow-on, oncoming) are
+    // NOT routed through the wheel — they fall to the flat-box placeholder below
+    // pending a separate enemy bake (lead escalated to Bruce). Do NOT route enemies
+    // here; do NOT re-add the removed runtime loft.
     let class = ship.klass.as_deref().unwrap_or("frigate");
-    // (#66) CHASE-CAM stance: the camera sits BEHIND the player looking up-lane, so
-    // the displayed view is the ship seen FROM the stern side. A ship whose bow
-    // points AWAY (into the screen — the player's normal BowOn{Fore}) shows its
-    // STERN → bowOnAft sprite (lead: "bowOnAft_top = stern-toward-camera, use it").
-    // A ship whose bow points TOWARD the camera (BowOn{Aft}, e.g. an oncoming
-    // enemy) shows its BOW → bowOnFore. Broadside → broadside. (This INVERTS the
-    // old top-down fore/aft pick, which assumed the camera looked straight down.)
-    let stance = match ship.orientation {
-        Orientation::BowOn { bow: LaneEnd::Fore } => SpriteStance::BowOnAft,
-        Orientation::BowOn { bow: LaneEnd::Aft } => SpriteStance::BowOnFore,
-        Orientation::Broadside => SpriteStance::Broadside,
-    };
-    if sprites.has_pair(class, stance) {
-        // The PLAYER is the hero foreground element (big, bottom-centre); enemies
-        // stay cell-sized up-lane. Quad from the cell's near-edge width × a hero
-        // factor, clamped above the bottom HUD band so the ship clears the status
-        // strip (#64). Sprite aspect ~2:1 (the baked side/top art is wider than tall).
-        let hero = if is_player { 1.9 } else { 1.15 };
-        let w = (q.near_edge_width() * hero).max(16.0);
-        let h = w * 0.5; // baked ship sprites read ~2:1 (length:height)
-        let band_top = crate::gfx::VIRTUAL_H as f32 - 40.0;
-        let cy = if is_player {
-            center[1].min(band_top - h * 0.5 - 2.0)
-        } else {
-            center[1]
-        };
-        let (l, r) = (center[0] - w * 0.5, center[0] + w * 0.5);
-        let (t, b) = (cy - h * 0.5, cy + h * 0.5);
-        // blend_t selects between the baked SIDE (0) and TOP (1) views. Lead: the
-        // chase-cam hero reads as bowOnAft_TOP (stern + deck seen from behind-above)
-        // — bias toward the top view, a little side mixed in for the low angle.
-        let blend_t = 0.70_f32;
-        let side_slug = format!("{}_{}_{}", class, stance.slug(), SpriteView::Side.slug());
-        let top_slug = format!("{}_{}_{}", class, stance.slug(), SpriteView::Top.slug());
-        out.push(DrawCommand::TexturedShip(TexturedShipInstance {
-            p0: [l, t],
-            p1: [r, t],
-            p2: [r, b],
-            p3: [l, b],
-            blend_t,
-            side: SpriteSlug::new(&side_slug),
-            top: SpriteSlug::new(&top_slug),
-        }));
-        // Runtime engine glow ON TOP (contract: additive runtime effect, NOT baked)
-        // at the player's stern (the sprite's lower edge). Enemies up-lane skip it.
-        if is_player {
+    if is_player {
+        // aim lane = the ship's OWN board column; fan = its own-forward board dir
+        // (see `facing_wheel::player_facing15`). One of 15.
+        let facing = crate::facing_wheel::player_facing15(ship.facing, ship.pos.col);
+        if sprites.has_facing(class, facing.index()) {
+            // The PLAYER is the hero foreground element (big, bottom-centre). Quad
+            // from the cell's near-edge width × a hero factor, clamped above the
+            // bottom HUD band so the ship clears the status strip (#64). Baked
+            // facing frames read ~2:1 (length:height) like the old side art.
+            let w = (q.near_edge_width() * 1.9).max(16.0);
+            let h = w * 0.5;
+            let band_top = crate::gfx::VIRTUAL_H as f32 - 40.0;
+            // PIVOT (#67 / contract §5): the wheel registers each facing against the
+            // hull's board-center. Until the bake ships per-facing trim metadata,
+            // anchor on the quad center (the loader uploads untrimmed frames, so the
+            // geometric center IS the board-center — revisit when the bake lands).
+            let cy = center[1].min(band_top - h * 0.5 - 2.0);
+            let (l, r) = (center[0] - w * 0.5, center[0] + w * 0.5);
+            let (t, b) = (cy - h * 0.5, cy + h * 0.5);
+            // ONE pre-lit frame — no side/top blend (each facing is already the final
+            // pitch-20 view). Feed the same slug to both texture slots with blend_t=0
+            // so the pipeline samples a single texture (the blend is a no-op).
+            let slug = crate::facing_wheel::facing_slug(class, facing);
+            out.push(DrawCommand::TexturedShip(TexturedShipInstance {
+                p0: [l, t],
+                p1: [r, t],
+                p2: [r, b],
+                p3: [l, b],
+                blend_t: 0.0,
+                side: SpriteSlug::new(&slug),
+                top: SpriteSlug::new(&slug),
+            }));
+            // Runtime engine glow ON TOP (contract: additive runtime effect, NOT
+            // baked) at the player's stern (the sprite's lower edge).
             let glow_y = (b - h * 0.10).min(band_top - 4.0);
             push_engine_glow_2d(out, [center[0], glow_y], w);
+            // Pips/buffer cues on top; the baked frame owns the hull + bow read, so
+            // the player chevron stays dropped (enemy chevrons still telegraph).
+            push_ship_arrow_and_pips_2d(out, ship, center, 22.0 * q.depth_scale);
+            return;
         }
-        // Pips/buffer cues on top; the baked sprite owns the hull + bow outline, so
-        // the player chevron stays dropped (enemy chevrons still draw for telegraph).
-        push_ship_arrow_and_pips_2d(out, ship, center, 22.0 * q.depth_scale);
-        return;
+        // else: no facing frame loaded yet (the correct bake hasn't dropped) → fall
+        // through to the clean flat-box placeholder. Placeholder > wrong ship.
     }
 
     // Inset hull box, scaled by depth so far ships are smaller. Bow stance is

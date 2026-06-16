@@ -220,6 +220,18 @@ pub trait SpriteRegistry {
         self.has(class, stance, SpriteView::Side) && self.has(class, stance, SpriteView::Top)
     }
 
+    /// Whether the v2 **15-facing** baked frame `index` (0..15) is loaded for
+    /// `class` — keyed `"<class>_f{index:02}"` (see [`crate::facing_wheel`]).
+    /// This is the v2 chase-cam render path: each facing is ONE pre-lit PNG
+    /// (no side/top blend), swapped per orientation, drawn UNLIT. Default
+    /// `false` (the no-GPU / test registries hold no facing sheet); `Gfx`
+    /// delegates to its uploaded-sprite map. The renderer falls back to the
+    /// procedural placeholder when this is false, so the player shows a clean
+    /// box until Bruce's `<class>_f00..f14` bake lands.
+    fn has_facing(&self, _class: &str, _index: usize) -> bool {
+        false
+    }
+
     /// Which 3D loft mesh (if any) the given ship renders with. `Some(kind)`
     /// makes `hud::push_ship` emit a `LoftShip` quad for that ship and skip its
     /// 2D silhouette — the "loft if the ship has a 3D asset, else 2D" dispatch,

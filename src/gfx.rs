@@ -796,6 +796,10 @@ impl crate::sprites::SpriteRegistry for Gfx {
         Gfx::has_ship_sprite(self, class, stance, view)
     }
 
+    fn has_facing(&self, class: &str, index: usize) -> bool {
+        Gfx::has_facing_sprite(self, class, index)
+    }
+
     fn loft_kind(&self, _ship_id: &str, is_player: bool) -> Option<crate::sprites::LoftMeshKind> {
         use crate::sprites::LoftMeshKind;
         if is_player {
