@@ -329,6 +329,23 @@ pub fn compose_scene_tweened(
 /// render logic is correct and lights up as the data fills in (the
 /// `grid_preview` bin proves the path with non-default mock positions).
 pub fn compose_scene_2d(board: &Board, cfg: &ProjectorConfig) -> Vec<DrawCommand> {
+    compose_scene_2d_with(board, cfg, &EmptySpriteRegistry)
+}
+
+/// Like [`compose_scene_2d`] but consults `sprites` for the loft/3-D ship path
+/// (#51): if [`SpriteRegistry::loft_kind`] returns a mesh kind for a ship, that
+/// ship is emitted as a [`DrawCommand::LoftShip`] (the real 3-D hull blitted into
+/// its projected cell quad) instead of the flat placeholder box. The bin passes
+/// its `Gfx` (which implements `SpriteRegistry` + has the CAD/loft meshes
+/// installed) so the player renders as the Aegis model; the default
+/// [`compose_scene_2d`] (and the headless tests) pass [`EmptySpriteRegistry`],
+/// keeping the flat-box path. Same back-to-front order; the registry only changes
+/// HOW each ship body is drawn, not the grid / telegraph / overlays.
+pub fn compose_scene_2d_with(
+    board: &Board,
+    cfg: &ProjectorConfig,
+    sprites: &dyn SpriteRegistry,
+) -> Vec<DrawCommand> {
     let mut out = Vec::with_capacity(256);
     push_grid_2d(&mut out, cfg);
 
@@ -343,7 +360,7 @@ pub fn compose_scene_2d(board: &Board, cfg: &ProjectorConfig) -> Vec<DrawCommand
     let mut ships: Vec<&Ship> = board.cells.iter().flatten().collect();
     ships.sort_by_key(|s| s.pos.row);
     for ship in &ships {
-        push_ship_2d(&mut out, ship, cfg);
+        push_ship_2d(&mut out, ship, cfg, sprites);
     }
     // Per-ship overlays LAST, so health bars + queue tiles sit on top of every
     // hull (incl. a nearer ship that overlaps a farther one). Same far→near order.
@@ -530,12 +547,18 @@ fn pt(p: [f32; 2]) -> Point2 {
     Point2 { x: p[0], y: p[1] }
 }
 
-/// D3: draw one ship at its projected cell — a faction-tinted hull quad (inset
-/// from the cell, scaled by `depth_scale`) + outline + a bow-direction arrow
-/// encoding `Facing::forward_axis()` + gold shield pips per zone. The hull fill
-/// is a flat placeholder; the depth_scale-driven loft seating follows in a later
-/// pass. Lifted from `grid_preview`'s `ship_draw_commands`.
-fn push_ship_2d(out: &mut Vec<DrawCommand>, ship: &Ship, cfg: &ProjectorConfig) {
+/// D3/#51: draw one ship at its projected cell. If `sprites` reports a loft mesh
+/// for this ship ([`SpriteRegistry::loft_kind`]) the real 3-D hull is emitted as
+/// a [`DrawCommand::LoftShip`] seated in the cell (the Aegis model for the
+/// player); otherwise a flat faction-tinted placeholder box. Either way a
+/// bow-direction arrow (encoding `Facing::forward_axis()`) + gold shield pips per
+/// zone are drawn on top so orientation + buffer read regardless of body style.
+fn push_ship_2d(
+    out: &mut Vec<DrawCommand>,
+    ship: &Ship,
+    cfg: &ProjectorConfig,
+    sprites: &dyn SpriteRegistry,
+) {
     let q = grid_cell_quad(ship.pos, cfg);
     let (fill, stroke) = if ship.faction == Faction::Player {
         (PLAYER_HULL_FILL, PLAYER_HULL_STROKE)
@@ -543,6 +566,31 @@ fn push_ship_2d(out: &mut Vec<DrawCommand>, ship: &Ship, cfg: &ProjectorConfig) 
         (ENEMY_HULL_FILL, ENEMY_HULL_STROKE)
     };
     let center = q.center;
+
+    // #51 loft body: if a 3-D mesh is installed for this ship, blit it into a
+    // cell-seated quad instead of the flat box. The loft texture is
+    // content-centred, so a quad centred on the cell seats the hull on the cell;
+    // size it from the cell's near-edge width × depth_scale so it fills the
+    // footprint and shrinks with depth. Bow arrow + shield pips still draw on top
+    // (below), so orientation/buffer read on the 3-D hull too.
+    let is_player = ship.faction == Faction::Player;
+    if let Some(kind) = sprites.loft_kind(&ship.id, is_player) {
+        let w = (q.near_edge_width() * 1.15).max(16.0);
+        let h = w / LOFT_TEXTURE_ASPECT;
+        let (l, r) = (center[0] - w * 0.5, center[0] + w * 0.5);
+        let (t, b) = (center[1] - h * 0.5, center[1] + h * 0.5);
+        out.push(DrawCommand::LoftShip(LoftShipInstance {
+            p0: [l, t],
+            p1: [r, t],
+            p2: [r, b],
+            p3: [l, b],
+            ship_id: SpriteSlug::new(&ship.id),
+            kind,
+        }));
+        // Orientation + buffer cues on top of the 3-D hull.
+        push_ship_arrow_and_pips_2d(out, ship, center, 22.0 * q.depth_scale);
+        return;
+    }
 
     // Inset hull box, scaled by depth so far ships are smaller. Bow stance is
     // longer along the bow axis; broadside is wider across the hull axis — a
@@ -572,12 +620,30 @@ fn push_ship_2d(out: &mut Vec<DrawCommand>, ship: &Ship, cfg: &ProjectorConfig) 
         push_line(out, pt(hull[i]), pt(hull[(i + 1) % 4]), 1.0, stroke);
     }
 
+    push_ship_arrow_and_pips_2d(out, ship, center, base);
+}
+
+/// Bow-direction arrow + per-zone shield pips for a ship, shared by both the
+/// flat-box and the loft (#51) body paths so orientation + the shield buffer
+/// read identically regardless of how the hull itself is drawn. `base` is the
+/// hull half-extent (22 × depth_scale) the arrow reach + pip placement key off.
+fn push_ship_arrow_and_pips_2d(
+    out: &mut Vec<DrawCommand>,
+    ship: &Ship,
+    center: [f32; 2],
+    base: f32,
+) {
+    let stroke = if ship.faction == Faction::Player {
+        PLAYER_HULL_STROKE
+    } else {
+        ENEMY_HULL_STROKE
+    };
     // Bow-direction arrow: a chevron just past the hull edge along the forward
     // axis (Facing::forward_axis(), via bow_screen_dir), rotated to point that
     // way. BOW_CHEVRON points +x at rotation 0.
     let (dx, dy) = bow_screen_dir(ship.facing);
     let reach = base + 8.0;
-    let arrow_sz = 6.0 * q.depth_scale.max(0.5);
+    let arrow_sz = (base * 0.27).max(3.0);
     push_sprite(
         out,
         SpriteInstance {
@@ -3776,7 +3842,7 @@ mod tests {
             s.pos = Pos::new(2, ROWS_LOCAL - 1);
             s.facing = facing;
             let mut out = Vec::new();
-            push_ship_2d(&mut out, &s, &cfg);
+            push_ship_2d(&mut out, &s, &cfg, &EmptySpriteRegistry);
             let (mn, mx) = atlas::cell_uvs(atlas::BOW_CHEVRON);
             out.iter()
                 .find_map(|c| match c {
@@ -3796,7 +3862,7 @@ mod tests {
         s.pos = Pos::new(2, ROWS_LOCAL - 1);
         s.facing = Facing::Broadside(Axis::EastWest);
         let mut out = Vec::new();
-        push_ship_2d(&mut out, &s, &cfg);
+        push_ship_2d(&mut out, &s, &cfg, &EmptySpriteRegistry);
         let (mn, mx) = atlas::cell_uvs(atlas::BOW_CHEVRON);
         let chev = out
             .iter()
