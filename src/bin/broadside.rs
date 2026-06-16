@@ -296,6 +296,21 @@ fn fresh_content() -> DemoContent {
     c
 }
 
+/// [`fresh_content`] PLUS the loaded catalog's actions merged in (#49a), so the
+/// resolver's fire path can resolve the catalog weapon ids that
+/// catalog-synthesized enemies mount (beam_cannon, railgun_broadside, …) —
+/// otherwise `content.action(id)` is `None` and enemies never fire. The catalog
+/// actions already carry 2-D bands (derived at load); merge is insert-if-absent
+/// so the hand-tuned player weapons keep precedence. `None` catalog (load
+/// failed / headless) → just the demo content, unchanged.
+fn build_content(catalog: Option<&broadside_engine::types::Catalog>) -> DemoContent {
+    let mut c = fresh_content();
+    if let Some(cat) = catalog {
+        c.install_catalog_actions(cat);
+    }
+    c
+}
+
 /// Load the canonical catalog from `assets/broadside.catalog.json` for
 /// catalog-driven enemy synthesis. Logs and returns `None` on a missing or
 /// unparseable asset — the demo then falls back to placeholder enemy
@@ -734,13 +749,19 @@ impl App {
             Some(cat) if !cat.sectors.is_empty() => generate_campaign(cat, 1),
             _ => placeholder_sectors(),
         };
+        // #49a: merge the loaded catalog's (2-D-band-derived) actions into the
+        // firing content so catalog-synthesized ENEMY weapons (beam_cannon,
+        // railgun_broadside, …) resolve — otherwise the enemy AI's fire-gate
+        // skips them (content.action(id) = None) and enemies never shoot.
+        // insert-if-absent: the hand-tuned player weapons keep precedence.
+        let content = build_content(catalog.as_ref());
         #[allow(unused_mut)]
         let mut app = Self {
             window: None,
             gfx: None,
             board: render_example_board(),
             lane: demo_lane(),
-            content: fresh_content(),
+            content,
             catalog,
             camera_angle_idx: CAMERA_ANGLE_DEFAULT_INDEX,
             tween_anchors: HashMap::new(),
@@ -853,7 +874,9 @@ impl App {
     /// overlays. Also re-installs audio on the new board's EventBus.
     fn restart_run(&mut self) {
         self.run = Run::new(Self::fresh_player_ship());
-        self.content = fresh_content();
+        // #49a: re-merge the catalog actions so enemy weapons resolve after a
+        // restart too (same wiring as startup).
+        self.content = build_content(self.catalog.as_ref());
         self.board = self
             .build_current_board()
             .unwrap_or_else(render_example_board);

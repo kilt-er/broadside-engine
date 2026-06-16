@@ -433,6 +433,26 @@ impl DemoContent {
         self.actions.insert(action.id.clone(), action);
     }
 
+    /// Merge a loaded [`crate::types::Catalog`]'s actions into this content so
+    /// the resolver's fire path can resolve CATALOG weapon ids (#49a). Without
+    /// this, catalog-synthesized enemies mount ids like `beam_cannon` /
+    /// `railgun_broadside` that the demo's hardcoded action set doesn't serve →
+    /// `content.action(id)` returns `None` → the enemy AI's fire-gate skips the
+    /// weapon → enemies never fire. The catalog actions already carry their
+    /// 2-D `range_band` (derived at load by `catalog::load_from_bytes`), so this
+    /// is purely a wiring step — no band authoring.
+    ///
+    /// **Does NOT clobber existing actions** (insert-if-absent): the demo's
+    /// hand-tuned player weapons (pulse_laser / torpedo / broadside_battery,
+    /// with their explicit demo bands) and the synthetics take precedence over a
+    /// same-id catalog entry. So merging the catalog adds the *missing* enemy
+    /// weapons without changing the player's loadout behavior.
+    pub fn install_catalog_actions(&mut self, catalog: &crate::types::Catalog) {
+        for action in &catalog.actions {
+            self.actions.entry(action.id.clone()).or_insert_with(|| action.clone());
+        }
+    }
+
     /// Register the synthetic actions used by [`key_to_intent`] (the four
     /// cardinal moves + reorient + vent).
     pub fn register_synthetics(&mut self) {
