@@ -1451,6 +1451,39 @@ impl Gfx {
                 }
             }
         }
+
+        // (#67) v2 15-FACING set: probe the contract-v2 facing sheet
+        // (`<class>_f00.png` .. `<class>_f14.png` — one PNG per facing,
+        // `facing_wheel::facing_slug` naming) and upload each present frame under
+        // its slug. ADDITIVE + forward-compatible: the frames don't exist yet
+        // (Bruce's 15-facing bake is pending), so this loads 0 today and does NOT
+        // disturb the 4-set path above — push_ship_2d keeps drawing the existing
+        // sprites until the f-frames land, then flips to the wheel. Per-facing
+        // PIVOT is deferred to a real format once the bake shows whether it ships
+        // pivot metadata / trimmed frames; until then the renderer assumes the
+        // sprite is centred on the cell (untrimmed canvas).
+        for class in &classes {
+            for i in 0..crate::facing_wheel::FACING_COUNT {
+                let slug = format!("{class}_f{i:02}");
+                let path = asset_dir.join("sprites").join(format!("{slug}.png"));
+                match image::open(&path) {
+                    Ok(img) => {
+                        let rgba = img.to_rgba8();
+                        let (w, h) = rgba.dimensions();
+                        let sprite = crate::sprites::SpriteImage {
+                            width: w,
+                            height: h,
+                            rgba: rgba.into_raw(),
+                        };
+                        self.upload_ship_sprite(&slug, &sprite);
+                        loaded += 1;
+                    }
+                    Err(e) => {
+                        log::debug!("facing sprite skipped: {} ({e})", path.display());
+                    }
+                }
+            }
+        }
         loaded
     }
 
@@ -1508,6 +1541,15 @@ impl Gfx {
     ) -> bool {
         let slug = format!("{}_{}_{}", class, stance.slug(), view.slug());
         self.ship_sprites.contains_key(&slug)
+    }
+
+    /// (#67) Whether the v2 15-facing frame `index` (0..FACING_COUNT) is loaded
+    /// for `class` — i.e. `<class>_f{index:02}` was found by
+    /// [`Self::try_load_ship_sprites`]. push_ship_2d gates the wheel draw on this:
+    /// true once Bruce's 15-facing bake is dropped, false today (→ keep the
+    /// current sprite/flat-box path, no regression).
+    pub fn has_facing_sprite(&self, class: &str, index: usize) -> bool {
+        self.ship_sprites.contains_key(&format!("{class}_f{index:02}"))
     }
 
     /// Build the per-slot (slot, side, top) bind group on first request
