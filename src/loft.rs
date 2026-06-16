@@ -56,7 +56,15 @@ pub const DEFAULT_SEC_N: usize = 10;
 /// mass without touching the design file (purely a render-readability tweak —
 /// the source design is unchanged). The playable bin and the headless capture
 /// tool BOTH apply this so the capture stays a faithful image of the game.
-pub const PLAYER_LOFT_HSCALE_BOOST: f32 = 1.8;
+///
+/// Tuned on the capture loop (#54): the loft hull seats correctly on its cell
+/// (the camera now frames the hull's bbox centre) but the Aegis is flat-wide
+/// (hscale 0.7, wscale ~1.9), so even seated it reads thin from the steep
+/// top-down ¾. 3.0× gives the player hull clear vertical mass — the most
+/// substantial ship on screen — without a grotesque stretched-tower look. This
+/// is a display choice (the source design is unchanged); Bruce can pick the
+/// final faithful-flat vs boosted-for-mass look.
+pub const PLAYER_LOFT_HSCALE_BOOST: f32 = 3.0;
 
 /// Parameters that scale the loft. Pulled from [`ShipDesign`]'s `settings`
 /// ([`crate::ship_design::Settings::stretch`] / `hscale`) plus the section

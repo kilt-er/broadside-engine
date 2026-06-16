@@ -119,7 +119,8 @@ fn main() {
     }
     gfx.advance_loft_poses(0.0);
 
-    let commands = compose_scene_2d_with(&board, &ProjectorConfig::default(), &gfx);
+    let cfg = ProjectorConfig::default();
+    let commands = compose_scene_2d_with(&board, &cfg, &gfx);
     match gfx.capture_png(&commands, std::path::Path::new(&path)) {
         Ok(()) => log::info!("capture: wrote {path}"),
         Err(e) => {

@@ -643,6 +643,9 @@ pub struct Gfx {
 struct LoftMesh {
     vbuf: wgpu::Buffer,
     vcount: u32,
+    /// Vertical centre of the hull bbox — the loft camera looks at this Y so the
+    /// hull renders centred in its texture (see [`crate::loft_gpu::upload_hull`]).
+    center_y: f32,
 }
 
 /// One uploaded ship sprite. `dimensions` is the source PNG size in
@@ -1154,12 +1157,16 @@ impl Gfx {
         glb_bytes: &[u8],
     ) -> Result<(), crate::mesh_import::ImportError> {
         let ship = crate::mesh_import::load_glb(glb_bytes)?;
-        let (vbuf, vcount) =
-            self.loft
-                .upload_imported_tinted(&self.device, &ship, Self::PLAYER_TINT);
+        let hull = self
+            .loft
+            .upload_imported_tinted(&self.device, &ship, Self::PLAYER_TINT);
         self.loft_meshes.insert(
             crate::sprites::LoftMeshKind::PlayerCad,
-            LoftMesh { vbuf, vcount },
+            LoftMesh {
+                vbuf: hull.vbuf,
+                vcount: hull.vcount,
+                center_y: hull.center_y,
+            },
         );
         Ok(())
     }
@@ -1188,10 +1195,14 @@ impl Gfx {
         // One tinted albedo per tri-soup vertex; no emissive (lofted hulls don't
         // glow, unlike the CAD canopy/gun accents).
         let colors = vec![tinted; mesh.positions.len()];
-        let (vbuf, vcount) = self.loft.upload_hull(&self.device, mesh, &colors, &[]);
+        let hull = self.loft.upload_hull(&self.device, mesh, &colors, &[]);
         self.loft_meshes.insert(
             crate::sprites::LoftMeshKind::PlayerLoft,
-            LoftMesh { vbuf, vcount },
+            LoftMesh {
+                vbuf: hull.vbuf,
+                vcount: hull.vcount,
+                center_y: hull.center_y,
+            },
         );
     }
 
@@ -1207,10 +1218,14 @@ impl Gfx {
         glb_bytes: &[u8],
     ) -> Result<(), crate::mesh_import::ImportError> {
         let ship = crate::mesh_import::load_glb(glb_bytes)?;
-        let (vbuf, vcount) = self.loft.upload_imported(&self.device, &ship);
+        let hull = self.loft.upload_imported(&self.device, &ship);
         self.loft_meshes.insert(
             crate::sprites::LoftMeshKind::EnemyCad,
-            LoftMesh { vbuf, vcount },
+            LoftMesh {
+                vbuf: hull.vbuf,
+                vcount: hull.vcount,
+                center_y: hull.center_y,
+            },
         );
         Ok(())
     }
@@ -1886,10 +1901,17 @@ impl Gfx {
                             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                                 label: Some("loft ship render"),
                             });
-                    // Camera is fixed inside LoftGpu; only the ship's model yaw
-                    // varies per ship.
-                    self.loft
-                        .render_ship(&self.queue, &mut enc, &mesh.vbuf, mesh.vcount, yaw);
+                    // Camera orbits the hull's bbox centre (mesh.center_y) so the
+                    // hull renders centred in its texture; only the ship's stance
+                    // yaw varies per ship.
+                    self.loft.render_ship(
+                        &self.queue,
+                        &mut enc,
+                        &mesh.vbuf,
+                        mesh.vcount,
+                        yaw,
+                        mesh.center_y,
+                    );
                     self.queue.submit(std::iter::once(enc.finish()));
 
                     // 2) Blit the posterized output onto this ship's lane quad.

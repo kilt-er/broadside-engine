@@ -341,6 +341,17 @@ fn fs_post(in: VsOut) -> @location(0) vec4<f32> {
 }
 "#;
 
+/// A hull uploaded to the GPU: its vertex buffer + count, plus the vertical
+/// centre of its bounding box (`center_y`, world units). `center_y` is the Y the
+/// loft camera should look at so the hull renders CENTRED in its texture (see
+/// [`LoftGpu::upload_hull`]); the caller stores it and passes it to
+/// [`LoftGpu::render_ship`].
+pub struct UploadedHull {
+    pub vbuf: wgpu::Buffer,
+    pub vcount: u32,
+    pub center_y: f32,
+}
+
 /// The loft GPU pipeline + offscreen targets. Owns the depth path; produces a
 /// posterized RGBA texture view per render. The caller (`gfx`) takes that view
 /// and feeds it to the existing `TexturedShip` blit.
@@ -649,7 +660,7 @@ impl LoftGpu {
         mesh: &HullMesh,
         colors: &[[f32; 3]],
         emissive: &[[f32; 4]],
-    ) -> (wgpu::Buffer, u32) {
+    ) -> UploadedHull {
         use wgpu::util::DeviceExt;
         let verts: Vec<Vertex> = (0..mesh.positions.len())
             .map(|i| Vertex {
@@ -662,12 +673,33 @@ impl LoftGpu {
                 emissive: emissive.get(i).copied().unwrap_or([0.0, 0.0, 0.0, 0.0]),
             })
             .collect();
+        // Vertical centre of the hull's bounding box (world units). The loft
+        // camera looks at this Y instead of the origin so the hull sits CENTRED
+        // in its texture regardless of how the design distributes mass about
+        // y=0 — e.g. the Aegis section runs deck +0.55 to belly −1.1, so its
+        // mass centres BELOW the origin and, framed at origin, the hull rendered
+        // low in the texture and read detached from its (cell-centred) chevron +
+        // hull-bar (#54/#55). Centring the camera on the bbox fixes every mesh.
+        let (mut min_y, mut max_y) = (f32::INFINITY, f32::NEG_INFINITY);
+        for p in &mesh.positions {
+            min_y = min_y.min(p[1]);
+            max_y = max_y.max(p[1]);
+        }
+        let center_y = if min_y.is_finite() {
+            (min_y + max_y) * 0.5
+        } else {
+            0.0
+        };
         let buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("loft hull vbuf"),
             contents: bytemuck::cast_slice(&verts),
             usage: wgpu::BufferUsages::VERTEX,
         });
-        (buf, verts.len() as u32)
+        UploadedHull {
+            vbuf: buf,
+            vcount: verts.len() as u32,
+            center_y,
+        }
     }
 
     /// Upload an [`ImportedShip`] (the architect's mesh_import / CAD-glb output,
@@ -680,7 +712,7 @@ impl LoftGpu {
         &self,
         device: &wgpu::Device,
         ship: &crate::mesh_import::ImportedShip,
-    ) -> (wgpu::Buffer, u32) {
+    ) -> UploadedHull {
         let (colors, emissive) = imported_vertex_attrs(ship);
         self.upload_hull(device, &ship.mesh, &colors, &emissive)
     }
@@ -694,7 +726,7 @@ impl LoftGpu {
         device: &wgpu::Device,
         ship: &crate::mesh_import::ImportedShip,
         tint: [f32; 3],
-    ) -> (wgpu::Buffer, u32) {
+    ) -> UploadedHull {
         let (mut colors, emissive) = imported_vertex_attrs(ship);
         for c in &mut colors {
             c[0] *= tint[0];
@@ -716,6 +748,7 @@ impl LoftGpu {
         vbuf: &wgpu::Buffer,
         vcount: u32,
         yaw_deg: f32,
+        center_y: f32,
     ) {
         let aspect = LOW_W as f32 / LOW_H as f32;
         // EXACTLY the POC: the stance `yaw_deg` is the CAMERA yaw (orbit the
@@ -725,9 +758,15 @@ impl LoftGpu {
         // profiles like the approved reference. (This replaces the #36/#37
         // model-rotation experiment that collapsed bow-on to a plank and went
         // vertical on broadside.) `yaw_deg` is static per ship (its stance);
-        // idle roll + reorient tween only nudge it.
-        let view_proj =
-            camera_view_proj(yaw_deg.to_radians(), CAMERA_PITCH_DEG.to_radians(), aspect);
+        // idle roll + reorient tween only nudge it. `center_y` is the hull's
+        // bbox vertical centre — the camera looks at THAT (not the origin) so
+        // the hull sits centred in the texture (#54/#55).
+        let view_proj = camera_view_proj(
+            yaw_deg.to_radians(),
+            CAMERA_PITCH_DEG.to_radians(),
+            aspect,
+            center_y,
+        );
         let model = identity4();
 
         // Lights ported from the loft editor's setLight (laz -50, lel 60) /
@@ -828,14 +867,17 @@ impl LoftGpu {
 // Column-major mat4 (`c*4 + r`); right-handed; clip z in 0..1 for wgpu.
 // ---------------------------------------------------------------------------
 
-fn camera_view_proj(yaw_rad: f32, pitch_rad: f32, aspect: f32) -> [f32; 16] {
+fn camera_view_proj(yaw_rad: f32, pitch_rad: f32, aspect: f32, target_y: f32) -> [f32; 16] {
     let r = 30.0;
+    // Orbit the camera around the look-AT point (0, target_y, 0), not the world
+    // origin, so a hull whose mass doesn't straddle y=0 still frames centred.
+    let target = [0.0, target_y, 0.0];
     let eye = [
         r * pitch_rad.cos() * yaw_rad.sin(),
-        r * pitch_rad.sin(),
+        target_y + r * pitch_rad.sin(),
         r * pitch_rad.cos() * yaw_rad.cos(),
     ];
-    let view = look_at(eye, [0.0, 0.0, 0.0], [0.0, 1.0, 0.0]);
+    let view = look_at(eye, target, [0.0, 1.0, 0.0]);
     // Ortho half-height in world units — the framing zoom. ONE fixed value
     // across all ships/stances so true relative scale is preserved and a ship
     // doesn't pop size when it reorients. Sized so the WORST-case stance fits:
@@ -1042,7 +1084,7 @@ mod tests {
 
     #[test]
     fn camera_view_proj_is_finite() {
-        let m = camera_view_proj(28f32.to_radians(), 26f32.to_radians(), 1.6);
+        let m = camera_view_proj(28f32.to_radians(), 26f32.to_radians(), 1.6, -0.5);
         assert!(m.iter().all(|v| v.is_finite()));
     }
 
