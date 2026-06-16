@@ -54,8 +54,10 @@ const PLAYER_HULL_STROKE: [f32; 4] = [0.329, 0.812, 0.788, 1.0];
 const ENEMY_HULL_FILL: [f32; 4] = [0.227, 0.122, 0.145, 1.0];
 const ENEMY_HULL_STROKE: [f32; 4] = [0.878, 0.478, 0.235, 1.0];
 
-const LANE_STROKE: [f32; 4] = [0.20, 0.28, 0.36, 1.0];
-const LANE_TICK: [f32; 4] = [0.33, 0.41, 0.51, 1.0];
+// (#62) Brighter, cooler grid lanes to read like the art-tool reference's crisp
+// cyan road (was a dim slate that barely registered against the starfield).
+const LANE_STROKE: [f32; 4] = [0.33, 0.52, 0.62, 1.0];
+const LANE_TICK: [f32; 4] = [0.50, 0.74, 0.84, 1.0]; // brighter front row
 
 const BAND_POINT_BLANK: [f32; 4] = [0.878, 0.400, 0.290, 0.6];
 const BAND_CLOSE: [f32; 4] = [0.878, 0.635, 0.235, 0.6];
@@ -116,6 +118,12 @@ const BOW_MARK_SHADOW: [f32; 4] = [0.02, 0.03, 0.05, 0.9]; // dark backing
 // a dimmer halo behind it so the cluster reads as glowing engines, not flat dots.
 const ENGINE_GLOW_CORE: [f32; 4] = [0.45, 0.95, 1.0, 1.0]; // bright cyan
 const ENGINE_GLOW_HALO: [f32; 4] = [0.30, 0.75, 1.0, 0.45]; // soft cyan halo
+
+// (#62) Player hull keel/outline stroke — a bright cool edge along the hero
+// hull's lower silhouette for shape-definition against the dark road (a full
+// quad box would read as a UI frame, so we stroke only the lower + side edges =
+// the hull's read silhouette, not the top).
+const HULL_KEEL_STROKE: [f32; 4] = [0.42, 0.74, 0.92, 0.9];
 
 const WHITE: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
 const DEFEAT_TINT: [f32; 4] = [0.85, 0.08, 0.10, 0.55];
@@ -845,6 +853,18 @@ fn push_ship_2d(
             ship_id: SpriteSlug::new(&ship.id),
             kind,
         }));
+        // (#62) Keel/outline stroke on the hero hull's LOWER silhouette (bottom +
+        // lower sides only — not a full box, which would read as a UI frame) for
+        // shape-definition against the dark road. Inset slightly so it hugs the
+        // hull, not the quad's empty corners.
+        if is_player {
+            let ix = w * 0.12; // horizontal inset (skip the empty quad corners)
+            let (kl, kr) = (l + ix, r - ix);
+            let ky = b - h * 0.06; // just above the very bottom edge
+            push_line(out, pt([kl, ky]), pt([kr, ky]), 1.0, HULL_KEEL_STROKE); // keel
+            push_line(out, pt([kl, ky]), pt([kl, cy]), 1.0, HULL_KEEL_STROKE); // left
+            push_line(out, pt([kr, ky]), pt([kr, cy]), 1.0, HULL_KEEL_STROKE); // right
+        }
         // (#62) Player engine glow at the stern (toward camera = the hull's lower
         // edge): the reference ship's SIGNATURE read. Seated low on the hull's
         // stern (now a DARK hull, so the bright cyan cluster POPS cyan-on-dark),
