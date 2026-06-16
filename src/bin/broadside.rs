@@ -490,15 +490,26 @@ fn render_example_board() -> Board {
     // the 5×4 grid; the 1-D demo placement below only touches cells[0..size].
     let mut cells: Vec<Option<Ship>> = (0..broadside_engine::grid::CELLS).map(|_| None).collect();
 
-    cells[0] = Some(player_ship(0));
-    // Each enemy gets one Forward pulse_laser so the AI has something to
-    // score and queue. Without a mount, decide_enemy_action correctly
-    // returns nothing and the enemy looks inert; per bruce's playtest the
-    // demo needs visible enemy behaviour to read as a live game.
-    cells[2] = Some(enemy_ship("enemy-2", 2, Orientation::Broadside));
-    cells[3] = Some(enemy_ship("enemy-3", 3, Orientation::BowOn { bow: LaneEnd::Aft }));
-    cells[5] = Some(enemy_ship("enemy-5", 5, Orientation::BowOn { bow: LaneEnd::Fore }));
-    cells[6] = Some(enemy_ship("enemy-6", 6, Orientation::BowOn { bow: LaneEnd::Fore }));
+    // (#54/#55) Lay the demo fleet out on the REAL 5×4 grid, bow-to-bow, matching
+    // the live runs::build_encounter_board layout: player front-centre (2,3)
+    // facing N (into the board, toward the enemies); enemies fanned centre-out
+    // across the back row (2,0),(1,0),(3,0) facing S (toward the player). Each
+    // ship's pos/facing now drive the 2-D render (was all-Pos(0,0)/Bow(S) →
+    // stacked + uniform-broadside). Each enemy gets one pulse_laser so the AI has
+    // something to queue (else decide_enemy_action returns nothing and it reads
+    // inert).
+    use broadside_engine::grid::{Dir4, Facing, Pos, COLS, ROWS};
+    let bow_n = Facing::Bow(Dir4::N);
+    let bow_s = Facing::Bow(Dir4::S);
+    let mid = COLS / 2;
+    let place = |cells: &mut Vec<Option<Ship>>, s: Ship| {
+        let idx = s.pos.to_index();
+        cells[idx] = Some(s);
+    };
+    place(&mut cells, player_ship(Pos::new(mid, ROWS - 1), bow_n));
+    place(&mut cells, enemy_ship("enemy-2", Pos::new(mid, 0), bow_s));
+    place(&mut cells, enemy_ship("enemy-3", Pos::new(mid - 1, 0), bow_s));
+    place(&mut cells, enemy_ship("enemy-5", Pos::new(mid + 1, 0), bow_s));
 
     Board {
         size,
@@ -514,8 +525,8 @@ fn render_example_board() -> Board {
     }
 }
 
-fn player_ship(cell: usize) -> Ship {
-    let mut player = make_ship("player", Faction::Player, cell, Orientation::BowOn { bow: LaneEnd::Fore });
+fn player_ship(pos: broadside_engine::grid::Pos, facing: broadside_engine::grid::Facing) -> Ship {
+    let mut player = make_ship("player", Faction::Player, pos, facing);
     player.shield_profile = ShieldProfile {
         bow: ShieldFace { armour: 2, charge: 1 },
         ..default_shield_profile()
@@ -589,8 +600,8 @@ fn synth_enemy_for_spawn(
 /// Enemy frigate: one Forward pulse_laser so the AI can actually queue an
 /// action. Without a mount, decide_enemy_action returns nothing and the
 /// enemy looks inert.
-fn enemy_ship(id: &str, cell: usize, orientation: Orientation) -> Ship {
-    let mut e = make_ship(id, Faction::Enemy, cell, orientation);
+fn enemy_ship(id: &str, pos: broadside_engine::grid::Pos, facing: broadside_engine::grid::Facing) -> Ship {
+    let mut e = make_ship(id, Faction::Enemy, pos, facing);
     e.mounts = vec![Mount {
         id: "m1".into(),
         arc: TArc::Forward,
@@ -599,18 +610,33 @@ fn enemy_ship(id: &str, cell: usize, orientation: Orientation) -> Ship {
     e
 }
 
-fn make_ship(id: &str, faction: Faction, cell: usize, orientation: Orientation) -> Ship {
+fn make_ship(
+    id: &str,
+    faction: Faction,
+    pos: broadside_engine::grid::Pos,
+    facing: broadside_engine::grid::Facing,
+) -> Ship {
+    // (#54/#55) The startup/Restart demo board now places ships at REAL 2-D
+    // positions + facings (like the live build_encounter_board) — previously
+    // make_ship hardcoded Pos(0,0) + Bow(S) for every ship, so the whole demo
+    // fleet stacked in the back-left cell with one uniform facing: the player
+    // ship looked "gone" (jammed under the enemies) and everything read
+    // "broadside". The legacy 1-D cell/orientation are derived to stay roughly
+    // consistent for any remaining 1-D reader during the EXPAND→CONTRACT window.
+    use broadside_engine::grid::{Dir4, Facing};
+    let cell = pos.to_index();
+    let orientation = match facing {
+        Facing::Bow(Dir4::N) => Orientation::BowOn { bow: LaneEnd::Fore },
+        Facing::Bow(Dir4::S) => Orientation::BowOn { bow: LaneEnd::Aft },
+        _ => Orientation::Broadside,
+    };
     Ship {
         id: id.into(),
         faction,
         cell,
-        // v2 (A3 EXPAND): transitional 2-D defaults. The 1-D lane index and a
-        // 2-D grid Pos are different spaces with no valid bijection (lead
-        // ruling) — don't derive pos from cell. The renderer's D-series rebuilds
-        // this demo scene natively on the 5×4 grid.
-        pos: broadside_engine::grid::Pos::new(0, 0),
+        pos,
         orientation,
-        facing: broadside_engine::grid::Facing::Bow(broadside_engine::grid::Dir4::S),
+        facing,
         hull: 5,
         max_hull: 5,
         heat: 0,
@@ -804,7 +830,11 @@ impl App {
     /// consistent across encounters. Subsystems live on `content`, not
     /// on the ship, so they carry over for free.
     fn fresh_player_ship() -> Ship {
-        player_ship(0)
+        // Front-centre, bow N — the campaign start pose. build_encounter_board
+        // re-stamps pos/facing from player_start_pos()/player_spawn_facing()
+        // anyway, but this keeps fresh_player_ship correct on its own.
+        use broadside_engine::grid::{Dir4, Facing, Pos, COLS, ROWS};
+        player_ship(Pos::new(COLS / 2, ROWS - 1), Facing::Bow(Dir4::N))
     }
 
     /// Build the [`Board`] for the current encounter. Returns `None` if
