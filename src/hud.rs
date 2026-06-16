@@ -76,6 +76,13 @@ const THREAT_FILL_STATUS: [f32; 4] = [0.608, 0.549, 0.859, 0.42]; // debuff
 const THREAT_FILL_OTHER: [f32; 4] = [0.55, 0.55, 0.55, 0.34]; // catch-all
 const THREAT_BEAM: [f32; 4] = [0.878, 0.300, 0.250, 0.50]; // source→target intent line
 
+// Per-ship 2D hull/health bar (`push_hull_bar_2d`): dark bg + fraction fill that
+// ramps green → amber → red as hull drops.
+const HULL_BAR_BG: [f32; 4] = [0.094, 0.094, 0.110, 0.85];
+const HULL_BAR_HIGH: [f32; 4] = [0.353, 0.820, 0.553, 1.0]; // >60% green
+const HULL_BAR_MID: [f32; 4] = [0.878, 0.741, 0.235, 1.0]; // >30% amber
+const HULL_BAR_LOW: [f32; 4] = [0.878, 0.286, 0.235, 1.0]; // <=30% red
+
 const SHIELD_PIP_CHARGE: [f32; 4] = [0.329, 0.812, 0.788, 1.0];
 
 const WHITE: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
@@ -335,10 +342,79 @@ pub fn compose_scene_2d(board: &Board, cfg: &ProjectorConfig) -> Vec<DrawCommand
     // Far row (row 0) first → front row last, so nearer ships overlap farther.
     let mut ships: Vec<&Ship> = board.cells.iter().flatten().collect();
     ships.sort_by_key(|s| s.pos.row);
-    for ship in ships {
+    for ship in &ships {
         push_ship_2d(&mut out, ship, cfg);
     }
+    // Per-ship overlays LAST, so health bars sit on top of every hull (incl. a
+    // nearer ship that overlaps a farther one). Same far→near order.
+    for ship in &ships {
+        push_hull_bar_2d(&mut out, ship, cfg);
+    }
     out
+}
+
+/// A compact per-ship hull/health bar floating just above the ship's cell on the
+/// 2D board (Bruce's "who's hurt" readability). A dark background bar with a
+/// left-aligned fill = `hull / max_hull`, colored green → amber → red as health
+/// drops. Width tracks the hull box and the bar shrinks with `depth_scale`, so a
+/// back-row ship gets a smaller bar — consistent with the perspective. Drawn for
+/// every ship (player + enemies); skipped if `max_hull <= 0` (degenerate).
+fn push_hull_bar_2d(out: &mut Vec<DrawCommand>, ship: &Ship, cfg: &ProjectorConfig) {
+    if ship.max_hull <= 0 {
+        return;
+    }
+    let q = grid_cell_quad(ship.pos, cfg);
+    let scale = q.depth_scale;
+    // Match the hull box half-width used in push_ship_2d (base = 22 * depth_scale).
+    let base = 22.0 * scale;
+    let half_w = base; // bar spans the hull width
+    let bar_h = (3.0 * scale).max(1.5);
+    // Float above the hull: cell center − (hull half-height + gap). Use the
+    // bow-stance vertical half-extent (the taller case) so the bar clears the hull.
+    let cy = q.center[1] - (base + 6.0 * scale);
+    let cx = q.center[0];
+    let left = cx - half_w;
+
+    // Background.
+    push_polygon(
+        out,
+        PolygonInstance::flat(
+            [
+                [left, cy - bar_h * 0.5],
+                [left + half_w * 2.0, cy - bar_h * 0.5],
+                [left + half_w * 2.0, cy + bar_h * 0.5],
+                [left, cy + bar_h * 0.5],
+            ],
+            HULL_BAR_BG,
+            atlas::cell_uvs(atlas::SOLID_WHITE),
+        ),
+    );
+
+    // Fill = hull fraction, left-aligned.
+    let frac = (ship.hull as f32 / ship.max_hull as f32).clamp(0.0, 1.0);
+    if frac > 0.0 {
+        let fill_w = half_w * 2.0 * frac;
+        let color = if frac > 0.6 {
+            HULL_BAR_HIGH
+        } else if frac > 0.3 {
+            HULL_BAR_MID
+        } else {
+            HULL_BAR_LOW
+        };
+        push_polygon(
+            out,
+            PolygonInstance::flat(
+                [
+                    [left, cy - bar_h * 0.5],
+                    [left + fill_w, cy - bar_h * 0.5],
+                    [left + fill_w, cy + bar_h * 0.5],
+                    [left, cy + bar_h * 0.5],
+                ],
+                color,
+                atlas::cell_uvs(atlas::SOLID_WHITE),
+            ),
+        );
+    }
 }
 
 /// D4: render the enemy-intent telegraph from `board.threats` (the resolver's
