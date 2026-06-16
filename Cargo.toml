@@ -116,6 +116,17 @@ name = "encounter_preview"
 path = "src/bin/encounter_preview.rs"
 required-features = ["render", "runtime"]
 
+# Headless offscreen → PNG capture: renders ONE frame of the real combat board
+# (campaign bow-to-bow layout, Aegis loft player + CAD enemies) through the same
+# pipelines the game uses, with NO window/display, and writes a PNG. The
+# permanent "give the team eyes" tool so anyone (incl. an AI agent) can SEE the
+# rendered frame by Reading the file. Run:
+# `cargo run --bin capture --features render,runtime -- bugs/current_state.png`.
+[[bin]]
+name = "capture"
+path = "src/bin/capture.rs"
+required-features = ["render", "runtime"]
+
 [dev-dependencies]
 # Property-based testing for the band_falloff overflow / clamp invariant
 # and the absorb_shield (dmg, armour, charge) state machine. Avoid using

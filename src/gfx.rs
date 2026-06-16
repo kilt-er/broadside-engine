@@ -586,10 +586,16 @@ fn fs_blit(in: VsOut) -> @location(0) vec4<f32> {
 /// procedural atlas texture, and all render pipelines on `new`. Renders one
 /// frame on `render` given a pre-built draw command list.
 pub struct Gfx {
-    surface: wgpu::Surface<'static>,
+    /// `None` in HEADLESS mode ([`Gfx::new_headless`], used by the offscreen PNG
+    /// capture tool) — there is no window/swapchain to present to; only the
+    /// offscreen target + readback are used. `Some` for the normal windowed path.
+    surface: Option<wgpu::Surface<'static>>,
     device: wgpu::Device,
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
+    /// The offscreen render target's texture (kept, not just its view) so the
+    /// headless [`Gfx::capture_png`] can `copy_texture_to_buffer` it for readback.
+    offscreen_tex: wgpu::Texture,
     offscreen_view: wgpu::TextureView,
     sprites: SpritePipeline,
     polygons: PolygonPipeline,
@@ -858,7 +864,22 @@ impl Gfx {
             desired_maximum_frame_latency: 2,
         };
         surface.configure(&device, &config);
+        Self::assemble(Some(surface), device, queue, format, config)
+    }
 
+    /// Shared post-device setup for both [`Gfx::new`] (windowed) and
+    /// [`Gfx::new_headless`] (capture): builds the offscreen target + atlas +
+    /// every pipeline + the parallax background and assembles the struct, given
+    /// an already-acquired device/queue/format/config and an optional surface.
+    /// Keeping this one body means the windowed and headless paths render through
+    /// the IDENTICAL pipelines (the whole point of capture: see the real frame).
+    fn assemble(
+        surface: Option<wgpu::Surface<'static>>,
+        device: wgpu::Device,
+        queue: wgpu::Queue,
+        format: wgpu::TextureFormat,
+        config: wgpu::SurfaceConfiguration,
+    ) -> Self {
         let offscreen = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("offscreen virtual-res target"),
             size: wgpu::Extent3d {
@@ -870,7 +891,11 @@ impl Gfx {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: OFFSCREEN_FORMAT,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            // COPY_SRC so the headless capture tool can read the rendered frame
+            // back for a PNG (harmless for the windowed path).
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
         });
         let offscreen_view = offscreen.create_view(&wgpu::TextureViewDescriptor::default());
@@ -940,6 +965,7 @@ impl Gfx {
             device,
             queue,
             config,
+            offscreen_tex: offscreen,
             offscreen_view,
             sprites,
             polygons,
@@ -963,6 +989,150 @@ impl Gfx {
 
         g.update_blit_uniform();
         g
+    }
+
+    /// HEADLESS constructor for the offscreen PNG capture tool (no window or
+    /// swapchain). Builds the SAME device, atlas, sprite/polygon/loft pipelines,
+    /// and parallax background as [`Gfx::new`], so a captured frame renders
+    /// through the exact same path the game uses, but with no surface
+    /// (`surface: None`). Headlessly, [`Gfx::render`] composites the scene into
+    /// the offscreen then skips the (absent) swapchain blit and present, and
+    /// [`Gfx::capture_png`] reads that offscreen back to a file. The permanent
+    /// "give the team eyes without a display" tool.
+    pub async fn new_headless() -> Self {
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+        let adapter = instance
+            .request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::HighPerformance,
+                compatible_surface: None,
+                force_fallback_adapter: false,
+            })
+            .await
+            .expect("request adapter (headless)");
+        log::info!("headless adapter: {:?}", adapter.get_info());
+        let (device, queue) = adapter
+            .request_device(&wgpu::DeviceDescriptor {
+                label: Some("headless device"),
+                required_features: wgpu::Features::empty(),
+                required_limits: wgpu::Limits::default(),
+                memory_hints: wgpu::MemoryHints::Performance,
+                trace: wgpu::Trace::Off,
+            })
+            .await
+            .expect("request device (headless)");
+        // No surface to derive a format from; the blit pipeline is built but never
+        // run headlessly, so any sRGB format works. A dummy 1×1 config keeps the
+        // shared `update_blit_uniform` math well-defined.
+        let format = wgpu::TextureFormat::Rgba8UnormSrgb;
+        let config = wgpu::SurfaceConfiguration {
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            format,
+            width: VIRTUAL_W * FIXED_UPSCALE,
+            height: VIRTUAL_H * FIXED_UPSCALE,
+            present_mode: wgpu::PresentMode::AutoVsync,
+            alpha_mode: wgpu::CompositeAlphaMode::Auto,
+            view_formats: vec![],
+            desired_maximum_frame_latency: 2,
+        };
+        Self::assemble(None, device, queue, format, config)
+    }
+
+    /// Render ONE frame of `commands` into the 480×270 offscreen and save it as a
+    /// PNG at `path` (the headless capture). Runs the SAME scene-to-offscreen
+    /// composite as [`Gfx::render`] (background → batched sprites/polygons/loft
+    /// ships), then copies the offscreen texture back to the CPU and writes RGBA
+    /// PNG via the `image` crate. The team (and the renderer) Read the PNG to SEE
+    /// the actual frame with no window/display needed.
+    ///
+    /// wgpu requires `copy_texture_to_buffer`'s `bytes_per_row` to be a multiple
+    /// of 256; 480×4 = 1920 is NOT, so we pad to the next multiple and strip the
+    /// padding per row before saving.
+    pub fn capture_png(
+        &mut self,
+        commands: &[DrawCommand],
+        path: &std::path::Path,
+    ) -> Result<(), String> {
+        // 1) Composite the scene into the offscreen exactly as render() does
+        //    (minus the swapchain blit) by reusing render() — headless, render()
+        //    composites the offscreen then early-returns at the (absent) surface.
+        self.render(commands).map_err(|e| format!("render: {e:?}"))?;
+
+        // 2) Read the offscreen back. Re-create a matching readback target: the
+        //    offscreen view's texture is private, so render a 2nd time into a
+        //    fresh COPY_SRC texture we own here is overkill — instead copy from the
+        //    existing offscreen. We kept its handle via offscreen_view's texture;
+        //    but TextureView doesn't expose its texture, so capture keeps its own
+        //    readback by copying through a dedicated capture texture.
+        let bytes_per_pixel = 4u32;
+        let unpadded = VIRTUAL_W * bytes_per_pixel;
+        let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT; // 256
+        let padded = unpadded.div_ceil(align) * align;
+        let buf_size = (padded * VIRTUAL_H) as u64;
+        let readback = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("capture readback"),
+            size: buf_size,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let mut enc = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("capture copy"),
+            });
+        enc.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: &self.offscreen_tex,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &readback,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(padded),
+                    rows_per_image: Some(VIRTUAL_H),
+                },
+            },
+            wgpu::Extent3d {
+                width: VIRTUAL_W,
+                height: VIRTUAL_H,
+                depth_or_array_layers: 1,
+            },
+        );
+        self.queue.submit(std::iter::once(enc.finish()));
+
+        // 3) Map + block until ready (headless tool, blocking is fine).
+        let slice = readback.slice(..);
+        let (tx, rx) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |r| {
+            let _ = tx.send(r);
+        });
+        self.device.poll(wgpu::PollType::Wait).ok();
+        rx.recv()
+            .map_err(|e| format!("map recv: {e}"))?
+            .map_err(|e| format!("map_async: {e:?}"))?;
+
+        // 4) Strip the per-row padding into a tight RGBA buffer.
+        let data = slice.get_mapped_range();
+        let mut rgba = Vec::with_capacity((unpadded * VIRTUAL_H) as usize);
+        for row in 0..VIRTUAL_H {
+            let start = (row * padded) as usize;
+            rgba.extend_from_slice(&data[start..start + unpadded as usize]);
+        }
+        drop(data);
+        readback.unmap();
+
+        // 5) Save PNG (RGBA8). image is in-tree (the bg loader uses it).
+        image::save_buffer(
+            path,
+            &rgba,
+            VIRTUAL_W,
+            VIRTUAL_H,
+            image::ColorType::Rgba8,
+        )
+        .map_err(|e| format!("png save: {e}"))?;
+        Ok(())
     }
 
     /// Distinct cool/friendly tint multiplier applied to the player's copy of
@@ -1121,13 +1291,17 @@ impl Gfx {
         if size.width > 0 && size.height > 0 {
             self.config.width = size.width;
             self.config.height = size.height;
-            self.surface.configure(&self.device, &self.config);
+            if let Some(surface) = self.surface.as_ref() {
+                surface.configure(&self.device, &self.config);
+            }
             self.update_blit_uniform();
         }
     }
 
     pub fn reconfigure(&mut self) {
-        self.surface.configure(&self.device, &self.config);
+        if let Some(surface) = self.surface.as_ref() {
+            surface.configure(&self.device, &self.config);
+        }
         self.update_blit_uniform();
     }
 
@@ -1555,20 +1729,13 @@ impl Gfx {
         // caller DROP the frame: a dropped frame presents nothing (the previous
         // backbuffer / a black image), so a run of Outdated frames reads as the
         // "fade to black → snap to grey" flicker (#47). Re-acquiring here renders
-        // this frame instead — the offscreen scene is already composited above, so
-        // we only needed the swap image for the final blit. Only a SECOND failure
-        // (or a non-stale error) propagates to the caller's fallback.
-        let frame = match self.surface.get_current_texture() {
-            Ok(f) => f,
-            Err(wgpu::SurfaceError::Outdated | wgpu::SurfaceError::Lost) => {
-                self.surface.configure(&self.device, &self.config);
-                self.surface.get_current_texture()?
-            }
-            Err(e) => return Err(e),
-        };
-        let swap_view = frame
-            .texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
+        // this frame instead. Only a SECOND failure (or a non-stale error)
+        // propagates to the caller's fallback.
+        //
+        // The swap image is acquired LATER (just before the final blit) — the
+        // offscreen composite below needs no surface, so a headless Gfx (no
+        // surface, e.g. `capture_png`) still composites the full scene into the
+        // offscreen and only skips the swapchain blit/present.
 
         // The scene-to-offscreen composite walks the batches in z-order. Most
         // batches (sprites / polygons / textured ships) draw directly into the
@@ -1802,6 +1969,33 @@ impl Gfx {
             });
             self.queue.submit(std::iter::once(enc.finish()));
         }
+
+        // Headless (no surface): the offscreen now holds the fully composited
+        // scene (read back by `capture_png`). There's no swapchain to blit to or
+        // present, so we're done.
+        let Some(surface) = self.surface.as_ref() else {
+            return Ok(());
+        };
+
+        // Acquire the swapchain image. On a STALE surface (Outdated/Lost — from a
+        // resize, a compositor change, or GPU/memory pressure) reconfigure and
+        // re-acquire ONCE in place, rather than letting `?` propagate and the
+        // caller DROP the frame: a dropped frame presents nothing (the previous
+        // backbuffer / a black image), so a run of Outdated frames reads as the
+        // "fade to black → snap to grey" flicker (#47). The offscreen scene is
+        // already composited above, so we only needed the swap image for the
+        // final blit. Only a SECOND failure (or a non-stale error) propagates.
+        let frame = match surface.get_current_texture() {
+            Ok(f) => f,
+            Err(wgpu::SurfaceError::Outdated | wgpu::SurfaceError::Lost) => {
+                surface.configure(&self.device, &self.config);
+                surface.get_current_texture()?
+            }
+            Err(e) => return Err(e),
+        };
+        let swap_view = frame
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
 
         // Final pass: blit offscreen → swapchain with continuous-scale
         // letterboxing, then present.
