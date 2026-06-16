@@ -97,6 +97,14 @@ const HUD_TILE_COOLDOWN: [f32; 4] = [0.42, 0.45, 0.52, 0.9]; // dim = cooling
 
 const SHIELD_PIP_CHARGE: [f32; 4] = [0.329, 0.812, 0.788, 1.0];
 
+// Bow-direction chevron (#55): BOLD, high-contrast, faction-tinted near-white so
+// the bow reads at a glance against both the dark backdrop and the hull (the old
+// chevron used the hull STROKE colour, which blended into the hull). A dark
+// drop-shadow chevron is drawn behind it so it reads on any layer.
+const BOW_MARK_PLAYER: [f32; 4] = [0.74, 1.0, 0.98, 1.0]; // bright cyan-white
+const BOW_MARK_ENEMY: [f32; 4] = [1.0, 0.86, 0.55, 1.0]; // bright amber-white
+const BOW_MARK_SHADOW: [f32; 4] = [0.02, 0.03, 0.05, 0.85]; // dark backing
+
 const WHITE: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
 const DEFEAT_TINT: [f32; 4] = [0.85, 0.08, 0.10, 0.55];
 const VICTORY_TINT: [f32; 4] = [1.00, 0.80, 0.20, 0.45];
@@ -855,26 +863,47 @@ fn push_ship_arrow_and_pips_2d(
     center: [f32; 2],
     base: f32,
 ) {
-    let stroke = if ship.faction == Faction::Player {
-        PLAYER_HULL_STROKE
+    let mark = if ship.faction == Faction::Player {
+        BOW_MARK_PLAYER
     } else {
-        ENEMY_HULL_STROKE
+        BOW_MARK_ENEMY
     };
-    // Bow-direction arrow: a chevron just past the hull edge along the forward
-    // axis (Facing::forward_axis(), via bow_screen_dir), rotated to point that
-    // way. BOW_CHEVRON points +x at rotation 0.
+    // Bow-direction chevron (#55): the single most important orientation cue —
+    // "you should know the bow without thinking." Drawn BOLD and in a bright
+    // faction-tinted near-white (not the hull-blending stroke), seated clearly
+    // ahead of the hull along the forward axis (Facing::forward_axis(), via
+    // bow_screen_dir). BOW_CHEVRON points +x at rotation 0. A dark drop-shadow
+    // chevron sits behind it (offset toward the hull) so it reads on any layer.
     let (dx, dy) = bow_screen_dir(ship.facing);
-    let reach = base + 8.0;
-    let arrow_sz = (base * 0.27).max(3.0);
+    let rot = dy.atan2(dx);
+    let arrow_sz = (base * 0.55).max(5.0);
+    // Seat the chevron a touch beyond the hull edge plus its own half-size so the
+    // whole mark clears the hull and reads as "pointing away from" the ship.
+    let reach = base + 6.0 + arrow_sz;
+    let tip = [center[0] + dx * reach, center[1] + dy * reach];
+    let (uv0, uv1) = atlas::cell_uvs(atlas::BOW_CHEVRON);
+    // Shadow first (pulled back toward the hull by ~1px so it haloes the mark).
     push_sprite(
         out,
         SpriteInstance {
-            pos: [center[0] + dx * reach, center[1] + dy * reach],
+            pos: [tip[0] - dx * 1.0, tip[1] - dy * 1.0],
+            half_size: [arrow_sz * 1.18, arrow_sz * 1.18],
+            color: BOW_MARK_SHADOW,
+            uv_min: uv0,
+            uv_max: uv1,
+            rotation_rad: rot,
+            _pad: [0.0; 3],
+        },
+    );
+    push_sprite(
+        out,
+        SpriteInstance {
+            pos: tip,
             half_size: [arrow_sz, arrow_sz],
-            color: stroke,
-            uv_min: atlas::cell_uvs(atlas::BOW_CHEVRON).0,
-            uv_max: atlas::cell_uvs(atlas::BOW_CHEVRON).1,
-            rotation_rad: dy.atan2(dx),
+            color: mark,
+            uv_min: uv0,
+            uv_max: uv1,
+            rotation_rad: rot,
             _pad: [0.0; 3],
         },
     );

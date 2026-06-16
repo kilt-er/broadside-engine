@@ -48,6 +48,16 @@ use crate::ship_design::{Point2, ShipDesign};
 /// side belly→top, skipping the shared top and belly endpoints).
 pub const DEFAULT_SEC_N: usize = 10;
 
+/// Vertical-mass multiplier applied to the PLAYER hull's `hscale` when lofting
+/// it for the in-game top-down ¾ camera (#54). The Aegis design is authored at
+/// `hscale = 0.7` (0.7u tall) for the CAD editor's near-side view, but from the
+/// game's steep [`crate::loft_gpu::CAMERA_PITCH_DEG`] pitch a 0.7u hull reads as
+/// a flat plank rather than a ship. Boosting the height gives the hull visible
+/// mass without touching the design file (purely a render-readability tweak —
+/// the source design is unchanged). The playable bin and the headless capture
+/// tool BOTH apply this so the capture stays a faithful image of the game.
+pub const PLAYER_LOFT_HSCALE_BOOST: f32 = 1.8;
+
 /// Parameters that scale the loft. Pulled from [`ShipDesign`]'s `settings`
 /// ([`crate::ship_design::Settings::stretch`] / `hscale`) plus the section
 /// ring resolution.

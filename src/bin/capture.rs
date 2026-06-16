@@ -132,7 +132,9 @@ fn main() {
 /// Loft the "Aegis" ship from the v2 library to a HullMesh (minimal-field parse,
 /// robust to the v2 editor settings schema — same approach as the bin).
 fn loft_aegis(library_bytes: &[u8]) -> Option<broadside_engine::loft::HullMesh> {
-    use broadside_engine::loft::{loft_from_profiles, LoftParams, DEFAULT_SEC_N};
+    use broadside_engine::loft::{
+        loft_from_profiles, LoftParams, DEFAULT_SEC_N, PLAYER_LOFT_HSCALE_BOOST,
+    };
     use broadside_engine::ship_design::Point2;
     use serde::Deserialize;
 
@@ -167,7 +169,9 @@ fn loft_aegis(library_bytes: &[u8]) -> Option<broadside_engine::loft::HullMesh> 
     let to_pts = |v: Vec<[f64; 2]>| v.into_iter().map(Point2).collect::<Vec<_>>();
     let params = LoftParams {
         stretch: d.settings.stretch as f32,
-        hscale: d.settings.hscale as f32,
+        // #54: give the hull vertical mass for the steep in-game camera (the
+        // game bin applies the same boost, so the capture stays faithful).
+        hscale: d.settings.hscale as f32 * PLAYER_LOFT_HSCALE_BOOST,
         sec_n: d.settings.secn.unwrap_or(DEFAULT_SEC_N).max(3),
     };
     Some(loft_from_profiles(

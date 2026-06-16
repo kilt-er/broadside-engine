@@ -1478,7 +1478,9 @@ fn loft_library_ship_by_name(
     library_bytes: &[u8],
     name: &str,
 ) -> Option<broadside_engine::loft::HullMesh> {
-    use broadside_engine::loft::{loft_from_profiles, LoftParams, DEFAULT_SEC_N};
+    use broadside_engine::loft::{
+        loft_from_profiles, LoftParams, DEFAULT_SEC_N, PLAYER_LOFT_HSCALE_BOOST,
+    };
     use broadside_engine::ship_design::Point2;
     use serde::Deserialize;
 
@@ -1518,7 +1520,10 @@ fn loft_library_ship_by_name(
     let height = d.height_profile.map(to_pts);
     let params = LoftParams {
         stretch: d.settings.stretch as f32,
-        hscale: d.settings.hscale as f32,
+        // #54: give the hull vertical mass for the steep in-game ¾ camera — a
+        // 0.7u-tall hull reads as a flat plank from this pitch. The headless
+        // capture tool applies the SAME boost so its image matches the game.
+        hscale: d.settings.hscale as f32 * PLAYER_LOFT_HSCALE_BOOST,
         sec_n: d.settings.secn.unwrap_or(DEFAULT_SEC_N).max(3),
     };
     Some(loft_from_profiles(
