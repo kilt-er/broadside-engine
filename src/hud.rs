@@ -846,12 +846,12 @@ fn push_ship_2d(
             kind,
         }));
         // (#62) Player engine glow at the stern (toward camera = the hull's lower
-        // edge): the reference ship's SIGNATURE read. Seat it at the stern but
-        // CLAMP its y to sit clear above the bottom HUD band (band top = frame_h -
-        // 40) so the bright cyan cluster always reads (it was hidden under the HUD).
+        // edge): the reference ship's SIGNATURE read. Seated low on the hull's
+        // stern (now a DARK hull, so the bright cyan cluster POPS cyan-on-dark),
+        // clamped clear of the bottom HUD band so it always reads.
         if is_player {
             let band_top = crate::gfx::VIRTUAL_H as f32 - 40.0;
-            let glow_y = (b - h * 0.14).min(band_top - 6.0);
+            let glow_y = (b - h * 0.06).min(band_top - 4.0);
             push_engine_glow_2d(out, [center[0], glow_y], w);
         }
         // Orientation + buffer cues on top of the 3-D hull. (#62) The player's bow
@@ -956,10 +956,12 @@ fn push_ship_arrow_and_pips_2d(
 /// thrusters plus a couple above, each a bright cyan CORE over a larger soft
 /// HALO so the cluster glows. Player-only (enemies are seen bow-on, up-lane).
 fn push_engine_glow_2d(out: &mut Vec<DrawCommand>, center: [f32; 2], hull_w: f32) {
-    // Thruster offsets (in units of hull half-width / a small vertical step),
-    // mimicking the reference cluster: 3 across the bottom, 2 tucked above.
-    let r = (hull_w * 0.5).max(8.0);
-    let step = r * 0.30;
+    // Thruster cluster sized to a COMPACT fraction of the hull width but CLAMPED so
+    // it stays a tidy engine bank, not a giant pale-cyan wash (the hero hull is
+    // huge, so scaling 1:1 with hull_w ballooned the halos into the "pale slab" —
+    // #62). The whole cluster spans ~`r` px; dots are small.
+    let r = (hull_w * 0.20).clamp(10.0, 26.0);
+    let step = r * 0.42;
     let dots = [
         (-2.0_f32, 0.35_f32, 1.15_f32), // (x in steps, y in steps, size mult)
         (0.0, 0.6, 1.5),
@@ -968,7 +970,7 @@ fn push_engine_glow_2d(out: &mut Vec<DrawCommand>, center: [f32; 2], hull_w: f32
         (1.0, -0.5, 1.0),
     ];
     let (uv0, uv1) = atlas::cell_uvs(atlas::SOLID_WHITE);
-    let base = (r * 0.16).max(1.6);
+    let base = (r * 0.22).max(1.6);
     for (sx, sy, sz) in dots {
         let pos = [center[0] + sx * step, center[1] + sy * step];
         let core = base * sz;

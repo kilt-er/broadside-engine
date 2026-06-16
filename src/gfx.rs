@@ -1171,10 +1171,13 @@ impl Gfx {
         Ok(())
     }
 
-    /// Base hull albedo the lofted player hull is tinted from — a neutral slate
-    /// that, multiplied by [`Self::PLAYER_TINT`], lands the cool player hue
-    /// (matches the look the CAD hull gets from `upload_imported_tinted`).
-    const LOFT_HULL_ALBEDO: [f32; 3] = [0.706, 0.776, 0.878];
+    /// Base hull albedo the lofted player hull is tinted from. (#62) DARKENED to a
+    /// deep slate so the lit hull reads as a defined dark-gray SHAPE (matching the
+    /// ref ship) rather than a pale light-blue fill/slab — and so the bright cyan
+    /// stern engine glow POPS against it. Multiplied by [`Self::PLAYER_TINT`] then
+    /// lit by the loft shader (which lifts it well above the raw albedo), so a low
+    /// albedo lands a medium-dark hull, not black. Was [0.706,0.776,0.878] (pale).
+    const LOFT_HULL_ALBEDO: [f32; 3] = [0.12, 0.14, 0.20];
 
     /// Install the PLAYER's actual class hull as an already-LOFTED [`HullMesh`]
     /// (the Aegis hull, lofted by the caller from the design in
