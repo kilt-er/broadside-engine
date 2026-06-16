@@ -1086,47 +1086,10 @@ impl ApplicationHandler for App {
         if loaded > 0 {
             log::info!("loaded {} ship sprite PNG(s) from assets/sprites/", loaded);
         }
-        // Install the loft meshes the 3D render path draws: the vendored CAD
-        // hull (assets/ships/broadside-ship.glb) shared by every ship — the
-        // player gets a distinctly cool-tinted copy, the four enemies the
-        // authored (orange-accented) colours. Meshes are uploaded once here;
-        // per-ship poses are synced from board orientation each frame. hud emits
-        // a LoftShip for any ship whose mesh is installed (skipping its 2D
-        // silhouette). The glb is embedded via include_bytes! so it loads
-        // regardless of the binary's run directory.
-        const SHIP_GLB: &[u8] = include_bytes!("../../assets/ships/broadside-ship.glb");
-        let player_ok = gfx.install_player_cad(SHIP_GLB).is_ok();
-        let enemy_ok = gfx.install_enemy_cad(SHIP_GLB).is_ok();
-        if player_ok && enemy_ok {
-            log::info!(
-                "loft: CAD hull installed for player (tinted) + enemies ({} bytes)",
-                SHIP_GLB.len()
-            );
-        } else {
-            log::warn!(
-                "loft: CAD import failed (player_ok={player_ok}, enemy_ok={enemy_ok}); \
-                 affected ships fall back to 2D silhouettes"
-            );
-        }
-
-        // (#51 Aegis) Render the PLAYER as its actual Aegis-class hull: load the
-        // "Aegis" loft design from the v2 ship library and install it as the
-        // player loft mesh. loft_kind PREFERS this over the generic CAD hull
-        // above, so the player shows the real Aegis (the CAD install stays as the
-        // fallback if this fails). Embedded so it loads regardless of run dir.
-        const SHIP_LIBRARY_V2: &[u8] =
-            include_bytes!("../../assets/ships/broadside-ship-library_v2.json");
-        match loft_library_ship_by_name(SHIP_LIBRARY_V2, "Aegis") {
-            Some(mesh) => {
-                let tris = mesh.tri_count();
-                gfx.install_player_loft_mesh(&mesh);
-                log::info!("loft: player Aegis hull lofted from ship-library_v2 ({tris} tris)");
-            }
-            None => log::warn!(
-                "loft: Aegis design not found/parseable in ship-library_v2; player falls back to CAD hull"
-            ),
-        }
-
+        // (#66) Ships render from the editor-BAKED sprites loaded above, drawn
+        // UNLIT per BROADSIDE_RENDER_CONTRACT.md. The runtime loft (CAD/Aegis mesh
+        // install) was an off-contract deviation that shadowed those sprites — it's
+        // removed; hud::push_ship_2d emits TexturedShip from the loaded sprites.
         self.window = Some(window);
         self.gfx = Some(gfx);
     }
@@ -1274,18 +1237,6 @@ impl ApplicationHandler for App {
                 let demo_state = self.demo_state;
                 let sector_idx = self.run.current_sector_idx;
                 let salvage = self.run.salvage;
-                // Sync every loft ship's pose to its current board orientation
-                // (sync_loft_pose creates a pose on first sight and reorients on
-                // a bow-on↔broadside flip — a no-op when unchanged, so flips
-                // auto-tween), prune poses for ships that have left the board,
-                // then advance all idle + tweens by a fixed ~60 Hz dt.
-                let loft_ships: Vec<(String, Orientation)> = self
-                    .board
-                    .cells
-                    .iter()
-                    .flatten()
-                    .map(|s| (s.id.clone(), s.orientation))
-                    .collect();
                 // Combat juice (#51): diff the board for this frame (spawns
                 // hit/explosion/trail/beam effects), then advance lifetimes by a
                 // fixed ~60 Hz dt. observe() is read-only over the board and
@@ -1347,12 +1298,9 @@ impl ApplicationHandler for App {
                 // (#57) Pan/recede the parallax background toward the player's
                 // column + the campaign level, eased per frame.
                 gfx.update_background(bg_level, player_col, 1.0 / 60.0);
-                for (id, orient) in &loft_ships {
-                    gfx.sync_loft_pose(id, *orient);
-                }
-                let live_ids: Vec<String> = loft_ships.iter().map(|(id, _)| id.clone()).collect();
-                gfx.retain_loft_poses(&live_ids);
-                let loft_animating = gfx.advance_loft_poses(1.0 / 60.0);
+                // (#66) Loft pose sync removed — ships render from baked sprites
+                // (push_ship_2d → TexturedShip), not the loft, so there are no loft
+                // poses to drive.
                 // v2 render path (#43): the playable bin now composes the 2-D
                 // perspective scene (the SAME hud::compose_scene_2d encounter_
                 // preview uses) instead of the legacy 1-D flat-lane
@@ -1453,7 +1401,7 @@ impl ApplicationHandler for App {
                 // The animation-liveness flags are consumed here only to advance
                 // their state each frame; redraw cadence no longer depends on
                 // them (we always redraw), so they no longer gate anything.
-                let _ = (active_tween, vfx_active, ability_active, loft_animating, flash_active);
+                let _ = (active_tween, vfx_active, ability_active, flash_active);
                 if let Some(w) = self.window.as_ref() {
                     w.request_redraw();
                 }
@@ -1461,77 +1409,6 @@ impl ApplicationHandler for App {
             _ => {}
         }
     }
-}
-
-/// Find the ship named `name` in a `broadside-ship-library` JSON blob and LOFT
-/// its hull to a [`HullMesh`] (#51 Aegis). Deliberately parses only the MINIMAL
-/// fields the loft needs (plan / section / optional heightProfile + the
-/// stretch/hscale settings) into a local shape rather than the full
-/// `ship_design::ShipDesign` — the v2 editor's `settings`/`grade` schema has
-/// diverged from that struct (extra fields, different required set: it has
-/// wscale/noseTaper/secn/lights/… but not sup/greeb/laz/lel/res), so a strict
-/// `ShipDesign` parse FAILS on the v2 library. The loft itself only consumes
-/// plan/section/height + stretch/hscale, so this minimal parse is sufficient and
-/// robust to the format drift. Returns `None` (caller falls back to the CAD hull)
-/// if the JSON is malformed or no ship matches — never crashes startup.
-fn loft_library_ship_by_name(
-    library_bytes: &[u8],
-    name: &str,
-) -> Option<broadside_engine::loft::HullMesh> {
-    use broadside_engine::loft::{
-        loft_from_profiles, LoftParams, DEFAULT_SEC_N, PLAYER_LOFT_HSCALE_BOOST,
-    };
-    use broadside_engine::ship_design::Point2;
-    use serde::Deserialize;
-
-    #[derive(Deserialize)]
-    struct Library {
-        ships: Vec<LibShip>,
-    }
-    #[derive(Deserialize)]
-    struct LibShip {
-        name: String,
-        design: LibDesign,
-    }
-    #[derive(Deserialize)]
-    struct LibDesign {
-        plan: Vec<[f64; 2]>,
-        section: Vec<[f64; 2]>,
-        #[serde(default, rename = "heightProfile")]
-        height_profile: Option<Vec<[f64; 2]>>,
-        settings: LibSettings,
-    }
-    #[derive(Deserialize)]
-    struct LibSettings {
-        stretch: f64,
-        hscale: f64,
-        /// Section ring resolution (the v2 editor's `secn`); default to the
-        /// engine's DEFAULT_SEC_N when absent.
-        #[serde(default)]
-        secn: Option<usize>,
-    }
-
-    let library: Library = serde_json::from_slice(library_bytes).ok()?;
-    let ship = library.ships.into_iter().find(|s| s.name == name)?;
-    let d = ship.design;
-    let to_pts = |v: Vec<[f64; 2]>| v.into_iter().map(Point2).collect::<Vec<_>>();
-    let plan = to_pts(d.plan);
-    let section = to_pts(d.section);
-    let height = d.height_profile.map(to_pts);
-    let params = LoftParams {
-        stretch: d.settings.stretch as f32,
-        // #54: give the hull vertical mass for the steep in-game ¾ camera — a
-        // 0.7u-tall hull reads as a flat plank from this pitch. The headless
-        // capture tool applies the SAME boost so its image matches the game.
-        hscale: d.settings.hscale as f32 * PLAYER_LOFT_HSCALE_BOOST,
-        sec_n: d.settings.secn.unwrap_or(DEFAULT_SEC_N).max(3),
-    };
-    Some(loft_from_profiles(
-        &plan,
-        &section,
-        height.as_deref(),
-        params,
-    ))
 }
 
 /// Keep the DISPLAY awake for the lifetime of the session (#47 follow-up).
