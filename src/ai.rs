@@ -35,8 +35,16 @@
 //! reorient, or a vent) — the read-and-react loop.
 
 use crate::grid::{self, Dir8, Pos, Range};
-use crate::resolve::{resolve_targeting_2d, Content};
+use crate::resolve::{enemy_initiative, resolve_targeting_2d, Content};
 use crate::types::{Board, Effect, Faction, Trait};
+
+/// C2 (#35) threat-spread tie-breaker weight: score penalty PER target cell that
+/// overlaps an already-threatened (by an earlier-committed ally) cell. Kept
+/// SMALL — one overlapping cell (`-1`) cannot flip the choice away from hitting
+/// the player (`+10`) or a higher-damage shot; it only separates otherwise
+/// comparable shots so the squad fans its threat. NEVER gates firing. Tunable;
+/// any change here is balance-touching → pre-propose.
+const SPREAD_OVERLAP_PENALTY: i32 = 1;
 
 /// Choose and queue the enemy at `enemy_cell`'s action for this world phase
 /// (the 2-D C1 ladder). `enemy_cell` is the flat board index the resolver's
@@ -80,6 +88,16 @@ pub fn decide_enemy_action(enemy_cell: usize, board: &mut Board, content: &dyn C
     // the best. The gate IS resolve_targeting_2d (the single source — V4); empty
     // result = can't fire (off-arc, out-of-band, or the #7 deadzone when the
     // player closed on a long-range gun).
+    //
+    // C2 (#35, the #74 threat-SPREAD): the cells already threatened by allies who
+    // committed EARLIER in this decision pass. Used as a TIE-BREAKER in the score
+    // below — a candidate shot whose target cells overlap the spread set is mildly
+    // penalised, so the squad fans its threats across DISTINCT cells (the player
+    // can't sidestep one cell to dodge everything). It is NEVER a gate: spread
+    // only chooses AMONG viable shots, never whether to shoot (the #41/#71 lesson
+    // — diversity must not cause "march, don't shoot"). See
+    // [`allies_threatened_cells`].
+    let spread_set = allies_threatened_cells(enemy_pos, board, content);
     let mut best: Option<(i32, String)> = None;
     for weapon_id in &mount_weapons {
         let Some(action) = content.action(weapon_id) else {
@@ -128,6 +146,14 @@ pub fn decide_enemy_action(enemy_cell: usize, board: &mut Board, content: &dyn C
         if pursuit && hits_player {
             score += 2;
         }
+        // C2 spread tie-breaker: penalise overlap with cells already threatened
+        // by earlier-committed allies, so the squad spreads its threat. SMALL
+        // and dominated by the +10 player-hit / raw-damage terms — it breaks
+        // ties between comparable shots, never overrides "hit the player hard"
+        // and never suppresses a shot (the action is already a viable fire here;
+        // this only nudges WHICH viable shot). Counts each target cell once.
+        let overlap = cells.iter().filter(|c| spread_set.contains(c)).count() as i32;
+        score -= SPREAD_OVERLAP_PENALTY * overlap;
         if best.as_ref().is_none_or(|(s, _)| score > *s) {
             best = Some((score, weapon_id.clone()));
         }
@@ -176,6 +202,29 @@ pub fn decide_enemy_action(enemy_cell: usize, board: &mut Board, content: &dyn C
         }
     }
 
+    /* -- RUNG 3.5: FALLBACK CLOSE (never camp) ---------------------------- */
+    // Reached when the enemy couldn't FIRE, choose_maneuver_dir held (Rung 2
+    // returns None for "in band but blocked by ARC/HEAT/COOLDOWN" — it expects a
+    // reorient), AND no REORIENT action exists (Rung 3 found none). Pre-fix the
+    // ladder fell through to empty here and the enemy CAMPED — bruce's "enemies
+    // just sit there" + the 3 red ai_2d maneuver tests. v1 always closed in this
+    // case. So: if not locked-out / anchored, close one step toward the player so
+    // the enemy keeps applying pressure (and likely brings its arc to bear next
+    // phase) rather than queuing nothing. Over-extension is unharmed — this only
+    // fires when Rung 2's band-aware open/close already declined (i.e. the weapon
+    // is in band; closing keeps it in/below band, never strands a Far gun's
+    // deadzone open). A locked-out enemy still prefers VENT (below).
+    if !locked_out && !anchored {
+        if let Some(dir) = grid::from_to(enemy_pos, player_pos) {
+            if let Some(synth_id) = synthetic_move_for_dir(dir) {
+                if let Some(s) = board.ship_at_mut(enemy_pos) {
+                    s.queue.push(synth_id.to_string());
+                    return;
+                }
+            }
+        }
+    }
+
     /* -- RUNG 4: VENT ----------------------------------------------------- */
     for weapon_id in &mount_weapons {
         let Some(action) = content.action(weapon_id) else {
@@ -193,6 +242,62 @@ pub fn decide_enemy_action(enemy_cell: usize, board: &mut Board, content: &dyn C
     // The world phase no-ops the turn. A correctly-configured enemy never
     // reaches here. (Liveness holds for the other rungs: a queued move /
     // reorient / vent is a visible non-damage telegraph.)
+}
+
+/// C2 (#35): the set of cells already threatened by allies who committed EARLIER
+/// in THIS decision pass — the "threat-spread" context for the current enemy's
+/// FIRE-rung tie-breaker.
+///
+/// ## Why "earlier in initiative" specifically (the interleaved-loop subtlety)
+///
+/// `run_world_phase` processes enemies in [`enemy_initiative`] order,
+/// fire-THEN-decide INTERLEAVED per enemy: each enemy fires (clearing its queue),
+/// then `decide_enemy_action` re-populates it. So at the moment enemy *E* decides:
+/// - enemies BEFORE *E* in initiative have already fired+re-decided THIS pass →
+///   their `queue` holds this-pass intent (fresh). ✓ count these.
+/// - enemies AFTER *E* have NOT been reached this iteration → their `queue` still
+///   holds LAST phase's intent (stale). ✗ skip — spreading against stale intent
+///   would be wrong.
+///
+/// So we take `enemy_initiative`, find `self_pos`'s index, and union the
+/// threatened cells of the strictly-earlier enemies, computing each via
+/// [`resolve_targeting_2d`] on that ally's queued action (the SAME single source
+/// the shot + ThreatMap use — no parallel targeting path). Only DAMAGE-bearing
+/// queued actions threaten cells (a queued move/reorient/vent threatens nothing).
+/// Pure read; no new board state.
+fn allies_threatened_cells(self_pos: Pos, board: &Board, content: &dyn Content) -> Vec<Pos> {
+    let order = enemy_initiative(board);
+    // Index of the deciding enemy in the initiative order (by cell == pos index
+    // under invariant A). If absent (shouldn't happen — it's a live enemy),
+    // treat as "no earlier allies".
+    let self_idx = order.iter().position(|&c| c == self_pos.to_index());
+    let Some(self_idx) = self_idx else {
+        return Vec::new();
+    };
+    let mut out: Vec<Pos> = Vec::new();
+    for &cell in &order[..self_idx] {
+        let Some(ally_pos) = Pos::from_index(cell) else { continue };
+        let Some(ally) = board.ship_at(ally_pos) else { continue };
+        // The ally's queued (this-pass) action ids. Usually one.
+        let queued: Vec<String> = ally.queue.clone();
+        for action_id in &queued {
+            let Some(action) = content.action(action_id) else { continue };
+            // Only damaging actions threaten cells (move/reorient/vent don't).
+            let deals_damage = action
+                .effects
+                .iter()
+                .any(|e| matches!(e, Effect::DAMAGE { .. }));
+            if !deals_damage {
+                continue;
+            }
+            for c in resolve_targeting_2d(action, board, ally_pos) {
+                if !out.contains(&c) {
+                    out.push(c);
+                }
+            }
+        }
+    }
+    out
 }
 
 /// Pick a one-step [`Dir8`] for the CLOSE/HOLD-RANGE rung, or `None` to hold.
