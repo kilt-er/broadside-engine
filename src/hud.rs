@@ -103,6 +103,10 @@ const SHIELD_PIP_CHARGE: [f32; 4] = [0.329, 0.812, 0.788, 1.0];
 // temperature: the player's hull is cool blue, so its chevron is WARM gold-white;
 // the enemy hull is warm orange, so its chevron is COOL cyan-white. A dark
 // drop-shadow chevron is drawn behind it so it reads on any backdrop layer.
+// Retained pending Bruce's final call on the player bow-arrow (#62 dropped it as
+// chase-view clutter, but the lead is holding the final drop for his nod — keep
+// the colour so re-enabling is a one-liner).
+#[allow(dead_code)]
 const BOW_MARK_PLAYER: [f32; 4] = [1.0, 0.91, 0.62, 1.0]; // warm gold-white (vs cool hull)
 const BOW_MARK_ENEMY: [f32; 4] = [0.72, 0.97, 1.0, 1.0]; // cool cyan-white (vs warm hull)
 const BOW_MARK_SHADOW: [f32; 4] = [0.02, 0.03, 0.05, 0.9]; // dark backing
@@ -821,9 +825,16 @@ fn push_ship_2d(
         let hero = if is_player { 1.9 } else { 1.15 };
         let w = (q.near_edge_width() * hero).max(16.0);
         let h = w / LOFT_TEXTURE_ASPECT;
-        // Bias the hero ship's centre DOWN so the enlarged hull sits at the
-        // foreground bottom rather than ballooning over the mid-road.
-        let cy = if is_player { center[1] + h * 0.18 } else { center[1] };
+        // Seat the hero hull so its centre sits a bit ABOVE the bottom HUD band
+        // (band top = frame_h - 40 = 230): the big hull + its stern engine glow must
+        // read clear of the HUD, not sink under it. Clamp the centre up if the cell
+        // projects low (the near row sits at the very bottom now).
+        let band_top = crate::gfx::VIRTUAL_H as f32 - 40.0;
+        let cy = if is_player {
+            center[1].min(band_top - h * 0.30)
+        } else {
+            center[1]
+        };
         let (l, r) = (center[0] - w * 0.5, center[0] + w * 0.5);
         let (t, b) = (cy - h * 0.5, cy + h * 0.5);
         out.push(DrawCommand::LoftShip(LoftShipInstance {
@@ -835,12 +846,18 @@ fn push_ship_2d(
             kind,
         }));
         // (#62) Player engine glow at the stern (toward camera = the hull's lower
-        // edge): the reference ship's signature read. Clustered just inside the
-        // bottom of the hull, sized to the hull width.
+        // edge): the reference ship's SIGNATURE read. Seat it at the stern but
+        // CLAMP its y to sit clear above the bottom HUD band (band top = frame_h -
+        // 40) so the bright cyan cluster always reads (it was hidden under the HUD).
         if is_player {
-            push_engine_glow_2d(out, [center[0], b - h * 0.16], w);
+            let band_top = crate::gfx::VIRTUAL_H as f32 - 40.0;
+            let glow_y = (b - h * 0.14).min(band_top - 6.0);
+            push_engine_glow_2d(out, [center[0], glow_y], w);
         }
-        // Orientation + buffer cues on top of the 3-D hull.
+        // Orientation + buffer cues on top of the 3-D hull. (#62) The player's bow
+        // chevron is DROPPED in the chase view — it's redundant clutter (the hull
+        // model carries the player's facing; the ref has no player arrow). Enemy
+        // chevrons stay (their facing varies + matters). Pips still draw on both.
         push_ship_arrow_and_pips_2d(out, ship, center, 22.0 * q.depth_scale);
         return;
     }
@@ -886,55 +903,49 @@ fn push_ship_arrow_and_pips_2d(
     center: [f32; 2],
     base: f32,
 ) {
-    let mark = if ship.faction == Faction::Player {
-        BOW_MARK_PLAYER
-    } else {
-        BOW_MARK_ENEMY
-    };
-    // Bow-direction chevron (#55): the single most important orientation cue —
-    // "you should know the bow without thinking." Drawn BOLD and in a bright
-    // faction-tinted near-white (not the hull-blending stroke), seated clearly
-    // ahead of the hull along the forward axis (Facing::forward_axis(), via
-    // bow_screen_dir). BOW_CHEVRON points +x at rotation 0. A dark drop-shadow
-    // chevron sits behind it (offset toward the hull) so it reads on any layer.
     let (dx, dy) = bow_screen_dir(ship.facing);
-    let rot = dy.atan2(dx);
-    // Size to survive the perspective shrink on the BACK row (far ships shrink
-    // most, so the floor matters more than the ratio): a generous fraction of the
-    // hull half-extent with a firm minimum so even the farthest ship's chevron
-    // reads as a clear pointer rather than a speck.
-    let arrow_sz = (base * 0.7).max(7.0);
-    // Seat the chevron clearly beyond the hull edge plus its own half-size so the
-    // whole mark CLEARS the hull (otherwise a far ship's short reach buries it
-    // under the hull) and reads as "pointing away from" the ship.
-    let reach = base + arrow_sz + 5.0;
-    let tip = [center[0] + dx * reach, center[1] + dy * reach];
-    let (uv0, uv1) = atlas::cell_uvs(atlas::BOW_CHEVRON);
-    // Shadow first (pulled back toward the hull by ~1px so it haloes the mark).
-    push_sprite(
-        out,
-        SpriteInstance {
-            pos: [tip[0] - dx * 1.0, tip[1] - dy * 1.0],
-            half_size: [arrow_sz * 1.18, arrow_sz * 1.18],
-            color: BOW_MARK_SHADOW,
-            uv_min: uv0,
-            uv_max: uv1,
-            rotation_rad: rot,
-            _pad: [0.0; 3],
-        },
-    );
-    push_sprite(
-        out,
-        SpriteInstance {
-            pos: tip,
-            half_size: [arrow_sz, arrow_sz],
-            color: mark,
-            uv_min: uv0,
-            uv_max: uv1,
-            rotation_rad: rot,
-            _pad: [0.0; 3],
-        },
-    );
+    // (#62) Bow-direction chevron — ENEMY ONLY in the chase view. The enemy's
+    // facing varies and matters (telegraph read), so it keeps the bold chevron.
+    // The PLAYER's chevron is DROPPED: it was redundant clutter (the hero hull
+    // model + its forward motion carry the player's facing; the ref has no player
+    // arrow). Pips still draw for both below. (Lead: holding the FINAL player-arrow
+    // drop for Bruce's nod, but testing it dropped now.)
+    if ship.faction != Faction::Player {
+        let rot = dy.atan2(dx);
+        // Size to survive the perspective shrink on the BACK row (far ships shrink
+        // most, so the floor matters more than the ratio).
+        let arrow_sz = (base * 0.7).max(7.0);
+        // Seat the chevron clearly beyond the hull edge + its own half-size so it
+        // CLEARS the hull and reads as "pointing away from" the ship.
+        let reach = base + arrow_sz + 5.0;
+        let tip = [center[0] + dx * reach, center[1] + dy * reach];
+        let (uv0, uv1) = atlas::cell_uvs(atlas::BOW_CHEVRON);
+        // Shadow first (pulled back toward the hull by ~1px so it haloes the mark).
+        push_sprite(
+            out,
+            SpriteInstance {
+                pos: [tip[0] - dx * 1.0, tip[1] - dy * 1.0],
+                half_size: [arrow_sz * 1.18, arrow_sz * 1.18],
+                color: BOW_MARK_SHADOW,
+                uv_min: uv0,
+                uv_max: uv1,
+                rotation_rad: rot,
+                _pad: [0.0; 3],
+            },
+        );
+        push_sprite(
+            out,
+            SpriteInstance {
+                pos: tip,
+                half_size: [arrow_sz, arrow_sz],
+                color: BOW_MARK_ENEMY,
+                uv_min: uv0,
+                uv_max: uv1,
+                rotation_rad: rot,
+                _pad: [0.0; 3],
+            },
+        );
+    }
 
     push_shield_pips_2d(out, ship, center, base, (dx, dy));
 }
