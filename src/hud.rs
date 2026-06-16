@@ -860,25 +860,29 @@ fn push_ship_2d(
             ship_id: SpriteSlug::new(&ship.id),
             kind,
         }));
-        // (#62) Keel/outline stroke on the hero hull's LOWER silhouette (bottom +
-        // lower sides only — not a full box, which would read as a UI frame) for
-        // shape-definition against the dark road. Inset slightly so it hugs the
-        // hull, not the quad's empty corners.
+        // (#66) The loft hull renders CENTRED in its quad (bbox-centre camera), so
+        // the VISIBLE hull occupies the middle ~half of the quad — NOT down at the
+        // quad bottom `b`. Seat the keel-line + engine glow at the visible hull's
+        // lower edge (≈ cy + h*0.22) so they HUG the hull as one object, instead of
+        // floating in the empty quad space below it (Bruce: hull + a separate blob
+        // "floating above"). hull_bottom is the shared anchor for both.
+        let hull_bottom = cy + h * 0.22;
+        // Keel/outline stroke on the hero hull's LOWER silhouette (bottom + lower
+        // sides only — not a full box, which would read as a UI frame).
         if is_player {
-            let ix = w * 0.12; // horizontal inset (skip the empty quad corners)
+            let ix = w * 0.18; // horizontal inset → hug the hull, not the quad corners
             let (kl, kr) = (l + ix, r - ix);
-            let ky = b - h * 0.06; // just above the very bottom edge
-            push_line(out, pt([kl, ky]), pt([kr, ky]), 1.0, HULL_KEEL_STROKE); // keel
-            push_line(out, pt([kl, ky]), pt([kl, cy]), 1.0, HULL_KEEL_STROKE); // left
-            push_line(out, pt([kr, ky]), pt([kr, cy]), 1.0, HULL_KEEL_STROKE); // right
+            push_line(out, pt([kl, hull_bottom]), pt([kr, hull_bottom]), 1.0, HULL_KEEL_STROKE);
+            push_line(out, pt([kl, hull_bottom]), pt([kl, cy]), 1.0, HULL_KEEL_STROKE);
+            push_line(out, pt([kr, hull_bottom]), pt([kr, cy]), 1.0, HULL_KEEL_STROKE);
         }
-        // (#62) Player engine glow at the stern (toward camera = the hull's lower
-        // edge): the reference ship's SIGNATURE read. Seated low on the hull's
-        // stern (now a DARK hull, so the bright cyan cluster POPS cyan-on-dark),
-        // clamped clear of the bottom HUD band so it always reads.
+        // (#66) Player engine glow at the stern — seated AT the visible hull's lower
+        // edge (hull_bottom) so the cyan thruster bank reads as the ship's engines,
+        // ONE object with the hull, not a blob floating below. Clamped clear of the
+        // bottom HUD band so it always reads.
         if is_player {
             let band_top = crate::gfx::VIRTUAL_H as f32 - 40.0;
-            let glow_y = (b - h * 0.06).min(band_top - 4.0);
+            let glow_y = (hull_bottom + 1.0).min(band_top - 4.0);
             push_engine_glow_2d(out, [center[0], glow_y], w);
         }
         // Orientation + buffer cues on top of the 3-D hull. (#62) The player's bow
