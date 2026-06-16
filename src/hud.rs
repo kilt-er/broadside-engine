@@ -67,6 +67,15 @@ const HEAT_BG: [f32; 4] = [0.094, 0.094, 0.110, 0.85];
 const HEAT_FILL: [f32; 4] = [0.949, 0.475, 0.235, 1.0];
 const HEAT_LOCKOUT: [f32; 4] = [0.949, 0.235, 0.235, 1.0];
 
+// D4 enemy-intent telegraph (`push_threats_2d`): semi-transparent cell fills
+// (read THROUGH to the grid/ship) by ThreatKind, plus the source→target beam.
+const THREAT_FILL: [f32; 4] = [0.878, 0.235, 0.235, 0.42]; // damage (move!)
+const THREAT_FILL_LETHAL: [f32; 4] = [0.961, 0.341, 0.286, 0.62]; // would-kill flash
+const THREAT_FILL_DISPLACE: [f32; 4] = [0.353, 0.624, 0.878, 0.42]; // push/pull/swap
+const THREAT_FILL_STATUS: [f32; 4] = [0.608, 0.549, 0.859, 0.42]; // debuff
+const THREAT_FILL_OTHER: [f32; 4] = [0.55, 0.55, 0.55, 0.34]; // catch-all
+const THREAT_BEAM: [f32; 4] = [0.878, 0.300, 0.250, 0.50]; // source→target intent line
+
 const SHIELD_PIP_CHARGE: [f32; 4] = [0.329, 0.812, 0.788, 1.0];
 
 const WHITE: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
@@ -316,6 +325,13 @@ pub fn compose_scene_2d(board: &Board, cfg: &ProjectorConfig) -> Vec<DrawCommand
     let mut out = Vec::with_capacity(256);
     push_grid_2d(&mut out, cfg);
 
+    // D4 enemy-intent telegraph: paint threatened cells UNDER the ships (so the
+    // ship draws on top of the red fill) from the resolver's ThreatMap
+    // (`board.threats`, populated by R8 via resolve_targeting — the single
+    // source). The intent BEAM (source→target) is drawn here too so the player
+    // reads which enemy threatens which cell — the core "who's doing what" cue.
+    push_threats_2d(&mut out, board, cfg);
+
     // Far row (row 0) first → front row last, so nearer ships overlap farther.
     let mut ships: Vec<&Ship> = board.cells.iter().flatten().collect();
     ships.sort_by_key(|s| s.pos.row);
@@ -323,6 +339,48 @@ pub fn compose_scene_2d(board: &Board, cfg: &ProjectorConfig) -> Vec<DrawCommand
         push_ship_2d(&mut out, ship, cfg);
     }
     out
+}
+
+/// D4: render the enemy-intent telegraph from `board.threats` (the resolver's
+/// ThreatMap — single source, populated by R8 from each enemy's queued action).
+/// Two cues per threat:
+///   1. a tinted FILL under the threatened cell — colour by [`ThreatKind`]
+///      (red = damage, brighter red = lethal, blue = displace, violet = status),
+///      so "this cell is dangerous, move" reads at a glance;
+///   2. a thin intent BEAM from the threatening enemy (`Threat::source`) to the
+///      target cell, so the player sees WHO is threatening WHERE.
+///
+/// Drawn after the grid, before ships (fills sit under hulls).
+fn push_threats_2d(out: &mut Vec<DrawCommand>, board: &Board, cfg: &ProjectorConfig) {
+    use crate::types::ThreatKind;
+    for threat in &board.threats {
+        let q = grid_cell_quad(threat.pos, cfg);
+        // Is this damage lethal to the cell's current occupant? (amount ≥ hull.)
+        let lethal = matches!(threat.kind, ThreatKind::Damage { amount }
+            if board
+                .cells
+                .get(threat.pos.to_index())
+                .and_then(|c| c.as_ref())
+                .is_some_and(|s| amount >= s.hull));
+        let fill = match threat.kind {
+            ThreatKind::Damage { .. } if lethal => THREAT_FILL_LETHAL,
+            ThreatKind::Damage { .. } => THREAT_FILL,
+            ThreatKind::Displace => THREAT_FILL_DISPLACE,
+            ThreatKind::Status => THREAT_FILL_STATUS,
+            ThreatKind::Other => THREAT_FILL_OTHER,
+        };
+        push_polygon(
+            out,
+            PolygonInstance::flat(q.corners, fill, atlas::cell_uvs(atlas::SOLID_WHITE)),
+        );
+        // Intent beam: source ship center → threatened cell center. Skip when the
+        // source IS the target (self-targeted, no meaningful line).
+        if threat.source != threat.pos {
+            let from = grid_cell_quad(threat.source, cfg).center;
+            let to = q.center;
+            push_line(out, pt(from), pt(to), 1.0, THREAT_BEAM);
+        }
+    }
 }
 
 /// Draw the empty 5×4 grid: each cell's wireframe trapezoid via the projector.
