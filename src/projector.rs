@@ -547,6 +547,50 @@ mod tests {
         }
     }
 
+    /// (#70 deterministic bow gate) THE non-eyeball verification that a facing-N
+    /// (up-lane) hull banks its BOW TOWARD the vanishing point at every column —
+    /// the thing that slipped past screenshot review ~5 times. Under scene-space
+    /// (camera_perspective), world-heading-N = +Z (deeper = toward the VP), so the
+    /// bow point = cell_camera_point + (0,0,+bow_len). We project the bow + the
+    /// cell centre and assert the bow's screen-x is on the VP side of centre:
+    ///   col 0 (left of centre)  → bow_x > centre_x (banks up-RIGHT toward VP)
+    ///   col 2 (centre)          → bow_x ≈ centre_x (straight up)
+    ///   col 4 (right of centre) → bow_x < centre_x (banks up-LEFT toward VP)
+    /// This is correct BY CONSTRUCTION for camera_perspective (no yaw-sign to get
+    /// wrong) — it's the oracle the billboard must match or be replaced by.
+    #[test]
+    fn facing_n_bow_banks_toward_vp_every_column() {
+        let c = cfg();
+        let m = camera_perspective(&c);
+        let vp = vanishing_point(&c);
+        let bow_len = 2.0_f32; // any positive +Z reach toward the VP
+        let row = ROWS - 1; // the player's front row
+        let center_x = c.frame_w * 0.5;
+        for col in 0..COLS {
+            let pos = Pos::new(col, row);
+            let cp = cell_camera_point(pos, &c);
+            // World-heading N (up-lane) = +Z (deeper toward the VP).
+            let bow = [cp[0], cp[1], cp[2] + bow_len];
+            let cell_scr = project_point(&m, cp).expect("cell in front");
+            let bow_scr = project_point(&m, bow).expect("bow in front");
+            // The bow must be NEARER the VP-x (frame centre) than the cell centre
+            // — i.e. it banks toward the convergence, never toward the screen edge.
+            let cell_off = (cell_scr.x - vp.x).abs();
+            let bow_off = (bow_scr.x - vp.x).abs();
+            assert!(
+                bow_off <= cell_off + 1e-3,
+                "col {col}: facing-N bow must bank TOWARD the VP — bow_x {:.2} (off {:.2}) not nearer VP.x {:.2} than cell_x {:.2} (off {:.2})",
+                bow_scr.x, bow_off, vp.x, cell_scr.x, cell_off
+            );
+            // And the bow must sit higher on screen than the cell (it points up-lane
+            // / into the distance), which is what makes it READ as bow-on.
+            assert!(
+                bow_scr.y < cell_scr.y,
+                "col {col}: facing-N bow should be higher (up-lane) than the cell centre"
+            );
+        }
+    }
+
     /// The far row (`row 0`) sits HIGHER on screen (smaller y) than the near row
     /// (`row ROWS-1`) — the core Star-Wars-crawl recession.
     #[test]
