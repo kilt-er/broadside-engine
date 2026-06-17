@@ -689,6 +689,17 @@ fn push_hull_bar_2d(out: &mut Vec<DrawCommand>, ship: &Ship, cfg: &ProjectorConf
 /// Drawn after the grid, before ships (fills sit under hulls).
 fn push_threats_2d(out: &mut Vec<DrawCommand>, board: &Board, cfg: &ProjectorConfig) {
     use crate::types::ThreatKind;
+    // (#76b Bruce) The player's own cell: a solid threat fill there reads as an
+    // ugly red SLAB under the foreground hero hull (Bruce's "red trapezoid"). On
+    // the player's occupied cell we draw OUTLINE-ONLY (no fill) — the player's
+    // danger reads from the bottom HUD + the incoming beam, not a slab under the
+    // ship. Other cells keep a fill, but lightened (see below).
+    let player_pos = board
+        .cells
+        .iter()
+        .flatten()
+        .find(|s| s.faction == Faction::Player)
+        .map(|s| s.pos);
     for threat in &board.threats {
         let q = grid_cell_quad(threat.pos, cfg);
         // Is this damage lethal to the cell's current occupant? (amount ≥ hull.)
@@ -705,10 +716,24 @@ fn push_threats_2d(out: &mut Vec<DrawCommand>, board: &Board, cfg: &ProjectorCon
             ThreatKind::Status => THREAT_FILL_STATUS,
             ThreatKind::Other => THREAT_FILL_OTHER,
         };
-        push_polygon(
-            out,
-            PolygonInstance::flat(q.corners, fill, atlas::cell_uvs(atlas::SOLID_WHITE)),
-        );
+        let on_player_cell = player_pos == Some(threat.pos);
+        // (#76b) Skip the solid FILL on the player's own cell (slab under the
+        // hull). A lethal flash still fills everywhere — that split-second
+        // would-die warning is worth the slab. The outline below always draws so
+        // the threatened cell still reads.
+        if !on_player_cell || lethal {
+            push_polygon(
+                out,
+                PolygonInstance::flat(q.corners, fill, atlas::cell_uvs(atlas::SOLID_WHITE)),
+            );
+        }
+        // (#76b) Cell OUTLINE in the threat colour (full-alpha edge) so the
+        // threatened cell reads crisply WITHOUT relying on a heavy fill — the
+        // telegraph stays legible even where the fill is skipped/light.
+        let edge = [fill[0], fill[1], fill[2], 0.9];
+        for i in 0..4 {
+            push_line(out, pt(q.corners[i]), pt(q.corners[(i + 1) % 4]), 1.0, edge);
+        }
         // Intent beam: source ship center → threatened cell center. Skip when the
         // source IS the target (self-targeted, no meaningful line).
         if threat.source != threat.pos {
