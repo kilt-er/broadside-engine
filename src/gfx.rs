@@ -1244,6 +1244,50 @@ impl Gfx {
         self.loft_meshes.contains_key(&kind)
     }
 
+    /// DYNAMIC-LIGHTING TEST (headless): upload an [`crate::mesh_import::ImportedShip`]
+    /// (e.g. the v2-lofted Aegis from [`crate::ship_loft_v2`]), render ONE loft
+    /// frame at `yaw_deg` with the KEY light at (`key_az_deg`, `key_el_deg`,
+    /// `key_intensity`), and write the posterized 3D ship to `path` as a PNG.
+    /// A caller sweeps `key_az_deg` across an arc + captures each frame to show
+    /// the shadows/hues shift on the hull — the dynamic-lighting proof. This is
+    /// the real loft render path (depth + Lambert + emissive + posterize),
+    /// isolated from the 2D gameplay compositor (which is untouched). Slow
+    /// (per-call GPU→CPU readback) — a capture/demo entry point only.
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_loft_to_png(
+        &self,
+        ship: &crate::mesh_import::ImportedShip,
+        yaw_deg: f32,
+        key_az_deg: f32,
+        key_el_deg: f32,
+        key_intensity: f32,
+        pitch_deg: f32,
+        half_extent: f32,
+        path: &std::path::Path,
+    ) -> Result<(), String> {
+        let hull = self.loft.upload_imported(&self.device, ship);
+        let mut enc = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("loft sweep frame"),
+            });
+        self.loft.render_ship_lit_framed(
+            &self.queue,
+            &mut enc,
+            &hull.vbuf,
+            hull.vcount,
+            yaw_deg,
+            hull.center_y,
+            key_az_deg,
+            key_el_deg,
+            key_intensity,
+            pitch_deg,
+            half_extent,
+        );
+        self.queue.submit(Some(enc.finish()));
+        self.loft.read_output_png(&self.device, &self.queue, path)
+    }
+
     /// Ensure a [`crate::loft_gpu::ShipPose`] exists for `ship_id` and matches
     /// `orientation`: creates one resting at `orientation` if absent, otherwise
     /// reorients it toward `orientation` (a no-op when already there, so this

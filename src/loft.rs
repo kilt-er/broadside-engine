@@ -76,16 +76,31 @@ pub struct LoftParams {
     /// Height scale applied to the section profile (the editor's `ST.hscale`;
     /// `0.7` default).
     pub hscale: f32,
+    /// Width scale applied to the section's lateral (z/beam) extent — the
+    /// editor's `ST.wscale` (`buildHull`: `z = zf * st.w * ww`). `1.0` = neutral
+    /// (the dagger default). The Aegis authors this at `1.92`; omitting it (the
+    /// old behaviour) rendered the hull ~half its real beam. See
+    /// `ShipEditor/BROADSIDE_RENDER_CONTRACT_v2.md` + the tool's `buildHull`.
+    pub wscale: f32,
+    /// Nose taper, `0..1` — the editor's `ST.noseTaper`. Scales section HEIGHT
+    /// toward the prow so the hull comes to a point instead of a full-height
+    /// axe-head (`buildHull`'s `noseHeightScale`). `0` = no taper (full height
+    /// to the tip), `1` = collapse to a point at the prow. The Aegis authors
+    /// `0.73`; omitting it (the old behaviour) left a blunt full-height prow.
+    pub nose_taper: f32,
     /// Section ring resolution. See [`DEFAULT_SEC_N`].
     pub sec_n: usize,
 }
 
 impl Default for LoftParams {
     fn default() -> Self {
-        // The loft editor's default state: ST.stretch = 2.0, ST.hscale = 0.7.
+        // The loft editor's default state: ST.stretch = 2.0, ST.hscale = 0.7,
+        // wscale = 1.0 (neutral), noseTaper = 0 (no taper).
         Self {
             stretch: 2.0,
             hscale: 0.7,
+            wscale: 1.0,
+            nose_taper: 0.0,
             sec_n: DEFAULT_SEC_N,
         }
     }
@@ -116,9 +131,16 @@ impl HullMesh {
 /// design; the section ring resolution uses [`DEFAULT_SEC_N`] (the design
 /// format does not currently carry one).
 pub fn loft_hull(design: &ShipDesign) -> HullMesh {
+    // The v1 [`ShipDesign::settings`] schema carries no `wscale`/`noseTaper`
+    // (those are v2-design fields), so they default to neutral here (`1.0` /
+    // `0.0`). A faithful v2 hull is imported via `mesh_import` (the GLB the tool
+    // bakes), not re-lofted in Rust — these knobs exist for the loft primitive
+    // but the production ship path is GLB.
     let params = LoftParams {
         stretch: design.settings.stretch as f32,
         hscale: design.settings.hscale as f32,
+        wscale: 1.0,
+        nose_taper: 0.0,
         sec_n: DEFAULT_SEC_N,
     };
     loft_from_profiles(
@@ -146,14 +168,22 @@ pub fn loft_from_profiles(
     // x of 0.5 maps to world x = 0 (amidships), 0 → stern (−l), 1 → prow (+l).
     let l = 6.0 * params.stretch / 2.0;
     let h = params.hscale;
+    let ww = if params.wscale.is_finite() {
+        params.wscale
+    } else {
+        1.0
+    };
+    let nose_taper = params.nose_taper;
     let sec_n = params.sec_n.max(3);
 
-    // Each plan point becomes a station: world x, half-width, and the
-    // height-profile multiplier sampled at that x.
+    // Each plan point becomes a station: world x, half-width, the height-profile
+    // multiplier sampled at that x, and the plan-x `px` (0=stern .. 1=prow) the
+    // nose taper keys off.
     struct Station {
         x: f32,
         w: f32,
         hm: f32,
+        px: f32,
     }
     let stations: Vec<Station> = plan
         .iter()
@@ -161,22 +191,26 @@ pub fn loft_from_profiles(
             x: (p.x() as f32 - 0.5) * 2.0 * l,
             w: p.y() as f32,
             hm: sample_height_prof(height, p.x() as f32),
+            px: p.x() as f32,
         })
         .collect();
 
     // Build one ring of vertices for a station: sample the section at `sec_n`
     // steps for the right (+z) side top→belly, then mirror the interior points
     // back for the left (−z) side, skipping the shared top and belly endpoints.
+    // Beam is scaled by `ww` (wscale); section HEIGHT is scaled by the nose
+    // taper toward the prow (`nose_height_scale`) — both faithful to the tool's
+    // `buildHull` (`z = zf*st.w*ww`, `hh = H*hm*noseHeightScale(px)`).
     let ring_pts = |st: &Station| -> Vec<[f32; 3]> {
         let mut pts = Vec::with_capacity(2 * sec_n - 2);
-        let hh = h * st.hm;
+        let hh = h * st.hm * nose_height_scale(nose_taper, st.px);
         for s in 0..sec_n {
             let (zf, y) = sample_section(section, s as f32 / (sec_n - 1) as f32);
-            pts.push([st.x, y * hh, zf * st.w]);
+            pts.push([st.x, y * hh, zf * st.w * ww]);
         }
         for s in (1..=(sec_n - 2)).rev() {
             let (zf, y) = sample_section(section, s as f32 / (sec_n - 1) as f32);
-            pts.push([st.x, y * hh, -zf * st.w]);
+            pts.push([st.x, y * hh, -zf * st.w * ww]);
         }
         pts
     };
@@ -236,6 +270,26 @@ fn sample_height_prof(height: Option<&[Point2]>, x: f32) -> f32 {
         }
     }
     1.0
+}
+
+/// `noseHeightScale(px)` — section-height multiplier toward the prow, a
+/// line-for-line port of the loft editor's `buildHull` helper. `nt` is the
+/// nose taper (`0..1`); `px` is plan-x (`0` = stern .. `1` = prow). The taper
+/// begins partway along (`start = 0.4`) and eases in (`t²`) to `1 − nt` at the
+/// prow, so the hull comes to a point (`nt = 1` → `0`) instead of a full-height
+/// axe-head. `nt <= 0` returns `1.0` (no taper) — the dagger default + the path
+/// every existing caller takes (`LoftParams::default().nose_taper == 0.0`).
+fn nose_height_scale(nt: f32, px: f32) -> f32 {
+    if nt <= 0.0 {
+        return 1.0;
+    }
+    const START: f32 = 0.4; // where the taper starts (toward the prow)
+    if px <= START {
+        return 1.0;
+    }
+    let t = (px - START) / (1.0 - START); // 0..1 from start to prow
+    let eased = t * t; // ease-in so it stays full longer
+    lerp(1.0, 1.0 - nt, eased) // at px=1, scale = 1-nt
 }
 
 /// `sampleSection(t)` — piecewise-linear across the section profile for
@@ -378,13 +432,13 @@ mod tests {
             &dagger_plan(),
             &dagger_section(),
             None,
-            LoftParams { stretch: 1.0, hscale: 0.7, sec_n: DEFAULT_SEC_N },
+            LoftParams { stretch: 1.0, ..LoftParams::default() },
         );
         let stretched = loft_from_profiles(
             &dagger_plan(),
             &dagger_section(),
             None,
-            LoftParams { stretch: 2.0, hscale: 0.7, sec_n: DEFAULT_SEC_N },
+            LoftParams { stretch: 2.0, ..LoftParams::default() },
         );
         let x_extent = |m: &HullMesh| {
             let xs: Vec<f32> = m.positions.iter().map(|p| p[0]).collect();
@@ -440,7 +494,7 @@ mod tests {
             &design.plan,
             &design.section,
             None,
-            LoftParams { stretch: 2.0, hscale: 0.7, sec_n: DEFAULT_SEC_N },
+            LoftParams { stretch: 2.0, hscale: 0.7, ..LoftParams::default() },
         );
         assert_eq!(via_design, via_profiles);
         assert!(via_design.tri_count() > 0);

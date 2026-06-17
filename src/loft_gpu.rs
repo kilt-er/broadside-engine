@@ -62,7 +62,7 @@ const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 pub const CAMERA_PITCH_DEG: f32 = 20.0;
 
 /// The canonical stance yaws (degrees), keyed by [`Orientation`], fed to
-/// [`camera_view_proj`] as the CAMERA yaw with the model at IDENTITY.
+/// [`camera_view_proj_zoom`] as the CAMERA yaw with the model at IDENTITY.
 ///
 /// #47 — a DELIBERATE override of the POC stance snaps (28/152/118). bruce wants
 /// the non-broadside ships PARALLEL to the lane, with the ¾ coming from the
@@ -514,7 +514,12 @@ impl LoftGpu {
         let out_tex = mk(
             "loft posterized out",
             LOW_FORMAT,
-            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            // COPY_SRC so the headless capture (read_output_png, the
+            // dynamic-lighting test) can copy this back to a buffer; additive —
+            // the gameplay blit path samples it as TEXTURE_BINDING unchanged.
+            wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_SRC,
         );
         let out_view = out_tex.create_view(&Default::default());
 
@@ -644,6 +649,84 @@ impl LoftGpu {
         (LOW_W, LOW_H)
     }
 
+    /// Read the posterized output texture back to an RGBA8 PNG on disk. For the
+    /// dynamic-lighting test / any headless loft inspection — copies `out_tex`
+    /// to a mappable buffer (stripping the 256-byte row alignment), maps it, and
+    /// saves via `image`. `device.poll(Wait)` drives the readback to completion.
+    /// NOT on the gameplay hot path (a per-frame GPU→CPU copy + map is slow);
+    /// this is a capture/debug entry point only.
+    pub fn read_output_png(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        path: &std::path::Path,
+    ) -> Result<(), String> {
+        let unpadded = LOW_W * 4;
+        let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT; // 256
+        let padded = unpadded.div_ceil(align) * align;
+        let buf_size = (padded * LOW_H) as u64;
+        let readback = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("loft readback"),
+            size: buf_size,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut enc =
+            device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("loft rb") });
+        enc.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: &self.out_tex,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &readback,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(padded),
+                    rows_per_image: Some(LOW_H),
+                },
+            },
+            wgpu::Extent3d {
+                width: LOW_W,
+                height: LOW_H,
+                depth_or_array_layers: 1,
+            },
+        );
+        queue.submit(Some(enc.finish()));
+
+        let slice = readback.slice(..);
+        let (tx, rx) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |r| {
+            let _ = tx.send(r);
+        });
+        device.poll(wgpu::PollType::Wait).ok();
+        rx.recv()
+            .map_err(|e| format!("map channel: {e}"))?
+            .map_err(|e| format!("map_async: {e}"))?;
+
+        let data = slice.get_mapped_range();
+        // Strip the row padding into a tight RGBA8 buffer.
+        let mut rgba = Vec::with_capacity((unpadded * LOW_H) as usize);
+        for row in 0..LOW_H {
+            let start = (row * padded) as usize;
+            let end = start + unpadded as usize;
+            rgba.extend_from_slice(&data[start..end]);
+        }
+        drop(data);
+        readback.unmap();
+
+        image::save_buffer(
+            path,
+            &rgba,
+            LOW_W,
+            LOW_H,
+            image::ColorType::Rgba8,
+        )
+        .map_err(|e| format!("png save: {e}"))
+    }
+
     /// Upload a hull's geometry to a fresh vertex buffer. `colors`, if present,
     /// is parallel to `mesh.positions` (one linear-RGB albedo per vertex);
     /// empty falls back to the default hull grey. `emissive` is likewise
@@ -738,8 +821,8 @@ impl LoftGpu {
 
     /// Render one ship pose into the offscreen target and posterize it into
     /// [`Self::output_view`]. `yaw_deg` is the ship's stance yaw (from
-    /// [`ShipPose::yaw_deg`]) — fed to [`camera_view_proj`] as the CAMERA yaw,
-    /// exactly as the POC does, with the model left at identity; pitch is fixed
+    /// [`ShipPose::yaw_deg`]) — fed to [`camera_view_proj_zoom`] as the CAMERA
+    /// yaw, exactly as the POC does, with the model left at identity; pitch fixed
     /// at [`CAMERA_PITCH_DEG`]. Records into `encoder`; the caller submits.
     pub fn render_ship(
         &self,
@@ -750,30 +833,91 @@ impl LoftGpu {
         yaw_deg: f32,
         center_y: f32,
     ) {
+        // The gameplay path: the house key light (loft editor setLight laz -50,
+        // lel 60, intensity 1.6). Delegates to the light-parameterised path.
+        self.render_ship_lit(
+            queue, encoder, vbuf, vcount, yaw_deg, center_y, -50.0, 60.0, 1.6,
+        );
+    }
+
+    /// Like [`Self::render_ship`] but with the KEY-LIGHT azimuth / elevation
+    /// (degrees) + intensity as parameters, so a caller can SWEEP the light to
+    /// show dynamic lighting (the dynamic-lighting test) — the gameplay path
+    /// uses the fixed house values via [`Self::render_ship`]. Azimuth/elevation
+    /// use the contract §5 basis (`dir = (cos el·sin az, sin el, cos el·cos az)`,
+    /// dir-toward-light). The fill light + ambient stay fixed so only the key
+    /// sweeps (the readable single-light demo).
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_ship_lit(
+        &self,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        vbuf: &wgpu::Buffer,
+        vcount: u32,
+        yaw_deg: f32,
+        center_y: f32,
+        key_az_deg: f32,
+        key_el_deg: f32,
+        key_intensity: f32,
+    ) {
+        // Gameplay framing: the house pitch + zoom. The demo path
+        // ([`Self::render_ship_lit_framed`]) overrides pitch/zoom for a readable
+        // single-ship capture.
+        self.render_ship_lit_framed(
+            queue,
+            encoder,
+            vbuf,
+            vcount,
+            yaw_deg,
+            center_y,
+            key_az_deg,
+            key_el_deg,
+            key_intensity,
+            CAMERA_PITCH_DEG,
+            HALF_EXTENT,
+        );
+    }
+
+    /// As [`Self::render_ship_lit`] but with CAMERA pitch + ortho half-height
+    /// (zoom) as parameters — for the dynamic-lighting test, which frames a
+    /// single long hull tighter + steeper than the gameplay defaults so the deck
+    /// shows and the light sweep reads. Gameplay never calls this directly.
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_ship_lit_framed(
+        &self,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        vbuf: &wgpu::Buffer,
+        vcount: u32,
+        yaw_deg: f32,
+        center_y: f32,
+        key_az_deg: f32,
+        key_el_deg: f32,
+        key_intensity: f32,
+        pitch_deg: f32,
+        half_extent: f32,
+    ) {
         let aspect = LOW_W as f32 / LOW_H as f32;
-        // EXACTLY the POC: the stance `yaw_deg` is the CAMERA yaw (orbit the
-        // ¾ camera around a fixed hull), model = identity. The camera always
-        // orbits about the vertical (Y) axis with up = +Y, so the ship can
-        // never tip vertical; bow-on / broadside present clean horizontal
-        // profiles like the approved reference. (This replaces the #36/#37
-        // model-rotation experiment that collapsed bow-on to a plank and went
-        // vertical on broadside.) `yaw_deg` is static per ship (its stance);
-        // idle roll + reorient tween only nudge it. `center_y` is the hull's
-        // bbox vertical centre — the camera looks at THAT (not the origin) so
-        // the hull sits centred in the texture (#54/#55).
-        let view_proj = camera_view_proj(
+        // The stance `yaw_deg` is the CAMERA yaw (orbit the ¾ camera around a
+        // fixed hull at identity); pitch + zoom are parameters here. The camera
+        // orbits about +Y (up), so the hull never tips vertical. `center_y` is
+        // the hull's bbox vertical centre — the camera looks at THAT so the hull
+        // sits centred in the texture.
+        let view_proj = camera_view_proj_zoom(
             yaw_deg.to_radians(),
-            CAMERA_PITCH_DEG.to_radians(),
+            pitch_deg.to_radians(),
             aspect,
             center_y,
+            half_extent,
         );
         let model = identity4();
 
-        // Lights ported from the loft editor's setLight (laz -50, lel 60) /
-        // fixed cool fill (4,2,-3). Dir-toward-light = +position (three.js
-        // DirectionalLights shine position→origin).
-        let laz = (-50.0f32).to_radians();
-        let lel = (60.0f32).to_radians();
+        // Key light: parameterised az/el (contract §5 basis). The fixed cool
+        // fill (4,2,-3) + ambient stay constant so the SWEEP reads as one light
+        // moving. Dir-toward-light = +position (three.js DirectionalLights shine
+        // position→origin).
+        let laz = key_az_deg.to_radians();
+        let lel = key_el_deg.to_radians();
         let key_dir = normalize3([lel.cos() * laz.sin(), lel.sin(), lel.cos() * laz.cos()]);
         let fill_dir = normalize3([4.0, 2.0, -3.0]);
         let amb = Self::ambient();
@@ -781,7 +925,7 @@ impl LoftGpu {
         let scene = SceneUniform {
             view_proj,
             model,
-            key_dir: [key_dir[0], key_dir[1], key_dir[2], 1.6],
+            key_dir: [key_dir[0], key_dir[1], key_dir[2], key_intensity],
             fill_dir: [fill_dir[0], fill_dir[1], fill_dir[2], 0.45],
             ambient: [amb[0], amb[1], amb[2], 1.0],
         };
@@ -867,7 +1011,19 @@ impl LoftGpu {
 // Column-major mat4 (`c*4 + r`); right-handed; clip z in 0..1 for wgpu.
 // ---------------------------------------------------------------------------
 
-fn camera_view_proj(yaw_rad: f32, pitch_rad: f32, aspect: f32, target_y: f32) -> [f32; 16] {
+/// Orthographic ¾ view-projection with the ortho half-height (framing zoom) a
+/// parameter. Gameplay passes [`HALF_EXTENT`] (the worst-case-stance zoom: one
+/// fixed value across all ships so scale is preserved and a ship doesn't pop
+/// size on reorient, sized so the perpendicular broadside ship's 12u length
+/// clears the box vertically — #49, half=7 → 14u tall box); the dynamic-lighting
+/// test frames a single hull tighter.
+fn camera_view_proj_zoom(
+    yaw_rad: f32,
+    pitch_rad: f32,
+    aspect: f32,
+    target_y: f32,
+    half: f32,
+) -> [f32; 16] {
     let r = 30.0;
     // Orbit the camera around the look-AT point (0, target_y, 0), not the world
     // origin, so a hull whose mass doesn't straddle y=0 still frames centred.
@@ -878,22 +1034,13 @@ fn camera_view_proj(yaw_rad: f32, pitch_rad: f32, aspect: f32, target_y: f32) ->
         r * pitch_rad.cos() * yaw_rad.cos(),
     ];
     let view = look_at(eye, target, [0.0, 1.0, 0.0]);
-    // Ortho half-height in world units — the framing zoom. ONE fixed value
-    // across all ships/stances so true relative scale is preserved and a ship
-    // doesn't pop size when it reorients. Sized so the WORST-case stance fits:
-    // the perpendicular broadside ship projects its full 12u length VERTICALLY
-    // under the 48° top-down pitch, so the box must be tall enough to clear it
-    // — at half=5 that overran the box and clipped the broadside bow flat (#49;
-    // measured NDC height 2.64 > 2.0). half=7 (14u tall box) fits the broadside
-    // bow with margin (NDC ~1.89); bow-on ships have width to spare. bruce dials
-    // final scale.
-    let half = HALF_EXTENT;
     let proj = ortho(-half * aspect, half * aspect, -half, half, 0.1, 100.0);
     mul4(proj, view)
 }
 
-/// Ortho half-height (world units) — the framing zoom. See [`camera_view_proj`].
-/// 7.0 clears the broadside ship's vertical projection at the 48° pitch (#49).
+/// Ortho half-height (world units) — the gameplay framing zoom. See
+/// [`camera_view_proj_zoom`]. 7.0 clears the broadside ship's vertical
+/// projection.
 const HALF_EXTENT: f32 = 7.0;
 
 fn normalize3(v: [f32; 3]) -> [f32; 3] {
@@ -1084,7 +1231,7 @@ mod tests {
 
     #[test]
     fn camera_view_proj_is_finite() {
-        let m = camera_view_proj(28f32.to_radians(), 26f32.to_radians(), 1.6, -0.5);
+        let m = camera_view_proj_zoom(28f32.to_radians(), 26f32.to_radians(), 1.6, -0.5, HALF_EXTENT);
         assert!(m.iter().all(|v| v.is_finite()));
     }
 
