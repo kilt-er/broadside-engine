@@ -296,60 +296,83 @@ fn ai_skips_action_that_overshoots_heat_budget_and_closes() {
     assert_closes_toward_player(&queue_of(&board, Pos::new(2, 2)), "bighot");
 }
 
-// #[ignore]: BLOCKED on an open resolver ruling (#3) — does hits_all PIERCE an
-// ally to reach a hostile beyond, in 2-D? Currently resolve_targeting_2d STOPS
-// the hits_all "sweep" at the first occupant (the ally at (2,1)), so no hostile
-// cell → the enemy can't fire → it closes (got ["__move_down"]). The assertion
-// below (fires "sweep") is correct ONLY if the resolver makes hits_all pierce.
-// Two outcomes (content relaying the resolver's call): pierce → keep this assert;
-// stop-at-occupant → change the assert to "closes" (assert_closes_toward_player).
-// Hold until the resolver rules on #3, then pin to whichever lands.
-#[ignore = "blocked on resolver hits_all-pierce ruling (#3); pin fires-vs-closes once decided — #33"]
+// RECONCILED with the resolver (#33): `hits_all`-pierce-through-an-ally is a
+// SPINAL_LINE behaviour, NOT a BEAM one. resolve_targeting_2d's BEAM branch is
+// first-target-only by DESIGN and ignores `hits_all` (resolve.rs:1148-1161); only
+// SPINAL_LINE honours `hits_all` to pierce every in-band occupant on the ray
+// (resolve.rs:1163-1178). This matches the canonical 1-D test verbatim, whose own
+// comment notes "pulse_laser is BEAM = first-target-only, so this scenario uses a
+// synthetic piercing variant" and builds a SPINAL_LINE (resolve.rs:4281-4297).
+// The earlier draft fired a BEAM with hits_all=true (a no-op flag for BEAM), so it
+// degenerately stopped at the ally and closed. Fixed: the piercing weapon is now
+// SPINAL_LINE, so the line genuinely threatens the player beyond the ally and the
+// friendly-fire filter permits the shot. NOT a resolver bug — a fixture bug.
 #[test]
 fn ai_fires_through_ally_to_reach_player() {
     // An ally sits between the enemy and the player on the firing ray, but the
     // line ALSO threatens the player beyond → the friendly-fire filter permits
     // it (at least one cell on the ray is hostile). Enemy at (2,0) Bow(S), ally
-    // at (2,1), player at (2,2): the down-column ray hits the player too.
+    // at (2,1), player at (2,2): the down-column ray pierces both.
     let ally = ship_2d("ally", Faction::Enemy, Pos::new(2, 1), 5, Facing::Bow(Dir4::N), Arc::Forward, "pulse_laser");
     let player = ship_2d("p", Faction::Player, Pos::new(2, 2), 10, Facing::Bow(Dir4::N), Arc::Forward, "pulse_laser");
     let enemy = ship_2d("e", Faction::Enemy, Pos::new(2, 0), 5, Facing::Bow(Dir4::S), Arc::Forward, "sweep");
     let mut board = board_2d(vec![ally, player, enemy]);
-    // sweep: hits_all so the ray threatens both the ally AND the player.
+    // sweep: SPINAL_LINE + hits_all so the ray pierces the ally AND the player.
     let mut sweep = beam("sweep", 4, vec![broadside_engine::grid::Range::Adjacent, broadside_engine::grid::Range::Near, broadside_engine::grid::Range::Far]);
+    sweep.targeting.pattern = TargetingPattern::SPINAL_LINE;
     sweep.targeting.hits_all = true;
     let c = content(&[sweep]);
     decide_enemy_action(Pos::new(2, 0).to_index(), &mut board, &c);
-    // TODO(#33 build-window): confirm C1 fires "sweep" here (the line threatens
-    // the player, so friendly-fire permits it). Drafted assertion:
     assert_eq!(
         queue_of(&board, Pos::new(2, 0)),
         vec!["sweep".to_string()],
-        "AI fires through an ally when the line also threatens the player",
+        "AI fires (SPINAL_LINE) through an ally when the line also threatens the player",
     );
 }
 
 #[test]
 fn ai_pursuit_bonus_flips_pick_toward_the_player_hitting_action() {
-    // Two options: a higher-raw shot that DOESN'T hit the player, vs a lower-raw
-    // "weak" shot that DOES — the pursuit bonus should flip the pick to the
-    // player-hitting one. (Geometry: the player-hitting weapon bears on the
-    // player; the other bears only on an ally.)
-    // TODO(#33 build-window): this needs a 2-D layout where exactly one weapon's
-    // ray hits the player and the other's hits only an ally — pin against C1.
-    let player = ship_2d("p", Faction::Player, Pos::new(2, 3), 20, Facing::Bow(Dir4::N), Arc::Forward, "pulse_laser");
+    // The `Pursuit` +2 is CONDITIONAL on hitting the player, so it races a
+    // higher-raw shot that does NOT hit the player. Faithful 2-D port of the
+    // canonical isolation (resolve.rs ai_pursuit_bonus_*): the board holds TWO
+    // player-faction ships — the real player (found FIRST = lowest cell index,
+    // so player_pos) and an allied player-faction ship — and the enemy has two
+    // OPPOSED arcs so each beam bears a different way.
+    //
+    // Enemy at (2,2) Bow(S): Forward bears S (+row), Rear bears N (-row).
+    //   - real player at (2,0) [index 2, the lowest -> player_pos], hit by the
+    //     REAR "weak" gun (raw 2): score 10(hit) + 2 - 0  (+2 Pursuit).
+    //   - ally (player-faction) at (2,3) [index 17], hit by the FORWARD "strong"
+    //     gun (raw 13): score 13 (no +10, no +2 — it doesn't hit player_pos).
+    // Without Pursuit: weak 12 < strong 13 -> strong. With Pursuit: weak 14 >
+    // strong 13 -> weak. So the +2 is decisive. (Contrived to isolate the term,
+    // exactly as the canonical test tunes its raw gap; deleting `if pursuit &&
+    // hits_player` flips the pick back to "strong" and reddens this.)
+    let player = ship_2d("p", Faction::Player, Pos::new(2, 0), 10, Facing::Bow(Dir4::S), Arc::Forward, "weak");
+    let ally = ship_2d("ally", Faction::Player, Pos::new(2, 3), 10, Facing::Bow(Dir4::N), Arc::Forward, "weak");
     let mut enemy = ship_2d("e", Faction::Enemy, Pos::new(2, 2), 5, Facing::Bow(Dir4::S), Arc::Forward, "weak");
+    enemy.heat_max = 10; // generous so neither shot trips the heat gate
+    enemy.traits = vec![broadside_engine::types::Trait::Pursuit];
     enemy.mounts = vec![
-        Mount { id: "m1".into(), arc: Arc::Forward, weapon: "weak".into() },
+        Mount { id: "m1".into(), arc: Arc::Rear, weapon: "weak".into() }, // bears N -> player (2,0)
+        Mount { id: "m2".into(), arc: Arc::Forward, weapon: "strong".into() }, // bears S -> ally (2,3)
     ];
-    let mut board = board_2d(vec![player, enemy]);
-    let weak = beam("weak", 3, vec![broadside_engine::grid::Range::Adjacent, broadside_engine::grid::Range::Near]);
-    let c = content(&[weak]);
+    // Index sanity: the real player must be the FIRST player-faction cell so the
+    // AI reads it as player_pos (lower cell index than the ally).
+    assert!(Pos::new(2, 0).to_index() < Pos::new(2, 3).to_index(), "real player precedes ally in scan order");
+    let mut board = board_2d(vec![player, ally, enemy]);
+    let mut weak = beam("weak", 2, vec![broadside_engine::grid::Range::Adjacent, broadside_engine::grid::Range::Near, broadside_engine::grid::Range::Far]);
+    weak.targeting.requires_arc = Some(Arc::Rear);
+    weak.cost.heat = 0;
+    let mut strong = beam("strong", 13, vec![broadside_engine::grid::Range::Adjacent, broadside_engine::grid::Range::Near, broadside_engine::grid::Range::Far]);
+    strong.targeting.requires_arc = Some(Arc::Forward);
+    strong.cost.heat = 0;
+    let c = content(&[weak, strong]);
     decide_enemy_action(Pos::new(2, 2).to_index(), &mut board, &c);
     assert_eq!(
         queue_of(&board, Pos::new(2, 2)),
         vec!["weak".to_string()],
-        "pursuit bonus favours the player-hitting shot",
+        "Pursuit's +2 flips the pick to the player-hitting shot over a higher-raw non-player shot",
     );
 }
 
