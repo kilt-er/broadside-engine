@@ -5265,6 +5265,22 @@ mod tests {
         assert_eq!(board.ship_at(Pos::new(2, 2)).unwrap().facing, Facing::Bow(Dir4::N), "four ccw turns round-trip");
     }
 
+    /// (#75) Tab's 180° about-face: two RotateRight effects (the bin's Tab
+    /// applies exactly this) reverse the bow (N->S), so the hull visibly turns
+    /// around — the fix for "Tab does nothing to the ship" (it used to toggle
+    /// orientation only, which no longer moves the facing-driven render/arcs).
+    #[test]
+    fn two_rotate_rights_are_a_180_about_face() {
+        let mut board = board_2d(vec![ship_2d("p", Faction::Player, Pos::new(2, 2), Facing::Bow(Dir4::N), Arc::Forward)]);
+        let action = synthetic_rotate_right_action();
+        let fx = action.effects[0].clone();
+        apply_effect(&fx, &action, Pos::new(2, 2).to_index(), &[], &mut board, &NoContent);
+        apply_effect(&fx, &action, Pos::new(2, 2).to_index(), &[], &mut board, &NoContent);
+        let p = board.ship_at(Pos::new(2, 2)).unwrap();
+        assert_eq!(p.facing, Facing::Bow(Dir4::S), "N + 2x rotate-right = S (about-face)");
+        assert_eq!(p.orientation, Orientation::BowOn { bow: LaneEnd::Aft }, "orientation re-derived: S -> Aft");
+    }
+
     /// Local builders for the rotate REORIENT effects (mirror
     /// `input::synthetic_rotate_*` without depending on the input module here).
     fn synthetic_rotate_right_action() -> Action {

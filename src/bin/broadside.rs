@@ -146,14 +146,16 @@ pub fn apply_intent(
     };
 
     match intent {
-        // --- Reorient: a 90° turn that TOGGLES bow-on ↔ broadside and stops
-        // perpendicular — NOT the 180° bow Fore↔Aft about-face the static
-        // `__reorient_flip` synthetic encodes (#52, bruce). We read the
-        // player's current orientation here and pick the target stance: bow-on
-        // → broadside, broadside → bow-on. The synthetic supplies the action's
-        // name/cost/targeting; we override only its REORIENT effect. Stays
-        // bin-local — no resolve.rs / AI change (enemy reorient uses its own
-        // action def). Reaching bow-Aft via control is a deferred follow-up.
+        // --- Tab: a 180° ABOUT-FACE that visibly turns the hull (#75). Pre-#75
+        // this toggled orientation BowOn↔Broadside only, which — now that render +
+        // the fire-gate key off FACING — left the hull motionless (Bruce: "Tab does
+        // nothing to the ship"). Tab now reverses the bow by rotating FACING 180°
+        // (two RotateRight quarter-turns: N↔S, E↔W), reusing the same facing-driven
+        // REORIENT path as the Q/E quarter-turn rotates; orientation is re-derived
+        // from the new facing inside the resolver. Distinct from Q/E (90°) — Tab is
+        // the quick reverse. Bin-local; the static `__reorient_flip` synthetic's
+        // own effect is overridden here (its REORIENT::Flip stays orientation-only
+        // for the class Signatures that use it).
         Intent::ReorientFlip => {
             let Some(id) = intent_to_action_id(&intent) else {
                 return false;
@@ -161,19 +163,11 @@ pub fn apply_intent(
             let Some(mut action) = content.action(id).cloned() else {
                 return false;
             };
-            let bow_on = board
-                .cells
-                .iter()
-                .flatten()
-                .find(|s| s.id == player_id)
-                .map(|s| matches!(s.orientation, Orientation::BowOn { .. }))
-                .unwrap_or(true);
-            let to = if bow_on {
-                ReorientTo::Broadside
-            } else {
-                ReorientTo::BowOn
-            };
-            action.effects = vec![Effect::REORIENT { to }];
+            // Two clockwise quarter-turns = a 180° about-face of facing.
+            action.effects = vec![
+                Effect::REORIENT { to: ReorientTo::RotateRight },
+                Effect::REORIENT { to: ReorientTo::RotateRight },
+            ];
             apply_instant_action(&player_id, &action, board, content);
             run_world_phase(board, content);
             true
