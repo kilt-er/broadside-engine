@@ -355,71 +355,82 @@ fn fight_to_completion(
     panic!("fight did not terminate within {cap} rounds — outcome logic likely regressed");
 }
 
-/// Choose + queue the player's action for one round, modelling a real
-/// playstyle against the #72 mid-lane pincer + #71's now-firing/moving
-/// enemies. Targets the nearest live enemy and:
-///   - out of the siege_beam's band (distance > 4 = past Mid) → `step` to
-///     close range;
-///   - in band but the Forward arc doesn't bear that lane-end → `flip` to
-///     face it (costs the turn — the #72 reorient tension);
-///   - in band and bearing → `siege_beam`.
+/// Choose + queue the player's action for one round in **2-D** (#25), modelling
+/// a real playstyle against the #72 back-row spread + #71's firing/moving
+/// enemies. The player spawns front-centre (`(2,3)`) bow N, so its Forward gun
+/// bears up its own column; enemies fan across the back rows. The driver:
+///   - **fire** when the siege_beam already bears on a hostile cell — gated by
+///     the SAME single source the shot fires through (`resolve_targeting_2d`),
+///     so "the driver decided to fire" == "the shot connects" (no parallel
+///     aim math that could drift from the engine);
+///   - else **line up the column**: strafe E/W toward the nearest enemy's
+///     column via the resolver-served `__move_left`/`__move_right` (these need
+///     no `Content` entry — `resolver_ai_move` serves them with the right
+///     `direction_2d`);
+///   - else (same column, can't fire = out of band or facing away): **close**
+///     N toward the back rows with `__move_up`, or **flip** if the enemy is
+///     somehow behind (defensive — the spawn layout never puts one there).
 ///
-/// A mountless/idle player (no siege_beam) is left alone (defeat path).
+/// A mountless/idle player (no weapon) is left alone (the defeat path).
 fn queue_player_combat_action(board: &mut Board) {
-    // Snapshot player cell + facing and the nearest enemy's cell.
-    let Some((pcell, pbow)) = board.cells.iter().flatten().find_map(|s| {
+    use broadside_engine::input::{SYNTHETIC_MOVE_LEFT, SYNTHETIC_MOVE_RIGHT, SYNTHETIC_MOVE_UP};
+    use broadside_engine::resolve::resolve_targeting_2d;
+
+    // Snapshot the player's pos + its first weapon id (the siege_beam).
+    let Some((ppos, weapon_id)) = board.cells.iter().flatten().find_map(|s| {
         if s.faction != Faction::Player {
             return None;
         }
-        match s.orientation {
-            Orientation::BowOn { bow } => Some((s.cell, bow)),
-            // Broadside fires both ends; treat as already-bearing.
-            Orientation::Broadside => Some((s.cell, bow_facing_nearest(board, s.cell))),
-        }
+        s.mounts.first().map(|m| (s.pos, m.weapon.clone()))
     }) else {
-        return;
+        return; // no player, or a mountless/idle player → leave alone
     };
-    let Some(enemy_cell) = board
+
+    // Nearest live enemy by grid (Chebyshev) distance.
+    let Some(epos) = board
         .cells
         .iter()
         .flatten()
         .filter(|s| s.faction == Faction::Enemy)
-        .map(|s| s.cell)
-        .min_by_key(|&e| e.abs_diff(pcell))
+        .map(|s| s.pos)
+        .min_by_key(|&e| broadside_engine::grid::distance(ppos, e))
     else {
-        return;
+        return; // no enemies (encounter already won)
     };
 
-    let dist = enemy_cell.abs_diff(pcell);
-    // Lane-end the enemy lies toward, relative to the player.
-    let toward = if enemy_cell >= pcell { LaneEnd::Fore } else { LaneEnd::Aft };
-
-    let action = if dist > 4 {
-        "step" // out of siege_beam band → close
-    } else if pbow != toward {
-        "flip" // in band but facing the wrong way → reorient to face it
+    // FIRE-GATE (single source): does the weapon already bear on a hostile?
+    // resolve_targeting_2d returns the cells the shot would hit from ppos; if
+    // any is a non-player ship, firing connects this round.
+    let action: String = if let Some(weapon) = LoopContent::new().0.get(&weapon_id) {
+        let targets = resolve_targeting_2d(weapon, board, ppos);
+        let bears_on_hostile = targets.iter().any(|&p| {
+            board
+                .cells
+                .get(p.to_index())
+                .and_then(|c| c.as_ref())
+                .map(|s| s.faction != Faction::Player)
+                .unwrap_or(false)
+        });
+        if bears_on_hostile {
+            weapon_id.clone()
+        } else if epos.col != ppos.col {
+            // Wrong column → strafe laterally to line up the enemy's column.
+            if epos.col < ppos.col { SYNTHETIC_MOVE_LEFT } else { SYNTHETIC_MOVE_RIGHT }.to_string()
+        } else if epos.row < ppos.row {
+            // Same column, enemy ahead (lower row) but out of band → close N.
+            SYNTHETIC_MOVE_UP.to_string()
+        } else {
+            // Same column, enemy BEHIND (higher row) — face it. (Defensive: the
+            // spawn layout keeps enemies in the back rows, so this is unreached.)
+            "flip".to_string()
+        }
     } else {
-        "siege_beam" // in band and bearing → fire
+        return; // weapon not in the loop kit → leave alone
     };
 
-    if let Some(p) = board.cells[pcell].as_mut() {
-        p.queue = vec![action.to_string()];
+    if let Some(p) = board.cells[ppos.to_index()].as_mut() {
+        p.queue = vec![action];
     }
-}
-
-/// Helper for a Broadside-stance player: which lane-end the nearest enemy
-/// lies toward (Broadside bears both, so this just picks a valid `bow` value
-/// for the bearing check — never triggers a needless flip).
-fn bow_facing_nearest(board: &Board, pcell: usize) -> LaneEnd {
-    board
-        .cells
-        .iter()
-        .flatten()
-        .filter(|s| s.faction == Faction::Enemy)
-        .map(|s| s.cell)
-        .min_by_key(|&e| e.abs_diff(pcell))
-        .map(|e| if e >= pcell { LaneEnd::Fore } else { LaneEnd::Aft })
-        .unwrap_or(LaneEnd::Fore)
 }
 
 /* =========================================================================
@@ -865,16 +876,15 @@ fn build_generated_ship(spawn: &ShipSpawn) -> Option<Ship> {
     ))
 }
 
-// #[ignore]: REGRESSED after R4/R6/R6b/#28 (passed at #22 time — uses the REAL
-// generator's 2-D spawn positions, not stale fixtures). Root cause is NOT the
-// spawn fixtures (those are 2-D-correct) — it's the 1-D test-harness player-driver
-// queue_player_combat_action (drives off cell/orientation/LaneEnd) which can't
-// pilot a now-fully-2D fight (2-D fire+damage+move), so the campaign never resolves
-// Won/Lost → cap timeout (run_loop.rs:350). Gated on #25 (migrate the player-driver
-// to 2-D) + the run_loop 2-D fixture rewrite. NOTE: re-check "didn't terminate" at
-// the #25 migration — if a real 2-D driver STILL hangs, that's a real resolver bug
-// to flag, not a harness gap.
-#[ignore = "regressed: 1-D player-driver can't pilot 2-D combat → no termination; restore at #25 + run_loop 2-D fixtures — #22"]
+// #25 RESTORED: this uses the REAL generator's 2-D spawn positions, so the only
+// blocker was the 1-D test-harness player-driver (queue_player_combat_action drove
+// off cell/orientation/LaneEnd and couldn't pilot a 2-D fight). That driver is now
+// 2-D (reads pos/facing, fire-gates on resolve_targeting_2d, strafes via the
+// resolver-served synthetic moves), so a properly-aimed player clears every
+// generated encounter and the campaign reaches Victorious — un-ignored. (The
+// stalemate was the harness, not the engine: the #25 canary
+// player_fires_and_kills_one_enemy_in_2d_ends_the_encounter proves the
+// campaign-terminating kill works end-to-end.)
 #[test]
 fn generated_spawn_pool_campaign_plays_through_to_victory() {
     let catalog = generated_campaign_catalog();
