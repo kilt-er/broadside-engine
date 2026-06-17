@@ -253,13 +253,19 @@ impl Content for LoopContent {
 /// facing. `Fore` puts the enemy's soft stern toward the player at cell 0
 /// (killable target); `Aft` swings the enemy's forward gun down-lane to
 /// bear on the player (a threat that shoots back).
-fn spawn(class_id: &str, cell: usize, hull: i32, bow: LaneEnd) -> ShipSpawn {
+/// A 2-D enemy spawn at `pos` with `hull`, bow pointed S (toward the front-row
+/// player) — the canonical enemy stance from [`runs::enemy_spawn_facing`], so a
+/// Forward mount bears down its column on a player below it. `build_encounter_board`
+/// places at `spawn.pos` and reads `spawn.facing` (invariant A), so the spawn —
+/// not the builder — fixes both. The legacy 1-D `cell` is kept consistent
+/// (`pos.to_index()`) for the transition window; nothing live reads it.
+fn spawn(class_id: &str, pos: Pos, hull: i32) -> ShipSpawn {
     ShipSpawn {
         class_id: class_id.into(),
-        cell,
-        pos: broadside_engine::grid::Pos::new(0, 0),
-        orientation: Orientation::BowOn { bow },
-        facing: broadside_engine::grid::Facing::Bow(broadside_engine::grid::Dir4::S),
+        cell: pos.to_index(),
+        pos,
+        orientation: Orientation::BowOn { bow: LaneEnd::Fore },
+        facing: Facing::Bow(Dir4::S),
         hp_override: Some(hull),
     }
 }
@@ -302,15 +308,15 @@ fn two_sector_campaign() -> Vec<Sector> {
             name: "Approach".into(),
             patrol_tier: 1,
             encounters: vec![
-                encounter("s0e0", vec![spawn("target", 1, 3, LaneEnd::Fore)], false),
-                encounter("s0e1", vec![spawn("target", 1, 3, LaneEnd::Fore)], false),
+                encounter("s0e0", vec![spawn("target", Pos::new(2, 0), 3)], false),
+                encounter("s0e1", vec![spawn("target", Pos::new(2, 0), 3)], false),
             ],
         },
         Sector {
             id: "s1".into(),
             name: "Citadel".into(),
             patrol_tier: 2,
-            encounters: vec![encounter("s1boss", vec![spawn("target", 1, 3, LaneEnd::Fore)], true)],
+            encounters: vec![encounter("s1boss", vec![spawn("target", Pos::new(2, 0), 3)], true)],
         },
     ]
 }
@@ -494,15 +500,10 @@ fn player_fires_and_kills_one_enemy_in_2d_ends_the_encounter() {
  * 1. Played-through victory across the whole campaign.
  * ====================================================================== */
 
-// #[ignore]: stale 1-D fixture. The local spawn() helper pins pos=Pos::new(0,0) for
-// every spawn; after C4's invariant-A placement (build_encounter_board places at
-// spawn.pos.to_index()) all enemies collide at cell 0 and are skipped, so the player
-// can't clear a real board and the played-through victory never sets (cap timeout).
-// Plus the player-driver + enemy AI are still 1-D (C1 pending). NOT a 2-D engine bug
-// (reviewer-confirmed). Restore campaign winnability on the 2-D fixture rewrite +
-// C1/R6 — tracks #22. (Contrast: generated_spawn_pool_campaign_plays_through_to_victory
-// PASSES because it uses the real generator's 2-D spawn positions, not spawn().)
-#[ignore = "stale 1-D spawn() fixture (pos (0,0)) + 1-D player/AI; restore at 2-D run_loop fixture rewrite + C1/R6 — #22"]
+// #22 RESTORED: the local spawn()/player_frigate fixtures are now 2-D (real
+// back-row pos + Bow(S) enemy facing), build_encounter_board places at
+// spawn.pos, and the player-driver is 2-D (#25), so the hand-built campaign
+// plays through on real boards exactly like the generated one.
 #[test]
 fn full_campaign_played_to_victory_sets_victorious() {
     let sectors = two_sector_campaign();
@@ -560,30 +561,25 @@ fn full_campaign_played_to_victory_sets_victorious() {
  * 2. Played-through defeat routes through mark_defeated.
  * ====================================================================== */
 
-#[ignore = "stale 1-D spawn() fixture (pos (0,0)) — brute can't bear on stacked player so the loss never resolves; restore at 2-D run_loop fixture rewrite + C1/R6 — #22"]
 #[test]
 fn losing_an_encounter_on_a_real_board_marks_run_defeated() {
     let content = LoopContent::new();
-    // A near-dead player (hull 1) versus a high-hull brute that shoots
-    // back, and we DON'T arm the player (`arm_player: false`) — so the
-    // player sits idle and the board outcome is decided entirely by the
-    // brute's return fire. This is the "the board killed me" path the
-    // run-loop must handle.
-    // #72: build_encounter_board now forces the player to the MID cell
-    // (size/2), ignoring the passed cell. The encounter's max spawn cell sets
-    // the lane size; brute@4 → canonical_lane_size(4) = 5 → mid = 2. So the
-    // player lands at cell 2 and the brute at cell 4 (no collision — a brute
-    // at cell 2 would now be skipped as colliding with the mid-lane player).
-    // Brute bow=Aft so its forward arc bears down-lane (toward lower cells) on
-    // the player at 2; distance 2 = Close.
-    let enc = encounter("ambush", vec![spawn("brute", 4, 20, LaneEnd::Aft)], false);
+    // A near-dead player (hull 1) versus a high-hull brute that shoots back, and
+    // we DON'T arm the player (`arm_player: false`) — the player sits idle and
+    // the board outcome is decided entirely by the brute's return fire. This is
+    // the "the board killed me" path the run-loop must handle.
+    //
+    // 2-D (#22): build_encounter_board fixes the player to the front-centre
+    // (2,3) bow N, and reads the spawn's pos/facing for the brute. The brute is
+    // placed directly ahead at (2,2) facing S (its canonical enemy stance) so
+    // its Forward arc bears down column 2 onto the player at distance 1
+    // (Adjacent). siege_beam is raw 6 at PointBlank-optimal, so even through the
+    // player's bow armour (2 — the bow faces N toward the brute) it lands ~4,
+    // which a 1-hull player can't survive. The brute's hull 20 keeps it alive
+    // long enough to return fire in the world phase. The AI (decide_enemy_action)
+    // queues the brute's shot — no player arming.
+    let enc = encounter("ambush", vec![spawn("brute", Pos::new(2, 2), 20)], false);
     let mut run = Run::new(player_frigate(0, 1));
-    // Route the brute's fire onto the player's soft stern. The hit arrives
-    // FROM the Fore direction (brute sits at the higher cell), so the player
-    // must face bow=Aft to put its stern — armour 0 — toward the brute.
-    // With distance 2 (Close) and siege_beam optimal PointBlank, falloff
-    // leaves floor(6 * 0.66) = 3 damage, which a 1-hull player can't survive.
-    run.player.orientation = Orientation::BowOn { bow: LaneEnd::Aft };
 
     let mut board = build_encounter_board(&enc, run.player.clone(), build_ship);
     let result = fight_to_completion(&mut board, &content, false, 16);
@@ -608,7 +604,6 @@ fn losing_an_encounter_on_a_real_board_marks_run_defeated() {
  * 3. Salvage → meta accrual across a real won encounter.
  * ====================================================================== */
 
-#[ignore = "stale 1-D spawn() fixture (pos (0,0)) — targets collide at cell 0, fight never resolves Won; salvage logic itself untouched; restore at 2-D run_loop fixture rewrite + C1/R6 — #22"]
 #[test]
 fn winning_an_encounter_accrues_salvage_into_the_run() {
     let content = LoopContent::new();
@@ -616,9 +611,9 @@ fn winning_an_encounter_accrues_salvage_into_the_run() {
     let enc = encounter(
         "haul",
         vec![
-            spawn("target", 1, 3, LaneEnd::Fore),
-            spawn("target", 2, 3, LaneEnd::Fore),
-            spawn("target", 3, 3, LaneEnd::Fore),
+            spawn("target", Pos::new(1, 0), 3),
+            spawn("target", Pos::new(2, 0), 3),
+            spawn("target", Pos::new(3, 0), 3),
         ],
         false,
     );
@@ -647,11 +642,10 @@ fn winning_an_encounter_accrues_salvage_into_the_run() {
 /// `capital_boss_win_accrues_tier_scaled_salvage_into_the_run` below). This
 /// test pins the still-valid no-catalog fallback (placeholder campaign with
 /// no CapitalDefs), so it must NOT be read as "capitals pay ×2 in the game."
-#[ignore = "stale 1-D spawn() fixture (pos (0,0)) — boss target stacked, fight never resolves Won; restore at 2-D run_loop fixture rewrite + C1/R6 — #22"]
 #[test]
 fn catalogless_boss_fallback_doubles_salvage_on_a_real_win() {
     let content = LoopContent::new();
-    let enc = encounter("boss", vec![spawn("target", 1, 3, LaneEnd::Fore)], true);
+    let enc = encounter("boss", vec![spawn("target", Pos::new(2, 0), 3)], true);
     let mut run = Run::new(player_frigate(0, 30));
 
     let mut board = build_encounter_board(&enc, run.player.clone(), build_ship);
@@ -678,7 +672,6 @@ fn catalogless_boss_fallback_doubles_salvage_on_a_real_win() {
 /// The Dasher: salvage_p1=2, salvage_p7=7. At patrol tier 4 the interpolation
 /// is 2 + (7-2)*(4-1)/6 = 2 + 2 = 4 (matching content's
 /// `capital_salvage_interpolates_p1_to_p7_by_tier`).
-#[ignore = "stale 1-D spawn() fixture (pos (0,0)) — capital target stacked, fight never resolves Won; tier-scaled salvage math untouched; restore at 2-D run_loop fixture rewrite + C1/R6 — #22"]
 #[test]
 fn capital_boss_win_accrues_tier_scaled_salvage_into_the_run() {
     // Catalog with one capital carrying the tier endpoints.
@@ -699,7 +692,7 @@ fn capital_boss_win_accrues_tier_scaled_salvage_into_the_run() {
     // boss materializes as a killable target so the player wins it.
     let enc = encounter(
         "drift_belt_boss",
-        vec![spawn("The Dasher", 1, 3, LaneEnd::Fore)],
+        vec![spawn("The Dasher", Pos::new(2, 0), 3)],
         true,
     );
     let mut run = Run::new(player_frigate(0, 30));
