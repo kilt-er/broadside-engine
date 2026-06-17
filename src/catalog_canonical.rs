@@ -193,24 +193,26 @@ fn transform_action(v: Value) -> Result<Value, &'static str> {
     // upgrade can widen to a real allowed-bands list.
     targeting.insert("band".into(), Value::Array(vec![Value::from(band.clone())]));
     targeting.insert("optimalBand".into(), Value::from(band.clone()));
-    // v2 (#28): DERIVE the 2-D Range bands from the 1-D band so the live
-    // catalog drives 2-D combat without re-authoring. Without this,
+    // v2 (#28, widened #81): DERIVE the 2-D Range bands from the 1-D band so the
+    // live catalog drives 2-D combat without re-authoring. Without this,
     // `Targeting.range_band` deserializes EMPTY (its serde default) and
     // `resolve_targeting_2d`'s `in_band` over an empty set is ALWAYS false →
     // NO catalog weapon fires in 2-D at any range (neutering C1, the player's
-    // fire, and the ThreatMap). The mapping collapses the 1-D 5-band ruler onto
-    // the 3-band Chebyshev ruler by DISTANCE equivalence (blueprint decision
-    // #6/#7): pointBlank(d≤1)→adjacent, close(d=2)→near, mid/long/extreme
-    // (d≥3)→far. This preserves over-extension: a long-range (mid/long/extreme)
-    // weapon becomes a `far` weapon whose band set excludes `adjacent`, so a
-    // player who closes onto it makes it inert (the #7 deadzone). Explicit
-    // per-action 2-D bands are a CONTRACT-time catalog upgrade; this is the
-    // transitional single-source derive. (Balance note: mid→far means
-    // mid-range guns can't fire adjacent in 2-D — intended over-extension; if
-    // playtest wants mid usable up close, change `mid` to `near` here.)
-    let range_2d = derive_range_2d(&band);
-    targeting.insert("rangeBand".into(), Value::Array(vec![Value::from(range_2d)]));
-    targeting.insert("optimalRange".into(), Value::from(range_2d));
+    // fire, and the ThreatMap). #81: each 1-D band expands to a CONTIGUOUS 2-D
+    // SET (not one ring) so weapons are actually playable in 2-D —
+    // pointBlank→[adjacent], close→[adjacent,near], mid→[near,far] — while
+    // long/extreme stay [far] to preserve over-extension (decision #7): a
+    // long-range gun's set excludes `adjacent`/`near`, so a player who closes
+    // onto it makes it inert. Explicit per-action 2-D bands are a CONTRACT-time
+    // catalog upgrade; this is the transitional single-source derive. See
+    // `derive_range_2d_set`; MUST match `catalog::expand_band_2d` (the strict
+    // load path) so both catalog shapes agree.
+    let range_set = derive_range_2d_set(&band);
+    let range_arr: Vec<Value> = range_set.iter().map(|s| Value::from(*s)).collect();
+    // optimalRange = nearest ring of the set (sensible telegraph distance).
+    let optimal = range_set.first().copied().unwrap_or("far");
+    targeting.insert("rangeBand".into(), Value::Array(range_arr));
+    targeting.insert("optimalRange".into(), Value::from(optimal));
     targeting.insert(
         "requiresArc".into(),
         match arc {
@@ -229,30 +231,36 @@ fn transform_action(v: Value) -> Result<Value, &'static str> {
     Ok(Value::Object(a))
 }
 
-/// Map a 1-D band id (canonical `band` string) to the 2-D [`crate::grid::Range`]
-/// serde id (#28). The 1-D 5-band ruler collapses onto the 3-band Chebyshev
-/// ruler by DISTANCE equivalence (blueprint decision #6):
+/// Expand a 1-D band id (canonical `band` string) into the CONTIGUOUS 2-D
+/// [`crate::grid::Range`] serde-id SET it should fire across (#28 derive, widened
+/// #81), NEAREST-first. The 1-D 5-band ruler maps onto the 3-band Chebyshev ruler:
 ///
-/// | 1-D band     | 1-D distance | 2-D Range  |
-/// |--------------|--------------|------------|
-/// | `pointBlank` | d ≤ 1        | `adjacent` |
-/// | `close`      | d = 2        | `near`     |
-/// | `mid`        | d ≤ 4        | `far`      |
-/// | `long`       | d ≤ 6        | `far`      |
-/// | `extreme`    | d ≥ 7        | `far`      |
+/// | 1-D band     | 2-D set                | note                                |
+/// |--------------|------------------------|-------------------------------------|
+/// | `pointBlank` | `[adjacent]`           | touching only                       |
+/// | `close`      | `[adjacent, near]`     | touching out to near                |
+/// | `mid`        | `[near, far]`          | reaches out, not point-blank        |
+/// | `long`       | `[far]`                | long-only — over-extension deadzone |
+/// | `extreme`    | `[far]`                | long-only — deadzone                 |
 ///
-/// `mid`/`long`/`extreme` all collapse to `far` because the 3-band ruler caps
-/// at `far` = d ≥ 3, and this is what preserves over-extension (decision #7): a
-/// long-range weapon's band set excludes `adjacent`, so it goes inert when the
-/// player closes onto it. An unknown band defaults to `far` (the safe
-/// "long-range, has a deadzone" bucket) rather than silently making a weapon
-/// fire point-blank. Returns the camelCase serde id `Range` deserializes from.
-fn derive_range_2d(band_1d: &str) -> &'static str {
+/// #81: a single 1-D band used to collapse to ONE 2-D ring, so a weapon fired in
+/// exactly one Chebyshev ring (unplayable — a `close` beam couldn't hit an
+/// adjacent enemy). Each band now expands to a contiguous set, but `long`/
+/// `extreme` stay `far`-only so over-extension (decision #7) still bites: closing
+/// onto a long-range gun excludes it from `adjacent`/`near` and it goes inert. An
+/// unknown band defaults to `[far]` (the safe "has a deadzone" bucket) rather
+/// than silently letting a weapon fire point-blank.
+///
+/// MUST stay identical to `catalog::expand_band_2d` (the strict load path) so the
+/// two catalog shapes can't diverge.
+fn derive_range_2d_set(band_1d: &str) -> Vec<&'static str> {
     match band_1d {
-        "pointBlank" => "adjacent",
-        "close" => "near",
-        // mid / long / extreme → far (and anything unrecognized, defensively).
-        _ => "far",
+        "pointBlank" => vec!["adjacent"],
+        "close" => vec!["adjacent", "near"],
+        "mid" => vec!["near", "far"],
+        "long" | "extreme" => vec!["far"],
+        // Anything unrecognized -> far-only (deadzone), defensively.
+        _ => vec!["far"],
     }
 }
 
@@ -970,11 +978,13 @@ mod tests {
         assert_eq!(t.band, vec![crate::types::RangeBand::Mid]);
     }
 
-    /// #28: the canonical transformer DERIVES the 2-D `rangeBand`/`optimalRange`
-    /// from the 1-D band (distance-equivalence per decision #6), so the live
-    /// catalog drives 2-D combat without an empty `range_band` (which would make
-    /// `resolve_targeting_2d` fire nothing). A `mid` weapon → `Far` (preserving
-    /// the over-extension deadzone: a long-range gun has no `Adjacent` band).
+    /// #28/#81: the canonical transformer DERIVES the 2-D `rangeBand`/`optimalRange`
+    /// from the 1-D band, so the live catalog drives 2-D combat without an empty
+    /// `range_band` (which would make `resolve_targeting_2d` fire nothing). #81
+    /// widens each 1-D band to a CONTIGUOUS 2-D SET (close→[Adjacent,Near],
+    /// mid→[Near,Far]) so weapons are playable, while `long`/`extreme` stay
+    /// `[Far]` to preserve the over-extension deadzone (a long-range gun has no
+    /// `Adjacent`/`Near` band).
     #[test]
     fn targeting_derives_2d_range_from_1d_band() {
         let mk = |band: &str| {
@@ -992,18 +1002,30 @@ mod tests {
             cat.actions[0].targeting.clone()
         };
         use crate::grid::Range;
-        // pointBlank → Adjacent, close → Near, mid/long/extreme → Far.
+        // #81 widened SETS: pointBlank→[Adjacent], close→[Adjacent,Near],
+        // mid→[Near,Far], long/extreme→[Far]. optimalRange = nearest ring.
         let t = mk("pointBlank");
         assert_eq!(t.range_band, vec![Range::Adjacent]);
         assert_eq!(t.optimal_range, Range::Adjacent);
-        assert_eq!(mk("close").optimal_range, Range::Near);
-        for far in ["mid", "long", "extreme"] {
+
+        let t = mk("close");
+        assert_eq!(t.range_band, vec![Range::Adjacent, Range::Near]);
+        assert_eq!(t.optimal_range, Range::Adjacent);
+
+        // mid reaches Near AND Far but is NOT point-blank (deadzone @ Adjacent).
+        let t = mk("mid");
+        assert_eq!(t.range_band, vec![Range::Near, Range::Far]);
+        assert_eq!(t.optimal_range, Range::Near);
+        assert!(!t.range_band.contains(&Range::Adjacent), "mid has an adjacent deadzone");
+
+        // long / extreme stay Far-only — the full over-extension deadzone
+        // (decision #7): inert when the player closes onto them.
+        for far in ["long", "extreme"] {
             let t = mk(far);
-            assert_eq!(t.range_band, vec![Range::Far], "{far} → Far");
+            assert_eq!(t.range_band, vec![Range::Far], "{far} → [Far]");
             assert_eq!(t.optimal_range, Range::Far);
-            // The over-extension invariant: a long-range weapon cannot fire
-            // Adjacent (decision #7) — its 2-D band set excludes Adjacent.
             assert!(!t.range_band.contains(&Range::Adjacent), "{far} has a deadzone");
+            assert!(!t.range_band.contains(&Range::Near), "{far} is far-only");
         }
     }
 

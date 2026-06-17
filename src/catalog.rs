@@ -102,38 +102,73 @@ pub fn load_from_bytes(bytes: &[u8]) -> Result<Catalog, LoadError> {
 }
 
 /// Fill each action's 2-D [`crate::grid::Range`] bands from its 1-D
-/// [`crate::types::RangeBand`] when they're absent (#28). Idempotent: actions
-/// that already carry a non-empty `range_band` (e.g. a future CONTRACT-era
-/// catalog with explicit 2-D bands) are left untouched. The 1-D→2-D mapping is
-/// the same distance-equivalence collapse the canonical transformer uses
-/// (blueprint decision #6): `PointBlank→Adjacent`, `Close→Near`,
-/// `Mid|Long|Extreme→Far`. Keeping the over-extension deadzone (decision #7):
-/// long-range guns become `Far` (no `Adjacent`), inert when closed upon.
+/// [`crate::types::RangeBand`] when they're absent (#28; widened #81). Idempotent:
+/// actions that already carry a non-empty `range_band` (e.g. a future CONTRACT-era
+/// catalog with explicit 2-D bands) are left untouched.
+///
+/// ## 1-D band → 2-D Range SET (#81 — the playable widening)
+///
+/// The catalog gives each weapon a SINGLE 1-D band (`"close"`, `"mid"`, …). The
+/// original #28 derive mapped that to a single 2-D Range cell, so a weapon fired
+/// in exactly ONE Chebyshev ring (a `close` beam only at distance 2, never
+/// adjacent) — too narrow to actually play. #81 expands each 1-D band into a
+/// CONTIGUOUS 2-D set that mirrors its firing intent, while preserving the
+/// over-extension deadzone (decision #7):
+///
+/// | 1-D band     | 2-D set            | note                                    |
+/// |--------------|--------------------|-----------------------------------------|
+/// | `PointBlank` | `[Adjacent]`       | touching only                           |
+/// | `Close`      | `[Adjacent, Near]` | fights from touching out to near        |
+/// | `Mid`        | `[Near, Far]`      | reaches out, NOT point-blank            |
+/// | `Long`       | `[Far]`            | long-only — DEADZONE (inert if closed)  |
+/// | `Extreme`    | `[Far]`            | long-only — DEADZONE                     |
+///
+/// Each set is a SUPERSET of the original single cell (only rings ADDED, never
+/// removed), so any test asserting a weapon fires at its old ring still holds.
+/// `Long`/`Extreme` stay `Far`-only so a player who closes onto a long-range gun
+/// still makes it inert — the #7 over-extension threat is unharmed.
+///
+/// `optimal_range` is the NEAREST ring of the resulting set (smallest Chebyshev),
+/// the sensible "ideal engagement distance" for a telegraph; band-falloff is
+/// absolute-by-distance now (R4) so `optimal_range` no longer drives damage.
+///
+/// MUST stay in lockstep with `catalog_canonical::derive_range_2d_set` (the other
+/// load path) — both produce identical sets so strict + canonical catalogs agree.
 fn normalize_2d_bands(catalog: &mut Catalog) {
-    use crate::grid::Range;
-    use crate::types::RangeBand;
-    fn to_2d(b: RangeBand) -> Range {
-        match b {
-            RangeBand::PointBlank => Range::Adjacent,
-            RangeBand::Close => Range::Near,
-            RangeBand::Mid | RangeBand::Long | RangeBand::Extreme => Range::Far,
-        }
-    }
     for action in &mut catalog.actions {
         let t = &mut action.targeting;
         if t.range_band.is_empty() {
-            // Derive the allowed 2-D set from the 1-D allowed set (dedup-preserving).
+            // Union the per-1-D-band sets (dedup-preserving), in nearest-first order.
             let mut seen = Vec::new();
             for &b in &t.band {
-                let r = to_2d(b);
-                if !seen.contains(&r) {
-                    seen.push(r);
+                for r in expand_band_2d(b) {
+                    if !seen.contains(&r) {
+                        seen.push(r);
+                    }
                 }
             }
+            // Optimal: the nearest ring of the optimal band's expansion.
+            t.optimal_range = expand_band_2d(t.optimal_band)
+                .first()
+                .copied()
+                .unwrap_or(crate::grid::Range::Far);
             t.range_band = seen;
-            // Optimal: derive from the 1-D optimal band (it's a single value).
-            t.optimal_range = to_2d(t.optimal_band);
         }
+    }
+}
+
+/// Expand one 1-D [`RangeBand`] into the contiguous 2-D [`crate::grid::Range`] set
+/// it should fire across (#81), NEAREST-first. See [`normalize_2d_bands`] for the
+/// table + rationale; kept in lockstep with
+/// `catalog_canonical::derive_range_2d_set`.
+pub(crate) fn expand_band_2d(b: crate::types::RangeBand) -> Vec<crate::grid::Range> {
+    use crate::grid::Range::{Adjacent, Far, Near};
+    use crate::types::RangeBand;
+    match b {
+        RangeBand::PointBlank => vec![Adjacent],
+        RangeBand::Close => vec![Adjacent, Near],
+        RangeBand::Mid => vec![Near, Far],
+        RangeBand::Long | RangeBand::Extreme => vec![Far],
     }
 }
 
