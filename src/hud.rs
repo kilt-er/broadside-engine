@@ -2463,6 +2463,25 @@ pub fn push_player_readout(out: &mut Vec<DrawCommand>, pos: crate::grid::Pos, fa
     push_text_left(out, &text, start_x, 26.0, pixel, DIM);
 }
 
+/// (#76) Top-right resolution readout under the POS/FACE line: `SHIP <w>x<h>`
+/// (the loft-render pixel size, cycled with `[`/`]`) and `SCENE <w>x<h>` (the
+/// virtual canvas). Right-aligned, dim, so Bruce sees the live res while tuning.
+/// Stacked at y=38 / y=48 (the POS/FACE line sits at y=26).
+pub fn push_res_readout(out: &mut Vec<DrawCommand>, ship: (u32, u32), scene: (u32, u32)) {
+    use crate::gfx::VIRTUAL_W;
+    const DIM: [f32; 4] = [0.62, 0.70, 0.80, 0.85];
+    let pixel = 1.0;
+    let advance = 5.0 * pixel + pixel;
+    let right_pad = 20.0;
+    let right_align = |out: &mut Vec<DrawCommand>, text: &str, y: f32| {
+        let total_w = text.len() as f32 * advance - pixel;
+        let start_x = VIRTUAL_W as f32 - total_w - right_pad;
+        push_text_left(out, text, start_x, y, pixel, DIM);
+    };
+    right_align(out, &format!("SHIP {}x{}", ship.0, ship.1), 38.0);
+    right_align(out, &format!("SCENE {}x{}", scene.0, scene.1), 48.0);
+}
+
 /// Minimalist controls legend, bottom-left corner. Dim single-column text,
 /// no background panel — just a quiet reminder of the keybindings that
 /// doesn't crowd the lane. Labels mirror the bin's `keycode_to_key` /

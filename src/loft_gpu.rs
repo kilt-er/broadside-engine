@@ -43,6 +43,31 @@ use crate::types::{LaneEnd, Orientation};
 /// pixellation-check (one-line change here).
 pub const LOW_W: u32 = 160;
 pub const LOW_H: u32 = 100;
+
+/// (#76) The SHIP-res cycle Bruce steps through with `[` / `]` (chunky → crisp):
+/// 160×100 (default) → 220×138 → 320×200, then wraps. All ~1.6:1 so the lane
+/// dest-quad aspect ([`crate::hud`]'s `LOFT_TEXTURE_ASPECT`) stays valid and the
+/// hull never re-squashes (#74). Bigger = finer ship pixels. [`next_loft_res`] /
+/// [`prev_loft_res`] step this list, snapping an off-list current size to the
+/// nearest neighbour first.
+pub const LOFT_RES_PRESETS: [(u32, u32); 3] = [(160, 100), (220, 138), (320, 200)];
+
+/// The next ship-res preset after `(w, h)` (wraps). If `(w, h)` isn't in the
+/// list, returns the first preset. See [`LOFT_RES_PRESETS`].
+pub fn next_loft_res(w: u32, h: u32) -> (u32, u32) {
+    match LOFT_RES_PRESETS.iter().position(|&p| p == (w, h)) {
+        Some(i) => LOFT_RES_PRESETS[(i + 1) % LOFT_RES_PRESETS.len()],
+        None => LOFT_RES_PRESETS[0],
+    }
+}
+
+/// The previous ship-res preset before `(w, h)` (wraps). See [`LOFT_RES_PRESETS`].
+pub fn prev_loft_res(w: u32, h: u32) -> (u32, u32) {
+    match LOFT_RES_PRESETS.iter().position(|&p| p == (w, h)) {
+        Some(i) => LOFT_RES_PRESETS[(i + LOFT_RES_PRESETS.len() - 1) % LOFT_RES_PRESETS.len()],
+        None => LOFT_RES_PRESETS[0],
+    }
+}
 /// Posterize band count — kept at 8 (this is about pixel SIZE, not colour count).
 pub const BANDS: f32 = 8.0;
 
@@ -368,6 +393,16 @@ pub struct LoftGpu {
     out_tex: wgpu::Texture,
     out_view: wgpu::TextureView,
     post_bg: wgpu::BindGroup,
+    /// (#76) The SHIP offscreen size — runtime now, not the [`LOW_W`]/[`LOW_H`]
+    /// const, so Bruce can cycle the ship-pixel chunkiness live ([`Self::resize`]
+    /// recreates the three targets + `post_bg` at the new size). Initialised to
+    /// the const default. The 2D compositor / HUD virtual res is untouched.
+    low_w: u32,
+    low_h: u32,
+    /// Kept so [`Self::resize`] can rebuild the targets + `post_bg` without
+    /// re-deriving the sampler / bind-group layout (size-independent).
+    post_bgl: wgpu::BindGroupLayout,
+    post_sampler: wgpu::Sampler,
 }
 
 impl LoftGpu {
@@ -483,45 +518,11 @@ impl LoftGpu {
         });
 
         // ---- offscreen scene color + depth + final posterized output ----
-        let mk = |label, format, usage| {
-            device.create_texture(&wgpu::TextureDescriptor {
-                label: Some(label),
-                size: wgpu::Extent3d {
-                    width: LOW_W,
-                    height: LOW_H,
-                    depth_or_array_layers: 1,
-                },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format,
-                usage,
-                view_formats: &[],
-            })
-        };
-        let scene_tex = mk(
-            "loft scene color",
-            LOW_FORMAT,
-            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
-        );
-        let scene_view = scene_tex.create_view(&Default::default());
-        let depth_tex = mk(
-            "loft depth",
-            DEPTH_FORMAT,
-            wgpu::TextureUsages::RENDER_ATTACHMENT,
-        );
-        let depth_view = depth_tex.create_view(&Default::default());
-        let out_tex = mk(
-            "loft posterized out",
-            LOW_FORMAT,
-            // COPY_SRC so the headless capture (read_output_png, the
-            // dynamic-lighting test) can copy this back to a buffer; additive —
-            // the gameplay blit path samples it as TEXTURE_BINDING unchanged.
-            wgpu::TextureUsages::RENDER_ATTACHMENT
-                | wgpu::TextureUsages::TEXTURE_BINDING
-                | wgpu::TextureUsages::COPY_SRC,
-        );
-        let out_view = out_tex.create_view(&Default::default());
+        // (#76) Created at the runtime ship res (initialised to the const
+        // default) via the shared helper so [`Self::resize`] can rebuild them.
+        let low_w = LOW_W;
+        let low_h = LOW_H;
+        let (scene_view, depth_view, out_tex, out_view) = make_loft_targets(device, low_w, low_h);
 
         // ---- posterize pipeline ----
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
@@ -635,7 +636,52 @@ impl LoftGpu {
             out_tex,
             out_view,
             post_bg,
+            low_w,
+            low_h,
+            post_bgl,
+            post_sampler: sampler,
         }
+    }
+
+    /// (#76) Resize the SHIP offscreen targets to `(w, h)` LIVE — recreate the
+    /// scene-color / depth / posterized-out textures + views at the new size and
+    /// rebuild `post_bg` (which samples the scene-color view). The pipelines,
+    /// UBOs, sampler, and bind-group layout are size-independent and reused. No
+    /// effect on the 2D compositor / HUD virtual res. Cheap (3 small textures +
+    /// one bind group); called only on a Bruce keypress, not per frame. Ignores a
+    /// zero dimension (keeps the current size) so a degenerate cycle can't crash.
+    pub fn resize(&mut self, device: &wgpu::Device, w: u32, h: u32) {
+        if w == 0 || h == 0 {
+            return;
+        }
+        let (scene_view, depth_view, out_tex, out_view) = make_loft_targets(device, w, h);
+        // Rebuild post_bg against the NEW scene-color view (binding 0); the
+        // sampler (1) + bands ubo (2) are unchanged.
+        let post_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("loft post bg (resized)"),
+            layout: &self.post_bgl,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&scene_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&self.post_sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: self.bands_ubo.as_entire_binding(),
+                },
+            ],
+        });
+        self.scene_view = scene_view;
+        self.depth_view = depth_view;
+        self.out_tex = out_tex;
+        self.out_view = out_view;
+        self.post_bg = post_bg;
+        self.low_w = w;
+        self.low_h = h;
     }
 
     /// The posterized RGBA output texture view (TEXTURE_BINDING) for the gfx
@@ -644,9 +690,10 @@ impl LoftGpu {
         &self.out_view
     }
 
-    /// Output dimensions (for the gfx side's UV / dest-rect math).
+    /// Output dimensions (for the gfx side's UV / dest-rect math). Runtime now
+    /// (#76 ship-res cycle), not the const.
     pub fn output_size(&self) -> (u32, u32) {
-        (LOW_W, LOW_H)
+        (self.low_w, self.low_h)
     }
 
     /// Read the posterized output texture back to an RGBA8 PNG on disk. For the
@@ -661,10 +708,12 @@ impl LoftGpu {
         queue: &wgpu::Queue,
         path: &std::path::Path,
     ) -> Result<(), String> {
-        let unpadded = LOW_W * 4;
+        // (#76) Runtime ship res (cyclable), not the const.
+        let (low_w, low_h) = (self.low_w, self.low_h);
+        let unpadded = low_w * 4;
         let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT; // 256
         let padded = unpadded.div_ceil(align) * align;
-        let buf_size = (padded * LOW_H) as u64;
+        let buf_size = (padded * low_h) as u64;
         let readback = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("loft readback"),
             size: buf_size,
@@ -685,12 +734,12 @@ impl LoftGpu {
                 layout: wgpu::TexelCopyBufferLayout {
                     offset: 0,
                     bytes_per_row: Some(padded),
-                    rows_per_image: Some(LOW_H),
+                    rows_per_image: Some(low_h),
                 },
             },
             wgpu::Extent3d {
-                width: LOW_W,
-                height: LOW_H,
+                width: low_w,
+                height: low_h,
                 depth_or_array_layers: 1,
             },
         );
@@ -708,8 +757,8 @@ impl LoftGpu {
 
         let data = slice.get_mapped_range();
         // Strip the row padding into a tight RGBA8 buffer.
-        let mut rgba = Vec::with_capacity((unpadded * LOW_H) as usize);
-        for row in 0..LOW_H {
+        let mut rgba = Vec::with_capacity((unpadded * low_h) as usize);
+        for row in 0..low_h {
             let start = (row * padded) as usize;
             let end = start + unpadded as usize;
             rgba.extend_from_slice(&data[start..end]);
@@ -720,8 +769,8 @@ impl LoftGpu {
         image::save_buffer(
             path,
             &rgba,
-            LOW_W,
-            LOW_H,
+            low_w,
+            low_h,
             image::ColorType::Rgba8,
         )
         .map_err(|e| format!("png save: {e}"))
@@ -897,7 +946,10 @@ impl LoftGpu {
         pitch_deg: f32,
         half_extent: f32,
     ) {
-        let aspect = LOW_W as f32 / LOW_H as f32;
+        // (#76) Aspect from the RUNTIME ship res (cyclable) — the presets are all
+        // ~1.6:1 so a cycle preserves the hull aspect, but reading it live keeps
+        // the ortho framing correct for any future non-1.6 preset too.
+        let aspect = self.low_w as f32 / self.low_h as f32;
         // The stance `yaw_deg` is the CAMERA yaw (orbit the ¾ camera around a
         // fixed hull at identity); pitch + zoom are parameters here. The camera
         // orbits about +Y (up), so the hull never tips vertical. `center_y` is
@@ -1004,6 +1056,53 @@ impl LoftGpu {
         }
         let _ = &self.out_tex; // kept alive; view borrows it
     }
+}
+
+/// (#76) Create the loft offscreen targets at `(w, h)`: the scene-color view,
+/// the depth view, and the posterized-out texture + view. Shared by
+/// [`LoftGpu::new`] (initial) and [`LoftGpu::resize`] (live ship-res cycle) so
+/// the size + usage flags stay in ONE place. `out_tex` is returned (not just its
+/// view) because the headless readback copies it.
+fn make_loft_targets(
+    device: &wgpu::Device,
+    w: u32,
+    h: u32,
+) -> (wgpu::TextureView, wgpu::TextureView, wgpu::Texture, wgpu::TextureView) {
+    let mk = |label, format, usage| {
+        device.create_texture(&wgpu::TextureDescriptor {
+            label: Some(label),
+            size: wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage,
+            view_formats: &[],
+        })
+    };
+    let scene_tex = mk(
+        "loft scene color",
+        LOW_FORMAT,
+        wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+    );
+    let scene_view = scene_tex.create_view(&Default::default());
+    let depth_tex = mk("loft depth", DEPTH_FORMAT, wgpu::TextureUsages::RENDER_ATTACHMENT);
+    let depth_view = depth_tex.create_view(&Default::default());
+    let out_tex = mk(
+        "loft posterized out",
+        LOW_FORMAT,
+        // COPY_SRC so the headless capture (read_output_png) can copy this back;
+        // additive — the gameplay blit samples it as TEXTURE_BINDING unchanged.
+        wgpu::TextureUsages::RENDER_ATTACHMENT
+            | wgpu::TextureUsages::TEXTURE_BINDING
+            | wgpu::TextureUsages::COPY_SRC,
+    );
+    let out_view = out_tex.create_view(&Default::default());
+    (scene_view, depth_view, out_tex, out_view)
 }
 
 // ---------------------------------------------------------------------------
@@ -1284,6 +1383,33 @@ mod tests {
     fn camera_view_proj_is_finite() {
         let m = camera_view_proj_zoom(28f32.to_radians(), 26f32.to_radians(), 1.6, -0.5, HALF_EXTENT);
         assert!(m.iter().all(|v| v.is_finite()));
+    }
+
+    /// (#76) Ship-res presets cycle forward/back with wrap, are all ~1.6:1 (so the
+    /// dest-quad aspect stays valid + the hull doesn't re-squash, #74), and an
+    /// off-list size snaps to the first preset.
+    #[test]
+    fn loft_res_presets_cycle_and_are_1_6_aspect() {
+        // All presets ~1.6:1.
+        for (w, h) in LOFT_RES_PRESETS {
+            let ar = w as f32 / h as f32;
+            assert!((ar - 1.6).abs() < 0.02, "preset {w}x{h} aspect {ar} not ~1.6");
+        }
+        // Forward wraps through the whole list back to the start.
+        let mut cur = LOFT_RES_PRESETS[0];
+        for _ in 0..LOFT_RES_PRESETS.len() {
+            cur = next_loft_res(cur.0, cur.1);
+        }
+        assert_eq!(cur, LOFT_RES_PRESETS[0], "forward cycle wraps to start");
+        // Back is the inverse of forward.
+        for p in LOFT_RES_PRESETS {
+            assert_eq!(prev_loft_res(next_loft_res(p.0, p.1).0, next_loft_res(p.0, p.1).1), p);
+        }
+        // Off-list size snaps to the first preset (defensive).
+        assert_eq!(next_loft_res(999, 999), LOFT_RES_PRESETS[0]);
+        assert_eq!(prev_loft_res(999, 999), LOFT_RES_PRESETS[0]);
+        // Default const is the first preset (so the initial size is in-cycle).
+        assert_eq!((LOW_W, LOW_H), LOFT_RES_PRESETS[0]);
     }
 
     /// Project a hull-LOCAL point through the REAL gameplay ortho loft camera at

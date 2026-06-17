@@ -139,6 +139,19 @@ fn main() {
         Err(e) => log::warn!("capture: Aegis.glb import failed ({e}); player falls back to sprite/flat-box"),
     }
 
+    // (#76) Optional BROADSIDE_SHIP_RES=N env cycles the SHIP loft res forward N
+    // steps before the capture, so a headless shot can verify the live ship-res
+    // change (160x100 -> 220x138 -> 320x200) renders correctly. Default 0 = the
+    // baseline res. Mirrors the live `,`/`.` control via `Gfx::cycle_loft_res`.
+    if let Ok(n) = std::env::var("BROADSIDE_SHIP_RES") {
+        if let Ok(steps) = n.parse::<u32>() {
+            for _ in 0..steps {
+                let (w, h) = gfx.cycle_loft_res(true);
+                log::info!("capture: cycled ship res -> {w}x{h}");
+            }
+        }
+    }
+
     // Optional 2nd arg = player column (0..COLS-1) so the capture can place the
     // player OFF-CENTER to expose lane-dependent pose bugs (a centred shot at the
     // zero-lane-yaw col 2 masks a mirrored lane-aim sign). Defaults to the

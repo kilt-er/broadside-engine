@@ -1150,6 +1150,27 @@ impl ApplicationHandler for App {
                     if let Some(w) = self.window.as_ref() { w.request_redraw(); }
                     return;
                 }
+                // (#76) `,` / `.` cycle the SHIP loft-render resolution LIVE
+                // (chunky <-> crisp ship pixels). Renderer-owned binding, handled
+                // before the content key map (like the `[`/`]` camera control).
+                // NOTE: the lead proposed `[`/`]` for this, but those are taken by
+                // the camera-angle scrubber above, so ship-res rides `,`/`.` until
+                // bindings are reshuffled. Scene-res (`-`/`=`) is deferred (the
+                // VIRTUAL_W/H const->runtime threading is a separate change).
+                if let Some(gfx) = self.gfx.as_mut() {
+                    if code == KeyCode::Comma {
+                        let (w, h) = gfx.cycle_loft_res(false);
+                        log::info!("ship res: {w}x{h}");
+                        if let Some(win) = self.window.as_ref() { win.request_redraw(); }
+                        return;
+                    }
+                    if code == KeyCode::Period {
+                        let (w, h) = gfx.cycle_loft_res(true);
+                        log::info!("ship res: {w}x{h}");
+                        if let Some(win) = self.window.as_ref() { win.request_redraw(); }
+                        return;
+                    }
+                }
                 let Some(key) = keycode_to_key(code) else { return };
 
                 // Modal-overlay states gate input. Phase 3 introduced
@@ -1378,6 +1399,13 @@ impl ApplicationHandler for App {
                     {
                         hud::push_player_readout(&mut instances, p.pos, p.facing);
                     }
+                    // (#76) Live resolution readout: SHIP <w>x<h> (cyclable via
+                    // `,`/`.`) + SCENE <w>x<h>, under the POS/FACE line.
+                    hud::push_res_readout(
+                        &mut instances,
+                        gfx.loft_res(),
+                        (broadside_engine::gfx::VIRTUAL_W, broadside_engine::gfx::VIRTUAL_H),
+                    );
                     // (#63) Controls legend removed — Bruce: the move-help text crowded
                     // the screen. Keybinds are discoverable in-game; no on-screen overlay.
                     // Player danger legibility (#67): screen hit-flash on damage.

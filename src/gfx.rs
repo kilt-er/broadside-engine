@@ -1288,6 +1288,28 @@ impl Gfx {
         self.loft_meshes.contains_key(&kind)
     }
 
+    /// (#76) Cycle the SHIP loft-render resolution LIVE — `forward` steps to the
+    /// next [`crate::loft_gpu::LOFT_RES_PRESETS`] (`]` key), else the previous
+    /// (`[`). Recreates the loft offscreen targets at the new size; the next
+    /// frame's loft pre-pass renders the hull at the new pixel chunkiness. Cheap
+    /// (3 small textures); the bin calls this on a keypress + redraws. Returns the
+    /// new `(w, h)` for the bin's "SHIP wxh" readout.
+    pub fn cycle_loft_res(&mut self, forward: bool) -> (u32, u32) {
+        let (w, h) = self.loft.output_size();
+        let (nw, nh) = if forward {
+            crate::loft_gpu::next_loft_res(w, h)
+        } else {
+            crate::loft_gpu::prev_loft_res(w, h)
+        };
+        self.loft.resize(&self.device, nw, nh);
+        (nw, nh)
+    }
+
+    /// The current SHIP loft-render resolution `(w, h)` — for the bin's readout.
+    pub fn loft_res(&self) -> (u32, u32) {
+        self.loft.output_size()
+    }
+
     /// DYNAMIC-LIGHTING TEST (headless): upload an [`crate::mesh_import::ImportedShip`]
     /// (e.g. the v2-lofted Aegis from [`crate::ship_loft_v2`]), render ONE loft
     /// frame at `yaw_deg` with the KEY light at (`key_az_deg`, `key_el_deg`,
