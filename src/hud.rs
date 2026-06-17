@@ -187,10 +187,13 @@ fn scaled_ship_extent(stance: Stance, view_angle_rad: f32) -> (f32, f32) {
 /// Tuned to ~fill a lane cell at the 7-cell layout; bruce dials final size.
 const LOFT_SHIP_HEIGHT_PX: f32 = 150.0;
 
-/// Aspect of the loft offscreen (`loft_gpu::LOW_W / LOW_H` = 320/200). Mirrored
-/// here as a plain const so `hud` stays buildable without the `render` feature
-/// (where `loft_gpu` isn't compiled). Kept in sync with the house-style res.
-const LOFT_TEXTURE_ASPECT: f32 = 320.0 / 200.0;
+/// Aspect of the loft offscreen (`loft_gpu::LOW_W / LOW_H` = 160/100 = 1.6).
+/// Mirrored here as a plain const so `hud` stays buildable without the `render`
+/// feature (where `loft_gpu` isn't compiled). MUST equal the loft texture's
+/// aspect: the loft blit stretches that texture to fill the dest quad, so any
+/// dest-rect built here divides a width by THIS to stay un-squashed (#74). Kept
+/// in sync with the house-style res (160×100 and the old 320×200 are both 1.6).
+const LOFT_TEXTURE_ASPECT: f32 = 160.0 / 100.0;
 
 /// Lane-seated blit rect (`(left, top, right, bottom)`) for a loft ship centred
 /// at screen-x `cx` on the lane at `center_y`. Fixed height × the loft texture's
@@ -877,7 +880,13 @@ fn push_ship_2d(
             // the placeholder did. The pose/foreshortening lives inside the loft
             // texture; this quad is just its dest-rect.
             let w = (q.near_edge_width() * 1.9).max(16.0);
-            let h = w * 0.5;
+            // Height from the loft OFFSCREEN aspect, NOT a hardcoded 2:1. The blit
+            // stretches the loft texture to fill this quad, so a quad aspect that
+            // disagrees with the texture's `LOW_W:LOW_H` (1.6:1) squashes the hull
+            // — a 2:1 quad stretched a 1.6:1 texture 1.25× horizontally, rendering
+            // the round engine-glow discs as ovals (Bruce-facing #74). `h = w /
+            // aspect` makes the dest-rect match the texture so circles stay round.
+            let h = w / LOFT_TEXTURE_ASPECT;
             let band_top = crate::gfx::VIRTUAL_H as f32 - 40.0;
             let cy = center[1].min(band_top - h * 0.5 - 2.0);
             let (l, r) = (center[0] - w * 0.5, center[0] + w * 0.5);
@@ -3595,6 +3604,53 @@ mod tests {
             .find(|l| l.ship_id.as_str() == "ship-2")
             .unwrap();
         assert_eq!(enemy.kind, LoftMeshKind::EnemyCad);
+    }
+
+    /// (#74) The player loft hero-quad's aspect MUST equal the loft texture's
+    /// aspect ([`LOFT_TEXTURE_ASPECT`]). The loft blit STRETCHES the offscreen
+    /// texture to fill this quad, so any other quad aspect squashes the hull —
+    /// the round engine-glow discs rendered as ovals (the 2:1 quad stretched the
+    /// 1.6:1 texture 1.25× horizontally). Asserting quad-aspect == texture-aspect
+    /// proves the blit applies ZERO stretch ⇒ a round texture-disc stays round,
+    /// deterministically (no eyeball / no pixel archaeology). Checked at a centre
+    /// and an edge column so the (column-dependent) `near_edge_width` can't
+    /// reintroduce a stretch.
+    #[test]
+    fn player_loft_quad_matches_texture_aspect_no_squash() {
+        use crate::grid::{Dir4, Facing, Pos, COLS, ROWS};
+        use crate::projector::ProjectorConfig;
+        let cfg = ProjectorConfig::default();
+        for col in [COLS / 2, COLS - 1] {
+            let mut board = empty_board(crate::grid::CELLS);
+            // Player on the front row at `col`, facing up-lane, with a class so
+            // the loft path engages (mirrors the live player).
+            let mut player =
+                frigate_at(0, Faction::Player, Orientation::BowOn { bow: LaneEnd::Fore });
+            player.pos = Pos::new(col, ROWS - 1);
+            player.facing = Facing::Bow(Dir4::N);
+            player.klass = Some("aegis".to_string());
+            let idx = player.pos.to_index();
+            board.cells[idx] = Some(player);
+
+            let scene = compose_scene_2d_with(&board, &cfg, &LoftAll);
+            let loft = scene
+                .iter()
+                .find_map(|c| match c {
+                    DrawCommand::LoftShip(l) => Some(*l),
+                    _ => None,
+                })
+                .expect("player emits a LoftShip");
+            // Quad corners: p0 top-left, p1 top-right, p2 bot-right, p3 bot-left.
+            let w = loft.p1[0] - loft.p0[0];
+            let h = loft.p3[1] - loft.p0[1];
+            assert!(w > 0.0 && h > 0.0, "col {col}: degenerate quad {w}x{h}");
+            let aspect = w / h;
+            assert!(
+                (aspect - LOFT_TEXTURE_ASPECT).abs() < 1e-3,
+                "col {col}: hero-quad aspect {aspect:.4} must equal the loft texture aspect \
+                 {LOFT_TEXTURE_ASPECT:.4} (else the blit squashes the hull / ovals the discs)"
+            );
+        }
     }
 
     #[test]
