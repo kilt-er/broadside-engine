@@ -344,6 +344,89 @@ pub fn grid_cell_quad(pos: Pos, cfg: &ProjectorConfig) -> CellQuad {
     }
 }
 
+/// (#70 scene-space) The cell's **camera-space point** under the projector's
+/// pinhole — the position a 3-D hull is placed at so it projects EXACTLY onto the
+/// cell, through [`camera_perspective`]. The projector is a pure `1/z` pinhole
+/// (camera at the origin looking along `+z`, no pitch): a cell at camera depth
+/// `z` sits at camera `(Xc, Yc, z)` with unit focal lengths, where `Xc` is the
+/// lateral fan offset, `Yc = (near_row_y − horizon_y)·z_near` is the CONSTANT
+/// "ground" offset (the projector shifts every cell by the same screen-Y/z, so
+/// the ground is the camera-Y plane `Yc`; a hull placed here sits on it and
+/// foreshortens through the same `1/z`), and `z` follows from the cell's
+/// screen-Y. So `screen = (center_x + Xc/z, horizon_y + Yc/z)` reproduces the
+/// projector. Returns `[Xc, Yc, z]` (the renderer yaws the hull about +Y at this
+/// point, then projects via [`camera_perspective`]).
+pub fn cell_camera_point(pos: Pos, cfg: &ProjectorConfig) -> [f32; 3] {
+    // Derive the camera point by INVERTING the projection against the cell's
+    // actual `grid_cell_quad(pos).center` — guarantees it projects back onto that
+    // exact centre (the quad's centre is a trapezoid centroid, which averages the
+    // near+far inv_z; recomputing from mid-depth alone drifts a fraction of a px
+    // in x). Yc is the constant "ground" offset; from center_y = hy + Yc/z we get
+    // z, then Xc = (center_x − cx)·z so center_x = cx + Xc/z exactly.
+    let center = grid_cell_quad(pos, cfg).center;
+    let cx = cfg.center_x();
+    let hy = cfg.horizon_y;
+    let yc = (cfg.near_row_y - cfg.horizon_y) * cfg.z_near;
+    // center_y − hy = Yc/z  ⇒  z = Yc / (center_y − hy). (center_y > hy for any
+    // real cell — every row sits below the horizon.)
+    let dy = (center[1] - hy).max(1e-3);
+    let z = yc / dy;
+    let xc = (center[0] - cx) * z;
+    [xc, yc, z]
+}
+
+/// (#70 scene-space) The projector's pinhole as a column-major `view_proj`
+/// matrix: maps a camera-space point `(Xc, Yc, Zc)` to virtual-pixel screen via
+/// `screen_x = center_x + Xc/Zc`, `screen_y = horizon_y + Yc/Zc` (unit focal
+/// lengths, the basis [`cell_camera_point`] is built on). This is the SAME `1/z`
+/// the grid lines + cell quads use, so a 3-D hull rendered through it agrees with
+/// the grid BY CONSTRUCTION — no per-facing yaw calibration. The renderer places
+/// the hull at [`cell_camera_point`], yaws it about +Y to its world heading, and
+/// projects through this; all 4 facings × all cells come out correct.
+///
+/// Output is in **virtual-pixel** space (origin top-left, y-down); the GPU side
+/// converts to NDC. Depth is written as `Zc` (linear) for the depth test —
+/// nearer (smaller `z`) must win, so the caller uses a `Greater`/reversed compare
+/// or negates as needed (documented at the call site).
+pub fn camera_perspective(cfg: &ProjectorConfig) -> [f32; 16] {
+    // Column-major. Row form (what it computes per point p=(x,y,z,1)):
+    //   clip.x = x
+    //   clip.y = y
+    //   clip.z = z              (linear depth, passed through)
+    //   clip.w = z              (perspective divide by z)
+    // then screen = center + clip.xy / clip.w → (center_x + x/z, horizon + ...)
+    // We fold the center_x / horizon_y offsets in by adding them × w (= z) into
+    // x,y so after the /w divide they become the constant screen offset.
+    let cx = cfg.center_x();
+    let hy = cfg.horizon_y;
+    // m * p, column-major (m[col*4 + row]):
+    //   x' = p.x + cx·p.z   (so x'/w = x/z + cx)
+    //   y' = p.y + hy·p.z   (so y'/w = y/z + hy)
+    //   z' = p.z
+    //   w' = p.z
+    [
+        1.0, 0.0, 0.0, 0.0, // col 0
+        0.0, 1.0, 0.0, 0.0, // col 1
+        cx, hy, 1.0, 1.0, // col 2 (adds cx·z to x, hy·z to y, z to z and w)
+        0.0, 0.0, 0.0, 0.0, // col 3
+    ]
+}
+
+/// Project a camera-space point through [`camera_perspective`] to a virtual-pixel
+/// screen point (the perspective divide). Returns `None` if behind/at the camera
+/// (`z ≤ 0`). Used by the unit test (cell point must land on the cell centre) and
+/// any CPU-side placement check.
+pub fn project_point(m: &[f32; 16], p: [f32; 3]) -> Option<Point2> {
+    // column-major mat·vec with w=1.
+    let x = m[0] * p[0] + m[4] * p[1] + m[8] * p[2] + m[12];
+    let y = m[1] * p[0] + m[5] * p[1] + m[9] * p[2] + m[13];
+    let w = m[3] * p[0] + m[7] * p[1] + m[11] * p[2] + m[15];
+    if w <= 1e-6 {
+        return None;
+    }
+    Some(Point2::new(x / w, y / w))
+}
+
 /// The lane grid's **vanishing point** in virtual-pixel space — where the
 /// receding columns converge (`1/z → 0`). Computed GEOMETRICALLY from the
 /// projection, not assumed: take an off-centre column's near-row and far-row
@@ -433,6 +516,34 @@ mod tests {
             let t = (vp.x - n[0]) / dx;
             let y = n[1] + t * (f[1] - n[1]);
             assert!(approx(y, vp.y, 1.0), "col {col} line hits y {y}, vp.y {}", vp.y);
+        }
+    }
+
+    /// (#70 scene-space) THE deterministic camera-derivation oracle: every cell's
+    /// camera-space point, projected through `camera_perspective`, must land
+    /// EXACTLY on that cell's `grid_cell_quad(pos).center`. This is what makes the
+    /// scene-space ship render correct BY CONSTRUCTION (a hull placed at the cell
+    /// point + projected through the same matrix as the grid agrees with the grid)
+    /// — verified by math, no rendering, no eyeball.
+    #[test]
+    fn cell_camera_point_projects_to_cell_center() {
+        let c = cfg();
+        let m = camera_perspective(&c);
+        for row in 0..ROWS {
+            for col in 0..COLS {
+                let pos = Pos::new(col, row);
+                let p = cell_camera_point(pos, &c);
+                let proj = project_point(&m, p).expect("cell in front of camera");
+                let center = grid_cell_quad(pos, &c).center;
+                assert!(
+                    approx(proj.x, center[0], 1e-2) && approx(proj.y, center[1], 1e-2),
+                    "cell {col},{row}: projected ({:.3},{:.3}) != cell center ({:.3},{:.3})",
+                    proj.x,
+                    proj.y,
+                    center[0],
+                    center[1]
+                );
+            }
         }
     }
 
