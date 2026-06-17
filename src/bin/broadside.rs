@@ -1359,6 +1359,19 @@ impl ApplicationHandler for App {
                 // projection. The modal overlays surface salvage in their banners.
                 if matches!(demo_state, DemoState::Playing) {
                     push_salvage_hud(&mut instances, salvage);
+                    // (#70) Live player POS + FACING readout (top-right under
+                    // SALVAGE) — ground truth for the strafe/reorient controls so
+                    // Bruce + lead read the real (col,row,facing), no capture
+                    // guessing. Pulled fresh from the board each frame.
+                    if let Some(p) = self
+                        .board
+                        .cells
+                        .iter()
+                        .flatten()
+                        .find(|s| s.faction == Faction::Player)
+                    {
+                        hud::push_player_readout(&mut instances, p.pos, p.facing);
+                    }
                     // (#63) Controls legend removed — Bruce: the move-help text crowded
                     // the screen. Keybinds are discoverable in-game; no on-screen overlay.
                     // Player danger legibility (#67): screen hit-flash on damage.
@@ -1519,6 +1532,50 @@ mod tests {
         render_example_board()
     }
 
+    /// (#70 strafe verify) REPLAY THE REAL INTENTS against the LIVE spawn board
+    /// (player at Pos(2,3) Bow(N)), exactly as the running game does — do NOT set
+    /// pos/facing directly (that bypass is what masked the bug). Pressing Right
+    /// twice must STRAFE the player to col 4, SAME row, facing UNCHANGED (Bow N).
+    /// This is the ground-truth for "arrows = lateral strafe, facing preserved"
+    /// (Bruce's control model). If this passes, the live render of the moved
+    /// player is bow-on toward the VP at col 4 (== the f4_c4_n capture).
+    #[test]
+    fn right_arrow_twice_strafes_to_col4_facing_unchanged() {
+        use broadside_engine::grid::{Dir4, Facing};
+        let mut board = fresh_board();
+        let mut content = DemoContent::default();
+
+        // Find the player's spawn pos/facing (the real board's, not assumed).
+        let spawn = board
+            .cells
+            .iter()
+            .flatten()
+            .find(|s| s.faction == Faction::Player)
+            .map(|s| (s.pos, s.facing))
+            .expect("player spawned");
+        assert_eq!(spawn.0.col, 2, "spawn col (campaign mid)");
+        assert_eq!(spawn.1, Facing::Bow(Dir4::N), "spawn facing bow-N up-lane");
+        let spawn_row = spawn.0.row;
+
+        // Replay Right, Right through the SAME apply_intent the keypress uses.
+        apply_intent(Intent::MoveRight, &mut board, &mut content, &fresh_board);
+        apply_intent(Intent::MoveRight, &mut board, &mut content, &fresh_board);
+
+        let player = board
+            .cells
+            .iter()
+            .flatten()
+            .find(|s| s.faction == Faction::Player)
+            .expect("player still on board");
+        assert_eq!(player.pos.col, 4, "Right×2 strafes to col 4 (2→3→4)");
+        assert_eq!(player.pos.row, spawn_row, "strafe keeps the SAME row (lateral only)");
+        assert_eq!(
+            player.facing,
+            Facing::Bow(Dir4::N),
+            "strafe must NOT change facing — ship stays bow-on toward the VP"
+        );
+    }
+
     #[test]
     fn keycode_translation_covers_every_binding() {
         assert_eq!(keycode_to_key(KeyCode::ArrowLeft), Some(Key::Left));
@@ -1554,26 +1611,43 @@ mod tests {
             &mut content,
             &fresh_board,
         );
-        let player = board.cells[0].as_ref().unwrap();
+        // (#70 2-D) player at its spawn cell (Pos(2,3)), not 1-D cell 0.
+        let player = board
+            .cells
+            .iter()
+            .flatten()
+            .find(|s| s.faction == Faction::Player)
+            .expect("player on board");
         assert_eq!(player.queue.last(), Some(&"pulse_laser".to_string()));
     }
 
     #[test]
     fn move_intent_advances_ship_instantly() {
-        // Under SS turn semantics MoveRight is instant — the ship moves
-        // one cell on the press, the queue is NOT touched, and the
-        // world phase runs after. Pre-SS the queue would contain the
-        // synthetic id; post-SS the queue stays empty.
+        // Under SS turn semantics MoveRight is instant — the ship strafes one
+        // cell on the press, the queue is NOT touched, the world phase runs
+        // after. (#70 2-D: the demo board spawns the player at Pos(2,3) facing N,
+        // NOT 1-D cell 0; MoveRight = Dir4::E = col+1, SAME row, facing
+        // unchanged.)
+        use broadside_engine::grid::{Dir4, Facing};
         let mut board = fresh_board();
         let mut content = DemoContent::default();
-        // Player starts at cell 0 with bow=Fore in the demo board.
+        let before = board
+            .cells
+            .iter()
+            .flatten()
+            .find(|s| s.faction == Faction::Player)
+            .map(|s| s.pos)
+            .expect("player spawned");
         apply_intent(Intent::MoveRight, &mut board, &mut content, &fresh_board);
-        let player_at_1 = board.cells[1]
-            .as_ref()
-            .is_some_and(|s| s.faction == Faction::Player);
-        assert!(player_at_1, "MoveRight should advance the player to cell 1");
-        assert!(board.cells[0].is_none(), "cell 0 should be empty after the move");
-        let player = board.cells[1].as_ref().unwrap();
+        let player = board
+            .cells
+            .iter()
+            .flatten()
+            .find(|s| s.faction == Faction::Player)
+            .expect("player still on board");
+        assert_eq!(player.pos.col, before.col + 1, "MoveRight strafes col+1");
+        assert_eq!(player.pos.row, before.row, "strafe keeps the row");
+        assert_eq!(player.facing, Facing::Bow(Dir4::N), "facing unchanged by strafe");
         assert!(player.queue.is_empty(), "instant intent must NOT push to queue");
     }
 
@@ -1581,13 +1655,24 @@ mod tests {
     fn commit_turn_runs_resolve_round() {
         let mut board = fresh_board();
         let mut content = DemoContent::default();
+        let before = board
+            .cells
+            .iter()
+            .flatten()
+            .find(|s| s.faction == Faction::Player)
+            .map(|s| s.pos)
+            .expect("player spawned");
         apply_intent(Intent::MoveRight, &mut board, &mut content, &fresh_board);
         apply_intent(Intent::CommitTurn, &mut board, &mut content, &fresh_board);
-        let player_at_1 = board.cells[1]
-            .as_ref()
-            .is_some_and(|s| s.faction == Faction::Player);
-        assert!(player_at_1, "player should have moved to cell 1 after thrust+commit");
-        assert!(board.cells[0].is_none(), "cell 0 should be empty");
+        // (#70 2-D) the player strafed col+1 (same row) before the round resolved.
+        let player = board
+            .cells
+            .iter()
+            .flatten()
+            .find(|s| s.faction == Faction::Player)
+            .expect("player on board after thrust+commit");
+        assert_eq!(player.pos.col, before.col + 1, "player strafed col+1 then committed");
+        assert_eq!(player.pos.row, before.row);
     }
 
     #[test]
@@ -1602,7 +1687,12 @@ mod tests {
         let mut content = DemoContent::default();
         apply_intent(Intent::Restart, &mut board, &mut content, &fresh_board);
         assert_eq!(win_state(&board), WinState::Playing);
-        assert!(board.cells[0].as_ref().is_some_and(|s| s.faction == Faction::Player));
+        // (#70 2-D) Restart rebuilds render_example_board → the player is back
+        // somewhere on the board (Pos(2,3)), not at 1-D cell 0.
+        assert!(
+            board.cells.iter().flatten().any(|s| s.faction == Faction::Player),
+            "restart recreates the player"
+        );
     }
 
     #[test]
@@ -1612,8 +1702,23 @@ mod tests {
         apply_intent(Intent::MoveRight, &mut board, &mut content, &fresh_board);
         apply_intent(Intent::CommitTurn, &mut board, &mut content, &fresh_board);
         apply_intent(Intent::Restart, &mut board, &mut content, &fresh_board);
-        assert!(board.cells[0].as_ref().is_some_and(|s| s.faction == Faction::Player));
-        assert!(board.cells[1].is_none());
+        // (#70 2-D) Restart rebuilds the fresh board: the player is back at its
+        // spawn Pos(2,3) (NOT moved to col+1) — i.e. the restart reset the strafe.
+        let fresh = fresh_board();
+        let spawn = fresh
+            .cells
+            .iter()
+            .flatten()
+            .find(|s| s.faction == Faction::Player)
+            .map(|s| s.pos)
+            .expect("fresh player");
+        let player = board
+            .cells
+            .iter()
+            .flatten()
+            .find(|s| s.faction == Faction::Player)
+            .expect("player after restart");
+        assert_eq!(player.pos, spawn, "restart resets the player to its spawn cell");
     }
 
     #[test]
@@ -1690,7 +1795,13 @@ mod tests {
             &fresh_board,
         );
         assert!(!changed, "PlayCard without inventory should be a no-op");
-        let player = board.cells[0].as_ref().unwrap();
+        // (#70 2-D) player is at its spawn cell (Pos(2,3)), not 1-D cell 0.
+        let player = board
+            .cells
+            .iter()
+            .flatten()
+            .find(|s| s.faction == Faction::Player)
+            .expect("player on board");
         assert!(player.queue.is_empty(), "no synthetic queued on rejected play");
     }
 }

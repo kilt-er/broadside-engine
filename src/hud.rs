@@ -2427,6 +2427,33 @@ pub fn push_salvage_hud(out: &mut Vec<DrawCommand>, salvage: u32) {
     }
 }
 
+/// (#70) Live player POS + FACING readout, top-right just under SALVAGE — the
+/// ground-truth Bruce + the lead read instead of guessing from a capture. Shows
+/// the board cell `(col,row)` and the cardinal facing the strafe/reorient
+/// controls produce, so "press Right → col+1, facing unchanged" is verifiable
+/// on screen. Small dim text (pixel=1) so it doesn't crowd the salvage banner.
+pub fn push_player_readout(out: &mut Vec<DrawCommand>, pos: crate::grid::Pos, facing: Facing) {
+    use crate::gfx::VIRTUAL_W;
+    const DIM: [f32; 4] = [0.62, 0.70, 0.80, 0.85];
+    let face = match facing {
+        Facing::Bow(Dir4::N) => "N",
+        Facing::Bow(Dir4::E) => "E",
+        Facing::Bow(Dir4::S) => "S",
+        Facing::Bow(Dir4::W) => "W",
+        Facing::Broadside(Axis::NorthSouth) => "BNS",
+        Facing::Broadside(Axis::EastWest) => "BEW",
+    };
+    let text = format!("POS {},{}  FACE {}", pos.col, pos.row, face);
+    let pixel = 1.0;
+    let advance = 5.0 * pixel + pixel; // glyph + 1px space (matches push_text_left)
+    let total_w = text.len() as f32 * advance - pixel;
+    let right_pad = 20.0;
+    let start_x = VIRTUAL_W as f32 - total_w - right_pad;
+    // Just below the SALVAGE banner (salvage sits at y=8 with pixel=2 → ~14px
+    // tall; place this at y=26).
+    push_text_left(out, &text, start_x, 26.0, pixel, DIM);
+}
+
 /// Minimalist controls legend, bottom-left corner. Dim single-column text,
 /// no background panel — just a quiet reminder of the keybindings that
 /// doesn't crowd the lane. Labels mirror the bin's `keycode_to_key` /
