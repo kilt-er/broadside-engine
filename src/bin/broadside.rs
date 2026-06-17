@@ -1061,6 +1061,9 @@ impl App {
                 ship.id.clone(),
                 hud::VisualShip2d {
                     center: q.center,
+                    // (#80) cell near (bottom) edge y — the loft hero seats here +
+                    // follows the lane on a move. corners[3] = bottom-left.
+                    near_edge_y: q.corners[3][1],
                     near_edge_width: q.near_edge_width(),
                     depth_scale: q.depth_scale,
                     facing_yaw_deg: hud::lerp_facing_yaw_deg(anchor.from_facing, ship.facing, eased),

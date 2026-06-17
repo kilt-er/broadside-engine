@@ -382,6 +382,10 @@ pub fn compose_scene_2d(board: &Board, cfg: &ProjectorConfig) -> Vec<DrawCommand
 pub struct VisualShip2d {
     /// Interpolated cell-centre in virtual-pixel space.
     pub center: [f32; 2],
+    /// Interpolated cell NEAR (bottom) edge screen-y — the loft hero hull seats
+    /// its base here so it FOLLOWS its cell up-lane as it moves (#80), instead of
+    /// pinning to the HUD band.
+    pub near_edge_y: f32,
     /// Interpolated near-edge width (drives the hero hull's on-screen size).
     pub near_edge_width: f32,
     /// Interpolated per-cell foreshortening factor (HUD marker sizes).
@@ -936,6 +940,11 @@ fn push_ship_2d(
     let facing_yaw_deg = vis
         .map(|v| v.facing_yaw_deg)
         .unwrap_or_else(|| loft_facing_ground_yaw(ship.facing));
+    // (#80) The cell's NEAR (bottom) edge screen-y — the loft hero hull seats its
+    // base here so it FOLLOWS the cell up-lane on a move (was pinned to the HUD
+    // band, which made the hull "drop off the grid" on any forward step).
+    // `q.corners[3]` is the bottom-left (near edge); interpolated mid-slide.
+    let near_edge_y = vis.map(|v| v.near_edge_y).unwrap_or(q.corners[3][1]);
 
     let is_player = ship.faction == Faction::Player;
 
@@ -985,9 +994,18 @@ fn push_ship_2d(
             // squash). x stays centred on the cell column so lateral moves read.
             let w = (near_edge_width * 1.0).max(16.0);
             let h = w / LOFT_TEXTURE_ASPECT;
-            let band_top = crate::gfx::VIRTUAL_H as f32 - 40.0;
-            // Seat the quad BOTTOM at the band top (foreground), extend UP by h.
-            let b = band_top - 2.0;
+            // (#80 Bruce) SEAT THE HULL ON ITS CELL — base at the cell's near
+            // (bottom) edge, extend UP by h, so the hero hull FOLLOWS its
+            // projected cell: it rides up-lane + shrinks as it advances, like any
+            // cell occupant. Was pinned to the bottom HUD band regardless of row
+            // (#78): at the front-row spawn that ~matched the cell, but on ANY
+            // forward move the cell went up-lane while the hull stayed at the
+            // bottom — reading as "the ship dropped off the grid below the
+            // playfield" (Bruce live: POS 2,2 yet the hull pinned at the band,
+            // the threatened cell up-lane). Keep the 1.0× width (the GOOD half of
+            // #78); x + bottom use the INTERPOLATED cell so the #79 slide follows
+            // the lane in both axes.
+            let b = near_edge_y;
             let t = b - h;
             let (l, r) = (center[0] - w * 0.5, center[0] + w * 0.5);
             out.push(DrawCommand::LoftShip(LoftShipInstance {
