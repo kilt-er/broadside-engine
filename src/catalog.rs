@@ -668,4 +668,67 @@ mod tests {
         assert!(lancer.traits.contains(&Trait::BurnHard),
             "lancer should carry BurnHard, got {:?}", lancer.traits);
     }
+
+    /// #28/#81 GUARANTEE: every TARGETING (firing) weapon in the REAL exported
+    /// catalog has a NON-EMPTY 2-D `range_band` after load — so no catalog weapon
+    /// is silently inert in 2-D (`resolve_targeting_2d`'s `in_band` over an empty
+    /// set is always false). This is the regression that catches a future catalog
+    /// re-export reverting to the bare 1-D `band` (the empty-`range_band` failure
+    /// the bin hit). SELF-pattern actions (movement/defensive — thrusters, slip,
+    /// brace, vent) don't target board cells, so an empty band there is harmless
+    /// and excluded. Skips if the asset is absent (some CI checkouts).
+    #[test]
+    fn real_catalog_every_firing_weapon_has_a_2d_band() {
+        use crate::types::TargetingPattern;
+        let path = std::path::Path::new("assets/broadside.catalog.json");
+        if !path.exists() {
+            eprintln!("[catalog test] asset absent; skipping 2-D band coverage check");
+            return;
+        }
+        let cat = load_from_path(path).expect("real catalog loads");
+
+        // Patterns that actually pick board cells (and thus need a band to fire).
+        // SELF / DEPLOYED_CELL / ORDNANCE don't gate on the target's band the same
+        // way (SELF hits the actor; DEPLOYED_CELL/ORDNANCE place/spawn ahead), but
+        // the derive populates them anyway — we assert the firing patterns here.
+        let firing = |p: TargetingPattern| {
+            matches!(
+                p,
+                TargetingPattern::BEAM
+                    | TargetingPattern::POINT_BLANK
+                    | TargetingPattern::BROADSIDE
+                    | TargetingPattern::SPINAL_LINE
+                    | TargetingPattern::BLAST
+            )
+        };
+        let mut checked = 0;
+        for a in &cat.actions {
+            if firing(a.targeting.pattern) {
+                assert!(
+                    !a.targeting.range_band.is_empty(),
+                    "firing weapon `{}` ({:?}) has an EMPTY 2-D range_band — it would never fire in 2-D",
+                    a.id, a.targeting.pattern,
+                );
+                checked += 1;
+            }
+        }
+        assert!(checked >= 5, "expected several firing weapons in the catalog, checked {checked}");
+
+        // Spot-check the #81 widened sets on representative weapons.
+        use crate::grid::Range;
+        let band_of = |id: &str| {
+            cat.actions.iter().find(|a| a.id == id)
+                .unwrap_or_else(|| panic!("`{id}` in catalog"))
+                .targeting.range_band.clone()
+        };
+        // close beam fires touching AND near (was: near-only).
+        assert_eq!(band_of("pulse_laser"), vec![Range::Adjacent, Range::Near],
+            "#81: a `close` weapon fires Adjacent+Near");
+        // mid beam reaches Near AND Far, never point-blank.
+        assert_eq!(band_of("beam_cannon"), vec![Range::Near, Range::Far],
+            "#81: a `mid` weapon fires Near+Far");
+        // long broadside stays Far-only (the over-extension deadzone, #7).
+        assert_eq!(band_of("railgun_broadside"), vec![Range::Far],
+            "#81: a `long` weapon is Far-only (deadzone preserved)");
+    }
 }
