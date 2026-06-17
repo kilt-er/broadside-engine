@@ -344,6 +344,37 @@ pub fn grid_cell_quad(pos: Pos, cfg: &ProjectorConfig) -> CellQuad {
     }
 }
 
+/// The lane grid's **vanishing point** in virtual-pixel space — where the
+/// receding columns converge (`1/z → 0`). Computed GEOMETRICALLY from the
+/// projection, not assumed: take an off-centre column's near-row and far-row
+/// cell centres (which lie on that column's converging edge) and extend the line
+/// to where it meets the frame-centre vertical (`x = frame_w/2`); every column's
+/// line meets there. For the symmetric pinhole projector this lands at
+/// `(frame_w/2, horizon_y)`, but deriving it survives any projector retune.
+///
+/// The renderer aims the chase-cam player's nose exactly at this point so an
+/// off-lane ship banks toward the convergence (up-lane), with no hand-tuned
+/// angle table.
+pub fn vanishing_point(cfg: &ProjectorConfig) -> Point2 {
+    let center_x = cfg.frame_w * 0.5;
+    // Column 0 (left edge) — off-centre, so its near→far centres define a sloped
+    // line toward the convergence. (Col COLS/2 sits on center_x and gives no
+    // slope, so use an edge column.)
+    let near = grid_cell_quad(Pos::new(0, ROWS - 1), cfg).center;
+    let far = grid_cell_quad(Pos::new(0, 0), cfg).center;
+    let (nx, ny) = (near[0], near[1]);
+    let (fx, fy) = (far[0], far[1]);
+    let dx = fx - nx;
+    if dx.abs() < 1e-6 {
+        // Degenerate (a column already on center) — fall back to the horizon line.
+        return Point2::new(center_x, cfg.horizon_y);
+    }
+    // Parametric: P = near + t·(far − near). Solve for x = center_x.
+    let t = (center_x - nx) / dx;
+    let vp_y = ny + t * (fy - ny);
+    Point2::new(center_x, vp_y)
+}
+
 /// Convenience: project every in-bounds [`Pos`] to its [`CellQuad`], in flat
 /// row-major order (the same order as [`crate::grid::all_positions`]). Handy for
 /// the renderer's per-frame cell pass and for tests.
@@ -365,6 +396,44 @@ mod tests {
 
     fn approx(a: f32, b: f32, eps: f32) -> bool {
         (a - b).abs() <= eps
+    }
+
+    /// The vanishing point sits on the frame-centre vertical, at/above the
+    /// horizon, and EVERY column's near→far centre line, extended, passes
+    /// through it (that's what makes it the convergence). Verifies the geometric
+    /// computation rather than the assumed `(W/2, horizon_y)`.
+    #[test]
+    fn vanishing_point_is_the_column_convergence() {
+        let c = cfg();
+        let vp = vanishing_point(&c);
+        // On the frame-centre vertical.
+        assert!(approx(vp.x, c.frame_w * 0.5, 1e-3), "vp.x {} != center", vp.x);
+        // Near the horizon line. NOT exactly equal: the VP is extrapolated from
+        // cell CENTRES (mid-depth `1/z`), whose converging lines meet a few px
+        // below the pure `1/z→0` horizon constant — the cell-centre convergence
+        // is what the rendered ship aims at, which is the point. Sanity-bound it
+        // to the horizon's neighbourhood.
+        assert!(
+            (vp.y - c.horizon_y).abs() <= 8.0,
+            "vp.y {} should be near horizon {}",
+            vp.y,
+            c.horizon_y
+        );
+        // Every column's near→far line, extended, hits the VP: the t that takes
+        // near→far to x=vp.x must land y≈vp.y for cols 0..COLS (skip the centre
+        // column, whose line is vertical / already at vp.x).
+        for col in 0..COLS {
+            if col == COLS / 2 {
+                continue;
+            }
+            let n = grid_cell_quad(Pos::new(col, ROWS - 1), &c).center;
+            let f = grid_cell_quad(Pos::new(col, 0), &c).center;
+            let dx = f[0] - n[0];
+            assert!(dx.abs() > 1e-4, "col {col} edge should slope");
+            let t = (vp.x - n[0]) / dx;
+            let y = n[1] + t * (f[1] - n[1]);
+            assert!(approx(y, vp.y, 1.0), "col {col} line hits y {y}, vp.y {}", vp.y);
+        }
     }
 
     /// The far row (`row 0`) sits HIGHER on screen (smaller y) than the near row

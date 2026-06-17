@@ -2018,59 +2018,71 @@ impl Gfx {
                 let mesh = self.loft_meshes.get(&q.kind);
                 let yaw = self.loft_poses.get(q.ship_id.as_str()).map(|p| p.yaw_deg());
                 if let (Some(mesh), Some(yaw)) = (mesh, yaw) {
-                    // (#70) CHASE-CAM base yaw: the loft camera orbits about +Y
-                    // looking toward the hull, and the hull's LENGTH is +X (prow
-                    // +X, stern/engines −X). The pose's stance yaw (BowOn{Fore}=0)
-                    // would show the hull SIDE-ON (length across screen). For the
-                    // chase cam we want the STERN toward the viewer (engines + glow
-                    // facing us, bow pointing up-lane into the screen) — that's the
-                    // camera on the −X side looking toward +X, i.e. camera yaw 270°
-                    // (−90). Added to the stance yaw so the live player presents
-                    // stern-on. (All live loft ships are the chase-cam player today;
-                    // an oncoming enemy loft would carry its own pose — follow-up.)
+                    // (#70) CHASE-CAM base yaw: the loft camera orbits about +Y and
+                    // the hull's LENGTH is +X (prow +X, stern/engines −X). The
+                    // pose's stance yaw (BowOn{Fore}=0) would show the hull SIDE-ON;
+                    // 270° (−90) puts the STERN toward the viewer (engines + glow
+                    // facing us, bow up-lane into the screen) — the stern-on chase
+                    // view. PURE stern-on here; the nose-AIM is done by 2D-rotating
+                    // the blit quad below (NOT by nudging this 3D yaw — the
+                    // 3D-yaw→screen-angle is foreshortened/nonlinear, which is why
+                    // the old hand-tuned lane-aim table needed fudging).
                     const CHASE_CAM_BASE_YAW_DEG: f32 = 270.0;
-                    // (#62/#70) LANE-AIM NOSE-TURN: yaw the hull so an off-centre
-                    // ship "aims up its lane" toward the central vanishing point
-                    // (NOSE TURN 15) — nose up-lane, not toward the screen edge.
-                    // Derived from the quad's centre-x offset from frame-centre.
-                    // (#70) SIGN: the 270° chase-cam base-yaw rotated the hull's
-                    // frame 90°, which MIRRORED the lane-aim sense — at the old
-                    // `+off` the nose turned AWAY from the vanishing point off-
-                    // centre (Bruce's right-lane shot pointed up-right). NEGATED so
-                    // the nose aims toward the vanishing point on every lane;
-                    // verified by capture at col 0/2/4. (Center col stays at the
-                    // base yaw — off=0 — which is why a centred shot masked this.)
-                    const LANE_AIM_MAX_DEG: f32 = 15.0;
-                    let quad_cx = (q.p0[0] + q.p2[0]) * 0.5;
-                    let off = ((quad_cx - VIRTUAL_W as f32 * 0.5) / (VIRTUAL_W as f32 * 0.5))
-                        .clamp(-1.0, 1.0);
-                    let yaw = yaw + CHASE_CAM_BASE_YAW_DEG - off * LANE_AIM_MAX_DEG;
-                    // 1) Render the hull into the shared loft target (own passes).
+                    let base_yaw = yaw + CHASE_CAM_BASE_YAW_DEG;
+
+                    // (#70) GEOMETRIC NOSE-AIM: aim the nose EXACTLY at the lane's
+                    // vanishing point (computed from the projector, not a table).
+                    // The un-rotated blit shows the hull nose-UP (toward −y); the
+                    // screen angle from the ship's quad centre to the VP is `alpha =
+                    // atan2(vp.y−cy, vp.x−cx)`, so rotating the quad by `alpha+90°`
+                    // points the nose along alpha — straight up at centre (ship
+                    // directly below the VP → alpha −90° → 0 rotation), banking
+                    // toward the VP off-centre. EXACT on every lane, no fudge.
+                    let cfg = crate::projector::ProjectorConfig::default();
+                    let vp = crate::projector::vanishing_point(&cfg);
+                    let cx = 0.25 * (q.p0[0] + q.p1[0] + q.p2[0] + q.p3[0]);
+                    let cy = 0.25 * (q.p0[1] + q.p1[1] + q.p2[1] + q.p3[1]);
+                    let alpha = (vp.y - cy).atan2(vp.x - cx);
+                    let screen_rot = alpha + std::f32::consts::FRAC_PI_2; // 0 at centre
+
+                    // 1) Render the hull into the shared loft target. Keep the
+                    // stern-on yaw; COUNTER-ROTATE the key light by the screen
+                    // rotation so the lit side + engine glow stay screen-stable as
+                    // the blit spins (light az is in degrees, screen y is down so
+                    // the screen-space spin negates).
+                    let key_az = -50.0 - screen_rot.to_degrees();
                     let mut enc =
                         self.device
                             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                                 label: Some("loft ship render"),
                             });
-                    // Camera orbits the hull's bbox centre (mesh.center_y) so the
-                    // hull renders centred in its texture; only the ship's stance
-                    // yaw varies per ship.
-                    self.loft.render_ship(
+                    self.loft.render_ship_lit(
                         &self.queue,
                         &mut enc,
                         &mesh.vbuf,
                         mesh.vcount,
-                        yaw,
+                        base_yaw,
                         mesh.center_y,
+                        key_az,
+                        60.0,
+                        1.6,
                     );
                     self.queue.submit(std::iter::once(enc.finish()));
 
-                    // 2) Blit the posterized output onto this ship's lane quad.
-                    //    Load (don't clear) so earlier scene segments survive.
+                    // 2) Blit the posterized output onto this ship's lane quad,
+                    //    2D-rotated about the quad centre by `screen_rot` so the
+                    //    nose aims at the VP. Load (don't clear) so earlier scene
+                    //    segments survive.
+                    let rot = |p: [f32; 2]| -> [f32; 2] {
+                        let (s, c) = screen_rot.sin_cos();
+                        let (dx, dy) = (p[0] - cx, p[1] - cy);
+                        [cx + dx * c - dy * s, cy + dx * s + dy * c]
+                    };
                     let qu = LoftQuadUniform {
-                        p0: q.p0,
-                        p1: q.p1,
-                        p2: q.p2,
-                        p3: q.p3,
+                        p0: rot(q.p0),
+                        p1: rot(q.p1),
+                        p2: rot(q.p2),
+                        p3: rot(q.p3),
                         px_to_ndc: [2.0 / VIRTUAL_W as f32, 2.0 / VIRTUAL_H as f32],
                         _pad: [0.0, 0.0],
                     };
