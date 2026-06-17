@@ -804,6 +804,30 @@ fn pt(p: [f32; 2]) -> Point2 {
 /// player); otherwise a flat faction-tinted placeholder box. Either way a
 /// bow-direction arrow (encoding `Facing::forward_axis()`) + gold shield pips per
 /// zone are drawn on top so orientation + buffer read regardless of body style.
+/// (#70) The hull's tactical [`Facing`] as a flat GROUND-PLANE yaw offset
+/// (degrees), composed on the chase-cam up-lane stern-on base in the loft render.
+/// This is what makes the hull SHOW its orientation — the core hook (bow-on vs
+/// broadside drives firing arcs). Relative to facing-N (bow up-lane toward the
+/// VP = 0): `Bow(N)` toward the VP/up-lane → 0; `Bow(E)` toward higher col
+/// (screen right) → +90 (bow to the right flank); `Bow(S)` toward the camera →
+/// 180 (bow at the viewer); `Bow(W)` toward lower col (screen left) → −90 (bow to
+/// the left flank); `Broadside(NorthSouth)` (hull along the lane) → 0 (reads
+/// bow-on-ish up-lane); `Broadside(EastWest)` (hull across the lane) → +90
+/// (flanks bear up-lane = the broadside/perpendicular stance).
+///
+/// All FLAT (a Y-axis ground yaw). The exact ± signs are CALIBRATED by capture
+/// (all 4 cardinals must be DISTINCT + correct: N→VP, S→camera, E/W→perpendicular).
+fn loft_facing_ground_yaw(facing: Facing) -> f32 {
+    match facing {
+        Facing::Bow(Dir4::N) => 0.0,
+        Facing::Bow(Dir4::E) => 90.0,
+        Facing::Bow(Dir4::S) => 180.0,
+        Facing::Bow(Dir4::W) => -90.0,
+        Facing::Broadside(Axis::NorthSouth) => 0.0,
+        Facing::Broadside(Axis::EastWest) => 90.0,
+    }
+}
+
 fn push_ship_2d(
     out: &mut Vec<DrawCommand>,
     ship: &Ship,
@@ -868,6 +892,9 @@ fn push_ship_2d(
                 // (#70) Aim the nose from the true CELL centre (not the dragged-
                 // down hero quad) — keeps the chase-cam lane-aim small + correct.
                 aim_at: center,
+                // (#70) The hull SHOWS its facing as a flat ground-plane yaw (the
+                // core hook): N→up-lane/VP, S→camera, E/W→broadside flanks.
+                facing_yaw_deg: loft_facing_ground_yaw(ship.facing),
             }));
             // Pips/buffer cues on top (the lit hull + its baked engine glow own
             // the hull + stern read, so the player chevron stays dropped).
@@ -1531,6 +1558,8 @@ fn push_ship(
             // Legacy 1-D path (not the live 2-D chase cam) — no VP convergence
             // here; aim from the lane point so the chase-cam yaw is a no-op.
             aim_at: [cx, p.y],
+            // Legacy 1-D: keep the up-lane stern-on orientation (no facing yaw).
+            facing_yaw_deg: 0.0,
         }));
         return;
     }
