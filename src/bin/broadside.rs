@@ -11,14 +11,16 @@
 //! |-----|--------|--------|
 //! | `1` / `2` / `3` | `QueueAction` from `mounts[0/1/2]` | Append weapon action id to `player.queue` |
 //! | `5` / `6` / `7` | `PlayCard` from `field_kit.cards[0/1/2]` | Decrement charge + queue synthetic card action |
-//! | `←` | `MoveLeft` | Queue synthetic `__move_left` |
-//! | `→` | `MoveRight` | Queue synthetic `__move_right` |
-//! | `Tab` | `ReorientFlip` | Queue synthetic `__reorient_flip` |
+//! | `←` / `→` | `MoveLeft` / `MoveRight` | Queue synthetic `__move_left` / `__move_right` |
+//! | `↑` / `↓` | `MoveUp` / `MoveDown` | Queue synthetic `__move_up` / `__move_down` (N / S) |
+//! | `Q` / `E` | `RotateLeft` / `RotateRight` (#75) | Turn the player's FACING a quarter-turn ccw / cw (`__rotate_left` / `__rotate_right`); render + firing arcs follow |
+//! | `Tab` | `ReorientFlip` (#75) | 180° about-face: the bin overrides the synthetic to two `RotateRight` (reverses the bow N↔S / E↔W) so the hull visibly turns |
 //! | `V` | `Vent` | Queue synthetic `__vent` |
 //! | `R` / `Space` | `CommitTurn` | Run `resolve_round`; re-renders next frame |
 //! | `Enter` | `Restart` | Reset the board to its initial state (also the only key accepted while a run-end overlay is showing) |
 //! | `1` / `2` / `3` (overloaded) | Path choice | While the EncounterComplete overlay is up: 1 = repair (+2 hull), 2 = upgrade (placeholder), 3 = continue to next encounter |
 //! | `[` / `]` | rotate camera | Cycle through `[0, 15, 30, 45, 60, 75, 90]°` |
+//! | `,` / `.` | ship-render res (#76) | Cycle the loft offscreen size `160×100 → 220×138 → 320×200` (live) |
 //! | `Esc` | exit | Close the window |
 //!
 //! Run with:

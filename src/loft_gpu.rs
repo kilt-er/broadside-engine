@@ -869,10 +869,15 @@ impl LoftGpu {
     }
 
     /// Render one ship pose into the offscreen target and posterize it into
-    /// [`Self::output_view`]. `yaw_deg` is the ship's stance yaw (from
-    /// [`ShipPose::yaw_deg`]) — fed to [`camera_view_proj_zoom`] as the CAMERA
-    /// yaw, exactly as the POC does, with the model left at identity; pitch fixed
-    /// at [`CAMERA_PITCH_DEG`]. Records into `encoder`; the caller submits.
+    /// [`Self::output_view`]. `yaw_deg` is the CAMERA yaw fed to
+    /// [`camera_view_proj_zoom`] with the model left at identity; pitch fixed at
+    /// [`CAMERA_PITCH_DEG`]. For the live PLAYER this is
+    /// [`crate::gfx`]'s flat ground-plane yaw from
+    /// [`chase_cam_ground_yaw_deg`] (base stern-on + tactical facing + lane-aim,
+    /// #73/#75) — NOT [`ShipPose::yaw_deg`]; the `ShipPose` only gates the draw +
+    /// drives the idle bob/tween, it does not supply this render yaw. (Other
+    /// callers, e.g. the dynamic-lighting demo, pass their own yaw.) Records into
+    /// `encoder`; the caller submits.
     pub fn render_ship(
         &self,
         queue: &wgpu::Queue,
