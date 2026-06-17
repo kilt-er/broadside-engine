@@ -42,14 +42,20 @@ fn zero_profile() -> ShieldProfile {
     }
 }
 
-fn ship(id: &str, faction: Faction, cell: usize, hull: i32) -> Ship {
+/// A ship at column `col` on **row 0** with bearing `facing`, one Forward mount
+/// loaded with "w". Upholds invariant A (`cell == pos.to_index()`); on row 0
+/// `pos.to_index() == col`, so the cell asserts below read directly as columns.
+/// (#22 2-D migration: every M-scenario lives on row 0 so the BEAM bears E/W
+/// along the row and the flak `+/-1` neighbours stay in-bounds and spatial.)
+fn ship(id: &str, faction: Faction, col: usize, hull: i32, facing: broadside_engine::grid::Facing) -> Ship {
+    let pos = broadside_engine::grid::Pos::new(col, 0);
     Ship {
         id: id.into(),
         faction,
-        cell,
-        pos: broadside_engine::grid::Pos::new(0, 0),
+        cell: pos.to_index(),
+        pos,
         orientation: Orientation::BowOn { bow: LaneEnd::Fore },
-        facing: broadside_engine::grid::Facing::Bow(broadside_engine::grid::Dir4::S),
+        facing,
         hull,
         max_hull: hull,
         heat: 0,
@@ -65,12 +71,21 @@ fn ship(id: &str, faction: Faction, cell: usize, hull: i32) -> Ship {
     }
 }
 
-fn board(size: usize, cells: Vec<Option<Ship>>) -> Board {
+/// Place ships on the fixed len-CELLS 5x4 grid at `cells[pos.to_index()]`
+/// (invariant A). `size = COLS` so the flak `+/-1` bound (`board.size`) admits
+/// every row-0 column.
+fn board_2d(ships: Vec<Ship>) -> Board {
+    let mut cells: Vec<Option<Ship>> = (0..broadside_engine::grid::CELLS).map(|_| None).collect();
+    for s in ships {
+        let idx = s.pos.to_index();
+        assert!(cells[idx].is_none(), "two ships share cell {idx}");
+        cells[idx] = Some(s);
+    }
     Board {
-        size,
+        size: broadside_engine::grid::COLS,
         cells,
         ordnance: Vec::new(),
-        hazards: (0..size).map(|_| Vec::new()).collect(),
+        hazards: (0..broadside_engine::grid::CELLS).map(|_| Vec::new()).collect(),
         patrol: 1,
         level: 0,
         threats: Vec::new(),
@@ -162,24 +177,20 @@ fn has_status(board: &Board, cell: usize, kind: StatusKind) -> bool {
  * M1 — flak_burst: adjacency + friendly-fire + shield-mediation.
  * ====================================================================== */
 
-#[ignore = "stale 1-D fixture (pos (0,0)) — 2-D fire/damage/modifier path (R3/R4) can't target co-located ships; NOT a 2-D bug; restore at 2-D mods fixture migration — #22"]
+// #22 2-D: all on row 0 (cell index == column), op faces E. Content's M1 intent
+// preserved exactly: a@(1,0) Bow(E) flak_burst raw 4 fires E; first ship is
+// t@(2,0) (primary 4 -> hull 1). Flak splashes the hit cell's E-W neighbours
+// (1,0) and (3,0): a itself (Player friendly self-splash, 5->4) and foe@(3,0)
+// (5->4). On row 0 the flak `+/-1` indices stay in-bounds (< COLS) and ARE the
+// spatial E-W neighbours, so the still-1-D splash lands correctly here.
 #[test]
 fn m1_flak_burst_splashes_both_neighbours_including_an_ally() {
-    // Content's M1 intent: primary takes 4 (→1), flak splashes BOTH lane-
-    // neighbours of the hit cell by 1, one of them a friendly (friendly-fire
-    // confirmed). Content's literal cells put an ally BETWEEN attacker and
-    // target, but flak rides a BEAM (first-ship-in-path), so the BEAM would
-    // hit that intervening ally as the primary, not the target. Repositioned
-    // to a BEAM-legal layout that preserves every stated assertion:
-    //   a@1 (Player, flak_burst raw 4) fires Fore; FIRST ship it meets is
-    //   t@2 (Enemy h5) → primary 4 → t.hull 1. Flak splashes the hit cell's
-    //   neighbours @1 and @3: a@1 itself (Player → friendly self-splash, 5→4)
-    //   and foe@3 (Enemy h5 → 5→4). Both neighbours splashed; one friendly.
-    let mut a = ship("a", Faction::Player, 1, 5);
+    use broadside_engine::grid::{Dir4, Facing};
+    let mut a = ship("a", Faction::Player, 1, 5, Facing::Bow(Dir4::E));
     a.queue.clear();
-    let t = ship("t", Faction::Enemy, 2, 5);
-    let foe = ship("foe", Faction::Enemy, 3, 5);
-    let mut b = board(5, vec![None, Some(a), Some(t), Some(foe), None]);
+    let t = ship("t", Faction::Enemy, 2, 5, Facing::Bow(Dir4::W));
+    let foe = ship("foe", Faction::Enemy, 3, 5, Facing::Bow(Dir4::W));
+    let mut b = board_2d(vec![a, t, foe]);
     let content = ModContent::new(vec![damage_action("w", 4, Some("flak_burst"), 0, 1)]);
 
     apply_instant_action("a", content.action("w").unwrap(), &mut b, &content);
@@ -188,24 +199,26 @@ fn m1_flak_burst_splashes_both_neighbours_including_an_ally() {
     assert_eq!(
         hull_at(&b, 1),
         4,
-        "flak is faction-blind: it splashes the firing Player a@1 (a neighbour of the hit cell) — friendly-fire (5 -> 4)",
+        "flak is faction-blind: it splashes the firing Player a@(1,0) (a neighbour of the hit cell) — friendly-fire (5 -> 4)",
     );
-    assert_eq!(hull_at(&b, 3), 4, "flak splashes the other neighbour foe@3 too (5 -> 4)");
+    assert_eq!(hull_at(&b, 3), 4, "flak splashes the other neighbour foe@(3,0) too (5 -> 4)");
 }
 
-#[ignore = "stale 1-D fixture (pos (0,0)) — 2-D fire/damage/modifier path (R3/R4) can't target co-located ships; NOT a 2-D bug; restore at 2-D mods fixture migration — #22"]
+// #22 2-D: same row-0 layout. The splash neighbour foe@(3,0) has its hit-facing
+// zone armoured 1, fully absorbing the 1 splash. NOTE: the flak_burst splash
+// routes through the 1-D apply_damage (the on-hit mod is not yet 2-D — see the
+// flak-2d gap), which reads the ship's 1-D `orientation` (BowOn{Fore} here), NOT
+// the 2-D `facing`. The splash arrives from the hit cell @(2,0), i.e. the Aft
+// lane direction relative to foe (cell 2 < 3) -> foe's STERN zone. Give stern
+// armour 1 -> foe takes 0. Proves the splash routes through absorb_shield.
 #[test]
 fn m1_flak_splash_is_shield_mediated() {
-    // BEAM-legal layout (same as above): a@1 fires Fore, first ship is t@2
-    // (primary). The splash neighbour foe@3 has its hit-facing zone armoured
-    // 1, fully absorbing the 1 splash. The splash arrives at foe@3 FROM the
-    // hit cell @2 (the Aft direction relative to foe, since 2 < 3) → foe's
-    // STERN zone (bow=Fore). Give stern armour 1 → foe takes 0.
-    let a = ship("a", Faction::Player, 1, 5);
-    let t = ship("t", Faction::Enemy, 2, 5);
-    let mut foe = ship("foe", Faction::Enemy, 3, 5);
+    use broadside_engine::grid::{Dir4, Facing};
+    let a = ship("a", Faction::Player, 1, 5, Facing::Bow(Dir4::E));
+    let t = ship("t", Faction::Enemy, 2, 5, Facing::Bow(Dir4::W));
+    let mut foe = ship("foe", Faction::Enemy, 3, 5, Facing::Bow(Dir4::W));
     foe.shield_profile.stern = ShieldFace { armour: 1, charge: 0 };
-    let mut b = board(5, vec![None, Some(a), Some(t), Some(foe), None]);
+    let mut b = board_2d(vec![a, t, foe]);
     let content = ModContent::new(vec![damage_action("w", 4, Some("flak_burst"), 0, 1)]);
 
     apply_instant_action("a", content.action("w").unwrap(), &mut b, &content);
@@ -222,15 +235,14 @@ fn m1_flak_splash_is_shield_mediated() {
  * M2 — twin_linked: cost-once + between-pass re-target.
  * ====================================================================== */
 
-#[ignore = "stale 1-D fixture (pos (0,0)) — 2-D fire/damage/modifier path (R3/R4) can't target co-located ships; NOT a 2-D bug; restore at 2-D mods fixture migration — #22"]
+// #22 2-D (row 0, op faces E): a@(0,0) Bow(E) raw 3 cd_max 4 twin_linked, t@(2,0)
+// h10. Effects twice -> t.hull 4. Heat charged once -> a.heat 3. Cooldown once.
 #[test]
 fn m2_twin_linked_applies_twice_but_pays_cost_once() {
-    // a@0 (h5, heat0, heat_max6), raw 3, cd_max 4, twin_linked. t@2 h10.
-    // Effects twice → t.hull 4. Heat charged once → a.heat 3. Cooldown set
-    // once → a.cooldowns[w] == 4.
-    let a = ship("a", Faction::Player, 0, 5);
-    let t = ship("t", Faction::Enemy, 2, 10);
-    let mut b = board(5, vec![Some(a), None, Some(t), None, None]);
+    use broadside_engine::grid::{Dir4, Facing};
+    let a = ship("a", Faction::Player, 0, 5, Facing::Bow(Dir4::E));
+    let t = ship("t", Faction::Enemy, 2, 10, Facing::Bow(Dir4::W));
+    let mut b = board_2d(vec![a, t]);
     let content = ModContent::new(vec![damage_action("w", 3, Some("twin_linked"), 4, 3)]);
 
     apply_instant_action("a", content.action("w").unwrap(), &mut b, &content);
@@ -245,16 +257,16 @@ fn m2_twin_linked_applies_twice_but_pays_cost_once() {
     );
 }
 
-#[ignore = "stale 1-D fixture (pos (0,0)) — 2-D fire/damage/modifier path (R3/R4) can't target co-located ships; NOT a 2-D bug; restore at 2-D mods fixture migration — #22"]
+// #22 2-D (row 0, op faces E): a@(0,0) Bow(E) raw 3 twin_linked. t1@(1,0) h3 (dies
+// to pass 1), t2@(2,0) h5. Pass 1 kills t1; pass 2 re-resolves targeting against
+// the new board -> first bearing target along the E ray is now t2 -> 3 (5 -> 2).
 #[test]
 fn m2_twin_linked_second_pass_retargets_after_first_pass_kill() {
-    // a@0 raw 3 twin_linked. t1@1 h3 (dies to pass 1), t2@2 h5. Pass 1 kills
-    // t1; pass 2 re-resolves targeting against the new board → first target
-    // toward the bow is now t2 → t2 takes 3 (5 -> 2).
-    let a = ship("a", Faction::Player, 0, 5);
-    let t1 = ship("t1", Faction::Enemy, 1, 3);
-    let t2 = ship("t2", Faction::Enemy, 2, 5);
-    let mut b = board(5, vec![Some(a), Some(t1), Some(t2), None, None]);
+    use broadside_engine::grid::{Dir4, Facing};
+    let a = ship("a", Faction::Player, 0, 5, Facing::Bow(Dir4::E));
+    let t1 = ship("t1", Faction::Enemy, 1, 3, Facing::Bow(Dir4::W));
+    let t2 = ship("t2", Faction::Enemy, 2, 5, Facing::Bow(Dir4::W));
+    let mut b = board_2d(vec![a, t1, t2]);
     let content = ModContent::new(vec![damage_action("w", 3, Some("twin_linked"), 0, 1)]);
 
     apply_instant_action("a", content.action("w").unwrap(), &mut b, &content);
@@ -271,17 +283,17 @@ fn m2_twin_linked_second_pass_retargets_after_first_pass_kill() {
  * M3 — incendiary / emp: riders land on CONTACT, through full shield absorption.
  * ====================================================================== */
 
-#[ignore = "stale 1-D fixture (pos (0,0)) — 2-D fire/damage/modifier path (R3/R4) can't target co-located ships; NOT a 2-D bug; restore at 2-D mods fixture migration — #22"]
+// #22 2-D (row 0): a@(0,0) Bow(E) raw 2 incendiary; t@(1,0) Bow(W) h5. The hit
+// arrives from the W (col 0 < 1); t faces W, so a shot dead ahead of its bow
+// lands on the BOW zone — armour it to 5 to absorb all hull damage. t.hull stays
+// 5, but HullBreach(3) lands on contact.
 #[test]
 fn m3_incendiary_rider_lands_even_when_shield_eats_all_hull_damage() {
-    // a@0 raw 2 incendiary; t@1 h5. The hit arrives FROM cell 0 = the Aft
-    // direction (0 < 1), so on a bow=Fore ship it lands on the STERN zone —
-    // armour that face to 5 to absorb all hull damage. t.hull stays 5, but
-    // HullBreach(3) lands on contact.
-    let a = ship("a", Faction::Player, 0, 5);
-    let mut t = ship("t", Faction::Enemy, 1, 5);
-    t.shield_profile.stern = ShieldFace { armour: 5, charge: 0 };
-    let mut b = board(3, vec![Some(a), Some(t), None]);
+    use broadside_engine::grid::{Dir4, Facing};
+    let a = ship("a", Faction::Player, 0, 5, Facing::Bow(Dir4::E));
+    let mut t = ship("t", Faction::Enemy, 1, 5, Facing::Bow(Dir4::W));
+    t.shield_profile.bow = ShieldFace { armour: 5, charge: 0 };
+    let mut b = board_2d(vec![a, t]);
     let content = ModContent::new(vec![damage_action("w", 2, Some("incendiary"), 0, 1)]);
 
     apply_instant_action("a", content.action("w").unwrap(), &mut b, &content);
@@ -293,14 +305,15 @@ fn m3_incendiary_rider_lands_even_when_shield_eats_all_hull_damage() {
     );
 }
 
-#[ignore = "stale 1-D fixture (pos (0,0)) — 2-D fire/damage/modifier path (R3/R4) can't target co-located ships; NOT a 2-D bug; restore at 2-D mods fixture migration — #22"]
+// #22 2-D (row 0): same as M3 incendiary — hit lands on t's BOW (it faces W into
+// the incoming W shot); bow armour 5 absorbs the hull damage, the rider lands.
 #[test]
 fn m3_emp_charge_rider_lands_through_shield() {
-    let a = ship("a", Faction::Player, 0, 5);
-    let mut t = ship("t", Faction::Enemy, 1, 5);
-    // Hit arrives from the Aft direction → Stern zone (see M3 incendiary note).
-    t.shield_profile.stern = ShieldFace { armour: 5, charge: 0 };
-    let mut b = board(3, vec![Some(a), Some(t), None]);
+    use broadside_engine::grid::{Dir4, Facing};
+    let a = ship("a", Faction::Player, 0, 5, Facing::Bow(Dir4::E));
+    let mut t = ship("t", Faction::Enemy, 1, 5, Facing::Bow(Dir4::W));
+    t.shield_profile.bow = ShieldFace { armour: 5, charge: 0 };
+    let mut b = board_2d(vec![a, t]);
     let content = ModContent::new(vec![damage_action("w", 2, Some("emp_charge"), 0, 1)]);
 
     apply_instant_action("a", content.action("w").unwrap(), &mut b, &content);
@@ -316,14 +329,15 @@ fn m3_emp_charge_rider_lands_through_shield() {
  * M4 — targeting_laser: lock on hit, doubles the NEXT hit, lock consumed.
  * ====================================================================== */
 
-#[ignore = "stale 1-D fixture (pos (0,0)) — 2-D fire/damage/modifier path (R3/R4) can't target co-located ships; NOT a 2-D bug; restore at 2-D mods fixture migration — #22"]
+// #22 2-D (row 0): a@(0,0) Bow(E) raw 2 targeting_laser; t@(1,0) h10. Shot 1 ->
+// t.hull 8 + TargetLock. Shot 2 (plain raw 2) -> doubled to 4 by the lock ->
+// t.hull 4, lock consumed.
 #[test]
 fn m4_targeting_laser_lock_doubles_the_following_hit() {
-    // a@0 raw 2 targeting_laser; t@1 h10. Shot 1 → t.hull 8 + TargetLock.
-    // Shot 2 (plain raw 2) → doubled to 4 by the lock → t.hull 4, lock gone.
-    let a = ship("a", Faction::Player, 0, 5);
-    let t = ship("t", Faction::Enemy, 1, 10);
-    let mut b = board(3, vec![Some(a), Some(t), None]);
+    use broadside_engine::grid::{Dir4, Facing};
+    let a = ship("a", Faction::Player, 0, 5, Facing::Bow(Dir4::E));
+    let t = ship("t", Faction::Enemy, 1, 10, Facing::Bow(Dir4::W));
+    let mut b = board_2d(vec![a, t]);
     let content = ModContent::new(vec![
         damage_action("laser", 2, Some("targeting_laser"), 0, 1),
         damage_action("plain", 2, None, 0, 1),
@@ -345,14 +359,14 @@ fn m4_targeting_laser_lock_doubles_the_following_hit() {
  * M5 — precision_core: any-lethal (incl. overkill) recharges cd→0; non-lethal doesn't.
  * ====================================================================== */
 
-#[ignore = "stale 1-D fixture (pos (0,0)) — 2-D fire/damage/modifier path (R3/R4) can't target co-located ships; NOT a 2-D bug; restore at 2-D mods fixture migration — #22"]
+// #22 2-D (row 0): a@(0,0) Bow(E) raw 9 cd_max 5 precision_core; t@(1,0) h3 ->
+// destroyed (overkill) -> a.cooldowns[w] == 0 (not 5).
 #[test]
 fn m5_precision_core_recharges_cooldown_to_zero_on_a_kill() {
-    // a@0 raw 9 cd_max 5 precision_core; t@1 h3 → destroyed (overkill) →
-    // a.cooldowns[w] == 0 (not 5).
-    let a = ship("a", Faction::Player, 0, 5);
-    let t = ship("t", Faction::Enemy, 1, 3);
-    let mut b = board(3, vec![Some(a), Some(t), None]);
+    use broadside_engine::grid::{Dir4, Facing};
+    let a = ship("a", Faction::Player, 0, 5, Facing::Bow(Dir4::E));
+    let t = ship("t", Faction::Enemy, 1, 3, Facing::Bow(Dir4::W));
+    let mut b = board_2d(vec![a, t]);
     let content = ModContent::new(vec![damage_action("w", 9, Some("precision_core"), 5, 1)]);
 
     apply_instant_action("a", content.action("w").unwrap(), &mut b, &content);
@@ -365,14 +379,14 @@ fn m5_precision_core_recharges_cooldown_to_zero_on_a_kill() {
     );
 }
 
-#[ignore = "stale 1-D fixture (pos (0,0)) — 2-D fire/damage/modifier path (R3/R4) can't target co-located ships; NOT a 2-D bug; restore at 2-D mods fixture migration — #22"]
+// #22 2-D (row 0): a@(0,0) Bow(E) raw 9 cd_max 5 precision_core; t@(1,0) h10 ->
+// survives at 1 -> a.cooldowns[w] == 5 (normal cooldown, no recharge).
 #[test]
 fn m5_precision_core_does_not_recharge_on_a_non_lethal_hit() {
-    // a@0 raw 9 cd_max 5 precision_core; t@1 h10 → survives at 1 →
-    // a.cooldowns[w] == 5 (normal cooldown, no recharge).
-    let a = ship("a", Faction::Player, 0, 5);
-    let t = ship("t", Faction::Enemy, 1, 10);
-    let mut b = board(3, vec![Some(a), Some(t), None]);
+    use broadside_engine::grid::{Dir4, Facing};
+    let a = ship("a", Faction::Player, 0, 5, Facing::Bow(Dir4::E));
+    let t = ship("t", Faction::Enemy, 1, 10, Facing::Bow(Dir4::W));
+    let mut b = board_2d(vec![a, t]);
     let content = ModContent::new(vec![damage_action("w", 9, Some("precision_core"), 5, 1)]);
 
     apply_instant_action("a", content.action("w").unwrap(), &mut b, &content);
@@ -389,15 +403,15 @@ fn m5_precision_core_does_not_recharge_on_a_non_lethal_hit() {
  * M6 — enemy-fired symmetry: mods are faction-agnostic.
  * ====================================================================== */
 
-#[ignore = "stale 1-D fixture (pos (0,0)) — 2-D fire/damage/modifier path (R3/R4) can't target co-located ships; NOT a 2-D bug; restore at 2-D mods fixture migration — #22"]
+// #22 2-D (row 0): mirror M2a with an Enemy attacker firing on a Player.
+// e@(0,0) Bow(E) raw 3 twin_linked vs player@(2,0) h10 -> player.hull 4; e.heat
+// charged once (3).
 #[test]
 fn m6_enemy_fired_twin_linked_behaves_identically() {
-    // Mirror M2a with an Enemy attacker firing on a Player. e@0 (Enemy) raw 3
-    // twin_linked vs player@2 (Player) h10 → player.hull 4; e.heat charged
-    // once (3).
-    let e = ship("e", Faction::Enemy, 0, 5);
-    let player = ship("player", Faction::Player, 2, 10);
-    let mut b = board(5, vec![Some(e), None, Some(player), None, None]);
+    use broadside_engine::grid::{Dir4, Facing};
+    let e = ship("e", Faction::Enemy, 0, 5, Facing::Bow(Dir4::E));
+    let player = ship("player", Faction::Player, 2, 10, Facing::Bow(Dir4::W));
+    let mut b = board_2d(vec![e, player]);
     let content = ModContent::new(vec![damage_action("w", 3, Some("twin_linked"), 4, 3)]);
 
     apply_instant_action("e", content.action("w").unwrap(), &mut b, &content);
@@ -415,33 +429,33 @@ fn m6_enemy_fired_twin_linked_behaves_identically() {
  *      not the flak splash.
  * ====================================================================== */
 
-#[ignore = "stale 1-D fixture (pos (0,0)) — 2-D fire/damage/modifier path (R3/R4) can't target co-located ships; NOT a 2-D bug; restore at 2-D mods fixture migration — #22"]
+// #22 2-D (row 0): Marksman (+1 at the FAR band — the #34 2-D successor of the
+// 1-D "Long") installed on the ATTACKER a@(0,0) Bow(E). Raw 4 flak_burst fired E.
+// The BEAM reaches t@(3,0) as its FIRST target (cells (1,0),(2,0) empty);
+// distance 3 = Far -> Marksman +1. Primary t takes 4 + 1 = 5 (10 -> 5). The flak
+// splashes the hit cell's E-W neighbours (2,0)[empty] and (4,0)=n -> n takes 1
+// with NO +1 (the splash's attacker is the hit cell @(3,0), no Marksman). So the
+// subsystem modifier hits the PRIMARY only, not the splash. (Row 0 keeps every
+// flak `+/-1` index in-bounds + spatial.)
 #[test]
 fn m7_marksman_modifier_applies_to_primary_not_flak_splash() {
-    // Marksman (+1 at Long) installed on the ATTACKER a@0. Raw 4 flak_burst
-    // fired at LONG range. The BEAM must reach t as its FIRST target, so there
-    // is NO ship between a@0 and t@5 (distance 5 = Long), and the splash
-    // neighbour n sits on t's FAR side at @6 (so it doesn't intercept the
-    // beam). Primary t@5 takes 4 + 1 (Marksman) = 5 (10 -> 5). The flak
-    // splashes the hit cell's neighbour n@6 for 1 — with NO +1, because the
-    // splash's attacker is the hit cell @5 (no Marksman). So the subsystem
-    // modifier hits the PRIMARY only, not the splash.
-    let a = ship("a", Faction::Player, 0, 10);
-    let t = ship("t", Faction::Enemy, 5, 10);
-    let n = ship("n", Faction::Enemy, 6, 5);
-    let mut b = board(7, vec![Some(a), None, None, None, None, Some(t), Some(n)]);
+    use broadside_engine::grid::{Dir4, Facing};
+    let a = ship("a", Faction::Player, 0, 10, Facing::Bow(Dir4::E));
+    let t = ship("t", Faction::Enemy, 3, 10, Facing::Bow(Dir4::W));
+    let n = ship("n", Faction::Enemy, 4, 5, Facing::Bow(Dir4::W));
+    let mut b = board_2d(vec![a, t, n]);
     let content = ModContent::new(vec![damage_action("w", 4, Some("flak_burst"), 0, 1)])
         .with_marksman("a");
 
     apply_instant_action("a", content.action("w").unwrap(), &mut b, &content);
 
     assert_eq!(
-        hull_at(&b, 5),
+        hull_at(&b, 3),
         5,
-        "primary: 4 raw + 1 Marksman (Long) = 5 (10 -> 5)",
+        "primary: 4 raw + 1 Marksman (Far) = 5 (10 -> 5)",
     );
     assert_eq!(
-        hull_at(&b, 6),
+        hull_at(&b, 4),
         4,
         "flak splash is 1 with NO Marksman bonus (the splash's attacker is the hit cell, not a) — modifier hits PRIMARY only (5 -> 4)",
     );
