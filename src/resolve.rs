@@ -4191,36 +4191,9 @@ mod tests {
             "AI should queue the threatening pulse_laser");
     }
 
-    /// AI doesn't queue an out-of-band action (range it can't reach).
-    // #[ignore]: stale 1-D fixture, NOT a C1 bug. make_ship/make_board leave
-    // ship.pos=(0,0); C1's 2-D decide_enemy_action reads pos, so player+enemy
-    // co-located at (0,0) → from_to=None → no maneuver (got [] where the 1-D
-    // test expected a move). The 8 sibling ai_* tests prove the 2-D ladder is
-    // correct on invariant-A boards. Restore via board_2d/ship_2d 2-D fixtures
-    // (real pos + bearing facings) — task #30.
-    #[ignore = "stale 1-D fixture (pos (0,0)); C1 AI is 2-D — restore at 2-D ai_* fixture migration #30"]
-    #[test]
-    fn ai_skips_out_of_band_action() {
-        let player = make_ship("p", Faction::Player, 0, 10, LaneEnd::Fore);
-        // Enemy at cell 6, bow=aft. Distance 6 is long; the weapon only
-        // covers pointBlank/close/mid (default pulse_laser). Skip.
-        let enemy = enemy_with_weapon("e", 6, "pulse_laser", Arc::Forward, LaneEnd::Aft);
-        let mut board = make_board(7, vec![
-            Some(player), None, None, None, None, None, Some(enemy),
-        ]);
-        let content = AiContent {
-            actions: HashMap::from([("pulse_laser".into(), pulse_laser())]),
-        };
-        crate::ai::decide_enemy_action(6, &mut board, &content);
-        let queue = board.cells[6].as_ref().unwrap().queue.clone();
-        // It must NOT queue the out-of-band weapon; instead (#68) it CLOSES
-        // toward the player (cell 0 is aft of cell 6 => __move_left) so it can
-        // get into band next turns. Old behavior was an empty/camp queue.
-        assert!(!queue.contains(&"pulse_laser".to_string()),
-            "AI must not queue the out-of-band attack; got {queue:?}");
-        assert_eq!(queue, vec![crate::input::SYNTHETIC_MOVE_LEFT.to_string()],
-            "#68: out of band => close toward the player instead of camping; got {queue:?}");
-    }
+    // (#30/#33) The 1-D make_ship stub of `ai_skips_out_of_band_action` was
+    // DELETED here — its 2-D version lives + green in tests/ai_2d.rs
+    // (ai_skips_out_of_band_action_and_closes).
 
     // (#76 audit) `ai_prefers_diversifying_threat` was DELETED here. It
     // claimed to lock "the AI prefers a diversifying (uncovered-end) threat,"
@@ -4275,49 +4248,9 @@ mod tests {
         );
     }
 
-    /// #68: an enemy with NO movement mount still CLOSES on the player when
-    /// the running Content serves the synthetic lane-relative move (the live
-    /// bin's case). This is the fix for "enemies never move" — live enemies
-    /// carry only weapon mounts, so the AI must reach for the same synthetic
-    /// __move_* actions the player uses.
-    #[ignore = "stale 1-D fixture (pos (0,0)); C1 AI is 2-D — restore at 2-D ai_* fixture migration #30"]
-    #[test]
-    fn ai_closes_via_synthetic_move_when_cannot_fire() {
-        // Enemy at cell 6 (far fore), bow=Aft so its forward gun points
-        // down-lane at the player at cell 0 — but distance 6 = Long, and
-        // pulse_laser's band is PB/Close/Mid, so it canNOT fire. With no
-        // movement mount, the only way to close is the synthetic move. Player
-        // is AFT of the enemy (cell 0 < 6) => __move_left (steps aft, toward
-        // the player). The enemy has ONLY a pulse_laser mount — no
-        // DISPLACE_SELF anywhere.
-        let player = make_ship("p", Faction::Player, 0, 10, LaneEnd::Fore);
-        let enemy = enemy_with_weapon("e", 6, "pulse_laser", Arc::Forward, LaneEnd::Aft);
-        let mut board = make_board(7, vec![
-            Some(player), None, None, None, None, None, Some(enemy),
-        ]);
-        // Content serves pulse_laser AND the synthetic move (as the live bin
-        // does). Reuse the real synthetic action so the id/effect match prod.
-        let content = AiContent {
-            actions: HashMap::from([
-                ("pulse_laser".into(), pulse_laser()),
-                (
-                    crate::input::SYNTHETIC_MOVE_LEFT.to_string(),
-                    crate::input::synthetic_move_left(),
-                ),
-                (
-                    crate::input::SYNTHETIC_MOVE_RIGHT.to_string(),
-                    crate::input::synthetic_move_right(),
-                ),
-            ]),
-        };
-        crate::ai::decide_enemy_action(6, &mut board, &content);
-        let queue = board.cells[6].as_ref().unwrap().queue.clone();
-        assert_eq!(
-            queue,
-            vec![crate::input::SYNTHETIC_MOVE_LEFT.to_string()],
-            "#68: a mountless-of-movement enemy closes via the synthetic lane-relative move (toward the player); got {queue:?}",
-        );
-    }
+    // (#30/#33) The 1-D make_ship stub of `ai_closes_via_synthetic_move_when_cannot_fire`
+    // was DELETED here — its 2-D version lives + green in tests/ai_2d.rs
+    // (same name).
 
     // (#20/#33) The 1-D make_ship stub of `ai_falls_back_to_movement_when_nothing_bears`
     // was DELETED here — migrated to tests/ai_2d.rs on 2-D invariant-A fixtures.
