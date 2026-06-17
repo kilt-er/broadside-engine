@@ -49,7 +49,7 @@ use broadside_engine::geometry::default_shield_profile;
 use broadside_engine::gfx::{Gfx, VIRTUAL_H, VIRTUAL_W};
 use broadside_engine::hud::{
     self, push_between_encounter_overlay, push_salvage_hud,
-    win_state, BetweenEncounterChoice, TweenState, WinState,
+    win_state, BetweenEncounterChoice, WinState,
 };
 use broadside_engine::runs::{
     advance_after_win, boss_ship_for_spawn, build_encounter_board, capital_boss_ship_for_spawn,
@@ -60,6 +60,7 @@ use broadside_engine::input::{
     intent_to_action_id, key_to_intent, synthetic_card_action_id, DemoContent, Intent, Key,
 };
 use broadside_engine::catalog::{enemy_ship_from_catalog_at_tier, load_from_path};
+use broadside_engine::grid::{Facing, Pos}; // (#79) TweenAnchor records pre-move pos/facing
 use broadside_engine::meta::{salvage_for_capital_encounter, salvage_for_encounter_win};
 use broadside_engine::perspective::{fractional_cell_to_screen, LaneGeometry, DEFAULT_LANE};
 use broadside_engine::projector::ProjectorConfig;
@@ -673,19 +674,22 @@ const CAMERA_ANGLE_DEFAULT_INDEX: usize = 3;
 
 /// Duration of the per-ship snap → smooth lerp after a turn-advancing
 /// input. ~200ms reads as crisp without feeling laggy at 60Hz.
-const TWEEN_DURATION_MS: u32 = 200;
+const TWEEN_DURATION_MS: u32 = 120;
 
-/// Per-ship "where did this ship visually start the tween from + when did
-/// the tween begin?" anchor. Recorded by `App::record_tween_anchors`
-/// after each input mutation; consumed by `App::tween_state` each frame
-/// to compute the eased visual cell.
+/// (#79) Per-ship "where + which way was this ship before the move, and when did
+/// the slide/turn begin?" anchor. Recorded by `App::record_tween_anchors` after
+/// each input mutation; consumed by `App::tween_2d` each frame to ease the
+/// rendered position + facing-yaw from the pre-move state to the new logical
+/// cell/facing over `TWEEN_DURATION_MS`, so the ship SLIDES + ROTATES instead of
+/// snapping. (Was a 1-D fractional `from_cell` feeding the dead 1-D
+/// `compose_scene_tweened`; now 2-D `Pos`/`Facing` feeding `compose_scene_2d_tweened`.)
 struct TweenAnchor {
-    /// Where the ship was rendering when the input arrived. Fractional
-    /// so an already-in-flight tween can be re-anchored mid-flight
-    /// without an extra snap.
-    from_cell: f32,
-    /// When the input fired. Elapsed > TWEEN_DURATION_MS means the
-    /// anchor is fully resolved and can be evicted.
+    /// The ship's grid cell BEFORE the move (the slide's start).
+    from_pos: Pos,
+    /// The ship's facing BEFORE the move (the turn's start) — for the rotation
+    /// tween (shortest-path yaw lerp).
+    from_facing: Facing,
+    /// When the input fired. Elapsed > TWEEN_DURATION_MS ⇒ resolved + evictable.
     started_at: Instant,
 }
 
@@ -1002,61 +1006,68 @@ impl App {
     /// (anchor present and not yet expired) we capture its currently
     /// rendered fractional cell rather than its logical cell, so a
     /// rapid double-tap doesn't visibly stutter.
-    fn snapshot_visual_cells(&self, now: Instant) -> HashMap<String, f32> {
-        let snap = self.tween_state(now);
+    /// (#79) Snapshot each ship's pre-mutation grid pos + facing, so the tween
+    /// anchor planted after `apply_intent` slides/turns FROM where the ship was.
+    /// (A ship already mid-slide re-anchors from its logical pre-move cell — a
+    /// negligible snap on a rare double-tap; moves are discrete turns.)
+    fn snapshot_pos_facing(&self) -> HashMap<String, (Pos, Facing)> {
         let mut out = HashMap::with_capacity(self.board.cells.len());
         for ship in self.board.cells.iter().flatten() {
-            let cell = snap
-                .visual_cells
-                .get(&ship.id)
-                .copied()
-                .unwrap_or(ship.cell as f32);
-            out.insert(ship.id.clone(), cell);
+            out.insert(ship.id.clone(), (ship.pos, ship.facing));
         }
         out
     }
 
-    /// Record fresh tween anchors after `apply_intent` ran: for every
-    /// ship currently on the board whose logical cell differs from its
-    /// pre-mutation visual cell, plant an anchor at that visual cell so
-    /// the next frame interpolates from there.
-    fn record_tween_anchors(&mut self, prev_visual: HashMap<String, f32>, now: Instant) {
-        // Drop anchors for ships that no longer exist (destroyed or
-        // replaced after Restart).
+    /// Record fresh tween anchors after `apply_intent` ran: for every ship whose
+    /// logical pos OR facing changed vs its pre-mutation snapshot, plant an
+    /// anchor at the OLD pos/facing so the next frames interpolate from there.
+    fn record_tween_anchors(&mut self, prev: HashMap<String, (Pos, Facing)>, now: Instant) {
+        // Drop anchors for ships that no longer exist (destroyed / Restart).
         self.tween_anchors
             .retain(|id, _| self.board.cells.iter().flatten().any(|s| &s.id == id));
         for ship in self.board.cells.iter().flatten() {
-            let target = ship.cell as f32;
-            let Some(&from) = prev_visual.get(&ship.id) else { continue };
-            if (from - target).abs() < 0.001 {
-                // Visual position already matches logical — no tween needed.
+            let Some(&(from_pos, from_facing)) = prev.get(&ship.id) else { continue };
+            if from_pos == ship.pos && from_facing == ship.facing {
+                // Nothing moved/turned — no tween needed.
                 self.tween_anchors.remove(&ship.id);
                 continue;
             }
             self.tween_anchors.insert(
                 ship.id.clone(),
-                TweenAnchor { from_cell: from, started_at: now },
+                TweenAnchor { from_pos, from_facing, started_at: now },
             );
         }
     }
 
-    /// Compute the per-ship visual cells for this frame. Anchors past
-    /// `TWEEN_DURATION_MS` are dropped; remaining anchors apply
-    /// ease-out quad to interpolate `from_cell` → `ship.cell`.
-    fn tween_state(&self, now: Instant) -> TweenState {
+    /// (#79) Compute this frame's per-ship visual tween overrides. Each in-flight
+    /// anchor eases `from`→`current` over `TWEEN_DURATION_MS` (ease-out quad):
+    /// position = lerp of the two cells' projected `CellQuad`s (slides along the
+    /// perspective), facing-yaw = shortest-path angular lerp (turns smoothly).
+    /// Expired/absent ⇒ no entry ⇒ that ship snaps to its logical cell.
+    fn tween_2d(&self, cfg: &broadside_engine::projector::ProjectorConfig, now: Instant) -> hud::Tween2d {
+        use broadside_engine::projector::grid_cell_quad;
         let dur_ms = TWEEN_DURATION_MS as f32;
-        let mut state = TweenState::default();
+        let mut tw = hud::Tween2d::default();
         for ship in self.board.cells.iter().flatten() {
             let Some(anchor) = self.tween_anchors.get(&ship.id) else { continue };
             let elapsed = now.duration_since(anchor.started_at).as_secs_f32() * 1000.0;
             let t = (elapsed / dur_ms).clamp(0.0, 1.0);
-            // Ease-out quad: 1 - (1 - t)^2. Crisp departure, soft arrival.
+            // Ease-out quad: 1 - (1 - t)^2 — crisp departure, soft arrival.
             let eased = 1.0 - (1.0 - t) * (1.0 - t);
-            let target = ship.cell as f32;
-            let visual = anchor.from_cell + (target - anchor.from_cell) * eased;
-            state.visual_cells.insert(ship.id.clone(), visual);
+            let from_q = grid_cell_quad(anchor.from_pos, cfg);
+            let to_q = grid_cell_quad(ship.pos, cfg);
+            let q = hud::lerp_cell_quad(&from_q, &to_q, eased);
+            tw.visual.insert(
+                ship.id.clone(),
+                hud::VisualShip2d {
+                    center: q.center,
+                    near_edge_width: q.near_edge_width(),
+                    depth_scale: q.depth_scale,
+                    facing_yaw_deg: hud::lerp_facing_yaw_deg(anchor.from_facing, ship.facing, eased),
+                },
+            );
         }
-        state
+        tw
     }
 
     /// True if any ship has a tween anchor that hasn't yet expired,
@@ -1230,7 +1241,7 @@ impl ApplicationHandler for App {
                 // rendering (not its logical pre-mutation cell, which
                 // may itself be mid-tween).
                 let now = Instant::now();
-                let prev_visual = self.snapshot_visual_cells(now);
+                let prev_visual = self.snapshot_pos_facing();
                 let changed = apply_intent(intent, &mut self.board, &mut self.content, &render_example_board);
                 if is_restart {
                     self.restart_run();
@@ -1332,6 +1343,10 @@ impl ApplicationHandler for App {
                     .map(|s| s.pos.col)
                     .unwrap_or(broadside_engine::grid::COLS / 2);
                 let bg_level = self.board.level;
+                // (#79) Per-ship slide/turn tween for THIS frame — computed BEFORE
+                // the gfx mutable borrow (it reads &self). Empty when nothing is
+                // mid-move, so the render is identical to the static path at rest.
+                let scene_tween = self.tween_2d(&ProjectorConfig::default(), now);
                 let Some(gfx) = self.gfx.as_mut() else { return };
                 // (#57) Pan/recede the parallax background toward the player's
                 // column + the campaign level, eased per frame.
@@ -1378,10 +1393,11 @@ impl ApplicationHandler for App {
                 // render as the real 3-D model, not the flat box. gfx already runs
                 // the loft pre-pass + blit for any LoftShip command, and the
                 // per-ship loft pose is synced/advanced above.
-                let mut instances = hud::compose_scene_2d_with(
+                let mut instances = hud::compose_scene_2d_tweened(
                     &self.board,
                     &ProjectorConfig::default(),
                     &*gfx,
+                    &scene_tween,
                 );
                 // In-game salvage counter (top-right) + controls legend
                 // (bottom-left) — both screen-space, independent of the board

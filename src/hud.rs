@@ -369,6 +369,54 @@ pub fn compose_scene_2d(board: &Board, cfg: &ProjectorConfig) -> Vec<DrawCommand
     compose_scene_2d_with(board, cfg, &EmptySpriteRegistry)
 }
 
+/// (#79) The interpolated RENDER position + facing for one ship mid-move, so its
+/// hull SLIDES cell-to-cell + TURNS smoothly instead of snapping. The bin
+/// computes these by easing `from`→`to` over ~0.12s (it owns the per-move timer);
+/// `hud` just draws them. `center` / `near_edge_width` / `depth_scale` are the
+/// lerp of the two cells' [`crate::projector::CellQuad`]s (so the ship follows
+/// the perspective, not a flat screen line); `facing_yaw_deg` is the shortest-
+/// path angular lerp of the ground-plane facing yaw (the player-loft hull's
+/// rotation). Absent ⇒ the ship renders at its logical cell (snap), so the
+/// default (empty [`Tween2d`]) reproduces [`compose_scene_2d_with`] exactly.
+#[derive(Clone, Copy, Debug)]
+pub struct VisualShip2d {
+    /// Interpolated cell-centre in virtual-pixel space.
+    pub center: [f32; 2],
+    /// Interpolated near-edge width (drives the hero hull's on-screen size).
+    pub near_edge_width: f32,
+    /// Interpolated per-cell foreshortening factor (HUD marker sizes).
+    pub depth_scale: f32,
+    /// Interpolated ground-plane facing yaw (deg) for the loft hull's rotation.
+    pub facing_yaw_deg: f32,
+}
+
+/// (#79) Per-ship visual tween overrides for the 2-D live path, keyed by
+/// `Ship::id`. Empty ⇒ every ship snaps to its logical cell (identical to the
+/// untweened compose). The 2-D analog of the 1-D [`TweenState`].
+#[derive(Default, Clone, Debug)]
+pub struct Tween2d {
+    pub visual: std::collections::HashMap<String, VisualShip2d>,
+}
+
+/// Linear-interpolate two [`crate::projector::CellQuad`]s corner-for-corner (+
+/// centre + depth_scale) by `t∈[0,1]`. Used to slide a ship between its previous
+/// and current cell along the perspective grid (#79). At `t=0` returns `a`, at
+/// `t=1` returns `b`. `pub` so the bin builds a [`VisualShip2d`] (it owns the
+/// per-move timer + the from/to cells).
+pub fn lerp_cell_quad(
+    a: &crate::projector::CellQuad,
+    b: &crate::projector::CellQuad,
+    t: f32,
+) -> crate::projector::CellQuad {
+    let l1 = |x: f32, y: f32| x + (y - x) * t;
+    let lc = |i: usize| [l1(a.corners[i][0], b.corners[i][0]), l1(a.corners[i][1], b.corners[i][1])];
+    crate::projector::CellQuad {
+        corners: [lc(0), lc(1), lc(2), lc(3)],
+        center: [l1(a.center[0], b.center[0]), l1(a.center[1], b.center[1])],
+        depth_scale: l1(a.depth_scale, b.depth_scale),
+    }
+}
+
 /// Like [`compose_scene_2d`] but consults `sprites` for the loft/3-D ship path
 /// (#51): if [`SpriteRegistry::loft_kind`] returns a mesh kind for a ship, that
 /// ship is emitted as a [`DrawCommand::LoftShip`] (the real 3-D hull blitted into
@@ -382,6 +430,22 @@ pub fn compose_scene_2d_with(
     board: &Board,
     cfg: &ProjectorConfig,
     sprites: &dyn SpriteRegistry,
+) -> Vec<DrawCommand> {
+    compose_scene_2d_tweened(board, cfg, sprites, &Tween2d::default())
+}
+
+/// Like [`compose_scene_2d_with`] but applies per-ship visual tween overrides
+/// (#79) so a moving/turning ship SLIDES + ROTATES smoothly instead of snapping.
+/// `tween` is the bin's eased `from`→`to` interpolation for this frame; a ship
+/// absent from `tween.visual` renders at its logical cell (so an empty
+/// [`Tween2d`] == the untweened compose). Only the ship BODY (the loft hull /
+/// placeholder) + its arrow/pips ride the override; the grid, threat fills, and
+/// the screen-space bottom HUD are position-independent and unchanged.
+pub fn compose_scene_2d_tweened(
+    board: &Board,
+    cfg: &ProjectorConfig,
+    sprites: &dyn SpriteRegistry,
+    tween: &Tween2d,
 ) -> Vec<DrawCommand> {
     let mut out = Vec::with_capacity(256);
     push_grid_2d(&mut out, cfg);
@@ -404,7 +468,7 @@ pub fn compose_scene_2d_with(
     let mut ships: Vec<&Ship> = board.cells.iter().flatten().collect();
     ships.sort_by_key(|s| s.pos.row);
     for ship in &ships {
-        push_ship_2d(&mut out, ship, cfg, sprites);
+        push_ship_2d(&mut out, ship, cfg, sprites, tween.visual.get(&ship.id));
     }
     // Per-ship overlays LAST, so health bars + queue tiles sit on top of every
     // hull (incl. a nearer ship that overlaps a farther one). Same far→near order.
@@ -831,11 +895,32 @@ fn loft_facing_ground_yaw(facing: Facing) -> f32 {
     }
 }
 
+/// (#79) SHORTEST-PATH interpolate the ground-plane facing yaw from `from`→`to`
+/// by `t∈[0,1]`, so a Q/E quarter-turn ROTATES the hull smoothly instead of
+/// snapping ±90. Both endpoints are [`loft_facing_ground_yaw`]; the delta is
+/// wrapped into `(−180, 180]` so e.g. a turn that numerically reads −270 takes
+/// the +90 short way. `pub` so the bin (which owns the turn timer) builds the
+/// interpolated [`VisualShip2d::facing_yaw_deg`]. Returns a yaw in degrees that
+/// `chase_cam_ground_yaw_deg` consumes exactly like a snapped facing yaw.
+pub fn lerp_facing_yaw_deg(from: Facing, to: Facing, t: f32) -> f32 {
+    let a = loft_facing_ground_yaw(from);
+    let b = loft_facing_ground_yaw(to);
+    // Wrap (b - a) into (−180, 180] for the shortest arc.
+    let mut delta = (b - a) % 360.0;
+    if delta > 180.0 {
+        delta -= 360.0;
+    } else if delta <= -180.0 {
+        delta += 360.0;
+    }
+    a + delta * t.clamp(0.0, 1.0)
+}
+
 fn push_ship_2d(
     out: &mut Vec<DrawCommand>,
     ship: &Ship,
     cfg: &ProjectorConfig,
     sprites: &dyn SpriteRegistry,
+    vis: Option<&VisualShip2d>,
 ) {
     let q = grid_cell_quad(ship.pos, cfg);
     let (fill, stroke) = if ship.faction == Faction::Player {
@@ -843,7 +928,14 @@ fn push_ship_2d(
     } else {
         (ENEMY_HULL_FILL, ENEMY_HULL_STROKE)
     };
-    let center = q.center;
+    // (#79) Mid-move/turn: use the bin's interpolated render position/facing so
+    // the ship SLIDES + ROTATES; absent ⇒ snap to the logical cell.
+    let center = vis.map(|v| v.center).unwrap_or(q.center);
+    let near_edge_width = vis.map(|v| v.near_edge_width).unwrap_or_else(|| q.near_edge_width());
+    let depth_scale = vis.map(|v| v.depth_scale).unwrap_or(q.depth_scale);
+    let facing_yaw_deg = vis
+        .map(|v| v.facing_yaw_deg)
+        .unwrap_or_else(|| loft_facing_ground_yaw(ship.facing));
 
     let is_player = ship.faction == Faction::Player;
 
@@ -891,7 +983,7 @@ fn push_ship_2d(
             // the back-row enemies (~y140), so the playfield reads above it (Bruce:
             // "can't see the enemy ships"). Height from the loft aspect (#74, no
             // squash). x stays centred on the cell column so lateral moves read.
-            let w = (q.near_edge_width() * 1.0).max(16.0);
+            let w = (near_edge_width * 1.0).max(16.0);
             let h = w / LOFT_TEXTURE_ASPECT;
             let band_top = crate::gfx::VIRTUAL_H as f32 - 40.0;
             // Seat the quad BOTTOM at the band top (foreground), extend UP by h.
@@ -907,14 +999,17 @@ fn push_ship_2d(
                 kind: loft_kind,
                 // (#70) Aim the nose from the true CELL centre (not the dragged-
                 // down hero quad) — keeps the chase-cam lane-aim small + correct.
+                // (#79) Mid-slide this is the interpolated centre so the lane-aim
+                // tracks the sliding ship.
                 aim_at: center,
                 // (#70) The hull SHOWS its facing as a flat ground-plane yaw (the
-                // core hook): N→up-lane/VP, S→camera, E/W→broadside flanks.
-                facing_yaw_deg: loft_facing_ground_yaw(ship.facing),
+                // core hook): N→up-lane/VP, S→camera, E/W→broadside flanks. (#79)
+                // Mid-turn this is the interpolated yaw so the hull rotates smoothly.
+                facing_yaw_deg,
             }));
             // Pips/buffer cues on top (the lit hull + its baked engine glow own
             // the hull + stern read, so the player chevron stays dropped).
-            push_ship_arrow_and_pips_2d(out, ship, center, 22.0 * q.depth_scale);
+            push_ship_arrow_and_pips_2d(out, ship, center, 22.0 * depth_scale);
             return;
         }
         // aim lane = the ship's OWN board column; fan = its own-forward board dir
@@ -925,7 +1020,7 @@ fn push_ship_2d(
             // from the cell's near-edge width × a hero factor, clamped above the
             // bottom HUD band so the ship clears the status strip (#64). Baked
             // facing frames read ~2:1 (length:height) like the old side art.
-            let w = (q.near_edge_width() * 1.9).max(16.0);
+            let w = (near_edge_width * 1.9).max(16.0);
             let h = w * 0.5;
             let band_top = crate::gfx::VIRTUAL_H as f32 - 40.0;
             // PIVOT (#67 / contract §5): the wheel registers each facing against the
@@ -954,7 +1049,7 @@ fn push_ship_2d(
             push_engine_glow_2d(out, [center[0], glow_y], w);
             // Pips/buffer cues on top; the baked frame owns the hull + bow read, so
             // the player chevron stays dropped (enemy chevrons still telegraph).
-            push_ship_arrow_and_pips_2d(out, ship, center, 22.0 * q.depth_scale);
+            push_ship_arrow_and_pips_2d(out, ship, center, 22.0 * depth_scale);
             return;
         }
         // else: no facing frame loaded yet (the correct bake hasn't dropped) → fall
@@ -964,7 +1059,7 @@ fn push_ship_2d(
     // Inset hull box, scaled by depth so far ships are smaller. Bow stance is
     // longer along the bow axis; broadside is wider across the hull axis — a
     // coarse stance read under the (always-present) arrow.
-    let base = 22.0 * q.depth_scale;
+    let base = 22.0 * depth_scale;
     let (hx, hy) = match ship.facing {
         Facing::Bow(d) => match d.axis() {
             Axis::NorthSouth => (base * 0.62, base),
@@ -3679,6 +3774,66 @@ mod tests {
         }
     }
 
+    /// (#79) `lerp_facing_yaw_deg` takes the SHORTEST arc: a Q/E quarter-turn is
+    /// always ±90 even across the ±180 wrap, and endpoints are exact at t=0/1.
+    #[test]
+    fn facing_yaw_lerp_is_shortest_path() {
+        use crate::grid::{Axis, Dir4, Facing};
+        let n = Facing::Bow(Dir4::N); // 0
+        let e = Facing::Bow(Dir4::E); // +90
+        let w = Facing::Bow(Dir4::W); // -90
+        let s = Facing::Bow(Dir4::S); // 180
+        // Endpoints exact.
+        assert!((lerp_facing_yaw_deg(n, e, 0.0) - 0.0).abs() < 1e-4);
+        assert!((lerp_facing_yaw_deg(n, e, 1.0) - 90.0).abs() < 1e-4);
+        // N->E half = +45.
+        assert!((lerp_facing_yaw_deg(n, e, 0.5) - 45.0).abs() < 1e-4);
+        // S(180)->W(-90): naive delta -270, shortest is +90 -> half lands 225
+        // (180 + 45), NOT 45. Proves the wrap.
+        assert!((lerp_facing_yaw_deg(s, w, 0.5) - 225.0).abs() < 1e-4, "S->W must wrap +90");
+        // W(-90)->N(0): +90, half = -45.
+        assert!((lerp_facing_yaw_deg(w, n, 0.5) - (-45.0)).abs() < 1e-4);
+        // A no-op (same facing) is flat.
+        let _ = Axis::EastWest;
+        assert!((lerp_facing_yaw_deg(n, n, 0.5) - 0.0).abs() < 1e-4);
+    }
+
+    /// (#79) `lerp_cell_quad` returns `a` at t=0, `b` at t=1, and the midpoint
+    /// centre is the mean of the two cell centres (slides along the grid).
+    #[test]
+    fn cell_quad_lerp_endpoints_and_midpoint() {
+        use crate::grid::Pos;
+        use crate::projector::{grid_cell_quad, ProjectorConfig};
+        let cfg = ProjectorConfig::default();
+        let a = grid_cell_quad(Pos::new(1, 3), &cfg);
+        let b = grid_cell_quad(Pos::new(3, 3), &cfg);
+        let at0 = lerp_cell_quad(&a, &b, 0.0);
+        let at1 = lerp_cell_quad(&a, &b, 1.0);
+        assert!((at0.center[0] - a.center[0]).abs() < 1e-3 && (at0.center[1] - a.center[1]).abs() < 1e-3);
+        assert!((at1.center[0] - b.center[0]).abs() < 1e-3 && (at1.center[1] - b.center[1]).abs() < 1e-3);
+        let mid = lerp_cell_quad(&a, &b, 0.5);
+        assert!((mid.center[0] - 0.5 * (a.center[0] + b.center[0])).abs() < 1e-3);
+        assert!((mid.center[1] - 0.5 * (a.center[1] + b.center[1])).abs() < 1e-3);
+    }
+
+    /// (#79) An empty [`Tween2d`] makes `compose_scene_2d_tweened` byte-identical
+    /// to `compose_scene_2d_with` (the tween is a strict opt-in superset).
+    #[test]
+    fn empty_tween2d_matches_untweened_2d() {
+        use crate::projector::ProjectorConfig;
+        let cfg = ProjectorConfig::default();
+        let mut board = empty_board(crate::grid::CELLS);
+        board.cells[crate::grid::Pos::new(2, 3).to_index()] = Some({
+            let mut s = frigate_at(0, Faction::Player, Orientation::BowOn { bow: LaneEnd::Fore });
+            s.pos = crate::grid::Pos::new(2, 3);
+            s.facing = crate::grid::Facing::Bow(crate::grid::Dir4::N);
+            s
+        });
+        let plain = compose_scene_2d_with(&board, &cfg, &EmptySpriteRegistry);
+        let tweened = compose_scene_2d_tweened(&board, &cfg, &EmptySpriteRegistry, &Tween2d::default());
+        assert_eq!(plain.len(), tweened.len(), "empty Tween2d must not change the draw list");
+    }
+
     #[test]
     fn tween_state_default_is_identity_with_compose_scene_with() {
         // A default TweenState (empty visual_cells map) should produce
@@ -4381,7 +4536,7 @@ mod tests {
             s.pos = Pos::new(2, ROWS_LOCAL - 1);
             s.facing = facing;
             let mut out = Vec::new();
-            push_ship_2d(&mut out, &s, &cfg, &EmptySpriteRegistry);
+            push_ship_2d(&mut out, &s, &cfg, &EmptySpriteRegistry, None);
             let (mn, mx) = atlas::cell_uvs(atlas::BOW_CHEVRON);
             out.iter()
                 .find_map(|c| match c {
@@ -4401,7 +4556,7 @@ mod tests {
         s.pos = Pos::new(2, ROWS_LOCAL - 1);
         s.facing = Facing::Broadside(Axis::EastWest);
         let mut out = Vec::new();
-        push_ship_2d(&mut out, &s, &cfg, &EmptySpriteRegistry);
+        push_ship_2d(&mut out, &s, &cfg, &EmptySpriteRegistry, None);
         let (mn, mx) = atlas::cell_uvs(atlas::BOW_CHEVRON);
         let chev = out
             .iter()
