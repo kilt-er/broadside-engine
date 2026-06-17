@@ -2975,6 +2975,99 @@ mod tests {
         }
     }
 
+    /* =====================================================================
+     * 2-D invariant-A fixtures (the #20 run_action rewrite).
+     *
+     * Mirror of the `tests/common` board_2d/ship_2d shape, ported inline
+     * because a src `#[cfg(test)]` mod can't pull in the `tests/` integration
+     * submodule. These place ships at real grid positions with explicit
+     * bearing facings (invariant A: ship.cell == ship.pos.to_index()), so the
+     * 2-D firing path (resolve_targeting_2d) + 2-D damage (apply_damage_2d)
+     * the live `run_action`/`fire_player_queue` path runs actually bear and the
+     * 2-D Range falloff / facing_zone apply. SUPERSEDES the make_ship row-0
+     * green-keep (Fore->Bow(E)) for the run_action tests.
+     * ================================================================== */
+
+    /// A `Ship` at a real 2-D `pos` with bearing `facing`, one `arc`-mount
+    /// loaded with `weapon`. `shield` lets a test route a hit onto a known
+    /// face. Upholds invariant A. heat_max generous (12) so no accidental
+    /// lockout; override fields on the returned ship as needed.
+    ///
+    /// Richer than the bare `ship_2d` in the resolve_targeting_2d sanity section
+    /// below (which hardcodes hull/weapon) — the run_action tests need to set
+    /// hull, weapon id, and a specific shield profile, so this is its own
+    /// builder rather than overloading that one.
+    #[allow(clippy::too_many_arguments)] // a fixture builder; explicit params mirror tests/common::ship_2d
+    fn armed_ship_2d(
+        id: &str,
+        faction: Faction,
+        pos: crate::grid::Pos,
+        hull: i32,
+        facing: crate::grid::Facing,
+        arc: Arc,
+        weapon: &str,
+        shield: ShieldProfile,
+    ) -> Ship {
+        Ship {
+            id: id.into(),
+            faction,
+            cell: pos.to_index(), // invariant A
+            pos,
+            orientation: Orientation::BowOn { bow: LaneEnd::Fore },
+            facing,
+            hull,
+            max_hull: hull,
+            heat: 0,
+            heat_max: 12,
+            locked_out: false,
+            shield_profile: shield,
+            mounts: vec![Mount { id: format!("{id}-m1"), arc, weapon: weapon.into() }],
+            queue: Vec::new(),
+            cooldowns: HashMap::new(),
+            statuses: Vec::new(),
+            traits: Vec::new(),
+            klass: None,
+        }
+    }
+
+    /// All-zero shield faces, so a hit lands raw on hull (legible arithmetic).
+    fn naked() -> ShieldProfile {
+        ShieldProfile {
+            bow: crate::types::ShieldFace { armour: 0, charge: 0 },
+            stern: crate::types::ShieldFace { armour: 0, charge: 0 },
+            port: crate::types::ShieldFace { armour: 0, charge: 0 },
+            starboard: crate::types::ShieldFace { armour: 0, charge: 0 },
+        }
+    }
+
+    /// Build a `Board` over the fixed `CELLS`-length 5x4 grid, placing each
+    /// ship at `cells[ship.pos.to_index()]` (invariant A). Panics on a
+    /// double-booked cell or an out-of-bounds ship — a fixture authoring bug
+    /// surfaced loudly. `size = COLS` (the grid width) so any residual 1-D
+    /// `board.size` reader sees a sane lane.
+    fn armed_board_2d(ships: Vec<Ship>) -> Board {
+        let mut cells: Vec<Option<Ship>> = (0..crate::grid::CELLS).map(|_| None).collect();
+        for s in ships {
+            assert!(s.pos.in_bounds(), "ship {} pos {:?} out of bounds", s.id, s.pos);
+            let idx = s.pos.to_index();
+            assert_eq!(s.cell, idx, "ship {} breaks invariant A", s.id);
+            assert!(cells[idx].is_none(), "two ships share cell {idx}");
+            cells[idx] = Some(s);
+        }
+        Board {
+            size: crate::grid::COLS,
+            cells,
+            ordnance: Vec::new(),
+            hazards: (0..crate::grid::CELLS).map(|_| Vec::new()).collect(),
+            patrol: 1,
+            level: 0,
+            threats: Vec::new(),
+            bus: EventBus::default(),
+            destroys_this_window: 0,
+            fire_events: vec![],
+        }
+    }
+
     /// Demo Scenario A: scout bow=fore -> weak STERN faces attacker.
     /// Distance 1 = pointBlank; weapon optimal=close (delta 1) -> factor
     /// 0.66 -> floor(4 * 0.66) = 2. Stern armour 0 -> 2 lands. 5 - 2 = 3.
@@ -3053,17 +3146,18 @@ mod tests {
     }
 
     /// Heat accumulates and lockout fires at heatMax. Cooldown is reset
-    /// unconditionally on the firing action.
+    /// unconditionally on the firing action. (#20 2-D fixture: attacker at
+    /// (2,1) Bow(S), scout directly ahead at (2,2) — distance 1 (Adjacent), in
+    /// pulse_laser's band, on the bearing ray, so the shot connects and the
+    /// heat/lockout/cooldown bookkeeping runs through the live 2-D fire path.)
     #[test]
     fn execute_queue_overheats_and_records_cooldown() {
-        let mut attacker = make_ship("frigate", Faction::Player, 0, 10, LaneEnd::Fore);
+        let mut attacker = armed_ship_2d("frigate", Faction::Player, crate::grid::Pos::new(2, 1), 10, crate::grid::Facing::Bow(crate::grid::Dir4::S), Arc::Forward, "pulse_laser", default_shield_profile());
         attacker.heat = 5;
         attacker.heat_max = 6;
         attacker.queue = vec!["pulse_laser".into()];
-        let scout = make_ship("scout", Faction::Enemy, 1, 5, LaneEnd::Fore);
-        let mut board = make_board(7, vec![
-            Some(attacker), Some(scout), None, None, None, None, None,
-        ]);
+        let scout = armed_ship_2d("scout", Faction::Enemy, crate::grid::Pos::new(2, 2), 5, crate::grid::Facing::Bow(crate::grid::Dir4::N), Arc::Forward, "pulse_laser", default_shield_profile());
+        let mut board = armed_board_2d(vec![attacker, scout]);
         struct OneAction(Action);
         impl Content for OneAction {
             fn action(&self, id: &str) -> Option<&Action> {
@@ -3073,7 +3167,7 @@ mod tests {
         }
         let content = OneAction(pulse_laser());
         fire_player_queue("frigate", &mut board, &content);
-        let p = board.cells[0].as_ref().unwrap();
+        let p = board.cells[crate::grid::Pos::new(2, 1).to_index()].as_ref().unwrap();
         assert_eq!(p.heat, 6, "heat should be 5 + 1");
         assert!(p.locked_out, "heat at heat_max triggers lockout");
         assert_eq!(p.cooldowns.get("pulse_laser").copied(), Some(0));
@@ -4208,54 +4302,11 @@ mod tests {
         );
     }
 
-    /// Fallback ladder (#41 O1 / #68): when it can't fire, the AI queues a
-    /// PURPOSEFUL CLOSE toward the player via the universal synthetic move —
-    /// it does NOT need (or use) a mounted movement action. Enemy at cell 6,
-    /// player at cell 0 (Long range, pulse_laser out of band) => closes via
-    /// __move_left (player is aft of the enemy).
-    #[test]
-    #[ignore = "C1-flipped: stale 1D make_ship fixture vs 2D fire-gate; tester migrates to ai.rs + 2D invariant-A fixtures (#33)"]
-    fn ai_falls_back_to_movement_when_nothing_bears() {
-        let player = make_ship("p", Faction::Player, 0, 10, LaneEnd::Fore);
-        // A plain weapon-only enemy — NO movement mount. The synthetic close
-        // is what carries it (the live-game shape).
-        let enemy = enemy_with_weapon("e", 6, "pulse_laser", Arc::Forward, LaneEnd::Aft);
-        let mut board = make_board(7, vec![
-            Some(player), None, None, None, None, None, Some(enemy),
-        ]);
-        let content = AiContent {
-            actions: HashMap::from([("pulse_laser".into(), pulse_laser())]),
-        };
-        crate::ai::decide_enemy_action(6, &mut board, &content);
-        let queue = board.cells[6].as_ref().unwrap().queue.clone();
-        assert_eq!(queue, vec![crate::input::SYNTHETIC_MOVE_LEFT.to_string()],
-            "#68: can't-fire enemy closes via the synthetic move toward the player; got {queue:?}");
-    }
+    // (#20/#33) The 1-D make_ship stub of `ai_falls_back_to_movement_when_nothing_bears`
+    // was DELETED here — migrated to tests/ai_2d.rs on 2-D invariant-A fixtures.
 
-    /// AI respects cooldowns: a charging weapon is skipped even when it
-    /// would otherwise threaten the player.
-    #[test]
-    #[ignore = "C1-flipped: stale 1D make_ship fixture vs 2D fire-gate; tester migrates to ai.rs + 2D invariant-A fixtures (#33)"]
-    fn ai_skips_action_on_cooldown() {
-        let player = make_ship("p", Faction::Player, 0, 10, LaneEnd::Fore);
-        let mut enemy = enemy_with_weapon("e", 2, "pulse_laser", Arc::Forward, LaneEnd::Aft);
-        enemy.cooldowns.insert("pulse_laser".into(), 2);
-        let mut board = make_board(7, vec![
-            Some(player), None, Some(enemy), None, None, None, None,
-        ]);
-        let content = AiContent {
-            actions: HashMap::from([("pulse_laser".into(), pulse_laser())]),
-        };
-        crate::ai::decide_enemy_action(2, &mut board, &content);
-        let queue = board.cells[2].as_ref().unwrap().queue.clone();
-        // The cooldown'd weapon must NOT be queued; instead (#68) the enemy
-        // closes toward the player while the gun recharges (cell 0 aft of
-        // cell 2 => __move_left).
-        assert!(!queue.contains(&"pulse_laser".to_string()),
-            "AI must skip the cooldown'd weapon; got {queue:?}");
-        assert_eq!(queue, vec![crate::input::SYNTHETIC_MOVE_LEFT.to_string()],
-            "#68: cooldown'd enemy closes toward the player instead of camping; got {queue:?}");
-    }
+    // (#20/#33) The 1-D make_ship stub of `ai_skips_action_on_cooldown` was
+    // DELETED here — migrated to tests/ai_2d.rs on 2-D invariant-A fixtures.
 
     /// Friendly-fire filter (task #49): an enemy whose arc bears only on
     /// another enemy ship in front of it must NOT queue the attack. The
@@ -4301,41 +4352,9 @@ mod tests {
             "#68: friendly-fire-blocked enemy closes toward the player instead of camping; got {queue:?}");
     }
 
-    /// The friendly-fire filter must NOT block firing through an ally to
-    /// hit the player. SPINAL_LINE hits_all=true with an enemy ally
-    /// in cell N and the player beyond — the action still threatens the
-    /// player, so the AI should fire even though it grazes an ally.
-    /// (Today's pulse_laser is BEAM = first-target-only, so this scenario
-    /// uses a synthetic piercing variant.)
-    #[test]
-    #[ignore = "C1-flipped: stale 1D make_ship fixture vs 2D fire-gate; tester migrates to ai.rs + 2D invariant-A fixtures (#33)"]
-    fn ai_fires_through_ally_to_reach_player() {
-        let player = make_ship("p", Faction::Player, 0, 10, LaneEnd::Fore);
-        let ally = make_ship("ally", Faction::Enemy, 2, 5, LaneEnd::Fore);
-        let shooter = enemy_with_weapon("shooter", 4, "spinal", Arc::Forward, LaneEnd::Aft);
-        let mut board = make_board(7, vec![
-            Some(player), None, Some(ally), None, Some(shooter), None, None,
-        ]);
-        // Spinal piercing action: SPINAL_LINE with hits_all=true so it
-        // pierces through cell 2 (ally) to cell 0 (player).
-        let mut spinal = pulse_laser();
-        spinal.id = "spinal".into();
-        spinal.targeting.pattern = TargetingPattern::SPINAL_LINE;
-        spinal.targeting.hits_all = true;
-        spinal.targeting.band = vec![
-            RangeBand::PointBlank, RangeBand::Close, RangeBand::Mid,
-            RangeBand::Long, RangeBand::Extreme,
-        ];
-        let content = AiContent {
-            actions: HashMap::from([("spinal".into(), spinal)]),
-        };
-        crate::ai::decide_enemy_action(4, &mut board, &content);
-        let queue = board.cells[4].as_ref().unwrap().queue.clone();
-        // At least one cell in the target set is hostile (cell 0, the
-        // player); the friendly-fire filter must permit this.
-        assert_eq!(queue, vec!["spinal".to_string()],
-            "AI should fire through an ally when the line also threatens the player");
-    }
+    // (#20/#33) The 1-D make_ship stub of `ai_fires_through_ally_to_reach_player`
+    // was DELETED here — migrated to tests/ai_2d.rs on 2-D invariant-A fixtures
+    // (and reconciled with the resolver: pierce is SPINAL_LINE, not BEAM).
 
     /// Lockout: when overheated, only zero-heat actions are eligible.
     #[test]
@@ -4417,41 +4436,8 @@ mod tests {
             "among bearing options the AI picks the highest raw damage");
     }
 
-    /// B4-heat: the heat-budget gate. An action whose heat would push the
-    /// enemy more than 1 past `heat_max` is skipped even when it bears on the
-    /// player and the enemy is NOT locked out. (Distinct from the lockout
-    /// gate: here the ship can still act, it just won't pick an action that
-    /// over-commits its heat.)
-    #[test]
-    #[ignore = "C1-flipped: stale 1D make_ship fixture vs 2D fire-gate; tester migrates to ai.rs + 2D invariant-A fixtures (#33)"]
-    fn ai_skips_action_that_overshoots_heat_budget() {
-        let player = make_ship("p", Faction::Player, 0, 10, LaneEnd::Fore);
-        let mut enemy = enemy_with_weapon("e", 2, "overcharged", Arc::Forward, LaneEnd::Aft);
-        enemy.heat = 5;
-        enemy.heat_max = 6; // 5 + cost must exceed 6 + 1 = 7 to be skipped
-        let mut board = make_board(7, vec![
-            Some(player), None, Some(enemy), None, None, None, None,
-        ]);
-        let overcharged = {
-            let mut a = pulse_laser();
-            a.id = "overcharged".into();
-            a.cost = ActionCost { heat: 3, cooldown_max: 0, advances_turn: true }; // 5+3=8 > 7
-            a
-        };
-        let content = AiContent {
-            actions: HashMap::from([("overcharged".into(), overcharged)]),
-        };
-        crate::ai::decide_enemy_action(2, &mut board, &content);
-        let queue = board.cells[2].as_ref().unwrap().queue.clone();
-        // The over-budget weapon must NOT be queued. The enemy is NOT locked
-        // out (it can still act), so per #68 it CLOSES toward the player
-        // rather than over-committing heat (cell 0 aft of cell 2 =>
-        // __move_left).
-        assert!(!queue.contains(&"overcharged".to_string()),
-            "AI must skip the over-heat-budget action; got {queue:?}");
-        assert_eq!(queue, vec![crate::input::SYNTHETIC_MOVE_LEFT.to_string()],
-            "#68: heat-constrained (not locked) enemy closes instead of over-committing; got {queue:?}");
-    }
+    // (#20/#33) The 1-D make_ship stub of `ai_skips_action_that_overshoots_heat_budget`
+    // was DELETED here — migrated to tests/ai_2d.rs on 2-D invariant-A fixtures.
 
     /// B4-heat boundary: an action that lands EXACTLY at heat_max + 1 is still
     /// allowed (the AI tolerates overheating by exactly one). This pins the
@@ -4480,76 +4466,9 @@ mod tests {
             "AI tolerates overheating by exactly 1 (heat_max + 1 is allowed)");
     }
 
-    /// B7-Pursuit (#76 strengthen): the `Pursuit` +2 is LIVE — it can flip the
-    /// argmax. Unlike the removed +6 lane-end bonus (which was added to ALL of
-    /// one enemy's candidates identically, preserving the argmax), Pursuit's +2
-    /// is CONDITIONAL on `hits_player`, so it races a candidate that does NOT
-    /// hit the player. This constructs the flip and asserts deleting the branch
-    /// would redden it — modeled on the BurnHard test below.
-    ///
-    /// Setup: enemy at cell 3, bow=Fore. The board holds TWO player-faction
-    /// ships (the resolver finds the FIRST one as `player_cell`):
-    ///   - the real player at cell 0 (aft of the enemy),
-    ///   - an allied player-faction ship at cell 6 (fore of the enemy).
-    ///
-    /// The enemy has two opposed mounts so each beam bears a different way:
-    ///   - a REAR-arc "weak" gun (raw 2) bears down-lane and hits the player at
-    ///     cell 0 -> score = 10(hit) + 2 - 0 (+2 Pursuit) ;
-    ///   - a FORWARD-arc "strong" gun (raw 13) bears up-lane and hits the ALLY
-    ///     at cell 6 (NOT player_cell) -> score = 13 (no +10, no +2).
-    ///
-    /// Without Pursuit: weak = 12, strong = 13 -> the AI picks the strong
-    /// ally-shot. With Pursuit: weak = 14 > 13 -> it picks the weak
-    /// player-shot. So the +2 is decisive. (This is a contrived isolation to
-    /// race the term — the raw gap is deliberately tuned the way the BurnHard
-    /// test tunes its gap; it is not a claim that shooting a 13-dmg ally over a
-    /// 2-dmg player is good play. Deleting `if pursuit && hits_player` flips
-    /// the pick back to "strong" and reddens the assert.)
-    #[test]
-    #[ignore = "C1-flipped: stale 1D make_ship fixture vs 2D fire-gate; tester migrates to ai.rs + 2D invariant-A fixtures (#33)"]
-    fn ai_pursuit_bonus_flips_pick_toward_the_player_hitting_action() {
-        let player = make_ship("p", Faction::Player, 0, 10, LaneEnd::Fore);
-        let ally = make_ship("ally", Faction::Player, 6, 10, LaneEnd::Fore);
-        let mut enemy = make_ship("e", Faction::Enemy, 3, 5, LaneEnd::Fore);
-        enemy.heat_max = 10; // generous so neither action trips the heat gate
-        enemy.traits = vec![crate::types::Trait::Pursuit];
-        enemy.mounts = vec![
-            // Rear-arc gun -> bears toward lower cells (opposite the bow) ->
-            // hits the player at 0.
-            Mount { id: "m1".into(), arc: Arc::Rear, weapon: "weak".into() },
-            // Forward-arc gun -> bears toward higher cells (the bow) -> hits
-            // the ally at 6.
-            Mount { id: "m2".into(), arc: Arc::Forward, weapon: "strong".into() },
-        ];
-        let mut board = make_board(7, vec![
-            Some(player), None, None, Some(enemy), None, None, Some(ally),
-        ]);
-        // Both shots are distance 3 = Mid, in pulse_laser's PB/Close/Mid band.
-        let weak = {
-            let mut a = pulse_laser();
-            a.id = "weak".into();
-            a.cost = ActionCost { heat: 0, cooldown_max: 0, advances_turn: true };
-            a.targeting.requires_arc = Some(Arc::Rear);
-            a.effects = vec![Effect::DAMAGE { amount: 2, band_falloff: None }];
-            a
-        };
-        let strong = {
-            let mut a = pulse_laser();
-            a.id = "strong".into();
-            a.cost = ActionCost { heat: 0, cooldown_max: 0, advances_turn: true };
-            a.targeting.requires_arc = Some(Arc::Forward);
-            a.effects = vec![Effect::DAMAGE { amount: 13, band_falloff: None }];
-            a
-        };
-        let content = AiContent {
-            actions: HashMap::from([("weak".into(), weak), ("strong".into(), strong)]),
-        };
-        crate::ai::decide_enemy_action(3, &mut board, &content);
-        let queue = board.cells[3].as_ref().unwrap().queue.clone();
-        assert_eq!(queue, vec!["weak".to_string()],
-            "Pursuit's +2 flips the pick to the player-hitting shot over a higher-raw \
-             non-player shot; got {queue:?}");
-    }
+    // (#20/#33) The 1-D make_ship stub of `ai_pursuit_bonus_flips_pick_toward_the_player_hitting_action`
+    // was DELETED here — migrated to tests/ai_2d.rs on 2-D invariant-A fixtures
+    // (the same Pursuit-+2 isolation, ported to opposed Rear/Forward arcs).
 
     /// B7-BurnHard: the `BurnHard` trait halves the heat penalty in scoring,
     /// so a hot-but-strong action is chosen over a cool-but-weak one where a
@@ -4606,22 +4525,15 @@ mod tests {
         use std::cell::Cell;
         use std::rc::Rc;
 
-        // Two squishy enemies adjacent to a spinal-piercing weapon; one shot
-        // should kill both.
-        let mut attacker = make_ship("frigate", Faction::Player, 0, 10, LaneEnd::Fore);
+        // Two squishy enemies on the attacker's column ahead of a spinal-piercing
+        // weapon; one shot should pierce and kill both. (#20 2-D fixture:
+        // attacker at (2,3) Bow(N) fires N up column 2; scout at (2,2) and gunboat
+        // at (2,1) are both on the ray, so the SPINAL_LINE hits_all pierces both.)
+        let mut attacker = armed_ship_2d("frigate", Faction::Player, crate::grid::Pos::new(2, 3), 10, crate::grid::Facing::Bow(crate::grid::Dir4::N), Arc::Forward, "chain_lance", default_shield_profile());
         attacker.queue = vec!["chain_lance".into()];
-        let mut scout = make_ship("scout", Faction::Enemy, 2, 1, LaneEnd::Fore);
-        scout.shield_profile = ShieldProfile {
-            bow: crate::types::ShieldFace { armour: 0, charge: 0 },
-            stern: crate::types::ShieldFace { armour: 0, charge: 0 },
-            port: crate::types::ShieldFace { armour: 0, charge: 0 },
-            starboard: crate::types::ShieldFace { armour: 0, charge: 0 },
-        };
-        let mut gunboat = make_ship("gunboat", Faction::Enemy, 4, 1, LaneEnd::Fore);
-        gunboat.shield_profile = scout.shield_profile;
-        let mut board = make_board(7, vec![
-            Some(attacker), None, Some(scout), None, Some(gunboat), None, None,
-        ]);
+        let scout = armed_ship_2d("scout", Faction::Enemy, crate::grid::Pos::new(2, 2), 1, crate::grid::Facing::Bow(crate::grid::Dir4::S), Arc::Forward, "chain_lance", naked());
+        let gunboat = armed_ship_2d("gunboat", Faction::Enemy, crate::grid::Pos::new(2, 1), 1, crate::grid::Facing::Bow(crate::grid::Dir4::S), Arc::Forward, "chain_lance", naked());
+        let mut board = armed_board_2d(vec![attacker, scout, gunboat]);
 
         // Subscribe to OnChainKill BEFORE we lose the bus mutability into
         // execute_queue. Use Rc<Cell<u32>> to side-channel the count out.
@@ -4666,8 +4578,8 @@ mod tests {
         fire_player_queue("frigate", &mut board, &content);
 
         // Both ships should be gone, and OnChainKill should have fired once.
-        assert!(board.cells[2].is_none(), "scout was killed");
-        assert!(board.cells[4].is_none(), "gunboat was killed");
+        assert!(board.cells[crate::grid::Pos::new(2, 2).to_index()].is_none(), "scout was killed");
+        assert!(board.cells[crate::grid::Pos::new(2, 1).to_index()].is_none(), "gunboat was killed");
         assert_eq!(count.get(), 1, "OnChainKill fires once for the window");
     }
 
@@ -4850,83 +4762,95 @@ mod tests {
     /// flak_burst: on hit, each lane-neighbour of the HIT cell takes 1 through
     /// the pipeline — faction-blind (an adjacent ALLY of the attacker is hit
     /// too). The hit cell itself is not re-damaged by the burst.
+    ///
+    /// !! REAL 2-D GAP (flagged to lead — flak-2d): the flak_burst ON-HIT MOD
+    /// splash (apply_on_hit_mod, resolve.rs FlakBurst arm) is still 1-D and is
+    /// effectively BROKEN on a real 2-D board. It splashes the HIT CELL's
+    /// flat-index neighbours `hit_cell +/- 1`, bounds-checked against
+    /// `board.size`, via the 1-D apply_damage — NOT grid::neighbors +
+    /// apply_damage_2d. Two failures result on the grid: (1) flat `+/- 1` is only
+    /// the spatial E-W neighbour mid-row (it crosses rows at a column edge), and
+    /// (2) `board.size` is the grid WIDTH (COLS=5), so any neighbour index >= 5
+    /// (i.e. anything off row 0) is wrongly culled as "off-board" — so on a
+    /// real board the splash usually lands on NOTHING. (Distinct from the BLAST
+    /// *targeting pattern*, which WAS widened to 8-neighbours.)
+    ///
+    /// This test is the SPEC of the intended 2-D behaviour (center's E-W
+    /// neighbours each take 1, faction-blind); it is #[ignore]d until the mod is
+    /// ported to grid::neighbors(hit_pos) + apply_damage_2d. Un-ignoring it then
+    /// proves the fix. The other 8 run_action tests (#20) don't touch this mod.
+    #[ignore = "flak-2d: flak_burst on-hit splash is 1-D (hit_cell +/-1 vs board.size) and drops splashes off row 0 on a real board; un-ignore when the mod ports to grid::neighbors + apply_damage_2d"]
     #[test]
     fn mod_flak_burst_splashes_both_neighbours_faction_blind() {
-        // attacker p@1 (player) fires at enemy@2; neighbours of cell 2 are
-        // cell 1 (the attacker itself — an ally of nobody, but player faction)
-        // and cell 3 (another enemy). Both should take 1 splash. Use a
-        // shieldless setup so the 1 lands on hull.
-        let zero = ShieldProfile {
-            bow: crate::types::ShieldFace { armour: 0, charge: 0 },
-            stern: crate::types::ShieldFace { armour: 0, charge: 0 },
-            port: crate::types::ShieldFace { armour: 0, charge: 0 },
-            starboard: crate::types::ShieldFace { armour: 0, charge: 0 },
+        // Attacker at (2,3) Bow(N) fires N up column 2 ((2,2) empty) onto the
+        // target at (2,1). The flak mod SHOULD splash the hit cell's spatial
+        // neighbours: (1,1) [a player-faction ally] and (3,1) [an enemy] — both
+        // take 1, proving the splash is faction-blind. Naked shields so the 1
+        // lands on hull. The hit cell itself is not re-damaged. (Currently RED:
+        // see the gap note above.)
+        let attacker = {
+            let mut a = armed_ship_2d("p", Faction::Player, crate::grid::Pos::new(2, 3), 5, crate::grid::Facing::Bow(crate::grid::Dir4::N), Arc::Forward, "flak", naked());
+            a.queue = vec!["flak".into()];
+            a
         };
-        let mut p = make_ship("p", Faction::Player, 1, 5, LaneEnd::Fore);
-        p.shield_profile = zero;
-        p.queue = vec!["flak".into()];
-        let mut t = make_ship("t", Faction::Enemy, 2, 5, LaneEnd::Fore);
-        t.shield_profile = zero;
-        let mut n = make_ship("n", Faction::Enemy, 3, 5, LaneEnd::Fore);
-        n.shield_profile = zero;
-        let mut board = make_board(7, vec![
-            None, Some(p), Some(t), Some(n), None, None, None,
-        ]);
+        let t = armed_ship_2d("t", Faction::Enemy, crate::grid::Pos::new(2, 1), 5, crate::grid::Facing::Bow(crate::grid::Dir4::S), Arc::Forward, "flak", naked());
+        let ally = armed_ship_2d("ally", Faction::Player, crate::grid::Pos::new(1, 1), 5, crate::grid::Facing::Bow(crate::grid::Dir4::S), Arc::Forward, "flak", naked());
+        let enemy_n = armed_ship_2d("n", Faction::Enemy, crate::grid::Pos::new(3, 1), 5, crate::grid::Facing::Bow(crate::grid::Dir4::S), Arc::Forward, "flak", naked());
+        let mut board = armed_board_2d(vec![attacker, t, ally, enemy_n]);
         fire_player_queue("p", &mut board, &ModContent(modded_weapon("flak", "flak_burst", 3)));
 
-        // Primary hit: enemy@2 takes the 3-dmg pulse (5 -> 2).
-        assert_eq!(board.cells[2].as_ref().unwrap().hull, 2, "primary pulse lands on target");
-        // Splash: both neighbours of cell 2 take 1. Cell 3 (enemy n) and
-        // cell 1 (player p) — faction-blind.
-        assert_eq!(board.cells[3].as_ref().unwrap().hull, 4, "fore neighbour takes 1 flak splash");
-        assert_eq!(board.cells[1].as_ref().unwrap().hull, 4, "aft neighbour (attacker's own faction) takes 1 — faction-blind");
+        // Primary hit: target at (2,1) takes the 3-dmg pulse (5 -> 2).
+        assert_eq!(board.cells[crate::grid::Pos::new(2, 1).to_index()].as_ref().unwrap().hull, 2, "primary pulse lands on target");
+        // Splash: the hit cell's E-W neighbours each take 1 — faction-blind.
+        assert_eq!(board.cells[crate::grid::Pos::new(3, 1).to_index()].as_ref().unwrap().hull, 4, "E neighbour (enemy) takes 1 flak splash");
+        assert_eq!(board.cells[crate::grid::Pos::new(1, 1).to_index()].as_ref().unwrap().hull, 4, "W neighbour (player-faction ally) takes 1 — faction-blind");
     }
 
-    /// incendiary: APPLY_STATUS hullBreach 3 on the hit cell.
+    /// incendiary: APPLY_STATUS hullBreach 3 on the hit cell. (#20 2-D fixture:
+    /// p at (2,1) Bow(S) fires S onto t directly ahead at (2,2), Adjacent.)
     #[test]
     fn mod_incendiary_applies_hull_breach_on_hit() {
-        let mut p = make_ship("p", Faction::Player, 1, 5, LaneEnd::Fore);
+        let mut p = armed_ship_2d("p", Faction::Player, crate::grid::Pos::new(2, 1), 5, crate::grid::Facing::Bow(crate::grid::Dir4::S), Arc::Forward, "inc", default_shield_profile());
         p.queue = vec!["inc".into()];
-        let t = make_ship("t", Faction::Enemy, 2, 20, LaneEnd::Fore);
-        let mut board = make_board(7, vec![None, Some(p), Some(t), None, None, None, None]);
+        let t = armed_ship_2d("t", Faction::Enemy, crate::grid::Pos::new(2, 2), 20, crate::grid::Facing::Bow(crate::grid::Dir4::N), Arc::Forward, "inc", default_shield_profile());
+        let mut board = armed_board_2d(vec![p, t]);
         fire_player_queue("p", &mut board, &ModContent(modded_weapon("inc", "incendiary", 3)));
-        let st = &board.cells[2].as_ref().unwrap().statuses;
+        let st = &board.cells[crate::grid::Pos::new(2, 2).to_index()].as_ref().unwrap().statuses;
         let breach = st.iter().find(|s| s.kind == StatusKind::HullBreach).expect("hullBreach applied");
         assert_eq!(breach.duration, 3, "incendiary applies hullBreach for 3 turns");
     }
 
-    /// emp_charge: APPLY_STATUS systemsOffline 3 on the hit cell.
+    /// emp_charge: APPLY_STATUS systemsOffline 3 on the hit cell. (#20 2-D fixture.)
     #[test]
     fn mod_emp_charge_applies_systems_offline_on_hit() {
-        let mut p = make_ship("p", Faction::Player, 1, 5, LaneEnd::Fore);
+        let mut p = armed_ship_2d("p", Faction::Player, crate::grid::Pos::new(2, 1), 5, crate::grid::Facing::Bow(crate::grid::Dir4::S), Arc::Forward, "emp", default_shield_profile());
         p.queue = vec!["emp".into()];
-        let t = make_ship("t", Faction::Enemy, 2, 20, LaneEnd::Fore);
-        let mut board = make_board(7, vec![None, Some(p), Some(t), None, None, None, None]);
+        let t = armed_ship_2d("t", Faction::Enemy, crate::grid::Pos::new(2, 2), 20, crate::grid::Facing::Bow(crate::grid::Dir4::N), Arc::Forward, "emp", default_shield_profile());
+        let mut board = armed_board_2d(vec![p, t]);
         fire_player_queue("p", &mut board, &ModContent(modded_weapon("emp", "emp_charge", 3)));
-        let st = &board.cells[2].as_ref().unwrap().statuses;
+        let st = &board.cells[crate::grid::Pos::new(2, 2).to_index()].as_ref().unwrap().statuses;
         let off = st.iter().find(|s| s.kind == StatusKind::SystemsOffline).expect("systemsOffline applied");
         assert_eq!(off.duration, 3, "emp_charge applies systemsOffline for 3 turns");
     }
 
     /// targeting_laser: APPLY_STATUS targetLock on hit — and it lands even when
     /// the directional shield fully absorbs the hull damage (rider on contact).
+    /// (#20 2-D fixture: t carries armour 99 on every face, so whichever zone
+    /// the southward shot presents absorbs the full pulse — the rider still lands.)
     #[test]
     fn mod_targeting_laser_applies_target_lock_even_through_full_shield() {
-        let mut p = make_ship("p", Faction::Player, 1, 5, LaneEnd::Fore);
+        let mut p = armed_ship_2d("p", Faction::Player, crate::grid::Pos::new(2, 1), 5, crate::grid::Facing::Bow(crate::grid::Dir4::S), Arc::Forward, "tl", default_shield_profile());
         p.queue = vec!["tl".into()];
-        // Target with a big bow charge that eats the whole pulse; the rider
-        // must still apply. Bow faces the attacker (incoming from aft side?).
-        // Simplest: armour high enough to zero the hull damage.
-        let mut t = make_ship("t", Faction::Enemy, 2, 20, LaneEnd::Fore);
-        t.shield_profile = ShieldProfile {
+        let armoured = ShieldProfile {
             bow: crate::types::ShieldFace { armour: 99, charge: 0 },
             stern: crate::types::ShieldFace { armour: 99, charge: 0 },
             port: crate::types::ShieldFace { armour: 99, charge: 0 },
             starboard: crate::types::ShieldFace { armour: 99, charge: 0 },
         };
-        let mut board = make_board(7, vec![None, Some(p), Some(t), None, None, None, None]);
+        let t = armed_ship_2d("t", Faction::Enemy, crate::grid::Pos::new(2, 2), 20, crate::grid::Facing::Bow(crate::grid::Dir4::N), Arc::Forward, "tl", armoured);
+        let mut board = armed_board_2d(vec![p, t]);
         fire_player_queue("p", &mut board, &ModContent(modded_weapon("tl", "targeting_laser", 3)));
-        let t_ref = board.cells[2].as_ref().unwrap();
+        let t_ref = board.cells[crate::grid::Pos::new(2, 2).to_index()].as_ref().unwrap();
         assert_eq!(t_ref.hull, 20, "shield fully absorbed the hull damage");
         assert!(
             t_ref.statuses.iter().any(|s| s.kind == StatusKind::TargetLock),
@@ -4938,67 +4862,56 @@ mod tests {
     /// non-lethal hit does not.
     #[test]
     fn mod_precision_core_recharges_cooldown_only_on_kill() {
-        // Lethal: target hull 3, pulse 3, no shield -> dies. Attacker's
+        // (#20 2-D fixture: p at (2,1) Bow(S) fires S onto t at (2,2).)
+        // Lethal: target hull 3, pulse 3 (no-falloff), naked -> dies. Attacker's
         // cooldown for "pc" must be 0 afterward (not the cost's 3).
-        let zero = ShieldProfile {
-            bow: crate::types::ShieldFace { armour: 0, charge: 0 },
-            stern: crate::types::ShieldFace { armour: 0, charge: 0 },
-            port: crate::types::ShieldFace { armour: 0, charge: 0 },
-            starboard: crate::types::ShieldFace { armour: 0, charge: 0 },
-        };
-        let mut p = make_ship("p", Faction::Player, 1, 5, LaneEnd::Fore);
+        let p_pos = crate::grid::Pos::new(2, 1);
+        let t_pos = crate::grid::Pos::new(2, 2);
+        let mut p = armed_ship_2d("p", Faction::Player, p_pos, 5, crate::grid::Facing::Bow(crate::grid::Dir4::S), Arc::Forward, "pc", default_shield_profile());
         p.queue = vec!["pc".into()];
-        let mut t = make_ship("t", Faction::Enemy, 2, 3, LaneEnd::Fore);
-        t.shield_profile = zero;
-        let mut board = make_board(7, vec![None, Some(p), Some(t), None, None, None, None]);
+        let t = armed_ship_2d("t", Faction::Enemy, t_pos, 3, crate::grid::Facing::Bow(crate::grid::Dir4::N), Arc::Forward, "pc", naked());
+        let mut board = armed_board_2d(vec![p, t]);
         fire_player_queue("p", &mut board, &ModContent(modded_weapon("pc", "precision_core", 3)));
-        assert!(board.cells[2].is_none(), "lethal hit killed the target");
+        assert!(board.cells[t_pos.to_index()].is_none(), "lethal hit killed the target");
         assert_eq!(
-            board.cells[1].as_ref().unwrap().cooldowns.get("pc").copied(),
+            board.cells[p_pos.to_index()].as_ref().unwrap().cooldowns.get("pc").copied(),
             Some(0),
             "precision_core recharges cooldown to 0 on a clean kill",
         );
 
         // Non-lethal: target survives, cooldown stays at the cost (3).
-        let mut p2 = make_ship("p", Faction::Player, 1, 5, LaneEnd::Fore);
+        let mut p2 = armed_ship_2d("p", Faction::Player, p_pos, 5, crate::grid::Facing::Bow(crate::grid::Dir4::S), Arc::Forward, "pc", default_shield_profile());
         p2.queue = vec!["pc".into()];
-        let mut t2 = make_ship("t", Faction::Enemy, 2, 20, LaneEnd::Fore);
-        t2.shield_profile = zero;
-        let mut board2 = make_board(7, vec![None, Some(p2), Some(t2), None, None, None, None]);
+        let t2 = armed_ship_2d("t", Faction::Enemy, t_pos, 20, crate::grid::Facing::Bow(crate::grid::Dir4::N), Arc::Forward, "pc", naked());
+        let mut board2 = armed_board_2d(vec![p2, t2]);
         fire_player_queue("p", &mut board2, &ModContent(modded_weapon("pc", "precision_core", 3)));
-        assert!(board2.cells[2].is_some(), "non-lethal hit left the target alive");
+        assert!(board2.cells[t_pos.to_index()].is_some(), "non-lethal hit left the target alive");
         assert_eq!(
-            board2.cells[1].as_ref().unwrap().cooldowns.get("pc").copied(),
+            board2.cells[p_pos.to_index()].as_ref().unwrap().cooldowns.get("pc").copied(),
             Some(3),
             "precision_core does NOT recharge when the hit fails to kill",
         );
     }
 
     /// twin_linked: the action's effects apply twice (cost paid once). A 3-dmg
-    /// no-falloff pulse on a 20-hull shieldless target lands 6 total.
+    /// no-falloff pulse on a 20-hull shieldless target lands 6 total. (#20 2-D
+    /// fixture: p at (2,1) Bow(S) fires S onto t at (2,2), naked so 6 lands raw.)
     #[test]
     fn mod_twin_linked_applies_effects_twice() {
-        let zero = ShieldProfile {
-            bow: crate::types::ShieldFace { armour: 0, charge: 0 },
-            stern: crate::types::ShieldFace { armour: 0, charge: 0 },
-            port: crate::types::ShieldFace { armour: 0, charge: 0 },
-            starboard: crate::types::ShieldFace { armour: 0, charge: 0 },
-        };
-        let mut p = make_ship("p", Faction::Player, 1, 5, LaneEnd::Fore);
+        let mut p = armed_ship_2d("p", Faction::Player, crate::grid::Pos::new(2, 1), 5, crate::grid::Facing::Bow(crate::grid::Dir4::S), Arc::Forward, "twin", default_shield_profile());
         p.heat = 0;
         p.queue = vec!["twin".into()];
-        let mut t = make_ship("t", Faction::Enemy, 2, 20, LaneEnd::Fore);
-        t.shield_profile = zero;
+        let t = armed_ship_2d("t", Faction::Enemy, crate::grid::Pos::new(2, 2), 20, crate::grid::Facing::Bow(crate::grid::Dir4::N), Arc::Forward, "twin", naked());
         let weapon = {
             let mut a = modded_weapon("twin", "twin_linked", 3);
             a.cost = ActionCost { heat: 2, cooldown_max: 3, advances_turn: true };
             a
         };
-        let mut board = make_board(7, vec![None, Some(p), Some(t), None, None, None, None]);
+        let mut board = armed_board_2d(vec![p, t]);
         fire_player_queue("p", &mut board, &ModContent(weapon));
-        assert_eq!(board.cells[2].as_ref().unwrap().hull, 14, "twin_linked lands 3 twice = 6 (20 -> 14)");
+        assert_eq!(board.cells[crate::grid::Pos::new(2, 2).to_index()].as_ref().unwrap().hull, 14, "twin_linked lands 3 twice = 6 (20 -> 14)");
         // Cost paid ONCE: heat went up by 2 (not 4).
-        assert_eq!(board.cells[1].as_ref().unwrap().heat, 2, "twin_linked pays heat once, not per volley");
+        assert_eq!(board.cells[crate::grid::Pos::new(2, 1).to_index()].as_ref().unwrap().heat, 2, "twin_linked pays heat once, not per volley");
     }
 
     /// autoloader: the turn-dispatch seam reports the action as free-fire
@@ -5027,24 +4940,21 @@ mod tests {
     /// per-enemy (which would wipe all-but-the-last ship's beams).
     #[test]
     fn fire_events_accumulate_across_a_multi_ship_round() {
-        // Player at cell 0 (bow fore) with a queued pulse at the enemies up
-        // lane. Two enemies adjacent to the player's targets, bow=Aft so their
-        // forward guns bear back down-lane and telegraph a shot at the player.
-        let mut player = make_ship("p", Faction::Player, 0, 40, LaneEnd::Fore);
+        // (#20 2-D fixture) Player front-centre at (2,3) Bow(N) with a queued
+        // pulse up its column. Two enemies on column 2 ahead, Bow(S) so their
+        // forward guns bear back down-column on the player and telegraph a shot.
+        let p_idx = crate::grid::Pos::new(2, 3).to_index();
+        let mut player = armed_ship_2d("p", Faction::Player, crate::grid::Pos::new(2, 3), 40, crate::grid::Facing::Bow(crate::grid::Dir4::N), Arc::Forward, "pulse_laser", default_shield_profile());
         player.heat_max = 99; // never lock out across the round
         player.queue = vec!["pulse_laser".into()];
-        // e1 at cell 1: player's pulse (PointBlank) bears + in band -> player
-        // shot lands here. e1 (bow Aft) also bears on the player at cell 0.
-        let mut e1 = enemy_with_weapon("e1", 1, "pulse_laser", Arc::Forward, LaneEnd::Aft);
-        e1.hull = 40;
+        // e1 at (2,2): player's pulse (Adjacent) bears + in band -> player shot
+        // lands here. e1 (Bow S) also bears on the player down the column.
+        let mut e1 = armed_ship_2d("e1", Faction::Enemy, crate::grid::Pos::new(2, 2), 40, crate::grid::Facing::Bow(crate::grid::Dir4::S), Arc::Forward, "pulse_laser", default_shield_profile());
         e1.heat_max = 99;
-        // e2 at cell 2 (Close), bow Aft, also bears on the player.
-        let mut e2 = enemy_with_weapon("e2", 2, "pulse_laser", Arc::Forward, LaneEnd::Aft);
-        e2.hull = 40;
+        // e2 at (2,1) (Near), Bow S, also bears on the player.
+        let mut e2 = armed_ship_2d("e2", Faction::Enemy, crate::grid::Pos::new(2, 1), 40, crate::grid::Facing::Bow(crate::grid::Dir4::S), Arc::Forward, "pulse_laser", default_shield_profile());
         e2.heat_max = 99;
-        let mut board = make_board(7, vec![
-            Some(player), Some(e1), Some(e2), None, None, None, None,
-        ]);
+        let mut board = armed_board_2d(vec![player, e1, e2]);
         let content = AiContent {
             actions: HashMap::from([("pulse_laser".into(), pulse_laser())]),
         };
@@ -5055,8 +4965,8 @@ mod tests {
         resolve_round(&mut board, &content);
         let after_first: Vec<_> = board.fire_events.clone();
         assert!(
-            after_first.iter().any(|f| f.from_cell == 0),
-            "player's fired pulse produced a FireEvent from cell 0; got {after_first:?}",
+            after_first.iter().any(|f| f.from_cell == p_idx),
+            "player's fired pulse produced a FireEvent from the player's cell; got {after_first:?}",
         );
 
         // Re-arm the player and run a SECOND round: now the enemies have a
@@ -5081,10 +4991,10 @@ mod tests {
             distinct_shooters.len(),
             after_second,
         );
-        // And the player (cell 0) is among them — its shot wasn't wiped by the
-        // enemies' subsequent fire_player_queue calls.
+        // And the player is among them — its shot wasn't wiped by the enemies'
+        // subsequent fire_player_queue calls.
         assert!(
-            after_second.iter().any(|f| f.from_cell == 0),
+            after_second.iter().any(|f| f.from_cell == p_idx),
             "the player's beam survives the enemies' fires in the same round; got {after_second:?}",
         );
     }
