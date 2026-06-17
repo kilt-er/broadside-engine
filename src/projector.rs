@@ -565,7 +565,6 @@ mod tests {
         let vp = vanishing_point(&c);
         let bow_len = 2.0_f32; // any positive +Z reach toward the VP
         let row = ROWS - 1; // the player's front row
-        let center_x = c.frame_w * 0.5;
         for col in 0..COLS {
             let pos = Pos::new(col, row);
             let cp = cell_camera_point(pos, &c);
