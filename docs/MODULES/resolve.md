@@ -217,12 +217,71 @@ target_cell)`.
 | `DAMAGE`           | For each cell with a ship: `apply_damage` through the pipeline.             |
 | `APPLY_STATUS`     | For each cell with a ship: `add_status` (existing entry takes `max(old, new)` duration). |
 | `VENT_HEAT`        | Drop source heat, clear lockout, optionally reset all cooldowns. Emit `OnVent`. |
-| `REORIENT`         | Flip/set source orientation. Emit `OnReorient`.                             |
+| `REORIENT`         | `RotateLeft`/`RotateRight` turn source **`facing`** ±90° + re-derive orientation (#75); `Flip`/`BowOn`/`Broadside` set orientation only (TS parity). Emit `OnReorient`. |
 | `SPAWN_ORDNANCE`   | Call `content.spawn_projectile(kind, &owner)`, push onto `board.ordnance`.  |
 | `DISPLACE_SELF`    | Delegate to `resolve_self_move` (THRUST / BURN / SLIP / JUMP / TRACTOR_SWAP). |
 | `DISPLACE_TARGET`  | For each target cell: `resolve_target_move` (Push / Pull / Swap).           |
 | `DEPLOY`           | For each cell: push a `Hazard` with `kind` widened from `DeployHazardKind`. |
 | `BOARD`            | **Doc-stub**. See Drift below.                                              |
+
+---
+
+## The REORIENT-rotate arm — the player rotation mechanic (#75)
+
+**Intent:** Bruce's core control hook. The player turns the ship a quarter-turn with `Q`
+(rotate-left) / `E` (rotate-right), or makes a 180° about-face with `Tab`. Turning the ship
+must rotate **both** the on-screen hull and the firing arcs — they cannot drift apart.
+
+The arm sits inside `apply_effect`'s `Effect::REORIENT { to }` branch (`resolve.rs:1489`):
+
+- `ReorientTo::RotateLeft` → `source.facing = rotate_facing_ccw(source.facing)`, then
+  `source.orientation = orientation_from_facing(source.facing)`.
+- `ReorientTo::RotateRight` → same with `rotate_facing_cw`.
+- `ReorientTo::Flip` / `Broadside` / `BowOn` → the legacy orientation-only sets, **unchanged**
+  (TS parity; still used by the class Signatures in `classes.rs`).
+
+**Why this makes render + arcs follow for free.** In live 2-D combat, `facing` is the single
+source of truth: the fire-gate keys off `facing` (`bearing_cardinals(ship.facing)` →
+[`resolve_targeting_2d`](resolve.md)) and the loft render keys off `facing`
+([`hud::loft_facing_ground_yaw`](hud.md) → [`loft_gpu::chase_cam_ground_yaw_deg`](loft_gpu.md)).
+So mutating `facing` rotates *both* by construction — **no damage-math or fire-gate code was
+touched**. `orientation` is kept only as a consistent *shadow* (the loft pose / HUD stance still
+read it); it is derived, never authoritative. This is the fix for the bug where `Tab` (pre-#75)
+moved `orientation` (`BowOn ↔ Broadside`) while `facing` and the arcs stood still — "Tab does
+nothing to the ship."
+
+**The pure helpers** (`resolve.rs:1991`–`2028`):
+
+- `rotate_facing_cw(facing)` / `rotate_facing_ccw(facing)` — a `Bow(d)` turns its `Dir4` via
+  [`Dir4::rotate_cw`/`rotate_ccw`](grid.md); a `Broadside(axis)` swaps its axis (the hull pivots
+  from across-lane to along-lane). Total + pure.
+- `orientation_from_facing(facing)` — the inverse-derivation, using the live `make_ship`/spawn
+  convention (`capture.rs` / `broadside.rs`): bow up-lane (`Dir4::N`) → `BowOn { Fore }`; bow
+  toward camera (`Dir4::S`) → `BowOn { Aft }`; the two flanks (`E`/`W`) → `Broadside`. **Drift
+  note:** this is the *inverse* of `types::facing_from_orientation` (which maps `Fore → Bow(S)`
+  for enemy spawns). The player path deliberately uses the bin's construction convention so a
+  rotated player's `orientation` matches how its ship was built.
+
+**Tab = 180° about-face.** `Tab` is bin-local (`bin/broadside.rs:159`): its `ReorientFlip`
+intent overrides the `__reorient_flip` synthetic's effects to **two** `RotateRight` effects, so
+the bow reverses (`N ↔ S`, `E ↔ W`) through the same facing-driven path. The static synthetic's
+own `REORIENT::Flip` is left orientation-only for the class Signatures that use it — so no
+content / AI / TS-parity change.
+
+**Worked examples (the gates, `resolve.rs` test module):**
+- `rotate_right_turns_facing_and_the_fire_gate_follows` — a `Forward` beam from `(2,2)` bearing
+  **N** (hits the enemy at `(2,0)`); after one `RotateRight` the facing turns `N→E`, orientation
+  re-derives to `Broadside`, and the *same* beam now bears **E** (hits `(4,2)`, no longer `(2,0)`).
+  This is the end-to-end proof that render-facing and combat-facing rotate together.
+- `rotate_left_is_ccw_and_four_turns_round_trip` — one `RotateLeft` from `Bow(N)` is `Bow(W)`;
+  four return to `N`.
+- `two_rotate_rights_are_a_180_about_face` — `N` + 2× `RotateRight` = `S`, orientation re-derived
+  to `BowOn { Aft }` (the `Tab` semantics).
+
+**Cross-references:** the `Dir4` rotation primitive is [`grid.md`](grid.md); the new
+`ReorientTo` variants are [`types.md`](types.md); the input binding (`Q`/`E`/`Tab` → intents →
+synthetics) is [`input.md`](input.md) + `bin/broadside.rs`; the render half (facing → ground-yaw)
+is [`loft_gpu.md`](loft_gpu.md) + [`hud.md`](hud.md).
 
 ---
 

@@ -38,6 +38,18 @@ low-amplitude **idle** (bob/sway/roll so a resting ship reads as alive) plus an
 bow-on↔broadside — the headline win over sprite blending. Pitch is the existing
 camera-angle scrubber, passed in.
 
+> **v2 realtime-3D update (#70–#75).** The LIVE player render no longer poses the hull
+> from `ShipPose`/`Orientation`. It is now a **flat ground-plane chase-cam billboard**
+> driven by the player's `Dir4` **facing**: `gfx` computes a single ground-yaw with
+> [`chase_cam_ground_yaw_deg`](#realtime-3d-chase-cam-the-live-player-render-7075) (below) and
+> feeds it straight to `render_ship`. The `MODEL_YAW_*` stance consts and the
+> `ShipPose` orientation tween described in the next two sections are the **pre-realtime-3D**
+> path; they survive only in this module's own unit tests (and `ShipPose` still exists as
+> animation scaffold `gfx` keeps per-ship), but they no longer choose the live player yaw.
+> See the **Drift** note at the end and the new realtime-3D section. The GLB Aegis reaches
+> this pipeline through [`mesh_import.rs`](mesh_import.md) → `upload_imported`; the baked
+> 15-facing sprite sheet is the **fallback** (render-contract v5).
+
 ---
 
 ## Constants + stance yaws (src/loft_gpu.rs:38–86)
@@ -147,17 +159,99 @@ texture view per render that `gfx` feeds to its `TexturedShip` blit.
 
 ---
 
-## Camera + matrix math (src/loft_gpu.rs:804–919)
+## Camera + matrix math
 
-`camera_view_proj` (src/loft_gpu.rs:804) — orthographic ¾, port of the editor's `setCam`:
-eye orbits at radius 30 from yaw/pitch, `look_at` origin, ortho frustum sized from
-`HALF_EXTENT` (5.0). The `HALF_EXTENT` comment (src/loft_gpu.rs:812-818) records a real
-design call: **one fixed framing zoom across all ships preserves their TRUE relative
-scale** (the 7.75u CAD ship renders ~65% of the 12u dagger, as authored — no per-ship
-fudge; bruce dials true scale at the asset source). `rotation_y` (src/loft_gpu.rs:840),
-`look_at` (src/loft_gpu.rs:850), `ortho` (src/loft_gpu.rs:883), `mul4` (src/loft_gpu.rs:907),
-`normalize3` are the column-major right-handed matrix helpers (clip z 0..1 for wgpu).
-`camera_view_proj_is_finite` (src/loft_gpu.rs:1020) is the smoke guard.
+`camera_view_proj_zoom(yaw_rad, pitch_rad, aspect, target_y, half)` (src/loft_gpu.rs:1044) —
+the orthographic ¾ camera, port of the editor's `setCam`: eye orbits at radius 30 from
+yaw/pitch around the look-AT point `(0, target_y, 0)` (orbiting the *target*, not the world
+origin, so a hull whose mass doesn't straddle `y=0` still frames centred), ortho frustum sized
+from `half`. The gameplay framing passes `half = HALF_EXTENT` (**7.0**, up from the POC's 5.0 —
+it clears the broadside ship's vertical projection, #49) and `target_y = mesh.center_y`. The
+fixed-zoom design call still holds: **one framing zoom across all ships preserves their TRUE
+relative scale** (no per-ship fudge; bruce dials true scale at the asset source). `look_at`
+(src/loft_gpu.rs:1138), `ortho`, `mul4`, `normalize3`, `identity4` are the column-major
+right-handed matrix helpers (clip z 0..1 for wgpu). `camera_view_proj_is_finite`
+(src/loft_gpu.rs:1308) is the smoke guard.
+
+> **Drift (#73).** `camera_view_proj` (the *no-zoom* version this section once documented) now
+> lives only in `src/bin/loft_poc.rs` (the spike), not in the engine. The engine's `render_ship`
+> path goes through `camera_view_proj_zoom`. The note above is the current shape.
+
+---
+
+## Realtime-3D chase-cam: the live player render (#70–#75)
+
+**Intent:** Render the player's Aegis as a real 3-D hull seated on the tactical grid, oriented
+by its `Dir4` facing, with the bow aimed up-lane toward the **vanishing point** — the
+"ship-from-behind" chase-cam read — while keeping the hull **flat on the ground plane** (Bruce's
+hard requirement: no barrel-roll) and limited-palette posterized like everything else.
+
+The whole live render path is **facing-driven**, and the camera-yaw computation lives in one
+pure, CPU-tested function so the sign that "burned ~5 screenshot reviews" can never regress:
+
+### `const CHASE_CAM_BASE_YAW_DEG` (src/loft_gpu.rs:1076) = `270.0`
+
+The loft camera orbits about `+Y`; the hull's length runs along `+X` (prow `+X`, stern/engines
+`−X`). `270°` (i.e. `−90`) puts the **stern toward the viewer with the bow up-lane** toward the
+vanishing point — the stern-on chase view, which is the facing-`N` base case.
+
+### `pub fn chase_cam_ground_yaw_deg(aim_at, facing_yaw_deg, cfg) -> f32` (src/loft_gpu.rs:1104)
+
+**THE single source** for the player loft hull's ground-plane camera yaw, shared by the live
+renderer ([`gfx.rs`](gfx.md):2050) **and** the deterministic bow gate, so verification tests the
+REAL render path. It composes **three flat terms** (no roll — only the ground heading turns):
+
+1. `CHASE_CAM_BASE_YAW_DEG` (270 = stern-on, bow up-lane).
+2. `facing_yaw_deg` — the tactical-facing offset from
+   [`hud::loft_facing_ground_yaw`](hud.md): `N = 0`, `E = +90`, `S = 180`, `W = −90`, so the
+   four cardinals read as distinct flat poses.
+3. The **lane-aim convergence** `psi` — so an off-centre ship's bow banks *toward* the vanishing
+   point (converges with the lane) instead of pointing parallel to the screen. `alpha` is the
+   screen angle from the cell centre straight up to the VP (`(vp.x − ax).atan2(ay − vp.y)`),
+   then `psi = atan(tan(alpha)·sin(pitch))` lands the up-lane component on the VP under the
+   chase pitch.
+
+`aim_at` is the ship's **CELL-centre** screen point (`q.aim_at` = `q.center`, the cell centroid),
+*not* the dragged-down hero quad — that keeps the convergence small and correct.
+
+**The SIGN** (the regression magnet, now PINNED): decreasing the camera yaw from 270 banks the
+bow LEFT on screen; increasing banks it RIGHT (verified against the real ortho camera). A ship
+*right* of the VP (`aim_at.x > vp.x`) must bank LEFT toward the VP ⇒ the yaw must DECREASE; there
+`alpha < 0` so `psi < 0`, hence the formula **ADDs** `psi` (`+psi`). The pre-#73 code used
+`−psi`, which pushed off-centre bows *away* from the VP.
+
+### The live blit (in `gfx.rs`, not this module)
+
+`gfx` computes `base_yaw = chase_cam_ground_yaw_deg(q.aim_at, q.facing_yaw_deg, &cfg)`, renders
+the hull into the shared loft target at that yaw via `render_ship`, then **blits the posterized
+output onto the lane quad UN-rotated** — the nose-aim lives entirely in the 3-D yaw; the hull
+stays flat on the grid. The fixed house key light relights the yawed hull in world space
+automatically (the hull turns *in 3D*; it does not spin on screen).
+
+### The live bow gate (the verification that was missing)
+
+`live_loft_bow_points_correctly_all_facings_and_columns` (src/loft_gpu.rs:1354) is the
+deterministic gate over **all 4 cardinals × columns 0/2/4**. It projects a hull-local bow point
+(`+X`) and the hull centre through the **exact same ortho loft camera** (`camera_view_proj_zoom`
+at `CAMERA_PITCH_DEG`/`HALF_EXTENT`, via the `bow_loft_ndc` helper) posed by the **same yaw
+formula**, and asserts the projected bow sits:
+- `N` → ABOVE centre (NDC +y = up-lane) **and** banked toward the VP-x at off-centre columns
+  (col 0 → right, col 4 → left — never toward the screen edge: the `N`-convergence regression),
+- `S` → BELOW (toward the camera), `E` → screen-RIGHT, `W` → screen-LEFT.
+
+**Why this gate matters (the deep Drift below):** the earlier `#70` bow oracle tested
+`projector::camera_perspective` — the scene-space **pinhole**, a *different* camera — so it passed
+green while the live ortho bow pointed the wrong way at off-centre columns. The fix (commit
+`f6208d0`) was both to correct the `+psi` sign and to rewrite the gate to replicate **this**
+ortho loft camera + the blit's sign-preserving NDC→screen map. See
+[`perspective.md`](perspective.md) for the scene-space "plan A" degenerate finding in full.
+
+**Cross-references:** facing → `facing_yaw_deg` is [`hud::loft_facing_ground_yaw`](hud.md); the
+yaw feeds `render_ship` here and the blit in [`gfx.md`](gfx.md); `vanishing_point` / `aim_at` cell
+centre come from [`perspective.md`](perspective.md) (the projector); rotating the facing that
+drives all of this is the [`resolve.md`](resolve.md) REORIENT-rotate arm.
+
+---
 
 ## `fn imported_vertex_attrs(ship)` (src/loft_gpu.rs:928)
 
@@ -168,3 +262,33 @@ out-of-range material index, fall back to default hull grey + no emissive + lit.
 unit-tested headless**; `upload_imported` is the thin GPU wrapper. **Worked example:**
 `imported_colors_expand_groups_and_fall_back_to_grey` (src/loft_gpu.rs:1026) — red lit
 group, green unlit-glow group, ungrouped verts → grey.
+
+`upload_imported_tinted(device, ship, tint)` (src/loft_gpu.rs:856) is a variant that multiplies
+every vertex albedo by a per-channel `tint` (emissive untouched), used to recolour the shared CAD
+hull a distinct hue for the player so it reads apart from the enemy fleet.
+
+---
+
+## Drift — the stance-yaw / `ShipPose` path vs. the live realtime-3D render
+
+The **Constants + stance yaws** and **`struct ShipPose`** sections above describe the
+*pre-realtime-3D* render model: a fixed camera, the ship's stance defined by rotating its model by
+`MODEL_YAW_*` (fore `−28` / aft `−152` / broadside `−118`), and `ShipPose` tweening that
+orientation yaw over `REORIENT_SECS`. That model was correct when a ship's render came from its
+`Orientation`.
+
+The v2 realtime-3D path (#70–#75) **superseded it for the LIVE player render**:
+
+- The live yaw is now the **facing-driven ground-yaw** from `chase_cam_ground_yaw_deg` (above),
+  computed in `gfx` from the player's `Dir4` facing + cell position, and passed straight to
+  `render_ship`. The `MODEL_YAW_*` consts and `orientation_yaw_deg` are no longer consulted to
+  pose the live player — they survive only in this module's own unit tests.
+- `ShipPose` still **exists** as animation scaffold (`gfx` keeps a `HashMap<id, ShipPose>` and
+  ticks `advance` for idle/redraw gating, and `ensure_loft_pose` still calls `reorient_to`), but
+  its tweened *yaw* is not what reaches the live blit — the ground-yaw is. Treat the stance-yaw
+  sections as historical context for the model, current for the *spike* (`loft_poc.rs`), and
+  read the **Realtime-3D chase-cam** section for the live player.
+- `render_ship` now also takes a `center_y` argument (the mesh's vertical centroid, fed to
+  `camera_view_proj_zoom`'s `target_y`) — newer than the signature the `struct LoftGpu` section
+  records. The in-engine docstring on `render_ship` (src/loft_gpu.rs:872) still says the yaw comes
+  from `ShipPose::yaw_deg`; for the live player it actually comes from `chase_cam_ground_yaw_deg`.

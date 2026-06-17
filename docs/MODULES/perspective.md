@@ -45,6 +45,63 @@ Three things to know up front:
 3. **Pure functions, no state.** No wgpu, no winit, no rendering loop. Take inputs,
    return geometry.
 
+> **Where the 2-D board projection actually lives.** This file (`perspective.rs`) is the
+> *1-D* flat-lane bridge. The **v2 2-D board** is projected by a separate module,
+> [`src/projector.rs`](../../src/projector.rs) (task #5 / D2), which has no standalone
+> companion yet — the scene-space section below documents its realtime-3D-relevant pieces.
+> `projector.rs` is a **pinhole `1/z`** projector: `grid_cell_quad(pos, cfg)` maps a `Pos`
+> to a trapezoid `CellQuad` (its `center` is the cell centroid, the `aim_at` the chase-cam
+> bow-aim measures from), and `vanishing_point(cfg)` computes the column-convergence point
+> geometrically (extend an off-centre column's near→far centre line to the frame-centre
+> vertical) — for the symmetric projector it lands at `(frame_w/2, horizon_y)`.
+
+---
+
+## Scene-space "plan A" — the degenerate finding (#70–#73)
+
+This is a **design record**: an investigated-and-rejected approach to the realtime-3D player
+render. It is worth documenting because the live render (the ortho-loft billboard in
+[`loft_gpu.md`](loft_gpu.md)) only makes sense once you know *why* the obvious approach failed.
+
+**The idea (plan A).** Instead of a flat billboard, place the real 3-D hull *inside the scene*:
+put it at the cell's camera-space point and project it through the **same pinhole** the grid uses,
+so the hull and the grid agree by construction (no per-facing yaw calibration). Two pure
+functions in `projector.rs` implement this scaffold:
+
+- `cell_camera_point(pos, cfg) -> [Xc, Yc, Zc]` (projector.rs:359) — the camera-space point a
+  hull is placed at so it projects EXACTLY onto the cell. Derived by *inverting* the projection
+  against the cell's actual `grid_cell_quad` centre: `Yc` is the constant "ground" offset, `z`
+  follows from the cell's screen-Y (`z = Yc / (center_y − horizon_y)`), then `Xc = (center_x −
+  cx)·z`. Pinned by `cell_camera_point_projects_to_cell_center`.
+- `camera_perspective(cfg) -> [f32;16]` (projector.rs:394) — the pinhole as a column-major
+  `view_proj`: `screen_x = center_x + Xc/Zc`, `screen_y = horizon_y + Yc/Zc` (unit focal
+  lengths), with a LINEAR `[0,1]` clip-depth over `[z_near, z_far·DEPTH_FAR_MARGIN]` (so the
+  hull's own faces depth-test `Less`). This is the **same `1/z`** the grid lines + cell quads
+  use. `camera_perspective` writing linear clip-depth was the #70 scene-space prep (commit
+  `b63141d`).
+
+**Why it is DEGENERATE.** Near-row cells sit at camera depth `z ≈ 1.625` in what is effectively a
+near-fisheye FOV. A hull large enough to fill the ~116-px near cell, placed at that depth, **wraps
+behind the camera** — its far end crosses `z = 0`. The cell depth is *forced* by the
+`cell_camera_point` oracle (it must project onto the real cell), and **no scale escapes it**:
+shrink the hull and it no longer fills the cell; keep it cell-sized and it self-intersects the
+near plane. The pinhole that is perfect for *flat grid lines* is wrong for *3-D objects with
+extent* at the near depths the tactical camera demands.
+
+**The resolution (commit `f6208d0`).** Keep the **flat ortho-loft billboard** for the player
+(Bruce's no-barrel-roll requirement was already pushing that way), and put all the orientation
+into a CPU-tested **ground-plane yaw** that aims the bow at the vanishing point —
+[`loft_gpu::chase_cam_ground_yaw_deg`](loft_gpu.md). The scene-space pinhole stays in the tree as
+verified math (it correctly projects *points*), and was the camera the `#70` bow oracle wrongly
+tested — which is exactly why the live ortho bow stayed wrong while that oracle passed green. The
+GPU swap to a scene-space hull was **cancelled** (task #72: "billboard won"); the math is shelved
+for a possible future enemy-render approach, not used for the live player.
+
+**Cross-references:** the live player render that replaced this is
+[`loft_gpu.md`](loft_gpu.md)'s realtime-3D chase-cam section; `vanishing_point` and
+`grid_cell_quad` are in `projector.rs`; the rotation that drives the facing is
+[`resolve.md`](resolve.md)'s REORIENT-rotate arm.
+
 ---
 
 ## The flat-scene shift (from pre-flat)

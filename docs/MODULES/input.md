@@ -44,18 +44,21 @@ winit KeyCode → (bin) keycode_to_key → input::Key
 ## `enum Key` (src/input.rs:47)
 
 **Intent:** A framework-agnostic key identity — one variant per binding the
-tutorial advertises (`Left`/`Right`/`Tab`/`V`, digits `D1`-`D3` for mounts and
-`D5`-`D7` for cards, `R`/`Space`/`Enter`). The bin maps `winit::KeyCode` onto this
-so the lib never imports winit. Adding a binding touches three places in lockstep:
-`Key`, `key_to_intent`, `tutorial_lines`.
+tutorial advertises (`Left`/`Right`/`Tab`/`V`, **`Q`/`E`** for rotation (#75), digits
+`D1`-`D3` for mounts and `D5`-`D7` for cards, `R`/`Space`/`Enter`). The bin maps
+`winit::KeyCode` onto this (e.g. `KeyQ → Key::Q`) so the lib never imports winit. Adding a
+binding touches three places in lockstep: `Key`, `key_to_intent`, `tutorial_lines`.
 
 ## `enum Intent` (src/input.rs:80)
 
 **Intent:** What the player *meant*. `QueueAction(String)` carries a real action id
-(a mount's weapon); `MoveLeft`/`MoveRight`/`ReorientFlip`/`Vent` are the synthetic
-actions; `PlayCard(String)` plays a field-kit card; `CommitTurn` fires the queue;
-`Restart` rebuilds the board. The doc-comments spell out each synthetic's effect
-(e.g. `Vent` → `VENT_HEAT 3, recharge cooldowns`).
+(a mount's weapon); `MoveLeft`/`MoveRight`/`MoveUp`/`MoveDown`/`ReorientFlip`/`Vent`/
+**`RotateLeft`/`RotateRight`** are the synthetic actions; `PlayCard(String)` plays a
+field-kit card; `CommitTurn` fires the queue; `Restart` rebuilds the board. The
+doc-comments spell out each synthetic's effect (e.g. `Vent` → `VENT_HEAT 3, recharge
+cooldowns`; `RotateLeft`/`RotateRight` → `REORIENT::RotateLeft`/`RotateRight`, a ±90°
+turn of `facing`). `Key::Q → RotateLeft`, `Key::E → RotateRight` (key_to_intent,
+src/input.rs:158).
 
 ---
 
@@ -115,6 +118,10 @@ advances turn).
   a predictable 2D control scheme. AI/scripted moves pass `direction: None` to keep
   orientation-relative behavior.
 - `synthetic_reorient_flip` (src/input.rs:274) — `REORIENT { to: Flip }`.
+- `synthetic_rotate_left`/`_right` (src/input.rs:395, 411) — `REORIENT { to: RotateLeft
+  }` / `RotateRight` (#75), ids `__rotate_left` / `__rotate_right` (`SYNTHETIC_ROTATE_*`).
+  A quarter-turn of the player's `facing`; the resolver re-derives `orientation`. Both
+  registered on `DemoContent` like the other synthetics.
 - `synthetic_vent` (src/input.rs:290) — `VENT_HEAT { amount: 3, recharge_cooldowns:
   Some(true) }`, matching the catalog's Defensive vent.
 

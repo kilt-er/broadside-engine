@@ -191,7 +191,21 @@ valid set of board cells.
 **Lines:** `grid.rs:282`–`335`. A cardinal-only direction, kept **separate from `Dir8` so a
 `Facing` cannot be constructed pointing at a diagonal** — the type system enforces the
 4-cardinal rule (decision #9). `from_dir8` returns `None` for the four diagonals. `axis` maps
-`N`/`S → NorthSouth`, `E`/`W → EastWest`.
+`N`/`S → NorthSouth`, `E`/`W → EastWest`. `ALL` is `[N, E, S, W]` — the four cardinals in
+**clockwise** order from `N`, which is what makes the two rotation helpers below pure index
+arithmetic.
+
+### `Dir4::rotate_cw` / `rotate_ccw` (#75 — the player rotation primitive)
+**Lines:** `grid.rs:332`, `:344`. A quarter-turn of the bow direction: `rotate_cw` steps
+`N → E → S → W → N` (`+1 mod 4`); `rotate_ccw` steps `N → W → S → E → N` (`−1 mod 4`). They
+mirror `Dir8::rotate_cw`/`rotate_ccw` but on the 4-cardinal alphabet. These are the geometric
+core of the **player rotation control** (`Q` = rotate-left/ccw, `E` = rotate-right/cw, `Tab` =
+180° = two cw turns): the resolver's `REORIENT::RotateLeft`/`RotateRight` arm turns the
+player's `facing` by calling these, and because *both* the loft render and the 2-D fire-gate
+read `facing`, the hull visibly rotates and the firing arcs follow by construction. Pinned by
+`rotate_cw_and_ccw_are_inverses`, the explicit `N→E→S→W` sequence test, and a
+four-turns-round-trip in `grid.rs`'s test module. See the cross-module hook
+["The rotation mechanic"](resolve.md) and [`resolve.md`](resolve.md)'s REORIENT-rotate arm.
 
 ### `Axis` and `Axis::dirs`
 **Lines:** `grid.rs:344`, `:355`. The two grid axes a `Broadside` hull can lie along. A

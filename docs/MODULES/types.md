@@ -133,7 +133,15 @@ The biggest data record. Field order matches the TS Ship interface.
 - **`DAMAGE { amount, band_falloff: Option<bool> }`** — the predicate semantics are
   load-bearing. See the dedicated section below.
 - **`DisplaceMode`** — `Push`, `Pull`, `Swap`; lowercase wire.
-- **`ReorientTo`** — `BowOn`, `Broadside`, `Flip`; camelCase.
+- **`ReorientTo`** — `BowOn`, `Broadside`, `Flip`, **`RotateLeft`, `RotateRight`**; camelCase.
+  `BowOn`/`Broadside`/`Flip` are the TS-parity orientation reorients. `RotateLeft`/`RotateRight`
+  are a **Rust-port extension** (#75, additive — never authored in catalog JSON, so the TS
+  contract is unchanged, like the `direction` field on `DISPLACE_SELF`): they turn the ship's
+  `facing` (`Dir4` bow direction) a quarter-turn ccw/cw and re-derive `orientation` from it. They
+  are produced only by the synthetic player rotate actions (`input::synthetic_rotate_*`). Because
+  the loft render and the 2-D fire-gate both key off `facing`, the hull visibly rotates and the
+  firing arcs follow — see [`resolve.md`](resolve.md)'s REORIENT-rotate arm and the cross-module
+  hook in `LINE_BY_LINE.md`.
 - **`DeployHazardKind`** — `Mine`, `Drone`. (No debris.)
 - **`MovementMode`** — `THRUST`, `BURN`, `SLIP`, `JUMP`, `TRACTOR_SWAP`; SCREAMING_SNAKE_CASE.
 

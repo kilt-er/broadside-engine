@@ -541,12 +541,18 @@ band_falloff) and `:843` (DISPLACE_SELF parses with MovementMode).
 **Intent:** Variants of `DISPLACE_TARGET.mode`. TS uses lowercase literals; serde
 `rename_all = "lowercase"` (line 463) matches.
 
-#### `enum ReorientTo { BowOn, Broadside, Flip }` (types.rs:475)
+#### `enum ReorientTo { BowOn, Broadside, Flip, RotateLeft, RotateRight }` (types.rs:769)
 
-**Mirrors:** `types.ts:141`.
+**Mirrors:** `types.ts:141` (the first three only).
 **Intent:** Variants of `REORIENT.to`. `BowOn` and `Broadside` align with the
 `Orientation` tag values; `Flip` is the stance-preserving inversion (bow-on
-fore→aft; broadside stays broadside).
+fore→aft; broadside stays broadside). `RotateLeft`/`RotateRight` (#75) are a
+**Rust-port extension** for the player rotation control: they turn the ship's `facing`
+(`Dir4` bow direction) a quarter-turn ccw/cw and re-derive `orientation` from it, so the
+hull visibly rotates and the firing arcs follow (render + the 2-D fire-gate both key off
+`facing`). Produced only by the synthetic player rotate actions, never authored in the
+catalog JSON — additive, so the TS contract is unchanged (like the `direction` field on
+`DISPLACE_SELF`).
 
 #### `enum DeployHazardKind { Mine, Drone }` (types.rs:485)
 
@@ -2277,15 +2283,63 @@ clear = cut-out), pass 2 posterize→output; records into the caller's encoder.
 **Cross-references:** consumes [`HullMesh`](#srcloftrs) + [`ImportedShip`](#srcmesh_importrs);
 output blit by [`gfx.rs`](#srcgfxrs); `ShipPose` driven by [`Orientation`](#srctypesrs).
 
-### Camera math + `imported_vertex_attrs` (src/loft_gpu.rs:804–950)
+### Camera math + `imported_vertex_attrs` (src/loft_gpu.rs:804–950, 1044+)
 
-`camera_view_proj` — orthographic ¾ (port of the editor's `setCam`), framed by a **single
-fixed `HALF_EXTENT`** across all ships so TRUE relative scale is preserved (the CAD ship
-renders ~65% of the dagger, as authored — no per-ship fudge; bruce dials scale at the asset
-source). `rotation_y`/`look_at`/`ortho`/`mul4`/`normalize3` are the column-major RH helpers.
+`camera_view_proj_zoom(yaw, pitch, aspect, target_y, half)` (src/loft_gpu.rs:1044) —
+orthographic ¾ (port of the editor's `setCam`), framed by a **single fixed `HALF_EXTENT`**
+(**7.0**) across all ships so TRUE relative scale is preserved (no per-ship fudge; bruce dials
+scale at the asset source). It orbits the camera around the look-AT point `(0, target_y, 0)` —
+`render_ship` passes `target_y = mesh.center_y` — so a hull whose mass doesn't straddle `y=0`
+still frames centred. `look_at`/`ortho`/`mul4`/`normalize3`/`identity4` are the column-major RH
+helpers. (The no-zoom `camera_view_proj` now lives only in the `loft_poc.rs` spike.)
 `imported_vertex_attrs` (src/loft_gpu.rs:928) — pure expansion of per-group materials → per-
 vertex albedo + emissive (`unlit`→w=1), ungrouped/out-of-range → grey+lit;
 `imported_colors_expand_groups_and_fall_back_to_grey` (src/loft_gpu.rs:1026) pins it.
+
+### Realtime-3D chase-cam: the live player render (#70–#75)
+
+The **live** player render is **facing-driven**, not `ShipPose`/`Orientation`-driven. The GLB
+Aegis (via [`mesh_import.rs`](#srcmesh_importrs) → `upload_imported`) is rendered as a **flat
+ground-plane billboard** whose ground-yaw aims the bow at the lane's vanishing point, and blit
+UN-rotated onto the cell quad — the nose-aim lives entirely in the 3-D yaw; the hull stays flat
+(Bruce: no barrel-roll). The baked 15-facing sprite sheet is the **fallback** (render-contract
+v5: GLB MESH primary + dynamically lit; sprites = preview/fallback).
+
+- `CHASE_CAM_BASE_YAW_DEG` (src/loft_gpu.rs:1076) = `270.0` — stern-on, bow up-lane (the
+  facing-`N` base). The hull's length is `+X` (prow `+X`); the camera orbits `+Y`.
+- `chase_cam_ground_yaw_deg(aim_at, facing_yaw_deg, cfg)` (src/loft_gpu.rs:1104) — **THE single
+  source** for the live yaw, shared by `gfx` (src/gfx.rs:2050) and the bow gate. Three flat terms:
+  the `270` base + the tactical-facing offset (`N=0`/`E=+90`/`S=180`/`W=−90`, from
+  [`hud::loft_facing_ground_yaw`](#srchudrs)) + the **lane-aim convergence `psi`** so an
+  off-centre bow banks toward the vanishing point. `aim_at` is the cell centre (`q.aim_at`), not
+  the hero quad. **SIGN** (the regression magnet): a ship right of the VP must bank LEFT (`psi<0`),
+  so the formula ADDs `+psi` (the pre-#73 `−psi` pushed bows away from the VP).
+- `live_loft_bow_points_correctly_all_facings_and_columns` (src/loft_gpu.rs:1354) — the
+  deterministic gate over all 4 cardinals × cols 0/2/4, projecting a `+X` bow point through the
+  **same ortho loft camera** (`bow_loft_ndc`) posed by the same yaw: `N` above + banked toward VP,
+  `S` below, `E` right, `W` left. The earlier `#70` oracle tested `projector::camera_perspective`
+  (the scene-space pinhole — a *different* camera), so it passed while the live bow was wrong;
+  commit `f6208d0` fixed the sign and rewrote the gate against the real camera.
+
+> **Drift.** The `MODEL_YAW_*` stance consts + `ShipPose` orientation tween (above) are the
+> pre-realtime-3D model; they survive only in this module's unit tests (and `ShipPose` as
+> animation scaffold `gfx` keeps), but no longer choose the live player yaw. The
+> scene-space "plan A" (place the hull in the projector pinhole) was found **degenerate** —
+> near-row cells sit at `z≈1.625` in a near-fisheye FOV, so a cell-filling hull wraps behind
+> the camera and no scale escapes the oracle-forced depth. See
+> [`MODULES/perspective.md`](MODULES/perspective.md) and the cross-module hook below.
+
+> **Cross-module hook — the rotation mechanic (Q/E/Tab).** `Q` = rotate-left, `E` =
+> rotate-right (each ±90° of facing), `Tab` = 180° about-face. The trace: a key →
+> [`input.rs`](#srcinputrs) `Intent::RotateLeft/RotateRight` (or `ReorientFlip` for `Tab`) →
+> a synthetic `__rotate_*` action whose effect is `REORIENT::RotateLeft/RotateRight` → the
+> resolver's REORIENT-rotate arm (`resolve.rs:1497`) turns `source.facing` via
+> [`Dir4::rotate_cw/rotate_ccw`](#srcgridrs) and re-derives `orientation`. Because the loft
+> render (this section, via `facing_yaw_deg`) **and** the 2-D fire-gate (`resolve_targeting_2d`,
+> via `bearing_cardinals(facing)`) both key off `facing`, the hull rotates **and** the firing
+> arcs follow with no damage-math change. The gate
+> `rotate_right_turns_facing_and_the_fire_gate_follows` proves a Forward beam that bore N hits
+> E after one rotate-right. `Tab` (bin-local) applies two `RotateRight` effects.
 
 ---
 
@@ -3799,9 +3853,16 @@ Per-arm walkthroughs:
 - **`Effect::VENT_HEAT { amount, recharge_cooldowns }`** (lines 551–564): drop heat
   by `amount` floored at 0, clear lockout, optionally reset all cooldowns to 0
   (the `recharge_cooldowns: Some(true)` branch). Emits `OnVent`.
-- **`Effect::REORIENT { to }`** (lines 566–577): switch orientation. `Flip` toggles
-  via `flip_orientation`; `Broadside` sets `Orientation::Broadside`; `BowOn` defaults
-  to `bow: Fore`. Emits `OnReorient`.
+- **`Effect::REORIENT { to }`** (lines 1489–1516): the player-rotation arm (#75) plus the
+  legacy orientation sets. `RotateLeft`/`RotateRight` turn `source.facing` a quarter-turn
+  (`rotate_facing_ccw`/`rotate_facing_cw`, src/resolve.rs:1991) **then** re-derive
+  `orientation` (`orientation_from_facing`, src/resolve.rs:2020) — `facing` is authoritative,
+  `orientation` a shadow. `Flip` toggles via `flip_orientation`; `Broadside` sets
+  `Orientation::Broadside`; `BowOn` defaults to `bow: Fore` (all three unchanged for TS
+  parity). Emits `OnReorient`. Because render + the 2-D fire-gate both key off `facing`, the
+  rotate cases turn the hull **and** the arcs together (see the cross-module hook in the
+  `loft_gpu.rs` section). Gates: `rotate_right_turns_facing_and_the_fire_gate_follows`,
+  `rotate_left_is_ccw_and_four_turns_round_trip`, `two_rotate_rights_are_a_180_about_face`.
 - **`Effect::SPAWN_ORDNANCE { projectile }`** (lines 579–588): clone the source ship
   (avoids holding `board.cells` borrowed while calling `content.spawn_projectile`),
   then push the new projectile onto `board.ordnance`.
@@ -5245,10 +5306,12 @@ content. Flow: bin translates winit keycode → `Key`; `key_to_intent` → `Inte
 
 ### `enum Key` / `enum Intent` (src/input.rs:47, 80)
 
-`Key` is one variant per advertised binding (`Left`/`Right`/`Tab`/`V`, `D1`-`D3` mounts,
-`D5`-`D7` cards, `R`/`Space`/`Enter`) — the bin maps `winit::KeyCode` onto it so the lib
-never imports winit. `Intent` is what the player meant: `QueueAction(id)` (a real mount
-weapon), the four synthetics, `PlayCard(id)`, `CommitTurn`, `Restart`.
+`Key` is one variant per advertised binding (`Left`/`Right`/`Tab`/`V`, **`Q`/`E`** rotation
+(#75), `D1`-`D3` mounts, `D5`-`D7` cards, `R`/`Space`/`Enter`) — the bin maps `winit::KeyCode`
+onto it (`KeyQ → Key::Q`, `KeyE → Key::E`) so the lib never imports winit. `Intent` is what the
+player meant: `QueueAction(id)` (a real mount weapon), the synthetics
+(`MoveLeft`/`MoveRight`/`MoveUp`/`MoveDown`/`ReorientFlip`/`Vent`/**`RotateLeft`/`RotateRight`**),
+`PlayCard(id)`, `CommitTurn`, `Restart`.
 
 ### `fn key_to_intent(key, ship, content) -> Option<Intent>` (src/input.rs:127)
 
@@ -5275,6 +5338,8 @@ The `SYNTHETIC_*` const ids + `Action` builders, so synthetics flow through the 
 `_right` use `DISPLACE_SELF { direction: Some(Aft/Fore) }` — the **lane-relative** override
 (#50) so Left always moves leftward on screen regardless of bow (AI passes `direction: None`
 for orientation-relative movement). `synthetic_reorient_flip` → `REORIENT{Flip}`,
+`synthetic_rotate_left`/`_right` (src/input.rs:395, 411) → `REORIENT{RotateLeft}`/`{RotateRight}`
+(ids `__rotate_left`/`__rotate_right`, #75 — the ±90° facing turn),
 `synthetic_vent` → `VENT_HEAT{3, recharge}`. Helpers: `all_bands` (five-band coverage),
 `self_targeting` (SELF, no arc), `zero_cost` (free + advances turn). **Worked example:**
 `synthetic_vent_flows_through_execute_queue` (src/input.rs:794).

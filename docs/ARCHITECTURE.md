@@ -221,6 +221,18 @@ flanked threats want broadside. The enemy AI's job is to manufacture the wrong s
 `REORIENT` (`fx.to`) is `"flip"` (toggle bow direction or stay broadside), `"bowOn"`
 (default fore), or `"broadside"`.
 
+> **v2 facing + the player rotation control (#75).** In the 2-D board the authoritative
+> orientation is a `Facing` — `Bow(Dir4)` (the strong bow points at a cardinal `N`/`E`/`S`/`W`)
+> or `Broadside(Axis)`. The player turns the ship with **`Q` (rotate-left, −90°)**, **`E`
+> (rotate-right, +90°)**, and **`Tab` (180° about-face)**. These add two more `REORIENT.to`
+> variants, `RotateLeft`/`RotateRight` (a Rust-port extension, never in catalog JSON), which
+> turn `facing` a quarter-turn and re-derive `orientation` from it. The key invariant: **both
+> the on-screen hull render and the firing arcs key off `facing`**, so rotating the ship turns
+> the hull *and* the arcs together with no damage-math change. (Pre-#75, `Tab` moved only
+> `orientation` while `facing`/arcs stood still — "Tab does nothing to the ship.") See
+> [`MODULES/resolve.md`](MODULES/resolve.md)'s REORIENT-rotate arm and
+> [`MODULES/grid.md`](MODULES/grid.md)'s `Dir4::rotate_cw/rotate_ccw`.
+
 ---
 
 ## The event bus
@@ -325,13 +337,34 @@ module (each has a full companion under `docs/MODULES/`):
 - **Ship geometry — two producers, one boundary** ([`RENDER_PIPELINE.md`](RENDER_PIPELINE.md)).
   Ships are **live 3D styled to read as pixel art**, not sprites. A low-poly hull is
   produced either by **lofting** a `ShipDesign` (`loft.rs`, [`loft.md`](MODULES/loft.md))
-  or by **importing** a CAD `.glb` (`mesh_import.rs`,
+  or by **importing** a CAD/editor `.glb` (`mesh_import.rs`,
   [`mesh_import.md`](MODULES/mesh_import.md)); both meet at one `HullMesh`, selected by
-  `ship_asset.rs` ([`ship_asset.md`](MODULES/ship_asset.md)).
+  `ship_asset.rs` ([`ship_asset.md`](MODULES/ship_asset.md)). Per **render-contract v5**, the
+  **GLB mesh is the primary in-game asset** (imported and **lit dynamically** at runtime); the
+  editor's baked **15-facing sprite sheet** is the preview/**fallback**. The live player ship is
+  the real **Aegis GLB**.
 - **GPU loft pipeline — `loft_gpu.rs`** ([`loft_gpu.md`](MODULES/loft_gpu.md)). Renders a
   `HullMesh` with an orthographic ¾-view camera into a **low-resolution offscreen buffer**
   (nearest sampling), then a **posterize** pass quantizes it to flat colour bands — the
-  Dead-Cells / HD-2D look: 3D source, limited-palette 2D result.
+  Dead-Cells / HD-2D look: 3D source, limited-palette 2D result. The **live player render** is a
+  **realtime-3D chase-cam billboard** (#70–#75): the GLB hull renders at a **flat ground-plane
+  yaw** computed from the player's `Dir4` facing + cell position
+  (`chase_cam_ground_yaw_deg` — base stern-on + facing offset + a lane-aim convergence that aims
+  the **bow at the lane's vanishing point**), then blits UN-rotated onto the cell quad. The hull
+  stays **flat on the grid** (Bruce: no barrel-roll); only its 3-D heading turns, so the firing
+  arcs and the visual nose agree. A CPU bow gate verifies the bow direction at all 4 cardinals ×
+  3 columns against the real ortho camera.
+
+  > **Design record — scene-space "plan A" was degenerate.** The obvious approach (place the
+  > 3-D hull *in* the projector's pinhole so hull and grid agree by construction) was investigated
+  > and rejected: near-row cells sit at camera depth `z≈1.625` in a near-fisheye FOV, so a hull
+  > big enough to fill the near cell wraps behind the camera, and the cell depth is forced by the
+  > `cell_camera_point` oracle (no scale escapes it). The scene-space camera math
+  > (`projector::camera_perspective`/`cell_camera_point`) is correct for projecting *points* and
+  > stays in the tree (shelved for a possible future enemy approach), but the live player uses the
+  > flat ortho-loft billboard + the CPU-tested ground-yaw bow-aim instead (commit `f6208d0`). The
+  > GPU swap to a scene-space hull was cancelled. See
+  > [`MODULES/perspective.md`](MODULES/perspective.md).
 - **wgpu draw layer — `gfx.rs`** ([`gfx.md`](MODULES/gfx.md)). Consumes the
   `Vec<DrawCommand>`, drawing each into the offscreen target, then blits fit-scaled to the
   window. Sprite/quad shapes for the lane, HUD, and 2D glyphs.

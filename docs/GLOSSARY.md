@@ -63,6 +63,16 @@ A mount **bears** on a target when its arc, given the ship's current orientation
 at the target's lane direction. The arc gate inside `resolveTargeting`. (HTML Part III;
 `geometry.ts:74`, `:90`.)
 
+**Bow-aim (vanishing-point aim)**
+The realtime-3D render trick that makes the chase-cam player ship read as travelling *into*
+the scene: the hull's bow is yawed to point at the lane's **vanishing point** (where the
+receding board columns converge), not straight up the screen. An off-centre ship therefore
+*banks* its nose toward the lane centre. Computed on the ground plane by
+`loft_gpu::chase_cam_ground_yaw_deg` and verified by a CPU bow gate over all 4 facings × 3
+columns. The sign of the bank ("a ship right of the VP banks left") was the regression that
+"burned ~5 screenshot reviews" before commit `f6208d0` pinned it. See **Chase camera**,
+**Vanishing point**. (Rust port, #70–#73; `src/loft_gpu.rs`.)
+
 **Beam**
 (a) An archetype — instant-energy weapons. (b) A targeting pattern (`BEAM`) — hitscan
 on the first target in the bearing direction. (HTML Part III, Part V.)
@@ -105,6 +115,23 @@ when the ship's stance is `broadside`. (HTML Part III, Part V.)
 See **Event bus**.
 
 ## C
+
+**Chase camera**
+The in-game view of the player ship: a ¾ look-down "from behind and above," so the player
+sees their own stern with the bow pointing up-lane into the board — the Shogun-Showdown-style
+hero read. The player hull renders as a flat ground-plane **billboard** (a posterized 3-D
+render blit onto its cell quad) whose 3-D heading is set by `chase_cam_ground_yaw_deg`
+(base stern-on yaw + the `Dir4` facing offset + the **bow-aim** convergence). The hull stays
+flat on the grid (no barrel-roll); only its heading turns. See **Bow-aim**, **Ground-plane
+yaw**, **Billboard (ship)**. (Rust port, #62/#70–#75; `src/loft_gpu.rs`, `src/gfx.rs`.)
+
+**Billboard (ship)**
+A flat quad in the scene textured with a pre-rendered image of the ship, rather than a 3-D
+hull placed in the scene. Broadside's live player render is a billboard: the GLB hull is
+rendered (lit, posterized) into an offscreen texture at the chase-cam ground-yaw, then blit
+UN-rotated onto the cell quad — the apparent 3-D orientation lives entirely in the rendered
+texture. Chosen after the **scene-space** "plan A" (a real hull in the projector pinhole)
+proved geometrically degenerate. (Rust port, #72–#73.)
 
 **Capital ship**
 A boss ship. Each sector ends in one. From Patrol 4 a capital can appear **Corrupted**,
@@ -179,6 +206,13 @@ player. Picks actions; the same `executeQueue` then runs them. (HTML Part IV;
 The effect that drops a `Hazard` (mine / drone / debris) into a cell's hazard list.
 Persists; triggers when a ship enters the cell. (`types.ts:144`, `resolve.ts:218`.)
 
+**Dir4**
+A cardinal-only direction — `N`/`E`/`S`/`W`, no diagonals — kept deliberately separate from the
+8-way `Dir8` so a `Facing` can never be constructed pointing at a diagonal (the type system
+enforces the 4-cardinal rule). `rotate_cw` (`N→E→S→W`) and `rotate_ccw` (`N→W→S→E`) are the
+geometric core of the player **rotation** control. See **Facing**, **Rotate (left/right)**.
+(`src/grid.rs`; v2.)
+
 **Deployed cell**
 A targeting pattern (`DEPLOYED_CELL`). Places a hazard on the cell directly in the
 bearing direction. (HTML Part III.)
@@ -238,7 +272,13 @@ The fifth (longest) range band, distance 7+. (`geometry.ts:36`.)
 ## F
 
 **Facing**
-See **Orientation**.
+The v2 board's **authoritative** hull orientation, a `Facing` value: `Bow(Dir4)` (the strong
+bow points at a cardinal `N`/`E`/`S`/`W`) or `Broadside(Axis)`. In live 2-D combat `facing` is
+the single source of truth — **both** the firing arcs (`bearing_cardinals(facing)`) and the
+chase-cam hull render (`loft_facing_ground_yaw(facing)`) key off it, so turning the ship rotates
+the arcs and the visual together. The older `Orientation` (`BowOn{LaneEnd}` / `Broadside`) is
+kept as a derived shadow. Turned a quarter-turn at a time by the player **rotation** control.
+See **Orientation**, **Rotate (left/right)**, **Dir4**. (`src/grid.rs`; v2 #75.)
 
 **Facing zone**
 `facingZone(orientation, incomingFrom)` — which hull zone takes a hit arriving along the
@@ -249,6 +289,15 @@ take a lane hit in bow-on stance. (HTML Part IV; `geometry.ts:61`.)
 **Faction**
 `player` or `enemy`. Used by `advanceProjectile` to decide what to hit, by `enemyInitiative`
 to filter, and by future AI logic. (`types.ts:27`.)
+
+**Fifteen-facing wheel (15-facing)**
+The baked-sprite render model (render contract v2–v5): a ship's on-screen orientation is one of
+15 pre-lit PNG frames — 3 hull fans (left / forward / right) × 5 lane aims — shot at the fixed
+pitch-20 chase camera. The engine **swaps** to the frame the wheel selects and draws it UNLIT
+(lights are baked in world space); it never rotates the pixels. This is the **fallback** path now
+that the GLB mesh is the primary, dynamically-lit asset. Player-centric (no toward-camera view),
+so enemies are not routed through it. (`docs/BROADSIDE_RENDER_CONTRACT.md` §5; `src/hud.rs`,
+`src/facing_wheel.rs`; v2 #67.)
 
 **Field kit**
 Items the player carries between fights. Resolve without spending a turn. Three groups:
@@ -266,6 +315,24 @@ maneuvers, the Autoloader mod, and most signatures are free-fire. The tempo leve
 
 **General (bay)**
 A subsystem bay that can appear in any shop. The catch-all category. (HTML Part VI.)
+
+**GLB mesh / GLB (render contract v5)**
+The glTF-binary 3-D ship asset, exported by the editor tool and imported at runtime by
+`mesh_import.rs`. Under **render contract v5** the GLB mesh is the **primary** in-game ship
+asset — imported and **lit dynamically** in-engine (true real-time lighting, not baked) — with
+the baked **15-facing sprite sheet** kept as preview/fallback. Format: TRIANGLES only, axes raw
+(+X length / +Y up / +Z starboard), transforms baked into vertices, one primitive per material
+(albedo `baseColorFactor`, `emissiveFactor`, `KHR_materials_unlit` on pure-light parts), centred
++ scaled to X-length 12. The same format the CAD editor's GLB exporter emits, so the engine
+ingests both tools' GLBs identically. The live player ship is the real Aegis GLB.
+(`docs/BROADSIDE_RENDER_CONTRACT.md` §5; `src/mesh_import.rs`, `src/loft_gpu.rs`.)
+
+**Ground-plane yaw**
+The single rotation applied to the chase-cam player hull: a heading angle *about the vertical
+(+Y) axis only*, so the hull turns flat on the board like a ship on water — no pitch, no roll
+("no barrel-roll," Bruce's hard requirement). Composed by `chase_cam_ground_yaw_deg` from the
+stern-on base, the `Dir4` facing offset, and the **bow-aim** convergence. See **Chase camera**,
+**Bow-aim**. (Rust port, #70–#73; `src/loft_gpu.rs`.)
 
 ## H
 
@@ -421,6 +488,14 @@ See **Targeting pattern**.
 **Point blank**
 The first (closest) range band, distance 0–1. (`geometry.ts:32`.)
 
+**Posterize**
+The render pass that gives ships the Dead-Cells / HD-2D look: a 3-D hull is rendered into a
+low-resolution offscreen buffer (nearest-sampled), then a fragment shader quantizes each colour
+channel to a small fixed number of bands (`BANDS` = 8) — `floor(c·bands + 0.5)/bands` — and
+discards near-transparent pixels to keep the silhouette cut-out. The result is a flat,
+limited-palette image from a 3-D source. Applies to both lofted and GLB hulls. See **Chase
+camera**, **Loft**. (`src/loft_gpu.rs`.)
+
 **Point-blank pattern**
 `POINT_BLANK` — targets the cell directly ahead. (HTML Part III.)
 
@@ -464,7 +539,18 @@ A field-kit item that rerolls intent — the Lucky Die analog. (HTML Part X.)
 **Reorient**
 A first-class movement verb (`REORIENT` effect). Flips a ship between stances or
 rotates a bow-on ship 180°. Equally tactical with cell movement. Emits `onReorient`.
-(HTML Part IV; `types.ts:141`, `resolve.ts:194`.)
+(HTML Part IV; `types.ts:141`, `resolve.ts:194`.) The v2 player-rotation variants
+(`RotateLeft`/`RotateRight`) ride this same effect — see **Rotate (left/right)**.
+
+**Rotate (left/right)** — the player rotation control
+The v2 player's hull-turning hook: **`Q`** rotates the ship left (−90°), **`E`** rotates right
+(+90°), **`Tab`** is a 180° about-face. Each turns the authoritative **`Facing`** a quarter-turn
+(`Dir4::rotate_ccw`/`rotate_cw`) via the `REORIENT.to = RotateLeft`/`RotateRight` effect, and
+re-derives `orientation` from the new facing. The point: render **and** firing arcs both key off
+`facing`, so the hull visibly turns and the arcs follow together — there is no separate "rotate
+the sprite" step. (Pre-#75, `Tab` toggled only `orientation`, so the hull and arcs stood still:
+"Tab does nothing to the ship.") A Rust-port extension, never authored in catalog JSON. See
+**Facing**, **Dir4**, **Reorient**. (`src/resolve.rs`, `src/grid.rs`, `src/input.rs`; v2 #75.)
 
 **Requires arc**
 The `Targeting.requiresArc` — the mount arc that must bear for the action to resolve.
@@ -483,6 +569,18 @@ affects. (`resolve.ts:81`.)
 **Salvage**
 Meta-progression currency. Dropped only by capital ships, scaling with Patrol tier.
 Used to unlock subsystems from astrogation. (HTML Part VIII, Part XI.)
+
+**Scene-space render ("plan A")**
+An investigated-and-**rejected** approach to the realtime-3D player ship: place the real 3-D
+hull at the cell's camera-space point and project it through the *same* pinhole the board grid
+uses, so hull and grid agree by construction. It was found geometrically **degenerate** — near
+cells sit at camera depth `z≈1.625` in a near-fisheye field of view, so a hull big enough to fill
+the near cell wraps behind the camera, and the cell depth is forced by the projector oracle (no
+scale escapes it). The scene-space math (`projector::camera_perspective` / `cell_camera_point`)
+correctly projects *points* and stays in the tree (shelved for a possible future enemy approach),
+but the live player uses the flat **billboard** + **bow-aim** ground-yaw instead (commit
+`f6208d0`); the GPU swap was cancelled ("billboard won"). See **Billboard (ship)**, **Chase
+camera**. (Rust port, #70–#73; `src/projector.rs`, `docs/MODULES/perspective.md`.)
 
 **Sector**
 A node in the campaign branching graph. A run is a path through sectors. Each sector
@@ -608,6 +706,13 @@ A mount arc. Always bears — fires regardless of orientation. (`types.ts:25`,
 `geometry.ts:76`.)
 
 ## V
+
+**Vanishing point**
+In the board's pinhole projection, the screen point where the receding lane columns converge
+(`1/z → 0`) — for the symmetric projector, the frame-centre at the horizon. Computed
+geometrically by `projector::vanishing_point` (extend an off-centre column's near→far centre line
+to the frame-centre vertical), not assumed, so it survives a projector retune. The chase-cam
+player's bow is aimed at this point. See **Bow-aim**, **Chase camera**. (`src/projector.rs`.)
 
 **Vent**
 The `VENT_HEAT` action and effect. Clears heat (by `amount`), unlocks an overheated
