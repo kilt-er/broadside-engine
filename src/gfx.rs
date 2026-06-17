@@ -2029,16 +2029,22 @@ impl Gfx {
                     // stern-on. (All live loft ships are the chase-cam player today;
                     // an oncoming enemy loft would carry its own pose — follow-up.)
                     const CHASE_CAM_BASE_YAW_DEG: f32 = 270.0;
-                    // (#62) LANE-AIM NOSE-TURN: yaw the hull toward its lane so an
-                    // off-centre ship "aims down its lane" like Bruce's art-tool
-                    // reference (NOSE TURN 15). Derived from the quad's centre-x
-                    // offset from frame-centre — left lanes turn the nose left,
-                    // right lanes right; the centre lane stays at its stance yaw.
+                    // (#62/#70) LANE-AIM NOSE-TURN: yaw the hull so an off-centre
+                    // ship "aims up its lane" toward the central vanishing point
+                    // (NOSE TURN 15) — nose up-lane, not toward the screen edge.
+                    // Derived from the quad's centre-x offset from frame-centre.
+                    // (#70) SIGN: the 270° chase-cam base-yaw rotated the hull's
+                    // frame 90°, which MIRRORED the lane-aim sense — at the old
+                    // `+off` the nose turned AWAY from the vanishing point off-
+                    // centre (Bruce's right-lane shot pointed up-right). NEGATED so
+                    // the nose aims toward the vanishing point on every lane;
+                    // verified by capture at col 0/2/4. (Center col stays at the
+                    // base yaw — off=0 — which is why a centred shot masked this.)
                     const LANE_AIM_MAX_DEG: f32 = 15.0;
                     let quad_cx = (q.p0[0] + q.p2[0]) * 0.5;
                     let off = ((quad_cx - VIRTUAL_W as f32 * 0.5) / (VIRTUAL_W as f32 * 0.5))
                         .clamp(-1.0, 1.0);
-                    let yaw = yaw + CHASE_CAM_BASE_YAW_DEG + off * LANE_AIM_MAX_DEG;
+                    let yaw = yaw + CHASE_CAM_BASE_YAW_DEG - off * LANE_AIM_MAX_DEG;
                     // 1) Render the hull into the shared loft target (own passes).
                     let mut enc =
                         self.device

@@ -65,15 +65,19 @@ fn make_ship(id: &str, faction: Faction, pos: Pos, facing: Facing) -> Ship {
     }
 }
 
-/// The campaign-layout board: player front-centre Bow(N), enemies centre-out
-/// across the back row Bow(S) — the real bow-to-bow start.
-fn capture_board() -> Board {
+/// The campaign-layout board: player front row Bow(N) at `player_col`, enemies
+/// centre-out across the back row Bow(S) — the real bow-to-bow start. `player_col`
+/// lets the capture place the player OFF-CENTER (e.g. col 0/4) to expose
+/// lane-dependent pose bugs that a centred (col 2, zero lane-yaw) shot masks.
+fn capture_board(player_col: usize) -> Board {
     let mut cells: Vec<Option<Ship>> = (0..broadside_engine::grid::CELLS).map(|_| None).collect();
     let place = |cells: &mut Vec<Option<Ship>>, s: Ship| {
         let idx = s.pos.to_index();
         cells[idx] = Some(s);
     };
-    let mut player = make_ship("player", Faction::Player, player_start_pos(), player_spawn_facing());
+    let start = player_start_pos();
+    let ppos = Pos::new(player_col.min(COLS - 1), start.row);
+    let mut player = make_ship("player", Faction::Player, ppos, player_spawn_facing());
     // (#66) class "aegis" so the baked aegis_* sprites are selected (the renderer
     // keys sprite_path on klass); the bin sets the player class likewise.
     player.klass = Some("aegis".to_string());
@@ -130,7 +134,16 @@ fn main() {
         Err(e) => log::warn!("capture: Aegis.glb import failed ({e}); player falls back to sprite/flat-box"),
     }
 
-    let board = capture_board();
+    // Optional 2nd arg = player column (0..COLS-1) so the capture can place the
+    // player OFF-CENTER to expose lane-dependent pose bugs (a centred shot at the
+    // zero-lane-yaw col 2 masks a mirrored lane-aim sign). Defaults to the
+    // campaign spawn column.
+    let player_col = std::env::args()
+        .nth(2)
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or_else(|| player_start_pos().col);
+    let board = capture_board(player_col);
+    log::info!("capture: player at column {player_col}");
 
     // (#70) Sync the player's loft pose so the loft pre-pass has a pose to render
     // (mirrors the playable bin's per-frame sync_loft_pose).
