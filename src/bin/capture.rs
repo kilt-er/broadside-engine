@@ -69,14 +69,16 @@ fn make_ship(id: &str, faction: Faction, pos: Pos, facing: Facing) -> Ship {
 /// centre-out across the back row Bow(S) — the real bow-to-bow start. `player_col`
 /// lets the capture place the player OFF-CENTER (e.g. col 0/4) to expose
 /// lane-dependent pose bugs that a centred (col 2, zero lane-yaw) shot masks.
-fn capture_board(player_col: usize, player_facing: Facing) -> Board {
+fn capture_board(player_col: usize, player_row: usize, player_facing: Facing) -> Board {
     let mut cells: Vec<Option<Ship>> = (0..broadside_engine::grid::CELLS).map(|_| None).collect();
     let place = |cells: &mut Vec<Option<Ship>>, s: Ship| {
         let idx = s.pos.to_index();
         cells[idx] = Some(s);
     };
-    let start = player_start_pos();
-    let ppos = Pos::new(player_col.min(COLS - 1), start.row);
+    let ppos = Pos::new(
+        player_col.min(COLS - 1),
+        player_row.min(broadside_engine::grid::ROWS - 1),
+    );
     // (#70) Player facing is an ARG so the capture reproduces a MOVED/REORIENTED
     // live player (the old frozen spawn-facing masked the chase-cam pose bug).
     // Post-decouple the loft hull no longer rotates with facing — so a capture
@@ -170,8 +172,16 @@ fn main() {
         Some("w") | Some("W") => Facing::Bow(Dir4::W),
         _ => player_spawn_facing(),
     };
-    let board = capture_board(player_col, player_facing);
-    log::info!("capture: player at column {player_col}, facing {player_facing:?}");
+    // Optional 4th arg = player ROW (0..ROWS-1) so the capture can place the
+    // player at a MOVED-FORWARD/BACK cell (row 0 = far/back, row 3 = front
+    // spawn) — reproduces what a forward (N) move actually draws, which a
+    // frozen-spawn-row capture can't show. Default = the campaign spawn row.
+    let player_row = std::env::args()
+        .nth(4)
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or_else(|| player_start_pos().row);
+    let board = capture_board(player_col, player_row, player_facing);
+    log::info!("capture: player at col {player_col} row {player_row}, facing {player_facing:?}");
 
     // (#70) Sync the player's loft pose so the loft pre-pass has a pose to render
     // (mirrors the playable bin's per-frame sync_loft_pose).
