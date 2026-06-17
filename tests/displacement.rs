@@ -50,14 +50,29 @@ fn bare_profile() -> ShieldProfile {
     }
 }
 
+/// A ship at column `cell` on **row 0** (so `pos.to_index() == cell`, and the
+/// cell-delta asserts read as +/-1 columns), facing **E** (`bow`'s lane end maps
+/// to the E-W axis: Fore->Bow(E), Aft->Bow(W)). Invariant A holds.
+///
+/// #22 2-D migration: displacement's DISPLACE_SELF moves run along `facing` (the
+/// 2-D mover reads it), so a row-0 + Bow(E) layout makes a "forward" THRUST step
+/// E = `+1` cell, matching every 1-D delta assertion. DISPLACE_TARGET is
+/// geometry-derived (direction_to over pos) and also resolves cleanly on row 0.
 fn ship(id: &str, cell: usize, hull: i32, bow: LaneEnd) -> Ship {
+    use broadside_engine::grid::{Dir4, Facing, Pos};
+    let pos = Pos::new(cell, 0);
+    // Fore (the +lane direction) -> Bow(E) (the +column direction); Aft -> Bow(W).
+    let facing = match bow {
+        LaneEnd::Fore => Facing::Bow(Dir4::E),
+        LaneEnd::Aft => Facing::Bow(Dir4::W),
+    };
     Ship {
         id: id.into(),
         faction: Faction::Player,
-        cell,
-        pos: broadside_engine::grid::Pos::new(0, 0),
+        cell: pos.to_index(),
+        pos,
         orientation: Orientation::BowOn { bow },
-        facing: broadside_engine::grid::Facing::Bow(broadside_engine::grid::Dir4::S),
+        facing,
         hull,
         max_hull: hull,
         heat: 0,
@@ -73,12 +88,25 @@ fn ship(id: &str, cell: usize, hull: i32, bow: LaneEnd) -> Ship {
     }
 }
 
-fn board(size: usize, cells: Vec<Option<Ship>>) -> Board {
+/// Place ships on the fixed len-CELLS 5x4 grid at `cells[pos.to_index()]`
+/// (invariant A). `_size` is ignored (kept so the many call sites read
+/// unchanged); the board is always the real `COLS`-wide grid. Each test fits its
+/// ships within row 0 (columns 0..COLS).
+fn board(_size: usize, cells: Vec<Option<Ship>>) -> Board {
+    // The callers pass a `Vec<Option<Ship>>` indexed by the OLD 1-D cell, which
+    // on row 0 equals pos.to_index() — but the vec is only `size` long. Re-home
+    // each present ship into a full len-CELLS grid by its pos.
+    let mut grid: Vec<Option<Ship>> = (0..broadside_engine::grid::CELLS).map(|_| None).collect();
+    for slot in cells.into_iter().flatten() {
+        let idx = slot.pos.to_index();
+        assert!(grid[idx].is_none(), "two ships share cell {idx}");
+        grid[idx] = Some(slot);
+    }
     Board {
-        size,
-        cells,
+        size: broadside_engine::grid::COLS,
+        cells: grid,
         ordnance: Vec::new(),
-        hazards: (0..size).map(|_| Vec::new()).collect(),
+        hazards: (0..broadside_engine::grid::CELLS).map(|_| Vec::new()).collect(),
         patrol: 1,
         level: 0,
         threats: Vec::new(),
@@ -128,8 +156,20 @@ fn carrier() -> Action {
 }
 
 /// Fire a DISPLACE_SELF effect at `source_cell`.
+///
+/// #22 2-D: the live 2-D mover (resolve_self_move_2d) reads `direction_2d` (else
+/// the ship's `facing`), NOT the legacy 1-D `direction`. So translate the 1-D
+/// `dir` override into its row-0 2-D cardinal — Fore (the +lane / +column
+/// direction) -> E, Aft -> W — and pass it as `direction_2d`. `None` falls back
+/// to the ship's facing (E for a Fore-bow ship, W for an Aft-bow ship), so a
+/// no-override THRUST steps along the bow exactly as the 1-D version did.
 fn self_move(board: &mut Board, source_cell: usize, mode: MovementMode, distance: i32, dir: Option<LaneEnd>) {
-    let fx = Effect::DISPLACE_SELF { mode, distance, direction: dir, direction_2d: None };
+    use broadside_engine::grid::Dir4;
+    let direction_2d = dir.map(|d| match d {
+        LaneEnd::Fore => Dir4::E,
+        LaneEnd::Aft => Dir4::W,
+    });
+    let fx = Effect::DISPLACE_SELF { mode, distance, direction: dir, direction_2d };
     apply_effect(&fx, &carrier(), source_cell, &[], board, &NoContent);
 }
 
@@ -156,7 +196,6 @@ fn hull_of(board: &Board, id: &str) -> i32 {
 // (DISPLACE_SELF/TARGET) to 2-D (reads pos); these build 1-D boards (pos (0,0)).
 // NOT a 2-D bug — the resolver's rsm2d_*/rt2d_* unit tests prove the 2-D movers.
 // Restore via board_2d/ship_2d (real positions + 2-D direction asserts) — #22.
-#[ignore = "stale 1-D fixture (pos (0,0)); R6/R6b movement is 2-D — restore at 2-D displacement fixture migration — #22"]
 #[test]
 fn a1_thrust_moves_exactly_one_cell_ignoring_distance() {
     let mut b = board(5, vec![None, Some(ship("p", 1, 5, LaneEnd::Fore)), None, None, None]);
@@ -169,7 +208,6 @@ fn a1_thrust_moves_exactly_one_cell_ignoring_distance() {
  * A2 — THRUST blocked by an occupant: stay put + 1 collision damage.
  * ====================================================================== */
 
-#[ignore = "stale 1-D fixture (pos (0,0)); R6/R6b movement is 2-D — restore at 2-D displacement fixture migration — #22"]
 #[test]
 fn a2_thrust_into_occupant_stays_and_takes_one_collision() {
     let mut b = board(
@@ -181,7 +219,6 @@ fn a2_thrust_into_occupant_stays_and_takes_one_collision() {
     assert_eq!(hull_of(&b, "p"), 4, "blocked THRUST takes exactly 1 collision (armour-0 => raw)");
 }
 
-#[ignore = "stale 1-D fixture (pos (0,0)); R6/R6b movement is 2-D — restore at 2-D displacement fixture migration — #22"]
 #[test]
 fn a2_thrust_into_wall_stays_and_takes_one_collision() {
     let mut b = board(5, vec![None, None, None, None, Some(ship("p", 4, 5, LaneEnd::Fore))]);
@@ -194,7 +231,6 @@ fn a2_thrust_into_wall_stays_and_takes_one_collision() {
  * A3 — BURN stops one cell short of the first occupant; collision = remaining×1.
  * ====================================================================== */
 
-#[ignore = "stale 1-D fixture (pos (0,0)); R6/R6b movement is 2-D — restore at 2-D displacement fixture migration — #22"]
 #[test]
 fn a3_burn_stops_short_of_occupant_and_bills_remaining_collision() {
     // p@1 BURN 4 toward x@4: advances 1->2->3 (2 cells), blocked at 4.
@@ -212,7 +248,6 @@ fn a3_burn_stops_short_of_occupant_and_bills_remaining_collision() {
  * A4 — BURN over a clear lane advances the full distance, no collision.
  * ====================================================================== */
 
-#[ignore = "stale 1-D fixture (pos (0,0)); R6/R6b movement is 2-D — restore at 2-D displacement fixture migration — #22"]
 #[test]
 fn a4_burn_clear_advances_full_distance() {
     let mut b = board(7, vec![None, Some(ship("p", 1, 5, LaneEnd::Fore)), None, None, None, None, None]);
@@ -226,7 +261,6 @@ fn a4_burn_clear_advances_full_distance() {
  *      start + distance.
  * ====================================================================== */
 
-#[ignore = "stale 1-D fixture (pos (0,0)); R6/R6b movement is 2-D — restore at 2-D displacement fixture migration — #22"]
 #[test]
 fn a5_slip_passes_through_occupants_to_first_free_cell() {
     // p@1 SLIP 2: scans 2 cells ahead (1->2->3), both occupied; keeps walking
@@ -250,33 +284,29 @@ fn a5_slip_passes_through_occupants_to_first_free_cell() {
     assert!(cell_of(&b, "a") == Some(2) && cell_of(&b, "b") == Some(3), "passed-through ships don't move");
 }
 
-#[ignore = "stale 1-D fixture (pos (0,0)); R6/R6b movement is 2-D — restore at 2-D displacement fixture migration — #22"]
 #[test]
-fn a5_slip_clamps_to_edge_and_bills_collision_when_no_free_cell() {
-    // p@1 SLIP 2 with 2,3,4,5,6 all occupied: no free cell ahead => clamp to
-    // edge (6) and bill collision = (distance - advanced).max(1). advanced =
-    // (6 - 1) = 5 along +1, so (2 - 5).max(1) = 1.
+fn a5_slip_no_free_cell_ahead_stays_put_and_bills_collision() {
+    // #22 2-D (row 0, COLS=5): p@0 SLIP 2 with cols 1,2,3,4 all occupied — the
+    // entire forward lane is packed and col 5 is off-grid, so the SLIP finds NO
+    // free cell. NOTE the 2-D resolver differs from the old 1-D here: rather than
+    // clamping to the edge cell, resolve_self_move_2d's SLIP "ran off the lane
+    // before a free cell" branch keeps the ship at its ORIGIN and bills the
+    // floor-1 collision (hull 5 -> 4). This is a deliberate 2-D behaviour (pinned
+    // by the resolver's rsm2d_* units); a corner not reachable in normal play
+    // (a row never holds COLS ships). The asserts pin the current 2-D behaviour.
     let mut b = board(
-        7,
+        5,
         vec![
-            None,
-            Some(ship("p", 1, 5, LaneEnd::Fore)),
-            Some(ship("a", 2, 5, LaneEnd::Fore)),
-            Some(ship("b", 3, 5, LaneEnd::Fore)),
-            Some(ship("c", 4, 5, LaneEnd::Fore)),
-            Some(ship("d", 5, 5, LaneEnd::Fore)),
-            Some(ship("e", 6, 5, LaneEnd::Fore)),
+            Some(ship("p", 0, 5, LaneEnd::Fore)),
+            Some(ship("a", 1, 5, LaneEnd::Fore)),
+            Some(ship("b", 2, 5, LaneEnd::Fore)),
+            Some(ship("c", 3, 5, LaneEnd::Fore)),
+            Some(ship("d", 4, 5, LaneEnd::Fore)),
         ],
     );
-    self_move(&mut b, 1, MovementMode::SLIP, 2, None);
-    // No free cell ahead => the SLIP edge-clamp branch fires: p clamps to the
-    // fore edge (cell 6) and is billed the floor-1 collision (hull 5 -> 4).
-    // NOTE: this exercises a corner of resolve_self_move that only arises when
-    // the ENTIRE forward lane is packed — not reachable in normal play (a
-    // 7-cell lane never holds 6 ships). The assertions below pin the current
-    // behavior exactly so any future change to the clamp branch is visible.
-    assert_eq!(cell_of(&b, "p"), Some(6), "no free cell => p clamps to the fore edge");
-    assert_eq!(hull_of(&b, "p"), 4, "edge clamp bills the floor-1 collision (5 -> 4)");
+    self_move(&mut b, 0, MovementMode::SLIP, 2, None);
+    assert_eq!(cell_of(&b, "p"), Some(0), "no free cell ahead => the 2-D SLIP keeps p at its origin");
+    assert_eq!(hull_of(&b, "p"), 4, "the no-free-cell SLIP bills the floor-1 collision (5 -> 4)");
 }
 
 /* =========================================================================
@@ -291,7 +321,6 @@ fn a6_jump_onto_occupied_cell_is_a_noop() {
     assert_eq!(hull_of(&b, "p"), 5, "failed JUMP deals no collision (it ignores the path)");
 }
 
-#[ignore = "stale 1-D fixture (pos (0,0)); R6/R6b movement is 2-D — restore at 2-D displacement fixture migration — #22"]
 #[test]
 fn a6_jump_onto_clear_cell_blinks_directly() {
     let mut b = board(7, vec![None, Some(ship("p", 1, 5, LaneEnd::Fore)), None, None, None, None, None]);
@@ -304,7 +333,6 @@ fn a6_jump_onto_clear_cell_blinks_directly() {
  * A7 — TRACTOR_SWAP trades cells with the adjacent bow-ward occupant.
  * ====================================================================== */
 
-#[ignore = "stale 1-D fixture (pos (0,0)); R6/R6b movement is 2-D — restore at 2-D displacement fixture migration — #22"]
 #[test]
 fn a7_tractor_swap_trades_with_adjacent_occupant() {
     let mut b = board(5, vec![None, Some(ship("p", 1, 5, LaneEnd::Fore)), Some(ship("x", 2, 5, LaneEnd::Fore)), None, None]);
@@ -326,7 +354,6 @@ fn a7_tractor_swap_with_no_adjacent_occupant_is_a_noop() {
  * A8 — direction override beats the bow-derived default.
  * ====================================================================== */
 
-#[ignore = "stale 1-D fixture (pos (0,0)); R6/R6b movement is 2-D — restore at 2-D displacement fixture migration — #22"]
 #[test]
 fn a8_thrust_direction_override_moves_against_the_bow() {
     // bow=Fore would step +1, but dir:Some(Aft) forces -1.
@@ -335,7 +362,6 @@ fn a8_thrust_direction_override_moves_against_the_bow() {
     assert_eq!(cell_of(&b, "p"), Some(1), "explicit Aft direction overrides the Fore bow");
 }
 
-#[ignore = "stale 1-D fixture (pos (0,0)); R6/R6b movement is 2-D — restore at 2-D displacement fixture migration — #22"]
 #[test]
 fn a8_thrust_with_no_override_follows_aft_bow() {
     let mut b = board(5, vec![None, None, Some(ship("p", 2, 5, LaneEnd::Aft)), None, None]);
@@ -386,14 +412,15 @@ fn a10_pull_stops_one_cell_short_of_the_source() {
     assert_eq!(hull_of(&b, "tgt"), 5, "unobstructed pull, no collision");
 }
 
-#[ignore = "stale 1-D fixture (pos (0,0)); R6/R6b movement is 2-D — restore at 2-D displacement fixture migration — #22"]
 #[test]
 fn a10_push_blocked_by_wall_bills_remaining_collision() {
-    // src@4, tgt@5, push toward the fore wall. distance 3: 5 -> 6 (1 cell),
-    // blocked by the wall. remaining = 3 - 1 = 2 collision. hull 5 - 2 = 3.
-    let mut b = board(7, vec![None, None, None, None, Some(ship("src", 4, 5, LaneEnd::Fore)), Some(ship("tgt", 5, 5, LaneEnd::Fore)), None]);
-    target_move(&mut b, 4, &[5], DisplaceMode::Push, 3);
-    assert_eq!(cell_of(&b, "tgt"), Some(6), "push reaches the last cell then the wall blocks");
+    // #22 2-D (row 0, COLS=5): src@2, tgt@3, push E toward the E wall. distance
+    // 3: 3 -> 4 (1 cell), then 4 -> col 5 is off-grid (wall). remaining = 3 - 1
+    // = 2 collision. hull 5 - 2 = 3. (Shifted into the 5-wide grid; same shape
+    // as the old 7-wide src@4/tgt@5 case.)
+    let mut b = board(5, vec![None, None, Some(ship("src", 2, 5, LaneEnd::Fore)), Some(ship("tgt", 3, 5, LaneEnd::Fore)), None]);
+    target_move(&mut b, 2, &[3], DisplaceMode::Push, 3);
+    assert_eq!(cell_of(&b, "tgt"), Some(4), "push reaches the last cell (4) then the wall blocks");
     assert_eq!(hull_of(&b, "tgt"), 3, "remaining distance (3-1=2) bills 2 collision damage");
 }
 
@@ -403,7 +430,6 @@ fn a10_push_blocked_by_wall_bills_remaining_collision() {
  *       the only-the-moving-ship-is-hurt invariant explicitly).
  * ====================================================================== */
 
-#[ignore = "stale 1-D fixture (pos (0,0)); R6/R6b movement is 2-D — restore at 2-D displacement fixture migration — #22"]
 #[test]
 fn a11_collision_damages_only_the_moving_ship_not_the_blocker() {
     let mut b = board(
