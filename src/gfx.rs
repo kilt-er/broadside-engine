@@ -2035,35 +2035,23 @@ impl Gfx {
                 // not the pose's animated yaw.
                 let has_pose = self.loft_poses.contains_key(q.ship_id.as_str());
                 if let (Some(mesh), true) = (mesh, has_pose) {
-                    // (#70) CHASE-CAM base yaw: the loft camera orbits about +Y and
-                    // the hull's LENGTH is +X (prow +X, stern/engines −X). 270° (−90)
-                    // puts the STERN toward the viewer with the bow UP-LANE (toward
-                    // the VP) — the stern-on chase view = the facing-N case.
-                    const CHASE_CAM_BASE_YAW_DEG: f32 = 270.0;
-
-                    // (#70) FACING-COUPLED, FLAT: the hull SHOWS its tactical facing
-                    // (the core hook) as one of 4 GROUND-PLANE orientations — toward
-                    // the VP (N/up-lane) / away (S) / the two broadside flanks (E/W)
-                    // — all flat on the grid. `q.facing_yaw_deg` (from hud, from
-                    // ship.facing) is the ground-yaw offset on top of the up-lane
-                    // base; N=0 is the stern-on up-lane render, S/E/W add 180/±90.
-                    //
-                    // LANE-AIM CONVERGENCE: the up-lane component still aims at the
-                    // VP so an off-centre ship's bow converges with the lane (not
-                    // parallel to the screen). alpha = screen angle straight-up→VP
-                    // measured FROM THE CELL centre (`q.aim_at`, NOT the dragged-down
-                    // hero quad); psi = atan(tan(alpha)·sin(pitch)) is the flat
-                    // ground-yaw that lands it on the VP. Applied to ALL facings so
-                    // the whole hull sits in the converged lane frame.
+                    // (#70/#73) FLAT ground-plane chase-cam yaw: the hull stays FLAT
+                    // on the grid (Bruce's requirement: no barrel-roll) and only its
+                    // heading turns. Composes the stern-on base (270) + the tactical
+                    // facing offset (`q.facing_yaw_deg`: N=0 / E=+90 / S=180 / W=−90)
+                    // + the lane-aim convergence so an off-centre bow banks toward the
+                    // vanishing point. The whole formula — and crucially the lane-aim
+                    // SIGN that burned ~5 screenshot reviews — lives in ONE pure,
+                    // CPU-tested place (`chase_cam_ground_yaw_deg`), gated by a bow
+                    // test that replicates THIS ortho loft camera (not the scene-space
+                    // pinhole the earlier oracle wrongly tested). Aim from the true
+                    // CELL centre (`q.aim_at`), not the dragged-down hero quad.
                     let cfg = crate::projector::ProjectorConfig::default();
-                    let vp = crate::projector::vanishing_point(&cfg);
-                    let (ax, ay) = (q.aim_at[0], q.aim_at[1]);
-                    let alpha = (vp.x - ax).atan2(ay - vp.y);
-                    let pitch = crate::loft_gpu::CAMERA_PITCH_DEG.to_radians();
-                    let psi = (alpha.tan() * pitch.sin()).atan();
-                    // up-lane stern-on base + the facing's ground-yaw + the lane
-                    // convergence. Sign of psi verified by capture (−).
-                    let base_yaw = CHASE_CAM_BASE_YAW_DEG + q.facing_yaw_deg - psi.to_degrees();
+                    let base_yaw = crate::loft_gpu::chase_cam_ground_yaw_deg(
+                        q.aim_at,
+                        q.facing_yaw_deg,
+                        &cfg,
+                    );
 
                     // 1) Render the hull into the shared loft target at the ground-
                     // yawed pose. The fixed house key light (laz -50 / lel 60)

@@ -1043,6 +1043,57 @@ fn camera_view_proj_zoom(
 /// projection.
 const HALF_EXTENT: f32 = 7.0;
 
+/// (#73) CHASE-CAM base yaw (degrees): the loft camera orbits about `+Y` and the
+/// hull's LENGTH is `+X` (prow `+X`, stern/engines `−X`). `270°` (−90) puts the
+/// STERN toward the viewer with the bow UP-LANE (toward the vanishing point) —
+/// the stern-on chase view = the facing-`N` case. The per-facing ground-yaw
+/// (`N=0`, `E=+90`, `S=180`, `W=−90`) + the lane-aim convergence are added on
+/// top by [`chase_cam_ground_yaw_deg`].
+pub const CHASE_CAM_BASE_YAW_DEG: f32 = 270.0;
+
+/// (#73) THE single source for the player loft hull's ground-plane camera yaw
+/// (degrees), shared by the live renderer ([`crate::gfx`]) and the deterministic
+/// bow gate so verification tests the REAL render path (the earlier camera-
+/// perspective oracle tested the WRONG camera — the scene-space pinhole, not this
+/// ortho loft camera — which is why the live bow stayed wrong while the oracle
+/// passed).
+///
+/// The hull renders FLAT on the grid (Bruce's hard requirement: no barrel-roll);
+/// only its ground-plane heading turns, via this yaw fed to the ortho loft
+/// camera. Composes three flat terms:
+///   - [`CHASE_CAM_BASE_YAW_DEG`] (270 = stern-on, bow up-lane),
+///   - `facing_yaw_deg` — the tactical-facing offset (`N`=0 / `E`=+90 / `S`=180
+///     / `W`=−90), so the four cardinals read as distinct flat poses,
+///   - the **lane-aim convergence** `psi`, so an off-centre ship's bow banks
+///     toward the vanishing point (converges with the lane) instead of pointing
+///     parallel to the screen.
+///
+/// `aim_at` is the ship's CELL-centre screen point (virtual px) — the anchor the
+/// convergence angle is measured FROM (not the dragged-down hero quad).
+///
+/// SIGN (the bug that burned ~5 reviews — now PINNED by the bow gate): decreasing
+/// the camera yaw from 270 banks the bow LEFT on screen; increasing banks it
+/// RIGHT (verified against the real ortho camera). A ship RIGHT of centre
+/// (`aim_at.x > vp.x`) must bank LEFT toward the VP ⇒ yaw must DECREASE. There
+/// `alpha < 0` (so `psi < 0`), hence we ADD `psi` (`+psi`, not the old `−psi`
+/// which pushed off-centre bows AWAY from the VP).
+pub fn chase_cam_ground_yaw_deg(
+    aim_at: [f32; 2],
+    facing_yaw_deg: f32,
+    cfg: &crate::projector::ProjectorConfig,
+) -> f32 {
+    let vp = crate::projector::vanishing_point(cfg);
+    let (ax, ay) = (aim_at[0], aim_at[1]);
+    // Screen angle straight-up → VP, measured from the cell centre. `alpha > 0`
+    // when the cell is LEFT of the VP (vp.x − ax > 0), `< 0` when RIGHT.
+    let alpha = (vp.x - ax).atan2(ay - vp.y);
+    let pitch = CAMERA_PITCH_DEG.to_radians();
+    // Flat ground-yaw that lands the up-lane component on the VP under the
+    // chase pitch (atan(tan(alpha)·sin(pitch))).
+    let psi = (alpha.tan() * pitch.sin()).atan();
+    CHASE_CAM_BASE_YAW_DEG + facing_yaw_deg + psi.to_degrees()
+}
+
 fn normalize3(v: [f32; 3]) -> [f32; 3] {
     let m = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
     if m < 1e-8 {
@@ -1233,6 +1284,118 @@ mod tests {
     fn camera_view_proj_is_finite() {
         let m = camera_view_proj_zoom(28f32.to_radians(), 26f32.to_radians(), 1.6, -0.5, HALF_EXTENT);
         assert!(m.iter().all(|v| v.is_finite()));
+    }
+
+    /// Project a hull-LOCAL point through the REAL gameplay ortho loft camera at
+    /// `yaw_deg` (the exact `render_ship` call) → loft-target NDC `(x, y)`. Ortho
+    /// ⇒ `w = 1`, no perspective divide; column-major. The downstream blit maps
+    /// the loft target's NDC-x linearly to screen-x (no flip) and NDC-y to a
+    /// y-down dest quad, so NDC-x sign == screen-x sign and **NDC +y == screen
+    /// UP**. Testing in NDC therefore tests the ACTUAL rendered bow direction.
+    fn bow_loft_ndc(yaw_deg: f32, p: [f32; 3]) -> (f32, f32) {
+        let aspect = LOW_W as f32 / LOW_H as f32;
+        let m = camera_view_proj_zoom(
+            yaw_deg.to_radians(),
+            CAMERA_PITCH_DEG.to_radians(),
+            aspect,
+            0.0, // bbox centre y; the bow-vs-centre Δ is centre-y independent
+            HALF_EXTENT,
+        );
+        let x = m[0] * p[0] + m[4] * p[1] + m[8] * p[2] + m[12];
+        let y = m[1] * p[0] + m[5] * p[1] + m[9] * p[2] + m[13];
+        (x, y)
+    }
+
+    /// (#73 LIVE-PATH bow gate) THE deterministic verification that the player
+    /// hull's bow points the right way at all 4 cardinal facings × columns
+    /// 0/2/4 — covering the REAL render path: the SAME ortho loft camera
+    /// (`camera_view_proj_zoom` at [`CAMERA_PITCH_DEG`]/[`HALF_EXTENT`]) the
+    /// renderer uses, posed by the SAME yaw formula
+    /// ([`chase_cam_ground_yaw_deg`]) it uses, with the bow read in loft-target
+    /// NDC (which the blit maps sign-preserving to screen). This is the gate the
+    /// earlier camera-perspective oracle FAILED to be — it tested the scene-space
+    /// pinhole, a DIFFERENT camera, so it passed green while the live ortho bow
+    /// pointed the wrong way at off-centre columns.
+    ///
+    /// The hull stays FLAT (no roll); only its ground heading turns. Per facing,
+    /// the projected bow (local `+X`, the prow) must sit, relative to the hull
+    /// centre:
+    ///   - `N` → ABOVE (NDC +y, up-lane) AND banked toward the VP-x at off-centre
+    ///     columns (col 0 → right, col 4 → left — NEVER toward the screen edge),
+    ///   - `S` → BELOW (toward the camera),
+    ///   - `E` → screen-RIGHT, `W` → screen-LEFT.
+    ///
+    /// The N convergence is the exact regression that slipped ~5 reviews.
+    #[test]
+    fn live_loft_bow_points_correctly_all_facings_and_columns() {
+        use crate::grid::{Dir4, Facing, Pos, COLS, ROWS};
+        use crate::projector::{grid_cell_quad, vanishing_point, ProjectorConfig};
+
+        let cfg = ProjectorConfig::default();
+        let vp = vanishing_point(&cfg);
+        let bow_local = [3.0_f32, 0.0, 0.0]; // prow +X, ~half hull length
+        let ctr_local = [0.0_f32, 0.0, 0.0];
+        let row = ROWS - 1; // the player's front row
+
+        // facing_yaw_deg mirrors hud::loft_facing_ground_yaw for the cardinals.
+        let facing_yaw = |f: Facing| match f {
+            Facing::Bow(Dir4::N) => 0.0_f32,
+            Facing::Bow(Dir4::E) => 90.0,
+            Facing::Bow(Dir4::S) => 180.0,
+            Facing::Bow(Dir4::W) => -90.0,
+            _ => unreachable!("cardinal bow facings only"),
+        };
+
+        for &col in &[0usize, COLS / 2, COLS - 1] {
+            let pos = Pos::new(col, row);
+            let aim_at = grid_cell_quad(pos, &cfg).center;
+            for facing in [
+                Facing::Bow(Dir4::N),
+                Facing::Bow(Dir4::S),
+                Facing::Bow(Dir4::E),
+                Facing::Bow(Dir4::W),
+            ] {
+                let yaw = chase_cam_ground_yaw_deg(aim_at, facing_yaw(facing), &cfg);
+                let (bx, by) = bow_loft_ndc(yaw, bow_local);
+                let (cx, cy) = bow_loft_ndc(yaw, ctr_local);
+                let (dx, dy) = (bx - cx, by - cy);
+                match facing {
+                    Facing::Bow(Dir4::N) => {
+                        assert!(
+                            dy > 1e-3,
+                            "col {col} N: bow must be ABOVE centre (up-lane); dy={dy:.4}"
+                        );
+                        // Banked toward the VP, never toward the screen edge.
+                        // aim_at.x < vp.x (col left of centre) ⇒ bow leans RIGHT
+                        // (dx>0) toward the VP; aim_at.x > vp.x ⇒ leans LEFT.
+                        if aim_at[0] < vp.x - 1e-3 {
+                            assert!(
+                                dx > 1e-4,
+                                "col {col} N (left of VP): bow must bank RIGHT toward VP; dx={dx:.4}"
+                            );
+                        } else if aim_at[0] > vp.x + 1e-3 {
+                            assert!(
+                                dx < -1e-4,
+                                "col {col} N (right of VP): bow must bank LEFT toward VP; dx={dx:.4}"
+                            );
+                        }
+                    }
+                    Facing::Bow(Dir4::S) => assert!(
+                        dy < -1e-3,
+                        "col {col} S: bow must be BELOW centre (toward camera); dy={dy:.4}"
+                    ),
+                    Facing::Bow(Dir4::E) => assert!(
+                        dx > 1e-3,
+                        "col {col} E: bow must be screen-RIGHT of centre; dx={dx:.4}"
+                    ),
+                    Facing::Bow(Dir4::W) => assert!(
+                        dx < -1e-3,
+                        "col {col} W: bow must be screen-LEFT of centre; dx={dx:.4}"
+                    ),
+                    _ => unreachable!(),
+                }
+            }
+        }
     }
 
     #[test]
