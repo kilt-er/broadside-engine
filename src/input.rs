@@ -52,6 +52,10 @@ pub enum Key {
     /// Down arrow. Move one cell S (toward the player's front row) — #18.
     Down,
     Tab,
+    /// Letter Q. Rotate the ship a quarter-turn LEFT (counter-clockwise) — #75.
+    Q,
+    /// Letter E. Rotate the ship a quarter-turn RIGHT (clockwise) — #75.
+    E,
     /// Letter V. Vent heat.
     V,
     /// Digit 1.
@@ -100,6 +104,13 @@ pub enum Intent {
     MoveDown,
     /// Push the synthetic `__reorient_flip` action — REORIENT::Flip.
     ReorientFlip,
+    /// v2 (#75): push the synthetic `__rotate_left` action — REORIENT::RotateLeft,
+    /// turning the player's FACING a quarter-turn counter-clockwise (N→W→S→E). The
+    /// hull rotates on screen + the firing arcs follow (both key off `facing`).
+    RotateLeft,
+    /// v2 (#75): push the synthetic `__rotate_right` action — REORIENT::RotateRight,
+    /// a quarter-turn clockwise (N→E→S→W).
+    RotateRight,
     /// Push the synthetic `__vent` action — VENT_HEAT 3, recharge cooldowns.
     Vent,
     /// Play a field-kit Card by id (task #63). Caller validates +
@@ -144,6 +155,8 @@ pub fn key_to_intent(key: Key, ship: &Ship, content: &dyn Content) -> Option<Int
         Key::Up => Some(Intent::MoveUp),
         Key::Down => Some(Intent::MoveDown),
         Key::Tab => Some(Intent::ReorientFlip),
+        Key::Q => Some(Intent::RotateLeft),
+        Key::E => Some(Intent::RotateRight),
         Key::V => Some(Intent::Vent),
         Key::D1 => mount_action(ship, 0).map(Intent::QueueAction),
         Key::D2 => mount_action(ship, 1).map(Intent::QueueAction),
@@ -178,6 +191,8 @@ pub fn intent_to_action_id(intent: &Intent) -> Option<&str> {
         Intent::MoveUp => Some(SYNTHETIC_MOVE_UP),
         Intent::MoveDown => Some(SYNTHETIC_MOVE_DOWN),
         Intent::ReorientFlip => Some(SYNTHETIC_REORIENT_FLIP),
+        Intent::RotateLeft => Some(SYNTHETIC_ROTATE_LEFT),
+        Intent::RotateRight => Some(SYNTHETIC_ROTATE_RIGHT),
         Intent::Vent => Some(SYNTHETIC_VENT),
         // PlayCard: caller validates + decrements via Content::try_play_card
         // first, then pushes synthetic_card_action_id(card_id) manually.
@@ -217,6 +232,12 @@ pub const SYNTHETIC_MOVE_UP: &str = "__move_up";
 /// S on the grid (`Dir4::S`). The AI's primary CLOSE direction.
 pub const SYNTHETIC_MOVE_DOWN: &str = "__move_down";
 pub const SYNTHETIC_REORIENT_FLIP: &str = "__reorient_flip";
+/// v2 (#75): rotate the player's FACING a quarter-turn counter-clockwise via
+/// REORIENT::RotateLeft. Registered on `DemoContent` (like reorient/vent) so the
+/// queued action resolves through the normal `execute_queue` pipeline.
+pub const SYNTHETIC_ROTATE_LEFT: &str = "__rotate_left";
+/// v2 (#75): rotate the player's FACING a quarter-turn clockwise.
+pub const SYNTHETIC_ROTATE_RIGHT: &str = "__rotate_right";
 pub const SYNTHETIC_VENT: &str = "__vent";
 
 /// All five-band coverage so the resolver's "is this band allowed?"
@@ -371,6 +392,36 @@ pub fn synthetic_reorient_flip() -> Action {
     }
 }
 
+/// Synthetic rotate-LEFT (#75): REORIENT::RotateLeft turns the player's `facing`
+/// a quarter-turn counter-clockwise (and re-derives `orientation`). Zero-cost,
+/// self-targeted, all-bands — same instant-apply shape as the move/flip actions.
+pub fn synthetic_rotate_left() -> Action {
+    Action {
+        id: SYNTHETIC_ROTATE_LEFT.into(),
+        name: "Rotate Left".into(),
+        archetype: WeaponArchetype::Movement,
+        cost: zero_cost(),
+        targeting: self_targeting(),
+        effects: vec![Effect::REORIENT { to: ReorientTo::RotateLeft }],
+        r#mod: None,
+        icon: None,
+    }
+}
+
+/// Synthetic rotate-RIGHT (#75): REORIENT::RotateRight, a quarter-turn clockwise.
+pub fn synthetic_rotate_right() -> Action {
+    Action {
+        id: SYNTHETIC_ROTATE_RIGHT.into(),
+        name: "Rotate Right".into(),
+        archetype: WeaponArchetype::Movement,
+        cost: zero_cost(),
+        targeting: self_targeting(),
+        effects: vec![Effect::REORIENT { to: ReorientTo::RotateRight }],
+        r#mod: None,
+        icon: None,
+    }
+}
+
 /// Synthetic vent. Dumps 3 heat and recharges cooldowns — matches the
 /// catalog `vent` action shape from the analysis HTML's Defensive
 /// archetype row.
@@ -454,13 +505,15 @@ impl DemoContent {
     }
 
     /// Register the synthetic actions used by [`key_to_intent`] (the four
-    /// cardinal moves + reorient + vent).
+    /// cardinal moves + reorient + rotate-left/right + vent).
     pub fn register_synthetics(&mut self) {
         self.insert(synthetic_move_left());
         self.insert(synthetic_move_right());
         self.insert(synthetic_move_up());
         self.insert(synthetic_move_down());
         self.insert(synthetic_reorient_flip());
+        self.insert(synthetic_rotate_left());
+        self.insert(synthetic_rotate_right());
         self.insert(synthetic_vent());
     }
 
@@ -734,6 +787,7 @@ pub fn tutorial_lines() -> &'static [&'static str] {
     &[
         "every input advances time",
         "[arrows] move (instant)",
+        "[Q/E] rotate (instant)",
         "[Tab] flip (instant)",
         "[V] vent (instant)",
         "[1/2/3] queue mount",
@@ -862,16 +916,29 @@ mod tests {
         assert_eq!(intent_to_action_id(&Intent::MoveLeft), Some(SYNTHETIC_MOVE_LEFT));
         assert_eq!(intent_to_action_id(&Intent::MoveRight), Some(SYNTHETIC_MOVE_RIGHT));
         assert_eq!(intent_to_action_id(&Intent::ReorientFlip), Some(SYNTHETIC_REORIENT_FLIP));
+        assert_eq!(intent_to_action_id(&Intent::RotateLeft), Some(SYNTHETIC_ROTATE_LEFT));
+        assert_eq!(intent_to_action_id(&Intent::RotateRight), Some(SYNTHETIC_ROTATE_RIGHT));
         assert_eq!(intent_to_action_id(&Intent::Vent), Some(SYNTHETIC_VENT));
         // Synthetic ids must use the `__` prefix so they cannot collide
         // with real catalog action ids (which are unprefixed snake_case).
         for id in [
             SYNTHETIC_MOVE_LEFT, SYNTHETIC_MOVE_RIGHT,
-            SYNTHETIC_REORIENT_FLIP, SYNTHETIC_VENT,
+            SYNTHETIC_REORIENT_FLIP, SYNTHETIC_ROTATE_LEFT, SYNTHETIC_ROTATE_RIGHT,
+            SYNTHETIC_VENT,
         ] {
             assert!(id.starts_with("__"),
                 "synthetic id `{id}` must start with __ to avoid catalog collisions");
         }
+    }
+
+    /// (#75) Q/E map to the rotate intents (Bruce can remap the keys; the
+    /// intent wiring is what the rotation mechanic rides on).
+    #[test]
+    fn q_and_e_are_rotate_left_right() {
+        let p = player_with_mounts(0);
+        let c = DemoContent::default();
+        assert_eq!(key_to_intent(Key::Q, &p, &c), Some(Intent::RotateLeft));
+        assert_eq!(key_to_intent(Key::E, &p, &c), Some(Intent::RotateRight));
     }
 
     #[test]
@@ -894,6 +961,8 @@ mod tests {
         assert!(c.action(SYNTHETIC_MOVE_LEFT).is_some());
         assert!(c.action(SYNTHETIC_MOVE_RIGHT).is_some());
         assert!(c.action(SYNTHETIC_REORIENT_FLIP).is_some());
+        assert!(c.action(SYNTHETIC_ROTATE_LEFT).is_some());
+        assert!(c.action(SYNTHETIC_ROTATE_RIGHT).is_some());
         assert!(c.action(SYNTHETIC_VENT).is_some());
     }
 

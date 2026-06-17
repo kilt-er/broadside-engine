@@ -755,12 +755,23 @@ pub enum DisplaceMode {
 /// Variants of `REORIENT.to`. TS uses lowercase literals plus `"bowOn"`/
 /// `"broadside"` matching the orientation tag values, and `"flip"` for the
 /// stance-preserving inversion.
+///
+/// [`Self::RotateLeft`] / [`Self::RotateRight`] are a **Rust-port extension** for
+/// the player rotation control (the four-orientation broadside hook): they turn
+/// the ship's `facing` (the [`crate::grid::Dir4`] bow direction) a quarter-turn
+/// counter-clockwise / clockwise and re-derive `orientation` from it, so the hull
+/// VISUALLY rotates and the firing arcs follow (render + the 2-D fire-gate both
+/// key off `facing`). They are produced only by the synthetic player rotate
+/// actions, never authored in the catalog JSON — so they don't change the TS
+/// contract (additive, like the `direction` field on `DISPLACE_SELF`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ReorientTo {
     BowOn,
     Broadside,
     Flip,
+    RotateLeft,
+    RotateRight,
 }
 
 /// `DEPLOY` only spawns mines or drones (not debris). Mirrors the TS union

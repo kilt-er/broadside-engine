@@ -325,6 +325,31 @@ impl Dir4 {
         }
     }
 
+    /// Rotate one quarter-turn **clockwise** (`N → E → S → W → N`). [`Dir4::ALL`]
+    /// is ordered clockwise from `N`, so this is `+1 (mod 4)`. The renderer's
+    /// rotate-RIGHT control turns the player's bow this way (toward higher `col`
+    /// when starting from `N`).
+    pub const fn rotate_cw(self) -> Dir4 {
+        match self {
+            Dir4::N => Dir4::E,
+            Dir4::E => Dir4::S,
+            Dir4::S => Dir4::W,
+            Dir4::W => Dir4::N,
+        }
+    }
+
+    /// Rotate one quarter-turn **counter-clockwise** (`N → W → S → E → N`), i.e.
+    /// `−1 (mod 4)`. The renderer's rotate-LEFT control turns the player's bow
+    /// this way.
+    pub const fn rotate_ccw(self) -> Dir4 {
+        match self {
+            Dir4::N => Dir4::W,
+            Dir4::W => Dir4::S,
+            Dir4::S => Dir4::E,
+            Dir4::E => Dir4::N,
+        }
+    }
+
     /// The axis this cardinal lies on.
     pub const fn axis(self) -> Axis {
         match self {
@@ -477,6 +502,27 @@ mod tests {
         for d in Dir8::ALL {
             assert_eq!(d.rotate_cw().rotate_ccw(), d);
             assert_eq!(d.rotate_ccw().rotate_cw(), d);
+        }
+    }
+
+    #[test]
+    fn dir4_rotate_cycles_cardinals_and_inverts() {
+        // CW order N→E→S→W→N (the player rotate-RIGHT control).
+        assert_eq!(Dir4::N.rotate_cw(), Dir4::E);
+        assert_eq!(Dir4::E.rotate_cw(), Dir4::S);
+        assert_eq!(Dir4::S.rotate_cw(), Dir4::W);
+        assert_eq!(Dir4::W.rotate_cw(), Dir4::N);
+        for d in Dir4::ALL {
+            // CW and CCW are inverses.
+            assert_eq!(d.rotate_cw().rotate_ccw(), d);
+            assert_eq!(d.rotate_ccw().rotate_cw(), d);
+            // Two quarter-turns == opposite; four == identity.
+            assert_eq!(d.rotate_cw().rotate_cw(), d.opposite());
+            let mut r = d;
+            for _ in 0..4 {
+                r = r.rotate_cw();
+            }
+            assert_eq!(r, d);
         }
     }
 

@@ -1488,10 +1488,26 @@ pub fn apply_effect(
 
         Effect::REORIENT { to } => {
             if let Some(source) = board.cells[source_cell].as_mut() {
-                source.orientation = match to {
-                    ReorientTo::Flip => flip_orientation(source.orientation),
-                    ReorientTo::Broadside => Orientation::Broadside,
-                    ReorientTo::BowOn => Orientation::BowOn { bow: LaneEnd::Fore },
+                match to {
+                    // (#75) Player rotation: turn the authoritative 2-D `facing`
+                    // a quarter-turn, then re-derive `orientation` from it so the
+                    // hull VISUALLY rotates and the firing arcs follow (render +
+                    // the 2-D fire-gate both key off `facing`; `orientation` is
+                    // the shadow the loft pose / HUD still read).
+                    ReorientTo::RotateLeft => {
+                        source.facing = rotate_facing_ccw(source.facing);
+                        source.orientation = orientation_from_facing(source.facing);
+                    }
+                    ReorientTo::RotateRight => {
+                        source.facing = rotate_facing_cw(source.facing);
+                        source.orientation = orientation_from_facing(source.facing);
+                    }
+                    // The legacy orientation-only reorients (TS parity) — unchanged.
+                    ReorientTo::Flip => source.orientation = flip_orientation(source.orientation),
+                    ReorientTo::Broadside => source.orientation = Orientation::Broadside,
+                    ReorientTo::BowOn => {
+                        source.orientation = Orientation::BowOn { bow: LaneEnd::Fore }
+                    }
                 };
             }
             emit(board, Hook::OnReorient, |ctx| {
@@ -1966,6 +1982,48 @@ fn flip_orientation(o: Orientation) -> Orientation {
     match o {
         Orientation::BowOn { bow } => Orientation::BowOn { bow: opposite(bow) },
         Orientation::Broadside => Orientation::Broadside,
+    }
+}
+
+/// Rotate a [`Facing`] one quarter-turn **clockwise** (#75 player rotate-RIGHT).
+/// A `Bow` stance turns its bow `Dir4` (`N→E→S→W`); a `Broadside` stance swaps
+/// its axis (the hull pivots from across-lane to along-lane). Total + pure.
+fn rotate_facing_cw(facing: crate::grid::Facing) -> crate::grid::Facing {
+    use crate::grid::{Axis, Facing};
+    match facing {
+        Facing::Bow(d) => Facing::Bow(d.rotate_cw()),
+        Facing::Broadside(Axis::NorthSouth) => Facing::Broadside(Axis::EastWest),
+        Facing::Broadside(Axis::EastWest) => Facing::Broadside(Axis::NorthSouth),
+    }
+}
+
+/// Rotate a [`Facing`] one quarter-turn **counter-clockwise** (#75 rotate-LEFT).
+fn rotate_facing_ccw(facing: crate::grid::Facing) -> crate::grid::Facing {
+    use crate::grid::{Axis, Facing};
+    match facing {
+        Facing::Bow(d) => Facing::Bow(d.rotate_ccw()),
+        Facing::Broadside(Axis::NorthSouth) => Facing::Broadside(Axis::EastWest),
+        Facing::Broadside(Axis::EastWest) => Facing::Broadside(Axis::NorthSouth),
+    }
+}
+
+/// Derive the legacy [`Orientation`] from the authoritative 2-D [`Facing`], for
+/// the player rotation control (#75): the live combat + render key off `facing`,
+/// so `facing` is the source of truth and `orientation` is kept as a consistent
+/// shadow (the loft pose + HUD sprite-stance still read it). Uses the live
+/// `make_ship`/spawn convention (capture.rs / broadside.rs): bow up-lane (away,
+/// `Dir4::N`) → `BowOn { Fore }`; bow toward the camera (`Dir4::S`) → `BowOn
+/// { Aft }`; the two flanks (`E`/`W`) → `Broadside`. This is the INVERSE of the
+/// enemy-spawn-oriented [`crate::types::facing_from_orientation`] (which maps
+/// `Fore → Bow(S)`); the player path uses the bin's construction convention so a
+/// rotated player's `orientation` matches how its ship was built.
+fn orientation_from_facing(facing: crate::grid::Facing) -> Orientation {
+    use crate::grid::{Dir4, Facing};
+    match facing {
+        Facing::Bow(Dir4::N) => Orientation::BowOn { bow: LaneEnd::Fore },
+        Facing::Bow(Dir4::S) => Orientation::BowOn { bow: LaneEnd::Aft },
+        Facing::Bow(Dir4::E) | Facing::Bow(Dir4::W) => Orientation::Broadside,
+        Facing::Broadside(_) => Orientation::Broadside,
     }
 }
 
@@ -5149,6 +5207,75 @@ mod tests {
         let board = board_2d(vec![ship, n]);
         let a = action_2d(TargetingPattern::BROADSIDE, Some(Arc::BroadsideArc), false);
         assert!(resolve_targeting_2d(&a, &board, Pos::new(2, 2)).is_empty());
+    }
+
+    /// (#75) THE rotation gate: a REORIENT::RotateRight changes the player's
+    /// FACING by +90 (N→E), re-derives orientation, AND the fire-gate follows
+    /// end to end. A Forward beam that bore NORTH (hitting the enemy due N)
+    /// must, after one rotate-right, bear EAST (hit the enemy due E and NOT the
+    /// one due N) — proving render-facing and combat-facing rotate together
+    /// (the bug was Tab moving orientation while facing/arcs stood still).
+    #[test]
+    fn rotate_right_turns_facing_and_the_fire_gate_follows() {
+        // Player at the interior cell (2,2) so it has occupants due N and due E.
+        let player = ship_2d("p", Faction::Player, Pos::new(2, 2), Facing::Bow(Dir4::N), Arc::Forward);
+        let north = ship_2d("n", Faction::Enemy, Pos::new(2, 0), Facing::Bow(Dir4::S), Arc::Turret);
+        let east = ship_2d("e", Faction::Enemy, Pos::new(4, 2), Facing::Bow(Dir4::W), Arc::Turret);
+        let mut board = board_2d(vec![player, north, east]);
+        let beam = action_2d(TargetingPattern::BEAM, Some(Arc::Forward), false);
+
+        // Before: Forward beam bears NORTH up column 2 → hits the enemy at (2,0).
+        assert_eq!(
+            resolve_targeting_2d(&beam, &board, Pos::new(2, 2)),
+            vec![Pos::new(2, 0)],
+            "pre-rotate: Forward beam bears N"
+        );
+
+        // Apply the live rotate-right REORIENT effect (the queued-action path).
+        let action = synthetic_rotate_right_action();
+        let fx = action.effects[0].clone();
+        apply_effect(&fx, &action, Pos::new(2, 2).to_index(), &[], &mut board, &NoContent);
+
+        // Facing turned N→E; orientation re-derived to Broadside (E/W flank).
+        let p = board.ship_at(Pos::new(2, 2)).expect("player still at (2,2)");
+        assert_eq!(p.facing, Facing::Bow(Dir4::E), "rotate-right: N→E");
+        assert_eq!(p.orientation, Orientation::Broadside, "orientation re-derived from facing");
+
+        // After: the SAME Forward beam now bears EAST along row 2 → hits (4,2),
+        // and no longer the northern enemy. The fire-gate followed the facing.
+        assert_eq!(
+            resolve_targeting_2d(&beam, &board, Pos::new(2, 2)),
+            vec![Pos::new(4, 2)],
+            "post-rotate: Forward beam bears E (arc followed the rotated facing)"
+        );
+    }
+
+    /// Rotate-LEFT is the inverse: four rotate-lefts return the facing to start,
+    /// and one rotate-left from Bow(N) is Bow(W).
+    #[test]
+    fn rotate_left_is_ccw_and_four_turns_round_trip() {
+        let mut board = board_2d(vec![ship_2d("p", Faction::Player, Pos::new(2, 2), Facing::Bow(Dir4::N), Arc::Forward)]);
+        let action = synthetic_rotate_left_action();
+        let fx = action.effects[0].clone();
+        apply_effect(&fx, &action, Pos::new(2, 2).to_index(), &[], &mut board, &NoContent);
+        assert_eq!(board.ship_at(Pos::new(2, 2)).unwrap().facing, Facing::Bow(Dir4::W), "N→W (ccw)");
+        for _ in 0..3 {
+            apply_effect(&fx, &action, Pos::new(2, 2).to_index(), &[], &mut board, &NoContent);
+        }
+        assert_eq!(board.ship_at(Pos::new(2, 2)).unwrap().facing, Facing::Bow(Dir4::N), "four ccw turns round-trip");
+    }
+
+    /// Local builders for the rotate REORIENT effects (mirror
+    /// `input::synthetic_rotate_*` without depending on the input module here).
+    fn synthetic_rotate_right_action() -> Action {
+        let mut a = action_2d(TargetingPattern::SELF, None, false);
+        a.effects = vec![Effect::REORIENT { to: ReorientTo::RotateRight }];
+        a
+    }
+    fn synthetic_rotate_left_action() -> Action {
+        let mut a = action_2d(TargetingPattern::SELF, None, false);
+        a.effects = vec![Effect::REORIENT { to: ReorientTo::RotateLeft }];
+        a
     }
 
     /* =====================================================================

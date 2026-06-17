@@ -83,6 +83,8 @@ fn keycode_to_key(code: KeyCode) -> Option<Key> {
         KeyCode::ArrowUp => Key::Up,
         KeyCode::ArrowDown => Key::Down,
         KeyCode::Tab => Key::Tab,
+        KeyCode::KeyQ => Key::Q,
+        KeyCode::KeyE => Key::E,
         KeyCode::KeyV => Key::V,
         KeyCode::Digit1 => Key::D1,
         KeyCode::Digit2 => Key::D2,
@@ -184,7 +186,17 @@ pub fn apply_intent(
         // maps them to __move_up/__move_down, registered in DemoContent). The
         // Key->Intent BINDING for the depth keys is #18's bin/renderer half; this
         // arm just makes the Intents resolvable so the surface compiles + works.
-        Intent::MoveLeft | Intent::MoveRight | Intent::MoveUp | Intent::MoveDown | Intent::Vent => {
+        // (#75) RotateLeft/RotateRight join this arm: they map to the registered
+        // __rotate_left / __rotate_right synthetics (REORIENT::RotateLeft/Right),
+        // which turn the player's FACING ±90 and re-derive orientation — the hull
+        // rotates on screen + the firing arcs follow (both key off facing).
+        Intent::MoveLeft
+        | Intent::MoveRight
+        | Intent::MoveUp
+        | Intent::MoveDown
+        | Intent::RotateLeft
+        | Intent::RotateRight
+        | Intent::Vent => {
             let Some(id) = intent_to_action_id(&intent) else {
                 return false;
             };
