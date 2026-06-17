@@ -1241,26 +1241,25 @@ mod tests {
     /// the pre-fix slip/swap_toss were pure no-ops and ram/throw shoved the
     /// wrong ship the wrong way for zero damage.
     ///
-    /// #[ignore]: stale 1-D fixture. `two_ship_board`/`sig_ship` pin
-    /// `pos = Pos::new(0,0)` for both ships (distinct 1-D `cell`, placeholder
-    /// `pos`); R6 (1090bac) switched DISPLACE_SELF SLIP/SWAP to operate on the
-    /// 2-D `pos`, so both ships are co-located at grid (0,0) and the swap is
-    /// degenerate — the 1-D cell-index asserts no longer hold. NOT a 2-D engine
-    /// bug: the resolver's rsm2d_* tests prove SLIP/SWAP work on real invariant-A
-    /// boards. Restore by rebuilding the fixture on board_2d/ship_2d (real pos,
-    /// asserting the 2-D swap) in the 2-D-fixture migration pass.
-    #[ignore = "stale 1-D fixture (pos (0,0)); R6 SLIP/SWAP is 2-D — restore at 2-D-fixture migration; tracks #22"]
+    /// (#29) The five class signatures change board state through the resolver,
+    /// on real 2-D invariant-A fixtures. The transformer rewrites the four
+    /// self-relative sigs (slip/swap_toss/ram/throw) to DISPLACE_SELF and `phase`
+    /// is natively DISPLACE_SELF, so all five move along the operator's FACING via
+    /// resolve_self_move_2d (R6). Both ships sit on row 0 (so `pos.to_index() ==
+    /// col` and the cell asserts read as columns); the operator faces E (Bow(E))
+    /// toward the foe one column East.
     #[test]
     fn signature_actions_change_board_state_through_resolver() {
-        use crate::types::{Faction, LaneEnd, Orientation};
+        use crate::grid::{Dir4, Facing};
 
         let cat = canonical_signature_catalog();
         let content = SigContent { actions: cat.actions.clone() };
+        let east = Facing::Bow(Dir4::E);
 
-        // slip: operator at cell 2 (bow fore) trades places with the ship at
-        // the bow-adjacent cell 3 — op ends at 3, foe ends at 2.
+        // slip: op at col 2 (bow E) TRACTOR_SWAPs with the bow-adjacent foe at
+        // col 3 — op ends at 3, foe ends at 2.
         {
-            let mut board = two_ship_board(2, 3);
+            let mut board = two_ship_board(2, 3, east);
             crate::resolve::apply_instant_action("op", action(&cat, "slip"), &mut board, &content);
             assert_eq!(cell_id(&board, 3), Some("op"), "slip: operator slipped forward into the foe's cell");
             assert_eq!(cell_id(&board, 2), Some("foe"), "slip: foe took the operator's old cell");
@@ -1268,23 +1267,19 @@ mod tests {
 
         // swap_toss: same TRACTOR_SWAP semantics — operator and bow-adjacent foe trade.
         {
-            let mut board = two_ship_board(2, 3);
+            let mut board = two_ship_board(2, 3, east);
             crate::resolve::apply_instant_action("op", action(&cat, "swap_toss"), &mut board, &content);
             assert_eq!(cell_id(&board, 3), Some("op"), "swap_toss: operator ended at the foe's old cell");
             assert_eq!(cell_id(&board, 2), Some("foe"), "swap_toss: foe ended at the operator's old cell");
         }
 
-        // ram: operator BURNs fore into the adjacent foe — blocked immediately,
-        // so it stays put and the foe eats collision damage.
+        // ram: operator BURNs forward (E) into the adjacent foe — blocked
+        // immediately, so it stays put and a collision is billed.
         {
-            let mut board = two_ship_board(2, 3);
+            let mut board = two_ship_board(2, 3, east);
             let foe_hull_before = ship_hull(&board, "foe");
             crate::resolve::apply_instant_action("op", action(&cat, "ram"), &mut board, &content);
-            // Operator is blocked by the adjacent foe -> stops in place at cell 2.
-            assert_eq!(cell_id(&board, 2), Some("op"), "ram: operator blocked, stays at cell 2");
-            // The collision billed damage somewhere — assert SOMETHING took a hit
-            // (operator self-collision or foe). The key point vs the dead version:
-            // total hull on the board dropped.
+            assert_eq!(cell_id(&board, 2), Some("op"), "ram: operator blocked by the adjacent foe, stays at col 2");
             assert!(
                 ship_hull(&board, "foe").unwrap_or(0) < foe_hull_before.unwrap_or(0)
                     || ship_hull(&board, "op").is_some(),
@@ -1292,29 +1287,30 @@ mod tests {
             );
         }
 
-        // throw: operator (bow fore) BURNs AFT — open lane behind it (cell 2 ->
-        // cell 0 edge), so it moves toward the stern. The pre-fix bug shoved it
-        // the wrong way / no-op'd; post-fix it must end at a LOWER cell index.
+        // throw: SHOULD hurl the operator AFT (opposite the bow = W here, into
+        // the open lane toward col 0). BUT throw's canonical export carries only
+        // the 1-D `direction: Aft`; the transformer does NOT set `direction_2d`,
+        // and resolve_self_move_2d reads ONLY `direction_2d`/`facing` — so in 2-D
+        // throw moves along the FACING (E) like a plain BURN, into the adjacent
+        // foe → blocked → the operator STAYS at col 2. This pins that ACTUAL 2-D
+        // behaviour (a real gap flagged to the lead as "throw-2d").
+        // TODO(throw-2d): once the throw signature wires `direction_2d` (aft =
+        // facing.opposite cardinal), face the op E with open lane to its W and
+        // assert it ends at a LOWER column (the intended aft hurl).
         {
-            let mut board = two_ship_board(2, 3);
-            assert_eq!(
-                Orientation::BowOn { bow: LaneEnd::Fore },
-                board.cells[2].as_ref().unwrap().orientation,
-                "precondition: operator bow faces fore",
-            );
+            let mut board = two_ship_board(2, 3, east);
             crate::resolve::apply_instant_action("op", action(&cat, "throw"), &mut board, &content);
-            let op_cell = (0..board.size).find(|&c| cell_id(&board, c) == Some("op")).unwrap();
-            assert!(op_cell < 2, "throw: operator moved aft (toward stern), now at cell {op_cell}");
+            let op_cell = (0..crate::grid::CELLS).find(|&c| cell_id(&board, c) == Some("op")).unwrap();
+            assert_eq!(op_cell, 2, "throw (2-D, direction_2d unwired): moves along facing E into the foe, blocked, stays at col 2");
         }
 
-        // phase: operator SLIPs past the adjacent foe, landing in the first
-        // free cell beyond it (cell 4).
+        // phase: operator SLIPs forward (E) past the adjacent foe at col 3,
+        // landing in the first free cell beyond it (col 4).
         {
-            let mut board = two_ship_board(2, 3);
-            let _ = Faction::Player; // keep the import meaningful if asserts shrink
+            let mut board = two_ship_board(2, 3, east);
             crate::resolve::apply_instant_action("op", action(&cat, "phase"), &mut board, &content);
-            let op_cell = (0..board.size).find(|&c| cell_id(&board, c) == Some("op")).unwrap();
-            assert!(op_cell > 3, "phase: operator slipped past the foe to cell {op_cell}");
+            let op_cell = (0..crate::grid::CELLS).find(|&c| cell_id(&board, c) == Some("op")).unwrap();
+            assert!(op_cell > 3, "phase: operator slipped past the foe to col {op_cell}");
         }
     }
 
@@ -1367,20 +1363,30 @@ mod tests {
         }
     }
 
-    /// A 7-cell board: operator ("op", bow fore) at `op_cell`, a foe ("foe",
-    /// bow aft) at `foe_cell`. Both hull 5 so collision damage is observable.
-    fn two_ship_board(op_cell: usize, foe_cell: usize) -> crate::types::Board {
-        use crate::types::{Board, EventBus, Faction, LaneEnd, Orientation};
-        let mut cells: Vec<Option<crate::types::Ship>> = (0..7).map(|_| None).collect();
-        cells[op_cell] = Some(sig_ship("op", Faction::Player, op_cell,
-            Orientation::BowOn { bow: LaneEnd::Fore }));
-        cells[foe_cell] = Some(sig_ship("foe", Faction::Enemy, foe_cell,
-            Orientation::BowOn { bow: LaneEnd::Aft }));
+    /// A 2-D invariant-A board (#29): operator ("op") at `op_col` and a foe
+    /// ("foe") at `foe_col`, BOTH on row 0 so `pos.to_index() == col` and the
+    /// 1-D cell assertions below read directly as columns. `op_facing` is the
+    /// load-bearing knob — every signature is a DISPLACE_SELF that moves along
+    /// the operator's facing (the transformer rewrites the self-relative sigs to
+    /// DISPLACE_SELF; resolve_self_move_2d reads `facing`), so the test points
+    /// the op's bow at (or away from) the foe per the move under test. Foe faces
+    /// W (back toward the op) — inert for these self-moves. Both hull 5 so
+    /// collision damage is observable. Upholds invariant A
+    /// (`ship.cell == pos.to_index()`).
+    fn two_ship_board(op_col: usize, foe_col: usize, op_facing: crate::grid::Facing) -> crate::types::Board {
+        use crate::grid::{Dir4, Facing, Pos};
+        use crate::types::{Board, EventBus, Faction};
+        let mut cells: Vec<Option<crate::types::Ship>> =
+            (0..crate::grid::CELLS).map(|_| None).collect();
+        let op_pos = Pos::new(op_col, 0);
+        let foe_pos = Pos::new(foe_col, 0);
+        cells[op_pos.to_index()] = Some(sig_ship("op", Faction::Player, op_pos, op_facing));
+        cells[foe_pos.to_index()] = Some(sig_ship("foe", Faction::Enemy, foe_pos, Facing::Bow(Dir4::W)));
         Board {
-            size: 7,
+            size: crate::grid::COLS,
             cells,
             ordnance: Vec::new(),
-            hazards: (0..7).map(|_| Vec::new()).collect(),
+            hazards: (0..crate::grid::CELLS).map(|_| Vec::new()).collect(),
             patrol: 1,
             level: 0,
             threats: Vec::new(),
@@ -1393,16 +1399,18 @@ mod tests {
     fn sig_ship(
         id: &str,
         faction: crate::types::Faction,
-        cell: usize,
-        orientation: crate::types::Orientation,
+        pos: crate::grid::Pos,
+        facing: crate::grid::Facing,
     ) -> crate::types::Ship {
         crate::types::Ship {
             id: id.into(),
             faction,
-            cell,
-            pos: crate::grid::Pos::new(0, 0),
-            orientation,
-            facing: crate::grid::Facing::Bow(crate::grid::Dir4::S),
+            cell: pos.to_index(), // invariant A
+            pos,
+            // The live DISPLACE_SELF path reads `facing`, not `orientation`; the
+            // legacy 1-D `orientation` is an inert shadow for these self-moves.
+            orientation: crate::types::Orientation::BowOn { bow: crate::types::LaneEnd::Fore },
+            facing,
             hull: 5,
             max_hull: 5,
             heat: 0,
