@@ -254,17 +254,26 @@ fn ai_closes_via_synthetic_move_when_cannot_fire() {
 }
 
 #[test]
-fn ai_falls_back_to_movement_when_nothing_bears() {
-    // Enemy bow N (faces AWAY from the player to its south) → its Forward arc
-    // doesn't bear → nothing fires → it maneuvers (reorient or close).
+fn ai_rotates_to_bear_when_misfacing_in_band() {
+    // Enemy bow N (faces AWAY from the player to its south) but IN BAND (Near,
+    // dist 2). Its Forward arc doesn't bear → can't fire. Q3 (#86): rather than
+    // CLOSE (which keeps the bow pointed away — the old "mash + never shoot"
+    // bug), the AI now ROTATES the bow toward the player. Bow N is 180° off the
+    // southward bearing, so it queues a quarter-turn (`__rotate_right`) to begin
+    // coming about; the next phase finishes the turn and the gun bears.
+    use broadside_engine::input::SYNTHETIC_ROTATE_RIGHT;
     let player = ship_2d("p", Faction::Player, Pos::new(2, 3), 10, Facing::Bow(Dir4::N), Arc::Forward, "pulse_laser");
     let enemy = ship_2d("e", Faction::Enemy, Pos::new(2, 1), 5, Facing::Bow(Dir4::N), Arc::Forward, "pulse_laser");
     let mut board = board_2d(vec![player, enemy]);
     let c = content(&[pulse_laser()]);
     decide_enemy_action(Pos::new(2, 1).to_index(), &mut board, &c);
-    // Bow N can't bear the southward player; the C1 camp fix (0fea775) CLOSES
-    // toward the player rather than camping empty — south = __move_down.
-    assert_closes_toward_player(&queue_of(&board, Pos::new(2, 1)), "pulse_laser");
+    let q = queue_of(&board, Pos::new(2, 1));
+    assert!(!q.contains(&"pulse_laser".to_string()), "can't-bear enemy must not queue the weapon; got {q:?}");
+    assert_eq!(
+        q,
+        vec![SYNTHETIC_ROTATE_RIGHT.to_string()],
+        "#86: a mis-facing in-band enemy ROTATES to bring its bow toward the player, not close/mash; got {q:?}",
+    );
 }
 
 #[test]

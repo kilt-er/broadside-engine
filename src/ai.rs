@@ -184,6 +184,7 @@ pub fn decide_enemy_action(enemy_cell: usize, board: &mut Board, content: &dyn C
     /* -- RUNG 3: REORIENT ------------------------------------------------- */
     // Turning the bow/broadside may bring the player into a forward/broadside
     // arc next phase. The AI just picks the reorient; arc math is the resolver's.
+    // 3a: a mounted weapon that ITSELF reorients (e.g. a sweep) — fire it.
     for weapon_id in &mount_weapons {
         let Some(action) = content.action(weapon_id) else {
             continue;
@@ -199,6 +200,24 @@ pub fn decide_enemy_action(enemy_cell: usize, board: &mut Board, content: &dyn C
                 s.queue.push(weapon_id.clone());
             }
             return;
+        }
+    }
+    // 3b (Q3 rotate-to-bear): reaching here means we couldn't FIRE, Rung 2 held
+    // (in band but off-ARC) or declined, and no weapon self-reorients. A
+    // mis-pointed hull (bow not aimed at the player) would otherwise fall to
+    // Rung 3.5 and CLOSE forever, mashing the player's cell without ever turning
+    // its gun to bear — the "camp + never fire" bug. So if the enemy's bow does
+    // NOT already point at the player's cardinal bearing, queue a synthetic
+    // ROTATE that turns the bow toward it (shortest turn). The rotate is
+    // resolver-served (`resolver_ai_move`), so no Content dependency. Skipped for
+    // a locked-out enemy (prefers VENT) and Anchored (positional anchors hold +
+    // vent rather than spin). Next phase the turned bow bears -> Rung 1 fires.
+    if !locked_out && !anchored {
+        if let Some(rot_id) = rotate_toward_player(enemy_pos, player_pos, board) {
+            if let Some(s) = board.ship_at_mut(enemy_pos) {
+                s.queue.push(rot_id.to_string());
+                return;
+            }
         }
     }
 
@@ -402,5 +421,57 @@ fn synthetic_move_for_dir(dir: Dir8) -> Option<&'static str> {
         Some(SYNTHETIC_MOVE_DOWN) // S: toward the player (close)
     } else {
         None
+    }
+}
+
+/// Q3 (rotate-to-bear): pick the synthetic ROTATE id that turns the enemy's bow
+/// the SHORTEST way toward the player's cardinal bearing, or `None` if the bow
+/// already points there (no rotation needed — let the close/hold rungs act).
+///
+/// The player's bearing is snapped from the 8-way `from_to` to a `Dir4`: the
+/// dominant offset axis (ties → the depth axis S/N, the common down-the-board
+/// case). The enemy's "forward" cardinal is the bow for a `Bow` stance, or the
+/// axis's increasing-coordinate cardinal for a `Broadside` stance (matching the
+/// resolver's arc-less forward convention). Turn choice: a quarter-turn CW
+/// (`__rotate_right`) if that lands on the target, CCW (`__rotate_left`) if that
+/// does, else the bow is 180° off → either quarter-turn closes the gap so we
+/// pick `__rotate_right` (the next phase re-decides and finishes the turn).
+///
+/// Returns a resolver-served id (`resolver_ai_move`), so no `Content` dependency.
+fn rotate_toward_player(enemy_pos: Pos, player_pos: Pos, board: &Board) -> Option<&'static str> {
+    use crate::grid::{Dir4, Facing};
+    use crate::input::{SYNTHETIC_ROTATE_LEFT, SYNTHETIC_ROTATE_RIGHT};
+
+    let enemy = board.ship_at(enemy_pos)?;
+    // The enemy's current forward cardinal.
+    let forward: Dir4 = match enemy.facing {
+        Facing::Bow(d) => d,
+        Facing::Broadside(axis) => axis.dirs().0,
+    };
+
+    // Snap the player's bearing to the dominant-axis cardinal (tie -> depth).
+    let dc = player_pos.col as i32 - enemy_pos.col as i32;
+    let dr = player_pos.row as i32 - enemy_pos.row as i32;
+    let target: Dir4 = if dc == 0 && dr == 0 {
+        return None; // co-located (shouldn't happen); nothing to aim at
+    } else if dr.abs() >= dc.abs() {
+        if dr > 0 { Dir4::S } else { Dir4::N } // toward / away along depth
+    } else if dc > 0 {
+        Dir4::E
+    } else {
+        Dir4::W
+    };
+
+    if forward == target {
+        return None; // already bearing — don't spin; let Rung 3.5 close
+    }
+    // Shortest turn toward the target cardinal.
+    if forward.rotate_cw() == target {
+        Some(SYNTHETIC_ROTATE_RIGHT)
+    } else if forward.rotate_ccw() == target {
+        Some(SYNTHETIC_ROTATE_LEFT)
+    } else {
+        // 180° off — either quarter-turn reduces the gap; finish next phase.
+        Some(SYNTHETIC_ROTATE_RIGHT)
     }
 }

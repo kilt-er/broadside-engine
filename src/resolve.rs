@@ -2069,14 +2069,57 @@ fn orientation_from_facing(facing: crate::grid::Facing) -> Orientation {
 /// enemies close. Used by [`fire_player_queue`] when `content.action()`
 /// returns `None` for one of these ids.
 pub(crate) fn resolver_ai_move(action_id: &str) -> Option<Action> {
-    // R6: serve all four cardinal synthetic-move ids. The 1-D `direction`
-    // (LaneEnd) stays for the dead-for-live 1-D path; `direction_2d` (Dir4) is
-    // the 2-D override the live `resolve_self_move_2d` reads. self-derive both
-    // from the id (no dependency on content's DemoContent builder — the
-    // resolver makes movement resolve identically whether or not Content
-    // registers these). The N/S ids have no 1-D LaneEnd analog (the 1-D lane
-    // had no depth axis), so they map to the closest 1-D direction for the
-    // legacy fallback while carrying the real Dir4 for 2-D.
+    // Shared SELF-targeted, zero-cost, all-bands shell for every resolver-served
+    // AI synthetic (moves AND rotates) — same instant-apply shape the player's
+    // input.rs synthetics use, so AI maneuvers resolve IDENTICALLY whether or not
+    // the running `Content` registers these ids.
+    let shell = |name: &str, effect: Effect| Action {
+        id: action_id.to_string(),
+        name: name.into(),
+        archetype: WeaponArchetype::Movement,
+        cost: ActionCost { heat: 0, cooldown_max: 0, advances_turn: true },
+        targeting: Targeting {
+            pattern: TargetingPattern::SELF,
+            band: vec![RangeBand::PointBlank],
+            optimal_band: RangeBand::PointBlank,
+            range_band: vec![crate::grid::Range::Adjacent],
+            optimal_range: crate::grid::Range::Adjacent,
+            requires_arc: None,
+            facing_relative: false,
+            hits_all: false,
+        },
+        effects: vec![effect],
+        r#mod: None,
+        icon: None,
+    };
+
+    // ROTATE / FLIP synthetics (Q3 enemy rotate-to-bear): the AI turns a
+    // mis-pointed hull to bring its arc onto the player. REORIENT effects,
+    // mirroring input.rs `synthetic_rotate_left/right` / `synthetic_reorient_flip`
+    // exactly so a resolver-served enemy rotate == the player's. WITHOUT these in
+    // the serve-list the rotate ids the AI queues would resolve to `None` and the
+    // enemy would never turn (the "camp + never fire" bug). The resolver's
+    // REORIENT arm rotates `facing` (and re-derives `orientation`), so the firing
+    // arc follows next phase.
+    match action_id {
+        crate::input::SYNTHETIC_ROTATE_LEFT => {
+            return Some(shell("Rotate Left", Effect::REORIENT { to: ReorientTo::RotateLeft }));
+        }
+        crate::input::SYNTHETIC_ROTATE_RIGHT => {
+            return Some(shell("Rotate Right", Effect::REORIENT { to: ReorientTo::RotateRight }));
+        }
+        crate::input::SYNTHETIC_REORIENT_FLIP => {
+            return Some(shell("Flip", Effect::REORIENT { to: ReorientTo::Flip }));
+        }
+        _ => {}
+    }
+
+    // R6: the four cardinal synthetic-MOVE ids. The 1-D `direction` (LaneEnd)
+    // stays for the dead-for-live 1-D path; `direction_2d` (Dir4) is the 2-D
+    // override the live `resolve_self_move_2d` reads. self-derive both from the
+    // id. The N/S ids have no 1-D LaneEnd analog (the 1-D lane had no depth
+    // axis), so they map to the closest 1-D direction for the legacy fallback
+    // while carrying the real Dir4 for 2-D.
     let (direction, direction_2d) = match action_id {
         crate::input::SYNTHETIC_MOVE_LEFT => (LaneEnd::Aft, Dir4::W),
         crate::input::SYNTHETIC_MOVE_RIGHT => (LaneEnd::Fore, Dir4::E),
@@ -2084,33 +2127,17 @@ pub(crate) fn resolver_ai_move(action_id: &str) -> Option<Action> {
         crate::input::SYNTHETIC_MOVE_DOWN => (LaneEnd::Fore, Dir4::S),
         _ => return None,
     };
-    Some(Action {
-        id: action_id.to_string(),
-        name: "Move".into(),
-        archetype: WeaponArchetype::Movement,
-        cost: ActionCost { heat: 0, cooldown_max: 0, advances_turn: true },
-        targeting: Targeting {
-            pattern: TargetingPattern::SELF,
-            band: vec![RangeBand::PointBlank],
-            optimal_band: RangeBand::PointBlank,
-            // v2 (A3 EXPAND): 2-D range mirror of the 1-D band above.
-            range_band: vec![crate::grid::Range::Adjacent],
-            optimal_range: crate::grid::Range::Adjacent,
-            requires_arc: None,
-            facing_relative: false,
-            hits_all: false,
-        },
-        effects: vec![Effect::DISPLACE_SELF {
+    Some(shell(
+        "Move",
+        Effect::DISPLACE_SELF {
             mode: MovementMode::THRUST,
             distance: 1,
             direction: Some(direction),
             // R6: the real 2-D cardinal, self-derived from the id; the live
             // resolve_self_move_2d moves 1 cell along it via grid::offset.
             direction_2d: Some(direction_2d),
-        }],
-        r#mod: None,
-        icon: None,
-    })
+        },
+    ))
 }
 
 /// A throwaway weapon used by the resolver for unattributed damage (projectile

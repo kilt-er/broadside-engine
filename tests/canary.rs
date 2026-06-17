@@ -252,3 +252,56 @@ fn player_out_trades_a_single_armed_enemy_in_column() {
     assert_eq!(enemies_left(&board), 0, "player kills the in-column shooter");
     assert!(player_alive(&board), "player survives a one-on-one against a weaker shooter");
 }
+
+/// Q3 PAYOFF (#86): a Forward-arc enemy whose bow points the WRONG WAY (away from
+/// the player) must ROTATE to bring its gun to bear and THEN FIRE — not spin in
+/// place or mash the player's cell forever (the pre-#86 "camp + never shoot"
+/// bug). Drives a stationary player (never fires) so the ONLY way its hull drops
+/// is the enemy turning to bear and shooting. Bounded; the enemy must connect.
+#[test]
+fn q3_misfacing_enemy_rotates_to_bear_then_fires() {
+    // Enemy at (2,1) Bow(N) — bow points UP/away from the player at (2,3) due
+    // SOUTH, same column, distance 2 (Near, in the ai_beam's band). A Forward gun
+    // bears ONLY out the bow (N), so it does NOT bear south on the player. To
+    // engage, the enemy must rotate its bow to S (two quarter-turns) — strafing
+    // can't help (already the player's column). Once Bow(S), the gun bears down
+    // the column and fires.
+    let mut enemy = ship_2d("e", Faction::Enemy, Pos::new(2, 1), 9, Facing::Bow(Dir4::N), Arc::Forward, "ai_beam");
+    enemy.shield_profile = naked_shields();
+    // Player: tanky, naked (so a landed shot shows in hull), and it NEVER fires
+    // (we don't queue it) — isolates "did the enemy turn + shoot?".
+    let mut player = ship_2d("p", Faction::Player, Pos::new(2, 3), 40, Facing::Bow(Dir4::N), Arc::Forward, "pc_beam");
+    player.shield_profile = naked_shields();
+    let mut board = board_2d(vec![enemy, player]);
+    let content = CanaryContent::new(6, 2);
+
+    let player_hull_0 = 40;
+    let mut rotated_seen = false;
+    let cap = 12;
+    let mut rounds = 0;
+    while rounds < cap {
+        // Player does NOT queue — only the world phase (enemy AI) acts.
+        resolve_round(&mut board, &content);
+        rounds += 1;
+        // Observe the enemy's facing: it should turn toward S (toward the player).
+        if let Some(e) = board.cells.iter().flatten().find(|s| s.id == "e") {
+            if matches!(e.facing, Facing::Bow(Dir4::S)) {
+                rotated_seen = true;
+            }
+        }
+        // Stop once the enemy has connected.
+        let p_hull = board.cells.iter().flatten().find(|s| s.id == "p").map(|s| s.hull).unwrap_or(0);
+        if p_hull < player_hull_0 {
+            break;
+        }
+    }
+
+    assert!(rotated_seen, "#86: the enemy must ROTATE its bow toward the player (saw Bow(S))");
+    let p_hull = board.cells.iter().flatten().find(|s| s.id == "p").map(|s| s.hull).unwrap_or(0);
+    assert!(
+        p_hull < player_hull_0,
+        "#86: after rotating to bear, the enemy must FIRE + connect (player hull {p_hull} < {player_hull_0}); it must not spin/mash forever",
+    );
+    // And it didn't waste the whole window: connected within the bound.
+    assert!(rounds < cap, "#86: enemy rotates + fires within {cap} rounds, not stuck");
+}
