@@ -875,22 +875,29 @@ fn push_ship_2d(
     // follow-up), so they stay on the flat-box placeholder.
     if is_player {
         if let Some(loft_kind) = sprites.loft_kind(&ship.id, true) {
-            // Hero-sized quad, lane-seated + clamped above the bottom HUD band —
-            // the same footprint the sprite path uses, so the 3D hull sits where
-            // the placeholder did. The pose/foreshortening lives inside the loft
-            // texture; this quad is just its dest-rect.
-            let w = (q.near_edge_width() * 1.9).max(16.0);
-            // Height from the loft OFFSCREEN aspect, NOT a hardcoded 2:1. The blit
-            // stretches the loft texture to fill this quad, so a quad aspect that
-            // disagrees with the texture's `LOW_W:LOW_H` (1.6:1) squashes the hull
-            // — a 2:1 quad stretched a 1.6:1 texture 1.25× horizontally, rendering
-            // the round engine-glow discs as ovals (Bruce-facing #74). `h = w /
-            // aspect` makes the dest-rect match the texture so circles stay round.
+            // (#76b Bruce) FOREGROUND HERO: anchor the hull LOW — its BOTTOM seats
+            // just above the bottom HUD band, so the ship sits in the chase-cam
+            // foreground and the PLAYFIELD (grid + enemies) reads ABOVE it. Was
+            // centred on the cell's mid-screen projection (`cy = center.y`), which
+            // floated the big hull at mid-screen and OCCLUDED the grid + the back-row
+            // enemies (Bruce: "sits too high off the grid ... can't see the enemy
+            // ships"). The hull's tactical facing still lives in the loft texture;
+            // only this dest-rect's screen anchor changes — `aim_at` stays the true
+            // cell centre so the chase-cam lane-aim is unaffected.
+            //
+            // Trimmed 1.9 → 1.0 × the near-row cell width so the hull stays in the
+            // lower band and its TOP clears the far/enemy rows (which project up
+            // near the horizon ~y120-150): at 1.0 the hull top lands ~y155, BELOW
+            // the back-row enemies (~y140), so the playfield reads above it (Bruce:
+            // "can't see the enemy ships"). Height from the loft aspect (#74, no
+            // squash). x stays centred on the cell column so lateral moves read.
+            let w = (q.near_edge_width() * 1.0).max(16.0);
             let h = w / LOFT_TEXTURE_ASPECT;
             let band_top = crate::gfx::VIRTUAL_H as f32 - 40.0;
-            let cy = center[1].min(band_top - h * 0.5 - 2.0);
+            // Seat the quad BOTTOM at the band top (foreground), extend UP by h.
+            let b = band_top - 2.0;
+            let t = b - h;
             let (l, r) = (center[0] - w * 0.5, center[0] + w * 0.5);
-            let (t, b) = (cy - h * 0.5, cy + h * 0.5);
             out.push(DrawCommand::LoftShip(LoftShipInstance {
                 p0: [l, t],
                 p1: [r, t],
