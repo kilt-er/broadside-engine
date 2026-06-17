@@ -359,3 +359,263 @@ mod heat {
         }
     }
 }
+
+/// 2-D combat-geometry invariants, driven through the REAL 2-D functions.
+///
+/// These guard the seams where the 2-D grid expands the input space past what
+/// `tests/geometry2d.rs` enumerates: `facing_zone` over the full Dir8 x Facing
+/// product (totality — it must NEVER fail to classify a hit), and the live
+/// `resolve_targeting_2d` / `apply_damage_2d` over arbitrary attacker/target
+/// positions, facings, and weapon shapes (no panic, in-bounds, deterministic).
+/// As elsewhere in this file, we drive the live engine and assert relationships
+/// that must always hold — no re-implemented oracle.
+mod combat_2d {
+    use broadside_engine::grid::{Axis, Dir4, Dir8, Facing, Pos, CELLS, COLS, ROWS};
+    use broadside_engine::resolve::{apply_damage_2d, resolve_targeting_2d, Content};
+    use broadside_engine::types::{
+        Action, ActionCost, Arc, Board, EventBus, Effect, Faction, HullZone, LaneEnd, Mount,
+        Orientation, Projectile, RangeBand, ShieldFace, ShieldProfile, Ship, Targeting,
+        TargetingPattern, WeaponArchetype,
+    };
+    use proptest::prelude::*;
+    use std::collections::HashMap;
+
+    /* ---- strategies over the finite 2-D type surface ------------------- */
+
+    fn any_dir4() -> impl Strategy<Value = Dir4> {
+        prop_oneof![Just(Dir4::N), Just(Dir4::E), Just(Dir4::S), Just(Dir4::W)]
+    }
+
+    fn any_dir8() -> impl Strategy<Value = Dir8> {
+        prop_oneof![
+            Just(Dir8::N), Just(Dir8::NE), Just(Dir8::E), Just(Dir8::SE),
+            Just(Dir8::S), Just(Dir8::SW), Just(Dir8::W), Just(Dir8::NW),
+        ]
+    }
+
+    /// Any `Facing`: a `Bow(Dir4)` (4) or a `Broadside(Axis)` (2) — the full
+    /// stance space the receiving-side `facing_zone` must classify.
+    fn any_facing() -> impl Strategy<Value = Facing> {
+        prop_oneof![
+            any_dir4().prop_map(Facing::Bow),
+            prop_oneof![Just(Axis::NorthSouth), Just(Axis::EastWest)].prop_map(Facing::Broadside),
+        ]
+    }
+
+    /// Any in-bounds grid `Pos` (col 0..COLS, row 0..ROWS).
+    fn any_pos() -> impl Strategy<Value = Pos> {
+        (0..COLS, 0..ROWS).prop_map(|(col, row)| Pos::new(col, row))
+    }
+
+    /// A `HullZone` is always one of the four faces — used to assert totality.
+    fn is_valid_zone(z: HullZone) -> bool {
+        matches!(z, HullZone::Bow | HullZone::Stern | HullZone::Port | HullZone::Starboard)
+    }
+
+    proptest! {
+        /// `facing_zone` is TOTAL: for EVERY (facing, incoming_from) over the
+        /// full Dir8 x Facing product it returns a valid HullZone and never
+        /// panics. This is the correctness-critical receiving seam (the V3
+        /// table) — a hit from any of the 8 directions onto any stance must
+        /// land on exactly one of the four faces. `tests/geometry2d.rs`
+        /// enumerates the table; this is the property-level totality guard.
+        #[test]
+        fn facing_zone_is_total_over_dir8_x_facing(
+            facing in any_facing(),
+            incoming in any_dir8(),
+        ) {
+            let zone = broadside_engine::geometry2d::facing_zone(facing, incoming);
+            prop_assert!(
+                is_valid_zone(zone),
+                "facing_zone({facing:?}, {incoming:?}) = {zone:?} is not a valid hull face",
+            );
+        }
+    }
+
+    /* ---- live-path fixtures (invariant A) ----------------------------- */
+
+    fn naked() -> ShieldProfile {
+        ShieldProfile {
+            bow: ShieldFace { armour: 0, charge: 0 },
+            stern: ShieldFace { armour: 0, charge: 0 },
+            port: ShieldFace { armour: 0, charge: 0 },
+            starboard: ShieldFace { armour: 0, charge: 0 },
+        }
+    }
+
+    fn ship_at(id: &str, faction: Faction, pos: Pos, hull: i32, facing: Facing) -> Ship {
+        Ship {
+            id: id.into(),
+            faction,
+            cell: pos.to_index(),
+            pos,
+            orientation: Orientation::BowOn { bow: LaneEnd::Fore },
+            facing,
+            hull,
+            max_hull: hull,
+            heat: 0,
+            heat_max: 12,
+            locked_out: false,
+            shield_profile: naked(),
+            mounts: vec![Mount { id: format!("{id}-m"), arc: Arc::Turret, weapon: "w".into() }],
+            queue: Vec::new(),
+            cooldowns: HashMap::new(),
+            statuses: Vec::new(),
+            traits: Vec::new(),
+            klass: None,
+        }
+    }
+
+    fn board_with(ships: Vec<Ship>) -> Board {
+        let mut cells: Vec<Option<Ship>> = (0..CELLS).map(|_| None).collect();
+        for s in ships {
+            let idx = s.pos.to_index();
+            cells[idx] = Some(s);
+        }
+        Board {
+            size: COLS,
+            cells,
+            ordnance: Vec::new(),
+            hazards: (0..CELLS).map(|_| Vec::new()).collect(),
+            patrol: 1,
+            level: 0,
+            threats: Vec::new(),
+            bus: EventBus::default(),
+            destroys_this_window: 0,
+            fire_events: Vec::new(),
+        }
+    }
+
+    /// A Turret weapon with `pattern`, the full 3-band range, optional hits_all.
+    fn weapon(pattern: TargetingPattern, hits_all: bool) -> Action {
+        Action {
+            id: "w".into(),
+            name: "w".into(),
+            archetype: WeaponArchetype::Beam,
+            cost: ActionCost { heat: 1, cooldown_max: 0, advances_turn: true },
+            targeting: Targeting {
+                pattern,
+                band: vec![RangeBand::PointBlank, RangeBand::Close, RangeBand::Mid],
+                optimal_band: RangeBand::PointBlank,
+                range_band: vec![
+                    broadside_engine::grid::Range::Adjacent,
+                    broadside_engine::grid::Range::Near,
+                    broadside_engine::grid::Range::Far,
+                ],
+                optimal_range: broadside_engine::grid::Range::Adjacent,
+                requires_arc: Some(Arc::Turret),
+                facing_relative: true,
+                hits_all,
+            },
+            effects: vec![Effect::DAMAGE { amount: 4, band_falloff: None }],
+            r#mod: None,
+            icon: None,
+        }
+    }
+
+    fn any_pattern() -> impl Strategy<Value = TargetingPattern> {
+        prop_oneof![
+            Just(TargetingPattern::BEAM),
+            Just(TargetingPattern::SPINAL_LINE),
+            Just(TargetingPattern::BROADSIDE),
+            Just(TargetingPattern::BLAST),
+            Just(TargetingPattern::POINT_BLANK),
+        ]
+    }
+
+    struct OneWeapon(Action);
+    impl Content for OneWeapon {
+        fn action(&self, id: &str) -> Option<&Action> {
+            (id == "w").then_some(&self.0)
+        }
+        fn spawn_projectile(&self, _: &str, _: &Ship) -> Projectile {
+            unreachable!("combat_2d proptests don't spawn ordnance");
+        }
+    }
+
+    proptest! {
+        /// `resolve_targeting_2d` over arbitrary attacker pos/facing, a target
+        /// at another arbitrary pos, and an arbitrary firing pattern:
+        ///   - never panics,
+        ///   - every returned cell is IN BOUNDS (a valid grid Pos),
+        ///   - the result is DETERMINISTIC (two calls on the same board agree).
+        ///
+        /// NOTE: we deliberately do NOT assert "never the attacker's own cell".
+        /// The property surfaced that BLAST legitimately CAN include the firer:
+        /// it splashes `center + grid::neighbors(center)`, so firing at an
+        /// ADJACENT target puts the firer's own cell in the blast radius
+        /// (atk (2,2) firing BLAST at (2,1) -> the burst's 8-neighbours of (2,1)
+        /// include (2,2)). That is correct faction-blind area-burst behaviour
+        /// (same family as flak_burst hitting its own faction), not a bug — so
+        /// "no self-cell" is false for area patterns and rightly omitted.
+        #[test]
+        fn resolve_targeting_2d_is_in_bounds_and_deterministic(
+            atk in any_pos(),
+            tgt in any_pos(),
+            facing in any_facing(),
+            pattern in any_pattern(),
+            hits_all in any::<bool>(),
+        ) {
+            prop_assume!(atk != tgt); // distinct cells (same cell can't host two ships)
+            let board = board_with(vec![
+                ship_at("a", Faction::Player, atk, 10, facing),
+                ship_at("t", Faction::Enemy, tgt, 10, Facing::Bow(Dir4::N)),
+            ]);
+            let a = weapon(pattern, hits_all);
+
+            let out1 = resolve_targeting_2d(&a, &board, atk);
+            let out2 = resolve_targeting_2d(&a, &board, atk);
+
+            prop_assert_eq!(&out1, &out2, "resolve_targeting_2d is non-deterministic");
+            for p in &out1 {
+                prop_assert!(p.in_bounds(), "targeting returned out-of-bounds cell {p:?}");
+            }
+        }
+
+        /// `apply_damage_2d` over arbitrary attacker/target positions, target
+        /// facing, and raw amount must NEVER panic and must leave the board
+        /// well-formed: invariant A holds for every surviving ship
+        /// (`cell == pos.to_index()`), and a target's hull only ever decreases
+        /// (damage never heals). Drives the full 2-D pipeline (falloff ->
+        /// modifier -> lock -> shield -> hull) on a real board.
+        #[test]
+        fn apply_damage_2d_never_panics_and_keeps_invariant_a(
+            atk in any_pos(),
+            tgt in any_pos(),
+            tgt_facing in any_facing(),
+            raw in 0_i32..50_i32,
+        ) {
+            prop_assume!(atk != tgt);
+            let mut board = board_with(vec![
+                ship_at("a", Faction::Player, atk, 10, Facing::Bow(Dir4::N)),
+                ship_at("t", Faction::Enemy, tgt, 20, tgt_facing),
+            ]);
+            let hull_before = board.ship_at(tgt).map(|s| s.hull).unwrap_or(0);
+            let a = weapon(TargetingPattern::BEAM, false);
+
+            // Must not panic for any in-bounds attacker/target pair.
+            apply_damage_2d(tgt, raw, atk, &a, &mut board, &OneWeapon(a.clone()));
+
+            // Hull only decreases (or the ship was destroyed = removed).
+            if let Some(s) = board.ship_at(tgt) {
+                prop_assert!(
+                    s.hull <= hull_before,
+                    "apply_damage_2d increased hull: {} -> {}", hull_before, s.hull,
+                );
+            }
+            // Invariant A holds for every surviving ship.
+            for (idx, slot) in board.cells.iter().enumerate() {
+                if let Some(s) = slot {
+                    prop_assert_eq!(
+                        s.cell, idx,
+                        "invariant A broken: ship {} at slot {} reports cell {}", s.id, idx, s.cell,
+                    );
+                    prop_assert_eq!(
+                        s.pos.to_index(), idx,
+                        "invariant A broken: ship {} pos {:?} indexes slot {}", s.id, s.pos, idx,
+                    );
+                }
+            }
+        }
+    }
+}

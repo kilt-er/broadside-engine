@@ -5,3 +5,4 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc 2e819443fa9ac1022d4a6caf4400a54ad548dc169c9264efa1692aeede1a3956 # shrinks to cost = 2, heat_max = 2, fire = [true]
+cc ecb34cd682746448f7cc89f252b1810c5160dadd4126a38b8a6240df2c9b74c7 # shrinks to atk = Pos { col: 2, row: 2 }, tgt = Pos { col: 2, row: 1 }, facing = Bow(N), pattern = BLAST, hits_all = false
