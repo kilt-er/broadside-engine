@@ -865,6 +865,9 @@ fn push_ship_2d(
                 p3: [l, b],
                 ship_id: SpriteSlug::new(&ship.id),
                 kind: loft_kind,
+                // (#70) Aim the nose from the true CELL centre (not the dragged-
+                // down hero quad) — keeps the chase-cam lane-aim small + correct.
+                aim_at: center,
             }));
             // Pips/buffer cues on top (the lit hull + its baked engine glow own
             // the hull + stern read, so the player chevron stays dropped).
@@ -1525,6 +1528,9 @@ fn push_ship(
             p3: [left, bottom],
             ship_id: SpriteSlug::new(&ship.id),
             kind: loft_kind,
+            // Legacy 1-D path (not the live 2-D chase cam) — no VP convergence
+            // here; aim from the lane point so the chase-cam yaw is a no-op.
+            aim_at: [cx, p.y],
         }));
         return;
     }

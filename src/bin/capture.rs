@@ -69,7 +69,7 @@ fn make_ship(id: &str, faction: Faction, pos: Pos, facing: Facing) -> Ship {
 /// centre-out across the back row Bow(S) — the real bow-to-bow start. `player_col`
 /// lets the capture place the player OFF-CENTER (e.g. col 0/4) to expose
 /// lane-dependent pose bugs that a centred (col 2, zero lane-yaw) shot masks.
-fn capture_board(player_col: usize) -> Board {
+fn capture_board(player_col: usize, player_facing: Facing) -> Board {
     let mut cells: Vec<Option<Ship>> = (0..broadside_engine::grid::CELLS).map(|_| None).collect();
     let place = |cells: &mut Vec<Option<Ship>>, s: Ship| {
         let idx = s.pos.to_index();
@@ -77,7 +77,12 @@ fn capture_board(player_col: usize) -> Board {
     };
     let start = player_start_pos();
     let ppos = Pos::new(player_col.min(COLS - 1), start.row);
-    let mut player = make_ship("player", Faction::Player, ppos, player_spawn_facing());
+    // (#70) Player facing is an ARG so the capture reproduces a MOVED/REORIENTED
+    // live player (the old frozen spawn-facing masked the chase-cam pose bug).
+    // Post-decouple the loft hull no longer rotates with facing — so a capture
+    // at the same column should look identical across facings (that's the fix);
+    // the arg lets us PROVE it + match any live case.
+    let mut player = make_ship("player", Faction::Player, ppos, player_facing);
     // (#66) class "aegis" so the baked aegis_* sprites are selected (the renderer
     // keys sprite_path on klass); the bin sets the player class likewise.
     player.klass = Some("aegis".to_string());
@@ -142,8 +147,18 @@ fn main() {
         .nth(2)
         .and_then(|s| s.parse::<usize>().ok())
         .unwrap_or_else(|| player_start_pos().col);
-    let board = capture_board(player_col);
-    log::info!("capture: player at column {player_col}");
+    // Optional 3rd arg = player FACING (n/s/e/w) so the capture reproduces a
+    // REORIENTED live player (the frozen spawn-facing masked the chase-cam pose
+    // bug). Default = the campaign spawn facing.
+    let player_facing = match std::env::args().nth(3).as_deref() {
+        Some("n") | Some("N") => Facing::Bow(Dir4::N),
+        Some("s") | Some("S") => Facing::Bow(Dir4::S),
+        Some("e") | Some("E") => Facing::Bow(Dir4::E),
+        Some("w") | Some("W") => Facing::Bow(Dir4::W),
+        _ => player_spawn_facing(),
+    };
+    let board = capture_board(player_col, player_facing);
+    log::info!("capture: player at column {player_col}, facing {player_facing:?}");
 
     // (#70) Sync the player's loft pose so the loft pre-pass has a pose to render
     // (mirrors the playable bin's per-frame sync_loft_pose).

@@ -270,6 +270,13 @@ pub struct LoftShipInstance {
     pub ship_id: SpriteSlug,
     /// Which uploaded loft mesh to render this ship with.
     pub kind: crate::sprites::LoftMeshKind,
+    /// (#70) The ship's CELL-centre screen point — the anchor the chase-cam
+    /// nose-aim measures the angle to the vanishing point FROM. NOT the draw
+    /// quad's centre: the player's hero quad is dragged to the screen bottom
+    /// (clamped above the HUD band + upscaled), far below the cell, which over-
+    /// steepened the aim. Aiming from the true cell centre keeps the lane-aim
+    /// small + correct. (Set from `grid_cell_quad(pos).center`.)
+    pub aim_at: [f32; 2],
 }
 
 impl From<SpriteInstance> for DrawCommand {
@@ -2016,44 +2023,47 @@ impl Gfx {
                 // cleanly if either is absent (mesh not installed / pose not yet
                 // synced) — the lane just shows no ship there rather than crash.
                 let mesh = self.loft_meshes.get(&q.kind);
-                let yaw = self.loft_poses.get(q.ship_id.as_str()).map(|p| p.yaw_deg());
-                if let (Some(mesh), Some(yaw)) = (mesh, yaw) {
+                // The pose only GATES the draw (created on first sight); its
+                // orientation yaw is deliberately NOT used for the chase-cam player
+                // (see decouple note below).
+                let has_pose = self.loft_poses.contains_key(q.ship_id.as_str());
+                if let (Some(mesh), true) = (mesh, has_pose) {
                     // (#70) CHASE-CAM base yaw: the loft camera orbits about +Y and
-                    // the hull's LENGTH is +X (prow +X, stern/engines −X). The
-                    // pose's stance yaw (BowOn{Fore}=0) would show the hull SIDE-ON;
-                    // 270° (−90) puts the STERN toward the viewer (engines + glow
-                    // facing us, bow up-lane into the screen) — the stern-on chase
-                    // view.
+                    // the hull's LENGTH is +X (prow +X, stern/engines −X). 270° (−90)
+                    // puts the STERN toward the viewer (engines + glow facing us,
+                    // bow up-lane into the screen) — the stern-on chase view.
                     const CHASE_CAM_BASE_YAW_DEG: f32 = 270.0;
 
-                    // (#70) GROUND-PLANE NOSE-AIM (replaces the 2D blit-rotate, which
-                    // ROLLED the hull): swing the nose toward the lane's vanishing
-                    // point with a 3D YAW about the hull's vertical (Y) axis — this
-                    // keeps the hull FLAT on the grid (deck up, receding along the
-                    // lane) while turning the nose left/right, which is the
-                    // flat-on-ground look Bruce wants (a screen-plane rotate barrel-
-                    // rolled it). The camera-yaw IS a ground Y-yaw, so adding the
-                    // lane-aim to it stays flat.
+                    // (#70) DECOUPLE from tactical facing: the chase-cam player
+                    // ALWAYS flies up-lane (the camera rides behind it), so the hull
+                    // base yaw is the FIXED stern-on value — NOT the pose's
+                    // orientation yaw. Driving it off `orientation` (the old #55
+                    // rotate-to-facing) made the hull swing to its tactical facing
+                    // when the player moved/reoriented (orientation yaw dominated,
+                    // the lane-aim was a nudge) — Bruce's "points where I moved /
+                    // over-rotated" bug. Tactical facing is now a HUD cue (#71), not
+                    // a hull rotation. (Enemies at arbitrary facings are a separate
+                    // scene-space follow-up.)
                     //
-                    // MAGNITUDE: aim at the geometric VP, mapped through the camera
-                    // pitch foreshortening. alpha = screen angle from straight-up
-                    // toward the VP; a ground-yaw projects to screen by ~sin(pitch),
-                    // so psi = atan(tan(alpha)·sin(pitch)) lands the nose on the VP.
-                    // Calibrated via capture at the edge lanes (see bugs/vp_*).
+                    // GROUND-PLANE NOSE-AIM: swing the nose toward the lane's
+                    // vanishing point with a 3D YAW about the hull's vertical (Y)
+                    // axis — keeps the hull FLAT on the grid (deck up) while turning
+                    // the nose (a screen-plane 2D rotate barrel-rolled it). alpha =
+                    // screen angle from straight-up toward the VP, measured FROM THE
+                    // CELL centre (`q.aim_at`, NOT the hero draw quad — the hero quad
+                    // is dragged to the screen bottom, which over-steepened alpha).
+                    // A ground-yaw projects to screen by ~sin(pitch), so psi =
+                    // atan(tan(alpha)·sin(pitch)) lands the nose on the VP.
                     let cfg = crate::projector::ProjectorConfig::default();
                     let vp = crate::projector::vanishing_point(&cfg);
-                    let cx = 0.25 * (q.p0[0] + q.p1[0] + q.p2[0] + q.p3[0]);
-                    let cy = 0.25 * (q.p0[1] + q.p1[1] + q.p2[1] + q.p3[1]);
-                    // Screen angle from the upward vertical toward the VP: 0 when the
-                    // VP is straight above the ship (centre lane), + to the right.
-                    let alpha = (vp.x - cx).atan2(cy - vp.y);
+                    let (ax, ay) = (q.aim_at[0], q.aim_at[1]);
+                    let alpha = (vp.x - ax).atan2(ay - vp.y);
                     let pitch = crate::loft_gpu::CAMERA_PITCH_DEG.to_radians();
                     let psi = (alpha.tan() * pitch.sin()).atan();
-                    // Ground Y-yaw (degrees), on top of the stern base. Sign: a
-                    // +screen-right VP needs the nose to swing toward +x screen,
-                    // which under the 270 stern-on camera is a −yaw — calibrated by
-                    // capture (cols 0/2/4: nose must hit the VP).
-                    let base_yaw = yaw + CHASE_CAM_BASE_YAW_DEG - psi.to_degrees();
+                    // Fixed stern-on base + the ground Y-yaw aim. Sign: a +screen-
+                    // right VP swings the nose toward +x screen, a −yaw under the
+                    // 270 stern-on camera (verified by capture).
+                    let base_yaw = CHASE_CAM_BASE_YAW_DEG - psi.to_degrees();
 
                     // 1) Render the hull into the shared loft target at the ground-
                     // yawed pose. The fixed house key light (laz -50 / lel 60)
