@@ -157,29 +157,20 @@ fn enemies_left(b: &Board) -> usize {
  * 1. The combat loop terminates in a player win.
  * ====================================================================== */
 
-// #[ignore]: stale 1-D fixture. The local ship() helper pins pos=Pos::new(0,0)
-// for every ship; R3 (59c0baa) switched firing to read ship.pos, so all ships
-// are co-located at (0,0) and no shot connects → the loop times out. Not a 2-D
-// engine bug (reviewer-confirmed, docs/reviews/red_test_triage_classification.md).
-// Restore on the 2-D fixture rewrite (real board_2d/ship_2d positions) — tracks #22.
-#[ignore = "stale 1-D fixture (pos (0,0)); restore at 2-D combat_loop fixture rewrite — #22"]
+// #22 2-D: player front-centre (2,3) Bow(N), forward gun bears N up column 2.
+// Two armed enemies on the column ahead at (2,2) and (2,1), both Bow(S) so their
+// forward guns bear back down-column on the player (they shoot back via the AI).
+// Player hits hard (8 raw, naked enemies => one shot each); enemies hit soft
+// (1 raw) so the player out-trades them and the loop ends in a win.
 #[test]
 fn combat_loop_player_clears_two_armed_enemies() {
-    // Player at cell 0, bow=fore (forward gun bears up-lane). Two armed
-    // enemies at cells 1 and 2, both bow=aft so their forward guns bear
-    // DOWN-lane on the player (they shoot back via the AI). Player hits hard
-    // (8 raw, naked enemies => one shot each); enemies hit soft (1 raw) so
-    // the player out-trades them and the loop ends in a win.
-    let mut player = ship("player", Faction::Player, 0, 30, LaneEnd::Fore, "pc_beam");
-    let mut e1 = ship("e1", Faction::Enemy, 1, 4, LaneEnd::Aft, "ai_beam");
-    let mut e2 = ship("e2", Faction::Enemy, 2, 4, LaneEnd::Aft, "ai_beam");
+    let player = common::ship_2d("player", Faction::Player, Pos::new(2, 3), 30, Facing::Bow(Dir4::N), Arc::Forward, "pc_beam");
+    let mut e1 = common::ship_2d("e1", Faction::Enemy, Pos::new(2, 2), 4, Facing::Bow(Dir4::S), Arc::Forward, "ai_beam");
+    let mut e2 = common::ship_2d("e2", Faction::Enemy, Pos::new(2, 1), 4, Facing::Bow(Dir4::S), Arc::Forward, "ai_beam");
     e1.shield_profile = naked_shields();
     e2.shield_profile = naked_shields();
-    let _ = &mut player;
 
-    let mut b = board(7, vec![
-        Some(player), Some(e1), Some(e2), None, None, None, None,
-    ]);
+    let mut b = common::board_2d(vec![player, e1, e2]);
     let content = CombatContent { player_beam: beam("pc_beam", 8), ai_beam: beam("ai_beam", 1) };
 
     // Drive rounds: each round the player queues its beam, then resolve_round
@@ -207,19 +198,17 @@ fn combat_loop_player_clears_two_armed_enemies() {
  * 2. Player death clears the cell and is detectable.
  * ====================================================================== */
 
-#[ignore = "stale 1-D fixture (pos (0,0)); enemy beams can't hit stacked player; restore at 2-D combat_loop fixture rewrite — #22"]
+// #22 2-D: a 2-hull player at (2,3) Bow(N) versus two hard-hitting armed enemies
+// at (2,2)/(2,1) Bow(S) that bear back down the column. The player never queues a
+// shot (it just sits), so the board kills it. We assert the player's cell goes
+// empty and find_player_id returns None — the bin's lose signal.
 #[test]
 fn combat_loop_player_death_clears_cell_and_is_detectable() {
-    // A 2-hull player versus three hard-hitting armed enemies that all bear
-    // on it. The player never queues a shot (it just sits), so the board
-    // kills it. We assert the player's cell goes empty and find_player_id
-    // returns None — the bin's lose signal.
-    let player = ship("player", Faction::Player, 0, 2, LaneEnd::Fore, "pc_beam");
-    let e1 = ship("e1", Faction::Enemy, 1, 20, LaneEnd::Aft, "ai_beam");
-    let e2 = ship("e2", Faction::Enemy, 2, 20, LaneEnd::Aft, "ai_beam");
-    let mut b = board(7, vec![
-        Some(player), Some(e1), Some(e2), None, None, None, None,
-    ]);
+    let player = common::ship_2d("player", Faction::Player, Pos::new(2, 3), 2, Facing::Bow(Dir4::N), Arc::Forward, "pc_beam");
+    let e1 = common::ship_2d("e1", Faction::Enemy, Pos::new(2, 2), 20, Facing::Bow(Dir4::S), Arc::Forward, "ai_beam");
+    let e2 = common::ship_2d("e2", Faction::Enemy, Pos::new(2, 1), 20, Facing::Bow(Dir4::S), Arc::Forward, "ai_beam");
+    let player_idx = Pos::new(2, 3).to_index();
+    let mut b = common::board_2d(vec![player, e1, e2]);
     // AI beam hits hard enough to punch through the bow (armour 2) — 6 raw.
     let content = CombatContent { player_beam: beam("pc_beam", 8), ai_beam: beam("ai_beam", 6) };
 
@@ -232,7 +221,7 @@ fn combat_loop_player_death_clears_cell_and_is_detectable() {
 
     assert!(rounds < 32, "the board should kill the idle player within the bound");
     assert!(find_player_id(&b).is_none(), "dead player is detectable via find_player_id == None");
-    assert!(b.cells[0].is_none(), "the player's cell is cleared on death");
+    assert!(b.cells[player_idx].is_none(), "the player's cell is cleared on death");
 }
 
 /* =========================================================================
@@ -337,28 +326,24 @@ fn combat_loop_keeps_board_consistent_across_rounds() {
  *    its queue between player inputs, and it's what fires next phase.
  * ====================================================================== */
 
-// #[ignore]: stale 1-D fixture. The enemy DECIDES + telegraphs fine (#67 mechanism
-// intact), but the telegraphed shot resolves on the (0,0)-degenerate board so the
-// player never loses hull. Restore the #67 telegraph guarantee as a 2-D fixture — #22.
-#[ignore = "stale 1-D fixture (pos (0,0)); #67 telegraph intact, restore at 2-D combat_loop fixture rewrite — #22"]
+// #22 2-D: one armed enemy at (2,1) Bow(S) bears down column 2 on the player at
+// (2,3) (distance 2 = Near, in band). High hull on both so nobody dies and we can
+// observe the telegraph (#67 fire-then-decide) across multiple world phases.
 #[test]
 fn telegraph_persists_in_enemy_queue_between_world_phases() {
     use broadside_engine::resolve::run_world_phase;
 
-    // One armed enemy that bears on the player (bow=Aft, forward gun points
-    // down-lane at the player at cell 0). High hull on both so nobody dies
-    // and we can observe the telegraph across multiple phases.
-    let mut player = ship("player", Faction::Player, 0, 99, LaneEnd::Fore, "pc_beam");
+    let mut player = common::ship_2d("player", Faction::Player, Pos::new(2, 3), 99, Facing::Bow(Dir4::N), Arc::Forward, "pc_beam");
     player.shield_profile = naked_shields(); // so the 3-dmg telegraph lands on hull, not armour
-    let e = ship("e", Faction::Enemy, 2, 99, LaneEnd::Aft, "ai_beam");
-    let mut b = board(7, vec![
-        Some(player), None, Some(e), None, None, None, None,
-    ]);
+    let e = common::ship_2d("e", Faction::Enemy, Pos::new(2, 1), 99, Facing::Bow(Dir4::S), Arc::Forward, "ai_beam");
+    let e_idx = Pos::new(2, 1).to_index();
+    let player_idx = Pos::new(2, 3).to_index();
+    let mut b = common::board_2d(vec![player, e]);
     let content = CombatContent { player_beam: beam("pc_beam", 1), ai_beam: beam("ai_beam", 3) };
 
     // Before any phase, the enemy has telegraphed nothing.
     assert!(
-        b.cells[2].as_ref().unwrap().queue.is_empty(),
+        b.cells[e_idx].as_ref().unwrap().queue.is_empty(),
         "enemy starts with an empty (un-telegraphed) queue",
     );
 
@@ -366,7 +351,7 @@ fn telegraph_persists_in_enemy_queue_between_world_phases() {
     // a no-op — then DECIDES and telegraphs its next action, left un-fired.
     run_world_phase(&mut b, &content);
 
-    let q1 = b.cells[2].as_ref().unwrap().queue.clone();
+    let q1 = b.cells[e_idx].as_ref().unwrap().queue.clone();
     assert_eq!(
         q1,
         vec!["ai_beam".to_string()],
@@ -374,7 +359,7 @@ fn telegraph_persists_in_enemy_queue_between_world_phases() {
     );
     // The player took no damage yet — the telegraphed shot has NOT fired.
     assert_eq!(
-        b.cells[0].as_ref().unwrap().hull,
+        b.cells[player_idx].as_ref().unwrap().hull,
         99,
         "the telegraphed shot is intent only — it has not dealt damage this phase",
     );
@@ -383,11 +368,11 @@ fn telegraph_persists_in_enemy_queue_between_world_phases() {
     // then the enemy re-telegraphs for the following phase.
     run_world_phase(&mut b, &content);
     assert!(
-        b.cells[0].as_ref().unwrap().hull < 99,
+        b.cells[player_idx].as_ref().unwrap().hull < 99,
         "#67: the previously-telegraphed action fires on the NEXT world phase",
     );
     assert_eq!(
-        b.cells[2].as_ref().unwrap().queue,
+        b.cells[e_idx].as_ref().unwrap().queue,
         vec!["ai_beam".to_string()],
         "the enemy re-telegraphs its next action after firing — the queue stays populated",
     );
@@ -397,29 +382,27 @@ fn telegraph_persists_in_enemy_queue_between_world_phases() {
 /// marching past its firing range. Regression for bruce's "enemies march in
 /// a line, never shoot, die" — the #68 close-move had over-corrected so that
 /// covered-end enemies maneuvered forever instead of firing.
-// #[ignore]: COMPOUND — stale 1-D fixture AND the V4 1-D-AI-gate caveat. (1) e1/e2/
-// player all at pos (0,0). (2) decide_enemy_action still decides via 1-D
-// resolve_targeting on `cell` but fires via 2-D resolve_targeting_2d on `pos` — the
-// exact desync V4 flagged. Restoring the #71 fires-and-holds guarantee needs BOTH the
-// 2-D fixture AND C1 routing decide_enemy_action through resolve_targeting_2d — #22.
-#[ignore = "stale 1-D fixture + V4 1-D-AI-gate caveat; restore at 2-D fixture rewrite AND C1 AI-gate convergence — #22"]
+// #22 + C1 (now landed): #71 fires-and-holds, on a 2-D column. Player at (2,3)
+// Bow(N) naked; e1 at (2,1) Bow(S) is distance 2 = Near = IN the narrow ai_beam's
+// band, so it must HOLD at (2,1) and FIRE down the column rather than march into
+// the player. e2 at (2,0) Bow(S) sits behind e1 on the same column (the live
+// "same lane-end" spawn shape) — its forward ray hits e1 first, so it can't fire
+// the player and maneuvers; the assertion is about e1 holding + the player taking
+// damage. (C1 routes decide_enemy_action through resolve_targeting_2d, closing
+// the V4 desync that gated this.)
 #[test]
 fn enemy_fires_and_holds_when_in_band_does_not_march() {
     use broadside_engine::resolve::run_world_phase;
-    // Narrow-band ai weapon (PB/Close/Mid, like the live pulse_laser).
+    // Narrow-band ai weapon (PB/Close/Mid 1-D; the live pulse_laser shape).
     let mut narrow = beam("ai_beam", 2);
     narrow.targeting.band = vec![RangeBand::PointBlank, RangeBand::Close, RangeBand::Mid];
     narrow.targeting.optimal_band = RangeBand::Close;
-    let mut player = ship("player", Faction::Player, 1, 99, LaneEnd::Fore, "pc_beam");
+    let mut player = common::ship_2d("player", Faction::Player, Pos::new(2, 3), 99, Facing::Bow(Dir4::N), Arc::Forward, "pc_beam");
     player.shield_profile = naked_shields(); // so hits land on hull (observable)
-    // TWO enemies on the SAME side of the player — the live spawn shape that
-    // exposed the bug (all "covered" the same lane-end, so all but one used
-    // to maneuver forever and never fire).
-    let e1 = ship("e1", Faction::Enemy, 5, 99, LaneEnd::Aft, "ai_beam"); // dist 4 = Mid, IN band
-    let e2 = ship("e2", Faction::Enemy, 6, 99, LaneEnd::Aft, "ai_beam");
-    let mut b = board(9, vec![
-        None, Some(player), None, None, None, Some(e1), Some(e2), None, None,
-    ]);
+    let e1 = common::ship_2d("e1", Faction::Enemy, Pos::new(2, 1), 99, Facing::Bow(Dir4::S), Arc::Forward, "ai_beam");
+    let e2 = common::ship_2d("e2", Faction::Enemy, Pos::new(2, 0), 99, Facing::Bow(Dir4::S), Arc::Forward, "ai_beam");
+    let e1_start = Pos::new(2, 1).to_index();
+    let mut b = common::board_2d(vec![player, e1, e2]);
     let content = CombatContent { player_beam: beam("pc_beam", 1), ai_beam: narrow };
 
     let hull_before = b.cells.iter().flatten().find(|s| s.id == "player").unwrap().hull;
@@ -429,9 +412,9 @@ fn enemy_fires_and_holds_when_in_band_does_not_march() {
     let e1_cell = b.cells.iter().position(|c| c.as_ref().map(|s| s.id == "e1").unwrap_or(false));
     let hull_after = b.cells.iter().flatten().find(|s| s.id == "player").map(|s| s.hull);
 
-    // e1 was in band at cell 5 from the start: it must HOLD there and FIRE,
+    // e1 was in band at (2,1) from the start: it must HOLD there and FIRE,
     // not march toward/into the player.
-    assert_eq!(e1_cell, Some(5), "an in-band enemy holds its firing position, it does not march");
+    assert_eq!(e1_cell, Some(e1_start), "an in-band enemy holds its firing position, it does not march");
     assert!(
         hull_after.unwrap() < hull_before,
         "#71: an in-band bearing enemy actually FIRES (player hull drops); got {hull_after:?} from {hull_before}",
