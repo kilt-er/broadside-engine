@@ -127,11 +127,18 @@ name = "capture"
 path = "src/bin/capture.rs"
 required-features = ["render", "runtime"]
 
-# Dynamic-lighting test: lofts the v2 Aegis + renders a 180° key-light sweep to
+# Dynamic-lighting test: 180° key-light sweep on a placeholder wedge hull to
 # bugs/light_sweep/. `cargo run --bin light_sweep --features render,runtime`.
 [[bin]]
 name = "light_sweep"
 path = "src/bin/light_sweep.rs"
+required-features = ["render", "runtime"]
+
+# Faithful Aegis: imports + verifies + renders assets/ships/Aegis.glb (at-rest +
+# light-sweep) to bugs/aegis/. `cargo run --bin render_aegis --features render,runtime`.
+[[bin]]
+name = "render_aegis"
+path = "src/bin/render_aegis.rs"
 required-features = ["render", "runtime"]
 
 [dev-dependencies]
