@@ -720,56 +720,134 @@ impl Content for DemoContent {
     }
 
     fn spawn_projectile(&self, kind: &str, owner: &Ship) -> Projectile {
-        // Minimal hardcoded table: matches the analysis-doc descriptions
-        // for `torpedo` (slow, high payload) and `missile_salvo` (fast,
-        // light payload). Unknown kinds fall back to a 0-damage dummy so
-        // the demo doesn't crash on a typo.
-        match kind {
-            "torpedo" => Projectile {
-                id: format!("{}-torp-{}", owner.id, owner.cell),
-                kind: "torpedo".into(),
-                cell: owner.cell,
-                // v2 (A3 EXPAND): carry the owner's 2-D pos; the real 2-D heading
-                // is derived by the resolver's ordnance projector (R5).
-                pos: owner.pos,
-                heading: match owner.orientation {
-                    crate::types::Orientation::BowOn { bow } => bow,
-                    crate::types::Orientation::Broadside => crate::types::LaneEnd::Fore,
+        spawn_ordnance(kind, owner)
+    }
+}
+
+/* =========================================================================
+ * Ordnance spawn table (#42).
+ *
+ * The real per-kind projectile stats for every catalog ordnance weapon
+ * that emits a `SPAWN_ORDNANCE` effect. Authored here (in the content
+ * lane) rather than in the catalog JSON because the `Projectile` shape —
+ * speed / hull / payload / heading — is engine-runtime, not part of the
+ * weapon's wire `Action` (the analysis-doc catalog only carries the
+ * launcher's `{ cost, targeting, effects: ["SPAWN_ORDNANCE"] }`; the
+ * projectile it spawns is a separate entity the resolver advances).
+ *
+ * ## Which kinds land here
+ *
+ * `Effect::SPAWN_ORDNANCE { projectile }` carries a kind string that the
+ * canonical transformer defaults to the launching action's id
+ * (`catalog_canonical.rs`: `m.insert("projectile", action_id)`). So the
+ * `kind` argument is one of the ordnance action ids whose `effects`
+ * include `SPAWN_ORDNANCE`: per the committed catalog that is exactly
+ * `torpedo`, `missile_salvo`, and `heavy_torpedo`. (`mine_layer` is
+ * `DEPLOY`, NOT `SPAWN_ORDNANCE` — it becomes a hazard via the DEPLOY arm,
+ * never a travelling projectile, so it is deliberately absent here.)
+ *
+ * ## Per-kind stats (analysis HTML "Ordnance & Field Kit", lines 991-996)
+ *
+ * - **torpedo** — "a slow projectile entity that advances one cell per
+ *   turn ... does no damage on launch — the enemy must dodge it, shoot it
+ *   down, or eat it." → speed 1, a solid 4-damage payload, hull 1 (one
+ *   point-defense hit breaks it up).
+ * - **missile_salvo** — "multiple fast projectile entities ... many small
+ *   impacts." We model the salvo as ONE fast, fragile entity carrying a
+ *   light payload (the multi-impact "chain / target-lock trigger" flavor
+ *   is the launcher's job — `flak_battery`/`targeting_laser` mods — not the
+ *   projectile's): speed 2, 2 damage, hull 1.
+ * - **heavy_torpedo** — "a slow, high-payload entity that detonates with a
+ *   systems-offline pulse. Heavy heat; a capital-ship opener." → speed 1,
+ *   a heavy 6-damage payload PLUS a `SystemsOffline` status rider on
+ *   impact (the in-payload analog of the launcher's `APPLY_STATUS`
+ *   effect), hull 2 (tougher to shoot down than a light torpedo).
+ *
+ * Unknown kinds fall back to a 0-damage, speed-1 dummy so a typo'd
+ * projectile id degrades gracefully (flies, hits, does nothing) instead of
+ * panicking mid-combat.
+ *
+ * ## Heading (the 2-D fix)
+ *
+ * `advance_projectile_2d` (R5) steps the projectile along its
+ * [`Projectile::heading8`] (a `Dir8`) each ordnance phase. The pre-#42 stub
+ * hardcoded `Dir8::N` for every projectile — correct only for a player
+ * facing N (into the screen, toward the back-row enemies); an ENEMY torpedo
+ * would have flown AWAY from the player. We derive the heading from the
+ * OWNER's facing, matching the resolver's own arc-less ORDNANCE bearing
+ * convention in `resolve::bearing_cardinals`: a `Bow(dir)` launches along
+ * the bow; a `Broadside(axis)` launches along the axis's
+ * increasing-coordinate direction (a stable "ahead" for a hull with no
+ * single bow). The legacy 1-D `heading` (`LaneEnd`) is kept consistent for
+ * the dead-for-live 1-D ordnance path until CONTRACT.
+ * ====================================================================== */
+
+/// Build the [`Projectile`] for ordnance `kind` launched by `owner`. See the
+/// module-level table comment above for the per-kind stats and the heading
+/// derivation. Public within the crate so the catalog-backed `Content` impl
+/// (and tests) reuse the single authoritative table.
+pub fn spawn_ordnance(kind: &str, owner: &Ship) -> Projectile {
+    let heading8 = ordnance_heading8(owner);
+    // Keep the legacy 1-D heading consistent (dead-for-live; CONTRACT drops it).
+    let heading = match owner.orientation {
+        crate::types::Orientation::BowOn { bow } => bow,
+        crate::types::Orientation::Broadside => crate::types::LaneEnd::Fore,
+    };
+    // Shared shell; per-kind arms override speed / hull / payload / id tag.
+    let base = |tag: &str, speed: u32, hull: i32, payload: Vec<Effect>| Projectile {
+        id: format!("{}-{tag}-{}", owner.id, owner.cell),
+        kind: kind.into(),
+        cell: owner.cell,
+        pos: owner.pos,
+        heading,
+        heading8,
+        speed,
+        hull,
+        payload,
+        owner_faction: owner.faction,
+    };
+    match kind {
+        "torpedo" => base(
+            "torp",
+            1,
+            1,
+            vec![Effect::DAMAGE { amount: 4, band_falloff: Some(false) }],
+        ),
+        // `missile` kept as an alias of `missile_salvo` for the demo's
+        // hand-built loadout / older fixtures that spawn "missile".
+        "missile_salvo" | "missile" => base(
+            "msl",
+            2,
+            1,
+            vec![Effect::DAMAGE { amount: 2, band_falloff: Some(false) }],
+        ),
+        "heavy_torpedo" => base(
+            "htorp",
+            1,
+            2,
+            vec![
+                Effect::DAMAGE { amount: 6, band_falloff: Some(false) },
+                // The "systems-offline pulse" the desc calls out, as an
+                // on-impact rider (mirrors the launcher's APPLY_STATUS).
+                Effect::APPLY_STATUS {
+                    status: crate::types::StatusKind::SystemsOffline,
+                    duration: 3,
                 },
-                heading8: crate::grid::Dir8::N,
-                speed: 1,
-                hull: 1,
-                payload: vec![Effect::DAMAGE { amount: 4, band_falloff: Some(false) }],
-                owner_faction: owner.faction,
-            },
-            "missile" => Projectile {
-                id: format!("{}-msl-{}", owner.id, owner.cell),
-                kind: "missile".into(),
-                cell: owner.cell,
-                pos: owner.pos,
-                heading: match owner.orientation {
-                    crate::types::Orientation::BowOn { bow } => bow,
-                    crate::types::Orientation::Broadside => crate::types::LaneEnd::Fore,
-                },
-                heading8: crate::grid::Dir8::N,
-                speed: 2,
-                hull: 1,
-                payload: vec![Effect::DAMAGE { amount: 2, band_falloff: Some(false) }],
-                owner_faction: owner.faction,
-            },
-            _ => Projectile {
-                id: format!("{}-unknown-{}", owner.id, owner.cell),
-                kind: kind.into(),
-                cell: owner.cell,
-                pos: owner.pos,
-                heading: crate::types::LaneEnd::Fore,
-                heading8: crate::grid::Dir8::N,
-                speed: 1,
-                hull: 1,
-                payload: vec![],
-                owner_faction: owner.faction,
-            },
-        }
+            ],
+        ),
+        _ => base("unknown", 1, 1, vec![]),
+    }
+}
+
+/// The [`crate::grid::Dir8`] an ordnance entity launched by `owner` travels.
+/// Matches `resolve::bearing_cardinals`'s arc-less ORDNANCE convention: the
+/// bow direction for a `Bow` stance, the axis's increasing-coordinate
+/// direction for a `Broadside` stance (a stable "ahead" with no single bow).
+fn ordnance_heading8(owner: &Ship) -> crate::grid::Dir8 {
+    use crate::grid::Facing;
+    match owner.facing {
+        Facing::Bow(dir) => dir.to_dir8(),
+        Facing::Broadside(axis) => axis.dirs().0.to_dir8(),
     }
 }
 
@@ -1279,5 +1357,89 @@ mod tests {
     fn synthetic_card_action_id_format() {
         assert_eq!(synthetic_card_action_id("mass_lock"), "__card_mass_lock");
         assert!(synthetic_card_action_id("anything").starts_with("__"));
+    }
+
+    /* ---- #42 ordnance spawn table ------------------------------------ */
+
+    /// Sum of DAMAGE amounts in a projectile's payload (the on-impact hit).
+    fn payload_damage(p: &Projectile) -> i32 {
+        p.payload
+            .iter()
+            .filter_map(|e| match e {
+                Effect::DAMAGE { amount, .. } => Some(*amount),
+                _ => None,
+            })
+            .sum()
+    }
+
+    /// Every catalog ordnance kind that emits `SPAWN_ORDNANCE` (torpedo,
+    /// missile_salvo, heavy_torpedo) spawns a real projectile with its
+    /// authored per-kind stats — not the old 0-damage dummy. This is the #42
+    /// regression: pre-fix only "torpedo"/"missile" had stats, so a catalog
+    /// `missile_salvo` / `heavy_torpedo` launch produced an inert 0-damage
+    /// entity.
+    #[test]
+    fn spawn_table_covers_every_catalog_ordnance_kind() {
+        let content = DemoContent::default();
+        let owner = player_with_mounts(0); // bow Dir4::S, faction Player
+
+        // torpedo — slow (1), solid payload (4), fragile (1).
+        let torp = content.spawn_projectile("torpedo", &owner);
+        assert_eq!(torp.kind, "torpedo");
+        assert_eq!(torp.speed, 1, "torpedo advances one cell per turn");
+        assert_eq!(payload_damage(&torp), 4, "torpedo carries a 4-damage payload");
+        assert_eq!(torp.hull, 1, "a light torpedo breaks up on one point-defense hit");
+
+        // missile_salvo — fast (2), light payload (2).
+        let msl = content.spawn_projectile("missile_salvo", &owner);
+        assert_eq!(msl.kind, "missile_salvo");
+        assert_eq!(msl.speed, 2, "missiles are fast");
+        assert_eq!(payload_damage(&msl), 2, "missile salvo is a light payload");
+
+        // heavy_torpedo — slow (1), heavy payload (6) + a SystemsOffline rider.
+        let heavy = content.spawn_projectile("heavy_torpedo", &owner);
+        assert_eq!(heavy.kind, "heavy_torpedo");
+        assert_eq!(heavy.speed, 1, "heavy torpedo is slow");
+        assert_eq!(payload_damage(&heavy), 6, "heavy torpedo is a heavy payload");
+        assert_eq!(heavy.hull, 2, "heavy torpedo is tougher to shoot down");
+        assert!(
+            heavy.payload.iter().any(|e| matches!(
+                e,
+                Effect::APPLY_STATUS { status: crate::types::StatusKind::SystemsOffline, .. }
+            )),
+            "heavy torpedo detonates with a systems-offline pulse",
+        );
+
+        // Unknown kind -> graceful 0-damage dummy (no panic).
+        let dud = content.spawn_projectile("not_a_real_kind", &owner);
+        assert_eq!(payload_damage(&dud), 0, "unknown kind is an inert dummy");
+    }
+
+    /// The projectile heading is derived from the OWNER's facing (the #42
+    /// 2-D fix), NOT a hardcoded `Dir8::N`. A player facing into the screen
+    /// (Bow N) launches N (toward the back-row enemies); an enemy facing the
+    /// player (Bow S) launches S (toward the player) — so an enemy torpedo
+    /// flies AT the player instead of away.
+    #[test]
+    fn spawn_heading_follows_owner_facing() {
+        use crate::grid::{Dir4, Dir8, Facing};
+        let content = DemoContent::default();
+
+        let mut player = player_with_mounts(0);
+        player.facing = Facing::Bow(Dir4::N);
+        let p_torp = content.spawn_projectile("torpedo", &player);
+        assert_eq!(p_torp.heading8, Dir8::N, "a bow-N owner launches northward");
+
+        let mut enemy = player_with_mounts(0);
+        enemy.id = "e".into();
+        enemy.faction = Faction::Enemy;
+        enemy.facing = Facing::Bow(Dir4::S);
+        let e_torp = content.spawn_projectile("torpedo", &enemy);
+        assert_eq!(
+            e_torp.heading8,
+            Dir8::S,
+            "a bow-S enemy launches toward the player (S), not the hardcoded N",
+        );
+        assert_eq!(e_torp.owner_faction, Faction::Enemy, "ownership carries through");
     }
 }
