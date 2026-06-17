@@ -57,7 +57,8 @@
 
 use std::collections::HashMap;
 
-use crate::types::{Board, RangeBand, Ship};
+use crate::grid::Range;
+use crate::types::{Board, Ship};
 
 /// Catalog id of an installed subsystem. Matches
 /// [`crate::types::SubsystemDef::id`]. We keep it as a typed wrapper so a
@@ -105,11 +106,13 @@ impl Installations {
 
 /// Marksman's per-hit damage bonus. Analysis HTML reads
 /// "Marksman: +1 damage at long range" — encoded as a flat `+1` whenever
-/// `band == Long`.
+/// `band == Range::Far` (the farthest 2-D band; #34 maps the 1-D "long range"
+/// onto the 3-band Chebyshev model).
 pub const MARKSMAN: &str = "marksman";
 
 /// Point-Blank Doctrine's per-hit damage bonus. Analysis-doc-aligned:
-/// `+2` whenever `band == PointBlank`. Synergizes with bow-on stance.
+/// `+2` whenever `band == Range::Adjacent` (point-blank = the nearest 2-D
+/// band). Synergizes with bow-on stance.
 pub const POINT_BLANK_DOCTRINE: &str = "point_blank_doctrine";
 
 /// HeatSink's end-of-turn effect: subtract one extra heat from the
@@ -128,10 +131,17 @@ pub const SUBSYSTEM_IDS: &[&str] = &[MARKSMAN, POINT_BLANK_DOCTRINE, HEAT_SINK];
 /// **attacker** and sum its per-hit damage bonus. Called by the
 /// `Content::damage_modifier` impl on [`crate::input::DemoContent`].
 ///
-/// `band` is the post-falloff range bucket. The bonus is additive — for
-/// the current three subsystems, only Marksman and Point-Blank Doctrine
-/// contribute and they contribute at most one band each. Returns 0 if no
-/// subsystem on the attacker matches the band.
+/// `band` is the post-falloff 2-D [`Range`] bucket (#34: the 3-band Chebyshev
+/// `Adjacent`/`Near`/`Far`, NOT the legacy 1-D `RangeBand`). The bonus is
+/// additive — for the current three subsystems, only Marksman and Point-Blank
+/// Doctrine contribute and they contribute at most one band each. Returns 0 if
+/// no subsystem on the attacker matches the band.
+///
+/// **1-D -> 2-D band mapping (#34):** the v1 5-band subsystem flavour folds onto
+/// the 3 v2 bands: "point-blank" (PBD) keys [`Range::Adjacent`], "long range"
+/// (Marksman) keys [`Range::Far`]. This keeps both subsystems LIVE in 2-D — the
+/// pre-#34 `Range -> RangeBand` shim collapsed `Far -> Mid`, so a `Long`-keyed
+/// Marksman could never fire (no 2-D band mapped to `Long`).
 ///
 /// **Direction (audit #67):** modifiers are attacker-side. The analysis
 /// HTML's catalog descs all read "+1 damage **when firing**" / "**when
@@ -142,14 +152,14 @@ pub const SUBSYSTEM_IDS: &[&str] = &[MARKSMAN, POINT_BLANK_DOCTRINE, HEAT_SINK];
 pub fn damage_modifier_for(
     installed: &[SubsystemId],
     _attacker: &Ship,
-    band: RangeBand,
+    band: Range,
     _board: &Board,
 ) -> i32 {
     let mut bonus = 0;
     for id in installed {
         match id.as_str() {
-            MARKSMAN if band == RangeBand::Long => bonus += 1,
-            POINT_BLANK_DOCTRINE if band == RangeBand::PointBlank => bonus += 2,
+            MARKSMAN if band == Range::Far => bonus += 1,
+            POINT_BLANK_DOCTRINE if band == Range::Adjacent => bonus += 2,
             _ => {}
         }
     }
@@ -260,25 +270,25 @@ mod tests {
     }
 
     #[test]
-    fn marksman_only_adds_at_long() {
+    fn marksman_only_adds_at_far() {
+        // #34: Marksman ("long range") keys the farthest 2-D band, Range::Far.
         let attacker = naked_ship("p", 0, 0, 6);
         let board = empty_board(vec![attacker.clone()]);
         let installed = vec![MARKSMAN.to_string()];
-        assert_eq!(damage_modifier_for(&installed, &attacker, RangeBand::PointBlank, &board), 0);
-        assert_eq!(damage_modifier_for(&installed, &attacker, RangeBand::Close, &board), 0);
-        assert_eq!(damage_modifier_for(&installed, &attacker, RangeBand::Mid, &board), 0);
-        assert_eq!(damage_modifier_for(&installed, &attacker, RangeBand::Long, &board), 1);
-        assert_eq!(damage_modifier_for(&installed, &attacker, RangeBand::Extreme, &board), 0);
+        assert_eq!(damage_modifier_for(&installed, &attacker, Range::Adjacent, &board), 0);
+        assert_eq!(damage_modifier_for(&installed, &attacker, Range::Near, &board), 0);
+        assert_eq!(damage_modifier_for(&installed, &attacker, Range::Far, &board), 1);
     }
 
     #[test]
-    fn point_blank_doctrine_only_adds_at_point_blank() {
+    fn point_blank_doctrine_only_adds_at_adjacent() {
+        // #34: Point-Blank Doctrine keys the nearest 2-D band, Range::Adjacent.
         let attacker = naked_ship("p", 0, 0, 6);
         let board = empty_board(vec![attacker.clone()]);
         let installed = vec![POINT_BLANK_DOCTRINE.to_string()];
-        assert_eq!(damage_modifier_for(&installed, &attacker, RangeBand::PointBlank, &board), 2);
-        assert_eq!(damage_modifier_for(&installed, &attacker, RangeBand::Close, &board), 0);
-        assert_eq!(damage_modifier_for(&installed, &attacker, RangeBand::Long, &board), 0);
+        assert_eq!(damage_modifier_for(&installed, &attacker, Range::Adjacent, &board), 2);
+        assert_eq!(damage_modifier_for(&installed, &attacker, Range::Near, &board), 0);
+        assert_eq!(damage_modifier_for(&installed, &attacker, Range::Far, &board), 0);
     }
 
     #[test]
@@ -292,10 +302,10 @@ mod tests {
             MARKSMAN.to_string(), MARKSMAN.to_string(),
             POINT_BLANK_DOCTRINE.to_string(), POINT_BLANK_DOCTRINE.to_string(),
         ];
-        // At PB: only PBD applies, 2×2 = 4 bonus.
-        assert_eq!(damage_modifier_for(&installed, &attacker, RangeBand::PointBlank, &board), 4);
-        // At Long: only Marksman applies, 2×1 = 2 bonus.
-        assert_eq!(damage_modifier_for(&installed, &attacker, RangeBand::Long, &board), 2);
+        // At Adjacent: only PBD applies, 2×2 = 4 bonus.
+        assert_eq!(damage_modifier_for(&installed, &attacker, Range::Adjacent, &board), 4);
+        // At Far: only Marksman applies, 2×1 = 2 bonus.
+        assert_eq!(damage_modifier_for(&installed, &attacker, Range::Far, &board), 2);
     }
 
     #[test]

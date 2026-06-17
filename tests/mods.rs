@@ -137,10 +137,11 @@ impl Content for ModContent {
     fn spawn_projectile(&self, _: &str, _: &Ship) -> Projectile {
         unreachable!("mod tests fire beams, not ordnance");
     }
-    fn damage_modifier(&self, attacker: &Ship, band: RangeBand, _board: &Board) -> i32 {
-        // Marksman: +1 when firing at Long, from the ATTACKER's fittings only.
+    fn damage_modifier(&self, attacker: &Ship, band: broadside_engine::grid::Range, _board: &Board) -> i32 {
+        // Marksman: +1 when firing at the farthest 2-D band (Range::Far, the #34
+        // 2-D successor of the 1-D "Long"), from the ATTACKER's fittings only.
         match &self.marksman_on {
-            Some(id) if *id == attacker.id && band == RangeBand::Long => 1,
+            Some(id) if *id == attacker.id && band == broadside_engine::grid::Range::Far => 1,
             _ => 0,
         }
     }

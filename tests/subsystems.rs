@@ -204,29 +204,36 @@ fn marksman_on_target_does_not_modify_damage() {
     );
 }
 
-/// Marksman does NOT add at non-Long bands. Same setup as the
-/// attacker-side install above but firing at Mid range (distance 3
+/// Marksman does NOT add at a non-Far band. Same setup as the
+/// attacker-side install above but firing at a CLOSE distance (distance 2
 /// from attacker cell 0). The install is on the ATTACKER per audit #67;
 /// installing on the target would make this test pass for the wrong
 /// reason (no bonus from any band) so the install side matters.
+///
+/// #34 note: Marksman now keys the 2-D [`broadside_engine::grid::Range::Far`]
+/// (the 1-D `apply_damage` path maps its `RangeBand` up to the 3-band 2-D
+/// `Range` — `PointBlank->Adjacent`, `Close->Near`, `Mid|Long|Extreme->Far`).
+/// Distance 3+ all fold into `Far`, so the "non-firing" gap is now `Adjacent`
+/// (d<=1) and `Near` (d==2). We fire at distance 2 (`Near`) — a band where
+/// Marksman genuinely does NOT contribute — so the gate is still under test.
 #[test]
 fn marksman_is_band_gated() {
     let mut board = board_with(
         7,
         vec![
             naked_ship("attacker", Faction::Player, 0, 10),
-            naked_ship("target", Faction::Enemy, 3, 10),
+            naked_ship("target", Faction::Enemy, 2, 10),
         ],
     );
     let log = damage_log(&mut board);
     let mut content = DemoContent::default();
     content.install_subsystem("attacker", MARKSMAN);
-    // Distance 0->3 = Mid band. Marksman fires only at Long.
-    apply_damage(3, 3, 0, &raw_weapon(RangeBand::Mid, 3), &mut board, &content);
+    // Distance 0->2 = Close (1-D) -> Near (2-D). Marksman fires only at Far.
+    apply_damage(2, 3, 0, &raw_weapon(RangeBand::Close, 3), &mut board, &content);
     assert_eq!(
         *log.borrow(),
-        vec![(3, 3)],
-        "Marksman on attacker must NOT add at Mid; raw 3 lands unchanged",
+        vec![(2, 3)],
+        "Marksman on attacker must NOT add at Near (distance 2); raw 3 lands unchanged",
     );
 }
 

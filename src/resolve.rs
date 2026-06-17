@@ -63,8 +63,19 @@ pub trait Content {
     /// damage pipeline **after** band falloff and **before** target-lock
     /// doubling. Concrete `Content` impls scan the **attacker's**
     /// installed subsystem list and sum each match's contribution —
-    /// Marksman is `+1` flat, Point-Blank Doctrine is `+2` when
-    /// `band == PointBlank`, and so on.
+    /// Point-Blank Doctrine is `+2` at [`crate::grid::Range::Adjacent`],
+    /// Marksman is `+1` at [`crate::grid::Range::Far`], and so on.
+    ///
+    /// **2-D band (#34):** `band` is the 2-D [`crate::grid::Range`] (the
+    /// 3-band Chebyshev bucket — `Adjacent`/`Near`/`Far`), NOT the legacy
+    /// 1-D `RangeBand`. The live damage pipeline ([`apply_damage_2d`])
+    /// passes the actual 2-D band straight through — no lossy collapse.
+    /// (The 1-D 5-band subsystem flavour mapped onto the 3 bands: the
+    /// "point-blank" subsystem keys `Adjacent`, the "long-range" one keys
+    /// `Far`. Before #34 the 2-D path collapsed `Far -> Mid` through a
+    /// `Range -> RangeBand` shim, so a `Long`-keyed subsystem like Marksman
+    /// could NEVER fire in 2-D — that latent bug is what this migration
+    /// fixes.)
     ///
     /// **Direction (audit #67):** modifiers fire from the attacker's
     /// fittings, NOT the target's. The analysis HTML's catalog descs
@@ -87,7 +98,7 @@ pub trait Content {
     ///   step inside the pipeline.
     ///
     /// Team-lead approved this trait extension; architect notified.
-    fn damage_modifier(&self, _attacker: &Ship, _band: RangeBand, _board: &Board) -> i32 {
+    fn damage_modifier(&self, _attacker: &Ship, _band: crate::grid::Range, _board: &Board) -> i32 {
         0
     }
 
@@ -1262,7 +1273,13 @@ pub fn apply_damage(
     //    onto Board. Audit #67: modifiers are attacker-side (the
     //    attacker's installed subsystems fire), so we look up by
     //    `atk_cell`, not `target_cell`.
-    dmg = apply_modifiers(dmg, atk_cell, band, board, content);
+    //    #34: `damage_modifier`/`apply_modifiers` now take the 2-D `Range`.
+    //    This 1-D `apply_damage` is dead-for-live (the live path is
+    //    `apply_damage_2d`, which already has the real 2-D band); it stays
+    //    only for its fixture tests until CONTRACT. Map its 1-D `RangeBand`
+    //    up to the 2-D `Range` at THIS boundary — the shim now lives in the
+    //    dead 1-D path, not the live 2-D one (that was the #34 point).
+    dmg = apply_modifiers(dmg, atk_cell, rangeband_to_range(band), board, content);
 
     // 3. Target-lock doubles the incoming hit and is consumed.
     if let Some(target) = board.cells[target_cell].as_mut() {
@@ -1352,11 +1369,11 @@ pub fn apply_damage_2d(
     };
 
     // 2. Subsystem damage modifiers (ATTACKER-side: look up by the attacker's
-    //    cell). `apply_modifiers`/`Content::damage_modifier` still take the 1-D
-    //    `RangeBand`, so map the 2-D `Range` -> `RangeBand` at the boundary (a
-    //    documented transition shim; `damage_modifier` is a no-op stub today).
-    //    Migrate the trait to `Range` when real subsystems land + drop the shim.
-    dmg = apply_modifiers(dmg, atk_pos.to_index(), range_to_rangeband(band), board, content);
+    //    cell). #34: `apply_modifiers`/`Content::damage_modifier` now take the
+    //    2-D `Range` directly — the live path passes the ACTUAL 2-D band, no
+    //    `Range -> RangeBand` collapse (the old shim dropped `Far -> Mid`, which
+    //    silently disabled any `Far`-keyed subsystem like Marksman in 2-D).
+    dmg = apply_modifiers(dmg, atk_pos.to_index(), band, board, content);
 
     // 3. Target-lock doubles the hit and is consumed.
     if let Some(target) = board.ship_at_mut(target_pos) {
@@ -1401,15 +1418,25 @@ pub fn apply_damage_2d(
     }
 }
 
-/// Map a 2-D [`crate::grid::Range`] to the 1-D [`RangeBand`] for the (still-1-D)
-/// `Content::damage_modifier` trait seam (R4 transition shim only — removed when
-/// `damage_modifier` migrates to `Range`). The 3 v2 bands collapse onto the
-/// nearest 1-D band: `Adjacent -> PointBlank`, `Near -> Close`, `Far -> Mid`.
-fn range_to_rangeband(r: crate::grid::Range) -> RangeBand {
-    match r {
-        crate::grid::Range::Adjacent => RangeBand::PointBlank,
-        crate::grid::Range::Near => RangeBand::Close,
-        crate::grid::Range::Far => RangeBand::Mid,
+/// Map a 1-D [`RangeBand`] up to the 2-D [`crate::grid::Range`] for the
+/// **dead-for-live** 1-D [`apply_damage`] path (#34). The live 2-D pipeline
+/// ([`apply_damage_2d`]) already holds the real 2-D `Range` and no longer needs
+/// any conversion — the `Content::damage_modifier` trait now takes `Range`
+/// natively. This collapse lives ONLY here so the 1-D fixture path keeps
+/// compiling until CONTRACT deletes [`apply_damage`]; it is the inverse-direction
+/// successor of the removed `range_to_rangeband` shim.
+///
+/// The 5 v1 bands fold onto the 3 v2 bands the same way the catalog loader's
+/// `normalize_2d_bands` and the canonical transformer do (blueprint decision #6):
+/// `PointBlank -> Adjacent`, `Close -> Near`, `Mid|Long|Extreme -> Far`. So a 1-D
+/// `Long` hit maps to `Far` — and a `Far`-keyed subsystem (Marksman) still fires
+/// on the 1-D path, matching its 2-D behaviour.
+fn rangeband_to_range(b: RangeBand) -> crate::grid::Range {
+    use crate::grid::Range;
+    match b {
+        RangeBand::PointBlank => Range::Adjacent,
+        RangeBand::Close => Range::Near,
+        RangeBand::Mid | RangeBand::Long | RangeBand::Extreme => Range::Far,
     }
 }
 
@@ -2163,7 +2190,7 @@ fn dummy_weapon() -> Action {
 fn apply_modifiers(
     dmg: i32,
     atk_cell: usize,
-    band: RangeBand,
+    band: crate::grid::Range,
     board: &Board,
     content: &dyn Content,
 ) -> i32 {
@@ -3945,7 +3972,7 @@ mod tests {
     impl Content for FixedModifier {
         fn action(&self, _: &str) -> Option<&Action> { None }
         fn spawn_projectile(&self, _: &str, _: &Ship) -> Projectile { unreachable!() }
-        fn damage_modifier(&self, _attacker: &Ship, _b: RangeBand, _board: &Board) -> i32 {
+        fn damage_modifier(&self, _attacker: &Ship, _b: crate::grid::Range, _board: &Board) -> i32 {
             self.0
         }
     }
@@ -3957,7 +3984,7 @@ mod tests {
         let board = make_board(7, vec![
             None, Some(scout), None, None, None, None, None,
         ]);
-        let out = super::apply_modifiers(4, 1, RangeBand::Close, &board, &NoContent);
+        let out = super::apply_modifiers(4, 1, crate::grid::Range::Near, &board, &NoContent);
         assert_eq!(out, 4);
     }
 

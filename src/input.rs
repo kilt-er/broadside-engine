@@ -689,11 +689,11 @@ impl Content for DemoContent {
     fn damage_modifier(
         &self,
         attacker: &Ship,
-        band: crate::types::RangeBand,
+        band: crate::grid::Range,
         board: &crate::types::Board,
     ) -> i32 {
         // Audit #67: subsystem damage bonuses fire from the attacker's
-        // installed fittings, not the target's.
+        // installed fittings, not the target's. #34: `band` is the 2-D Range.
         let installed = self.installations.for_ship(&attacker.id);
         crate::subsystems::damage_modifier_for(installed, attacker, band, board)
     }
