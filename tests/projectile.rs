@@ -97,6 +97,34 @@ fn projectile(id: &str, cell: usize, heading: LaneEnd, speed: u32, dmg: i32, own
     }
 }
 
+/// A 2-D projectile at a real `pos` heading `heading8` (the field the live
+/// `advance_projectile_2d` / R5 reads, alongside `pos`). `cell` mirrors
+/// `pos.to_index()` (invariant A). Use this for the live-path tests
+/// (`run_world_phase` / `resolve_round`); the bare `projectile()` above drives
+/// the still-1-D `advance_projectile` primitive directly.
+fn projectile_2d(
+    id: &str,
+    pos: broadside_engine::grid::Pos,
+    heading8: broadside_engine::grid::Dir8,
+    speed: u32,
+    dmg: i32,
+    owner: Faction,
+) -> Projectile {
+    Projectile {
+        id: id.into(),
+        kind: "torpedo".into(),
+        cell: pos.to_index(),
+        pos,
+        // 1-D `heading` is the dead mirror; the live path reads `heading8`.
+        heading: LaneEnd::Fore,
+        heading8,
+        speed,
+        hull: 2,
+        payload: vec![Effect::DAMAGE { amount: dmg, band_falloff: Some(false) }],
+        owner_faction: owner,
+    }
+}
+
 /// A board with the given ships and ordnance, sized `size`.
 fn board(size: usize, cells: Vec<Option<Ship>>, ordnance: Vec<Projectile>) -> Board {
     Board {
@@ -123,13 +151,20 @@ impl Content for OrdContent {
         (id == "launch_torpedo").then_some(&self.launcher)
     }
     fn spawn_projectile(&self, kind: &str, owner: &Ship) -> Projectile {
+        // 2-D spawn: the torpedo starts on the owner's cell and heads along the
+        // owner's bow cardinal (heading8), so the live advance_projectile_2d
+        // (R5) steps it correctly. Mirrors the real catalog spawn shape (#42).
+        let heading8 = match owner.facing {
+            broadside_engine::grid::Facing::Bow(d) => d.to_dir8(),
+            broadside_engine::grid::Facing::Broadside(axis) => axis.dirs().0.to_dir8(),
+        };
         Projectile {
             id: format!("{}:{}", owner.id, kind),
             kind: kind.into(),
-            cell: owner.cell,
-            pos: broadside_engine::grid::Pos::new(0, 0),
+            cell: owner.pos.to_index(),
+            pos: owner.pos,
             heading: LaneEnd::Fore,
-            heading8: broadside_engine::grid::Dir8::N,
+            heading8,
             speed: 1,
             hull: 2,
             payload: vec![Effect::DAMAGE { amount: 3, band_falloff: Some(false) }],
@@ -345,30 +380,36 @@ fn launcher_action() -> Action {
     }
 }
 
-// #[ignore]: stale 1-D fixture (target_ship pins pos (0,0)) — the launcher fires
-// through the 2-D path (R3) which can't target co-located ships, so no torpedo
-// spawns; and ordnance advance is 2-D-pending (R5, #37). NOT a 2-D bug. Restore
-// via board_2d/ship_2d real positions once R5 lands — tracks #22.
-#[ignore = "stale 1-D fixture (pos (0,0)) + ordnance advance R5-pending (#37); restore at 2-D projectile fixture migration — #22"]
+// #22 RESTORED: the launcher fires through the live 2-D path (resolve_round ->
+// fire_player_queue -> SPAWN_ORDNANCE) and the spawned torpedo advances through
+// the 2-D ordnance phase (advance_projectile_2d, R5). Player at (2,3) Bow(N): its
+// Forward ORDNANCE arc bears one step N (the spawn cell (2,2), in-bounds), so the
+// launcher fires; the torpedo spawns at the player's cell (2,3) heading N and the
+// same round's ordnance phase steps it one cell N to (2,2). Enemy at (2,0) is
+// dressing (the spawn doesn't depend on it).
 #[test]
 fn firing_a_launcher_spawns_a_projectile_on_the_board() {
-    // Player at cell 0 (bow=Fore so its Forward arc bears up-lane), an enemy
-    // far enough away (cell 4) to be a valid ORDNANCE-band target. Queue the
-    // launcher; resolve_round fires the player queue (spawning the torpedo)
-    // and then runs the ordnance phase (advancing it).
-    let mut player = target_ship("player", 0, 12, LaneEnd::Fore);
+    use broadside_engine::grid::{Dir4, Facing, Pos};
     let player = {
-        player.faction = Faction::Player;
-        player.mounts = vec![Mount { id: "m1".into(), arc: Arc::Forward, weapon: "launch_torpedo".into() }];
-        player.queue = vec!["launch_torpedo".into()];
-        player
+        let mut p = target_ship("player", Pos::new(2, 3).to_index(), 12, LaneEnd::Fore);
+        p.faction = Faction::Player;
+        p.pos = Pos::new(2, 3);
+        p.facing = Facing::Bow(Dir4::N);
+        p.mounts = vec![Mount { id: "m1".into(), arc: Arc::Forward, weapon: "launch_torpedo".into() }];
+        p.queue = vec!["launch_torpedo".into()];
+        p
     };
-    let enemy = target_ship("e", 4, 6, LaneEnd::Aft);
-    let mut b = board(
-        7,
-        vec![Some(player), None, None, None, Some(enemy), None, None],
-        vec![],
-    );
+    let enemy = {
+        let mut e = target_ship("e", Pos::new(2, 0).to_index(), 6, LaneEnd::Aft);
+        e.pos = Pos::new(2, 0);
+        e.facing = Facing::Bow(Dir4::S);
+        e
+    };
+    let mut cells: Vec<Option<Ship>> = (0..broadside_engine::grid::CELLS).map(|_| None).collect();
+    let (pi, ei) = (player.pos.to_index(), enemy.pos.to_index());
+    cells[pi] = Some(player);
+    cells[ei] = Some(enemy);
+    let mut b = board(broadside_engine::grid::COLS, cells, vec![]);
     let content = OrdContent { launcher: launcher_action() };
 
     // Snapshot ordnance count before firing.
@@ -376,15 +417,15 @@ fn firing_a_launcher_spawns_a_projectile_on_the_board() {
 
     resolve_round(&mut b, &content);
 
-    // The spawned torpedo started at the player's cell (0) heading Fore at
-    // speed 1; one ordnance-phase advance steps it to cell 1. So after the
-    // round it exists and has moved.
+    // The spawned torpedo started at the player's cell (2,3) heading N at speed
+    // 1; one ordnance-phase advance steps it N to (2,2). So after the round it
+    // exists and has moved.
     assert_eq!(b.ordnance.len(), 1, "the launcher spawned exactly one projectile");
     assert_eq!(b.ordnance[0].kind, "torpedo");
     assert_eq!(b.ordnance[0].owner_faction, Faction::Player);
     assert_eq!(
-        b.ordnance[0].cell, 1,
-        "spawned at the player's cell 0, advanced one cell Fore in the same round's ordnance phase",
+        b.ordnance[0].pos, Pos::new(2, 2),
+        "spawned at the player's cell (2,3), advanced one cell N to (2,2) in the same round's ordnance phase",
     );
 }
 
@@ -392,24 +433,25 @@ fn firing_a_launcher_spawns_a_projectile_on_the_board() {
  * 7. World-phase ordnance pass drives advance for every live projectile.
  * ====================================================================== */
 
-// #[ignore]: ordnance advance is 2-D-pending (R5, #37) + stale 1-D fixture
-// (pos (0,0)). The fore-heading advance assertion is 1-D; R5 ports advance to the
-// 2-D grid. NOT a 2-D bug. Restore once R5 lands, on 2-D fixtures — tracks #22.
-#[ignore = "ordnance advance R5-pending (#37) + stale 1-D fixture (pos (0,0)); restore at 2-D projectile fixture migration — #22"]
+// #22 RESTORED: the live ordnance phase (run_world_phase -> advance_projectile_2d,
+// R5) steps each projectile along its `heading8` over the 2-D grid. Two
+// independent projectiles on different rows so they don't interact:
+//   "a" at (1,0) heading E -> (2,0) [index 2]; "z" at (3,2) heading W -> (2,2)
+//   [index 12]. Empty board (no occupants) so neither impacts.
 #[test]
 fn world_phase_advances_all_live_projectiles() {
-    // Two independent projectiles; one round of the world phase steps both.
+    use broadside_engine::grid::{Dir8, Pos};
     let mut b = board(
-        9,
-        vec![None; 9],
+        broadside_engine::grid::COLS,
+        vec![None; broadside_engine::grid::CELLS],
         vec![
-            projectile("a", 1, LaneEnd::Fore, 1, 3, Faction::Player),
-            projectile("z", 7, LaneEnd::Aft, 1, 3, Faction::Enemy),
+            projectile_2d("a", Pos::new(1, 0), Dir8::E, 1, 3, Faction::Player),
+            projectile_2d("z", Pos::new(3, 2), Dir8::W, 1, 3, Faction::Enemy),
         ],
     );
     run_world_phase(&mut b, &NoContent);
 
-    let cell_of = |id: &str| b.ordnance.iter().find(|p| p.id == id).map(|p| p.cell);
-    assert_eq!(cell_of("a"), Some(2), "fore-heading projectile advanced");
-    assert_eq!(cell_of("z"), Some(6), "aft-heading projectile advanced");
+    let pos_of = |id: &str| b.ordnance.iter().find(|p| p.id == id).map(|p| p.pos);
+    assert_eq!(pos_of("a"), Some(Pos::new(2, 0)), "E-heading projectile advanced one cell E");
+    assert_eq!(pos_of("z"), Some(Pos::new(2, 2)), "W-heading projectile advanced one cell W");
 }
