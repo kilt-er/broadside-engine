@@ -605,8 +605,13 @@ fn inflate_effect(v: Value, archetype: &str, heat: i32, action_id: &str) -> Valu
             m.insert("mode".into(), Value::String(mode.into()));
             m.insert("distance".into(), Value::from(distance));
             // direction omitted (None = orientation-relative, matching TS)
-            // for every mode except `throw`, which heads aft regardless of
-            // stance.
+            // for every mode except `throw`, which heads AFT regardless of
+            // stance. throw-2d: we set only the 1-D `direction: aft` (NOT
+            // `direction_2d`) on purpose — "aft" is facing-RELATIVE, so it
+            // cannot be a static 2-D cardinal here (the ship's bow direction is
+            // a runtime value). `resolve_self_move_2d` reads this 1-D `direction`
+            // and computes the opposite-of-bow cardinal at resolve time, so a
+            // throw hurls the operator aft for ANY facing.
             if id_lower == "throw" {
                 m.insert("direction".into(), Value::String("aft".into()));
             }
@@ -1309,21 +1314,19 @@ mod tests {
             );
         }
 
-        // throw: SHOULD hurl the operator AFT (opposite the bow = W here, into
-        // the open lane toward col 0). BUT throw's canonical export carries only
-        // the 1-D `direction: Aft`; the transformer does NOT set `direction_2d`,
-        // and resolve_self_move_2d reads ONLY `direction_2d`/`facing` — so in 2-D
-        // throw moves along the FACING (E) like a plain BURN, into the adjacent
-        // foe → blocked → the operator STAYS at col 2. This pins that ACTUAL 2-D
-        // behaviour (a real gap flagged to the lead as "throw-2d").
-        // TODO(throw-2d): once the throw signature wires `direction_2d` (aft =
-        // facing.opposite cardinal), face the op E with open lane to its W and
-        // assert it ends at a LOWER column (the intended aft hurl).
+        // throw (throw-2d FIXED): hurls the operator AFT — opposite the bow.
+        // op faces E at col 2, so aft = W; BURN distance 2 walks (1,0) then (0,0),
+        // both free (the foe is to the EAST at col 3, out of the way) → op lands
+        // at col 0. `resolve_self_move_2d` now reads the canonical 1-D
+        // `direction: Aft` and computes facing.opposite at resolve time (a static
+        // `direction_2d` can't encode facing-relative aft). The foe at col 3 is
+        // untouched — throw heads the OTHER way.
         {
             let mut board = two_ship_board(2, 3, east);
             crate::resolve::apply_instant_action("op", action(&cat, "throw"), &mut board, &content);
             let op_cell = (0..crate::grid::CELLS).find(|&c| cell_id(&board, c) == Some("op")).unwrap();
-            assert_eq!(op_cell, 2, "throw (2-D, direction_2d unwired): moves along facing E into the foe, blocked, stays at col 2");
+            assert_eq!(op_cell, 0, "throw-2d: operator hurls AFT (opposite bow E = W) to col 0");
+            assert_eq!(cell_id(&board, 3), Some("foe"), "the foe (to the east) is untouched by an aft throw");
         }
 
         // phase: operator SLIPs forward (E) past the adjacent foe at col 3,

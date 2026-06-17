@@ -1553,17 +1553,18 @@ pub fn apply_effect(
             board.ordnance.push(p);
         }
 
-        Effect::DISPLACE_SELF { mode, distance, direction: _, direction_2d } => {
+        Effect::DISPLACE_SELF { mode, distance, direction, direction_2d } => {
             // R6: the LIVE path is now 2-D. Convert source_cell -> Pos (exact
             // under Board invariant (A): source_cell == ship.pos.to_index()) and
-            // move via resolve_self_move_2d, reading the 2-D `direction_2d`
-            // override (the 1-D `direction` is ignored on the live path; the 1-D
-            // resolve_self_move + its fixture tests stay until CONTRACT). On a
-            // real 2-D board (ships placed at cells[pos.to_index()]) this moves
-            // correctly; the legacy 1-D resolve_self_move would mis-step a flat
-            // 2-D index as a lane position.
+            // move via resolve_self_move_2d. We pass BOTH the 2-D `direction_2d`
+            // override AND the 1-D `direction`: throw-2d uses the canonical
+            // `direction: Aft` to hurl the ship facing-RELATIVE aft (the 2-D
+            // resolver computes facing.opposite at run time, since a static
+            // `direction_2d` cardinal can't express "aft" for an arbitrary
+            // facing). The legacy 1-D resolve_self_move + its fixture tests stay
+            // until CONTRACT.
             if let Some(source_pos) = Pos::from_index(source_cell) {
-                resolve_self_move_2d(source_pos, *mode, *distance, *direction_2d, board, content);
+                resolve_self_move_2d(source_pos, *mode, *distance, *direction_2d, *direction, board, content);
             }
         }
 
@@ -1749,22 +1750,26 @@ fn apply_on_hit_mod(
     };
     match m {
         WeaponMod::FlakBurst => {
-            // 1 dmg to each lane-neighbour of the HIT cell, bounds-checked,
-            // through the full pipeline (shield-mediated, falloff off) via the
-            // dummy impact weapon — same precedent as ReactorBreach splash in
-            // `destroy`. Faction-blind: hits allies too (content ruling;
-            // pairs with the "Unfriendly Fire" design). The hit cell itself is
-            // NOT re-damaged. Splash origin is the hit cell so the directional
-            // shield reads the burst as arriving from the detonation.
-            let dummy = dummy_weapon();
-            for delta in [-1i32, 1] {
-                let nc = hit_cell as i32 + delta;
-                if nc < 0 || (nc as usize) >= board.size {
-                    continue;
-                }
-                let nc = nc as usize;
-                if board.cells[nc].is_some() {
-                    apply_damage(nc, 1, hit_cell, &dummy, board, content);
+            // flak-2d: 1 dmg to each in-bounds 8-NEIGHBOUR of the HIT cell,
+            // through the full 2-D pipeline (shield-mediated, falloff off) via the
+            // dummy impact weapon — the area-burst analog of the BLAST targeting
+            // pattern (which already splashes `grid::neighbors`). The pre-2-D arm
+            // splashed only the two 1-D lane neighbours (`hit_cell ± 1`)
+            // bounds-checked against `board.size` (== COLS = 5), so OFF row 0 the
+            // neighbours culled as "off-board" and the burst hit nothing. Now keyed
+            // on the real grid: `grid::neighbors(hit_pos)` is edge-clamped (3 at a
+            // corner, 5 on an edge, 8 interior). Faction-blind (hits allies too —
+            // the "Unfriendly Fire" ruling). The hit cell itself is NOT re-damaged.
+            // Splash origin is the hit cell so the directional shield reads the
+            // burst as arriving from the detonation; `apply_damage_2d`'s
+            // `direction_to` handles the diagonal `incoming_from` an 8-neighbour
+            // splash produces (facing_zone is total over 8).
+            if let Some(hit_pos) = Pos::from_index(hit_cell) {
+                let dummy = dummy_weapon();
+                for n in crate::grid::neighbors(hit_pos) {
+                    if board.ship_at(n).is_some() {
+                        apply_damage_2d(n, 1, hit_pos, &dummy, board, content);
+                    }
                 }
             }
         }
@@ -2467,19 +2472,31 @@ fn resolve_self_move_2d(
     mode: MovementMode,
     distance: i32,
     direction_2d: Option<Dir4>,
+    direction_1d: Option<LaneEnd>,
     board: &mut Board,
     content: &dyn Content,
 ) {
     let Some(ship) = board.ship_at(ship_pos) else {
         return;
     };
-    // Resolve the cardinal move direction (override, else facing-derived).
-    let dir: Dir8 = match direction_2d {
-        Some(d) => d.to_dir8(),
-        None => match ship.facing {
-            Facing::Bow(d) => d.to_dir8(),
-            Facing::Broadside(axis) => axis.dirs().0.to_dir8(),
-        },
+    // Resolve the cardinal move direction, in precedence order:
+    //   1. `direction_2d` — an explicit 2-D cardinal override (if a content
+    //      author ever sets one; nothing does today).
+    //   2. `direction_1d == Some(Aft)` — the facing-RELATIVE aft hurl (throw-2d).
+    //      `direction_2d` can't encode "aft" as a static cardinal because aft
+    //      depends on the ship's runtime facing; so `throw`'s canonical
+    //      `direction: Aft` is honoured HERE, computing the opposite-of-bow
+    //      cardinal at resolve time. `Some(Fore)` is the default forward step
+    //      (no-op vs facing) and falls through.
+    //   3. facing-forward (the bow, or a Broadside axis's positive cardinal).
+    let forward: Dir4 = match ship.facing {
+        Facing::Bow(d) => d,
+        Facing::Broadside(axis) => axis.dirs().0,
+    };
+    let dir: Dir8 = match (direction_2d, direction_1d) {
+        (Some(d), _) => d.to_dir8(),
+        (None, Some(LaneEnd::Aft)) => forward.opposite().to_dir8(),
+        _ => forward.to_dir8(),
     };
 
     // Per-mode landing computation. `landing` is the destination cell;
@@ -4775,19 +4792,18 @@ mod tests {
     /// real board the splash usually lands on NOTHING. (Distinct from the BLAST
     /// *targeting pattern*, which WAS widened to 8-neighbours.)
     ///
-    /// This test is the SPEC of the intended 2-D behaviour (center's E-W
-    /// neighbours each take 1, faction-blind); it is #[ignore]d until the mod is
-    /// ported to grid::neighbors(hit_pos) + apply_damage_2d. Un-ignoring it then
-    /// proves the fix. The other 8 run_action tests (#20) don't touch this mod.
-    #[ignore = "flak-2d: flak_burst on-hit splash is 1-D (hit_cell +/-1 vs board.size) and drops splashes off row 0 on a real board; un-ignore when the mod ports to grid::neighbors + apply_damage_2d"]
+    /// This test is the SPEC of the intended 2-D behaviour (center's spatial
+    /// neighbours each take 1, faction-blind). flak-2d FIXED: the mod now splashes
+    /// `grid::neighbors(hit_pos)` via `apply_damage_2d`, so the splash lands on a
+    /// real 2-D board (off row 0 too). The other 8 run_action tests (#20) don't
+    /// touch this mod.
     #[test]
     fn mod_flak_burst_splashes_both_neighbours_faction_blind() {
         // Attacker at (2,3) Bow(N) fires N up column 2 ((2,2) empty) onto the
-        // target at (2,1). The flak mod SHOULD splash the hit cell's spatial
+        // target at (2,1). The flak mod splashes the hit cell's spatial
         // neighbours: (1,1) [a player-faction ally] and (3,1) [an enemy] — both
         // take 1, proving the splash is faction-blind. Naked shields so the 1
-        // lands on hull. The hit cell itself is not re-damaged. (Currently RED:
-        // see the gap note above.)
+        // lands on hull. The hit cell itself is not re-damaged.
         let attacker = {
             let mut a = armed_ship_2d("p", Faction::Player, crate::grid::Pos::new(2, 3), 5, crate::grid::Facing::Bow(crate::grid::Dir4::N), Arc::Forward, "flak", naked());
             a.queue = vec!["flak".into()];
@@ -5250,7 +5266,7 @@ mod tests {
     fn rsm2d_thrust_moves_one_cell_along_direction_2d_override() {
         // Override N from (2,2): move to (2,1), slot+pos updated, old cell empty.
         let mut board = board_2d(vec![ship_2d("p", Faction::Player, Pos::new(2, 2), Facing::Bow(Dir4::S), Arc::Turret)]);
-        resolve_self_move_2d(Pos::new(2, 2), MovementMode::THRUST, 1, Some(Dir4::N), &mut board, &NoContent);
+        resolve_self_move_2d(Pos::new(2, 2), MovementMode::THRUST, 1, Some(Dir4::N), None, &mut board, &NoContent);
         assert_ship_at(&board, "p", Pos::new(2, 1));
         assert!(board.ship_at(Pos::new(2, 2)).is_none(), "old cell vacated");
     }
@@ -5259,7 +5275,7 @@ mod tests {
     fn rsm2d_thrust_none_derives_direction_from_facing() {
         // No override: a Bow(N) ship thrusts N (toward row 0). From (2,2)->(2,1).
         let mut board = board_2d(vec![ship_2d("p", Faction::Player, Pos::new(2, 2), Facing::Bow(Dir4::N), Arc::Turret)]);
-        resolve_self_move_2d(Pos::new(2, 2), MovementMode::THRUST, 1, None, &mut board, &NoContent);
+        resolve_self_move_2d(Pos::new(2, 2), MovementMode::THRUST, 1, None, None, &mut board, &NoContent);
         assert_ship_at(&board, "p", Pos::new(2, 1));
     }
 
@@ -5279,7 +5295,7 @@ mod tests {
         p.shield_profile = zero;
         let mut board = board_2d(vec![p]);
         let hull_before = board.ship_at(Pos::new(2, 0)).unwrap().hull;
-        resolve_self_move_2d(Pos::new(2, 0), MovementMode::THRUST, 1, None, &mut board, &NoContent);
+        resolve_self_move_2d(Pos::new(2, 0), MovementMode::THRUST, 1, None, None, &mut board, &NoContent);
         assert_ship_at(&board, "p", Pos::new(2, 0)); // didn't move
         assert_eq!(board.ship_at(Pos::new(2, 0)).unwrap().hull, hull_before - 1, "wall collision = 1 (shieldless)");
     }
@@ -5304,7 +5320,7 @@ mod tests {
             ship_2d("b", Faction::Enemy, Pos::new(2, 1), Facing::Bow(Dir4::S), Arc::Turret),
         ]);
         let hull_before = board.ship_at(Pos::new(2, 2)).unwrap().hull;
-        resolve_self_move_2d(Pos::new(2, 2), MovementMode::THRUST, 1, None, &mut board, &NoContent);
+        resolve_self_move_2d(Pos::new(2, 2), MovementMode::THRUST, 1, None, None, &mut board, &NoContent);
         assert_ship_at(&board, "p", Pos::new(2, 2)); // blocked
         assert_ship_at(&board, "b", Pos::new(2, 1)); // blocker unmoved
         assert_eq!(board.ship_at(Pos::new(2, 2)).unwrap().hull, hull_before - 1);
@@ -5318,7 +5334,7 @@ mod tests {
             ship_2d("p", Faction::Player, Pos::new(4, 1), Facing::Bow(Dir4::W), Arc::Turret),
             ship_2d("b", Faction::Enemy, Pos::new(1, 1), Facing::Bow(Dir4::E), Arc::Turret),
         ]);
-        resolve_self_move_2d(Pos::new(4, 1), MovementMode::BURN, 3, Some(Dir4::W), &mut board, &NoContent);
+        resolve_self_move_2d(Pos::new(4, 1), MovementMode::BURN, 3, Some(Dir4::W), None, &mut board, &NoContent);
         assert_ship_at(&board, "p", Pos::new(2, 1));
         assert_ship_at(&board, "b", Pos::new(1, 1));
     }
@@ -5327,7 +5343,7 @@ mod tests {
     fn rsm2d_jump_blinks_to_target_cell() {
         // JUMP S distance 2 from (0,0): direct to (0,2), no path scan.
         let mut board = board_2d(vec![ship_2d("p", Faction::Player, Pos::new(0, 0), Facing::Bow(Dir4::S), Arc::Turret)]);
-        resolve_self_move_2d(Pos::new(0, 0), MovementMode::JUMP, 2, Some(Dir4::S), &mut board, &NoContent);
+        resolve_self_move_2d(Pos::new(0, 0), MovementMode::JUMP, 2, Some(Dir4::S), None, &mut board, &NoContent);
         assert_ship_at(&board, "p", Pos::new(0, 2));
     }
 
@@ -5338,7 +5354,7 @@ mod tests {
             ship_2d("p", Faction::Player, Pos::new(0, 0), Facing::Bow(Dir4::S), Arc::Turret),
             ship_2d("x", Faction::Enemy, Pos::new(0, 2), Facing::Bow(Dir4::N), Arc::Turret),
         ]);
-        resolve_self_move_2d(Pos::new(0, 0), MovementMode::JUMP, 2, Some(Dir4::S), &mut board, &NoContent);
+        resolve_self_move_2d(Pos::new(0, 0), MovementMode::JUMP, 2, Some(Dir4::S), None, &mut board, &NoContent);
         assert_ship_at(&board, "p", Pos::new(0, 0)); // stayed
         assert_ship_at(&board, "x", Pos::new(0, 2));
     }
@@ -5350,7 +5366,7 @@ mod tests {
             ship_2d("p", Faction::Player, Pos::new(1, 1), Facing::Bow(Dir4::E), Arc::Turret),
             ship_2d("o", Faction::Enemy, Pos::new(2, 1), Facing::Bow(Dir4::W), Arc::Turret),
         ]);
-        resolve_self_move_2d(Pos::new(1, 1), MovementMode::TRACTOR_SWAP, 1, Some(Dir4::E), &mut board, &NoContent);
+        resolve_self_move_2d(Pos::new(1, 1), MovementMode::TRACTOR_SWAP, 1, Some(Dir4::E), None, &mut board, &NoContent);
         assert_ship_at(&board, "o", Pos::new(1, 1)); // other now where p was
         assert_ship_at(&board, "p", Pos::new(2, 1)); // p now where other was
     }
@@ -5359,7 +5375,7 @@ mod tests {
     fn rsm2d_tractor_swap_no_adjacent_is_noop() {
         // SWAP E from (4,3) (col 4 = E edge): nothing adjacent -> no-op.
         let mut board = board_2d(vec![ship_2d("p", Faction::Player, Pos::new(4, 3), Facing::Bow(Dir4::E), Arc::Turret)]);
-        resolve_self_move_2d(Pos::new(4, 3), MovementMode::TRACTOR_SWAP, 1, Some(Dir4::E), &mut board, &NoContent);
+        resolve_self_move_2d(Pos::new(4, 3), MovementMode::TRACTOR_SWAP, 1, Some(Dir4::E), None, &mut board, &NoContent);
         assert_ship_at(&board, "p", Pos::new(4, 3)); // unmoved
     }
 

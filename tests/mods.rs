@@ -204,20 +204,21 @@ fn m1_flak_burst_splashes_both_neighbours_including_an_ally() {
     assert_eq!(hull_at(&b, 3), 4, "flak splashes the other neighbour foe@(3,0) too (5 -> 4)");
 }
 
-// #22 2-D: same row-0 layout. The splash neighbour foe@(3,0) has its hit-facing
-// zone armoured 1, fully absorbing the 1 splash. NOTE: the flak_burst splash
-// routes through the 1-D apply_damage (the on-hit mod is not yet 2-D — see the
-// flak-2d gap), which reads the ship's 1-D `orientation` (BowOn{Fore} here), NOT
-// the 2-D `facing`. The splash arrives from the hit cell @(2,0), i.e. the Aft
-// lane direction relative to foe (cell 2 < 3) -> foe's STERN zone. Give stern
-// armour 1 -> foe takes 0. Proves the splash routes through absorb_shield.
+// #22 2-D + flak-2d: same row-0 layout. The splash neighbour foe@(3,0) has its
+// hit-facing zone armoured 1, fully absorbing the 1 splash. flak-2d: the splash
+// now routes through `apply_damage_2d`, which reads the 2-D `facing` + the 2-D
+// `direction_to`. The splash arrives FROM the hit cell @(2,0) = WEST of foe@(3,0);
+// foe faces W (Bow(W)), so an incoming-from-W hit lands on foe's BOW zone. Give
+// BOW armour 1 -> foe takes 0. Proves the splash routes through absorb_shield.
+// (Pre-flak-2d this read the 1-D orientation -> stern zone; the 2-D splash reads
+// the real facing, hence bow here.)
 #[test]
 fn m1_flak_splash_is_shield_mediated() {
     use broadside_engine::grid::{Dir4, Facing};
     let a = ship("a", Faction::Player, 1, 5, Facing::Bow(Dir4::E));
     let t = ship("t", Faction::Enemy, 2, 5, Facing::Bow(Dir4::W));
     let mut foe = ship("foe", Faction::Enemy, 3, 5, Facing::Bow(Dir4::W));
-    foe.shield_profile.stern = ShieldFace { armour: 1, charge: 0 };
+    foe.shield_profile.bow = ShieldFace { armour: 1, charge: 0 };
     let mut b = board_2d(vec![a, t, foe]);
     let content = ModContent::new(vec![damage_action("w", 4, Some("flak_burst"), 0, 1)]);
 
