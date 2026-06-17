@@ -1183,6 +1183,36 @@ impl Gfx {
     /// albedo lands a medium-dark hull, not black. Was [0.706,0.776,0.878] (pale).
     const LOFT_HULL_ALBEDO: [f32; 3] = [0.12, 0.14, 0.20];
 
+    /// Install the PLAYER's faithful class hull directly from a `.glb` — the
+    /// Aegis export (`assets/ships/Aegis.glb`) Bruce's tool bakes per the v5
+    /// render contract. Imports via [`crate::mesh_import::load_glb`] and uploads
+    /// through [`crate::loft_gpu::LoftGpu::upload_imported`] so the AUTHORED
+    /// per-group materials (albedo + emissive + the unlit cyan engine glow) reach
+    /// the shader UNTINTED — i.e. the exact faithful render `render_aegis` proved
+    /// (X-length 12, wide-low, stern nacelles). Uploaded as
+    /// [`LoftMeshKind::PlayerLoft`], which [`Self::loft_kind`] prefers over the
+    /// generic tinted CAD hull. This is the LIVE-GAME player ship path; preferred
+    /// over [`Self::install_player_loft_mesh`] (which re-lofts + tints) now that
+    /// the GLB pipeline carries the real mesh. Idempotent; per-ship pose created
+    /// lazily by [`Self::sync_loft_pose`]. Returns the import error if the bytes
+    /// don't parse (caller logs + falls back to 2D / sprite).
+    pub fn install_player_glb(
+        &mut self,
+        glb_bytes: &[u8],
+    ) -> Result<(), crate::mesh_import::ImportError> {
+        let ship = crate::mesh_import::load_glb(glb_bytes)?;
+        let hull = self.loft.upload_imported(&self.device, &ship);
+        self.loft_meshes.insert(
+            crate::sprites::LoftMeshKind::PlayerLoft,
+            LoftMesh {
+                vbuf: hull.vbuf,
+                vcount: hull.vcount,
+                center_y: hull.center_y,
+            },
+        );
+        Ok(())
+    }
+
     /// Install the PLAYER's actual class hull as an already-LOFTED [`HullMesh`]
     /// (the Aegis hull, lofted by the caller from the design in
     /// `assets/ships/broadside-ship-library_v2.json`), recoloured the player hue.
@@ -1988,17 +2018,27 @@ impl Gfx {
                 let mesh = self.loft_meshes.get(&q.kind);
                 let yaw = self.loft_poses.get(q.ship_id.as_str()).map(|p| p.yaw_deg());
                 if let (Some(mesh), Some(yaw)) = (mesh, yaw) {
+                    // (#70) CHASE-CAM base yaw: the loft camera orbits about +Y
+                    // looking toward the hull, and the hull's LENGTH is +X (prow
+                    // +X, stern/engines −X). The pose's stance yaw (BowOn{Fore}=0)
+                    // would show the hull SIDE-ON (length across screen). For the
+                    // chase cam we want the STERN toward the viewer (engines + glow
+                    // facing us, bow pointing up-lane into the screen) — that's the
+                    // camera on the −X side looking toward +X, i.e. camera yaw 270°
+                    // (−90). Added to the stance yaw so the live player presents
+                    // stern-on. (All live loft ships are the chase-cam player today;
+                    // an oncoming enemy loft would carry its own pose — follow-up.)
+                    const CHASE_CAM_BASE_YAW_DEG: f32 = 270.0;
                     // (#62) LANE-AIM NOSE-TURN: yaw the hull toward its lane so an
                     // off-centre ship "aims down its lane" like Bruce's art-tool
                     // reference (NOSE TURN 15). Derived from the quad's centre-x
-                    // offset from frame-centre (no need to thread the grid column
-                    // through the pose) — left lanes turn the nose left, right
-                    // lanes right; the centre lane stays at its stance yaw.
+                    // offset from frame-centre — left lanes turn the nose left,
+                    // right lanes right; the centre lane stays at its stance yaw.
                     const LANE_AIM_MAX_DEG: f32 = 15.0;
                     let quad_cx = (q.p0[0] + q.p2[0]) * 0.5;
                     let off = ((quad_cx - VIRTUAL_W as f32 * 0.5) / (VIRTUAL_W as f32 * 0.5))
                         .clamp(-1.0, 1.0);
-                    let yaw = yaw + off * LANE_AIM_MAX_DEG;
+                    let yaw = yaw + CHASE_CAM_BASE_YAW_DEG + off * LANE_AIM_MAX_DEG;
                     // 1) Render the hull into the shared loft target (own passes).
                     let mut enc =
                         self.device

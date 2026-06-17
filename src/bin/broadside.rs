@@ -1086,10 +1086,19 @@ impl ApplicationHandler for App {
         if loaded > 0 {
             log::info!("loaded {} ship sprite PNG(s) from assets/sprites/", loaded);
         }
-        // (#66) Ships render from the editor-BAKED sprites loaded above, drawn
-        // UNLIT per BROADSIDE_RENDER_CONTRACT.md. The runtime loft (CAD/Aegis mesh
-        // install) was an off-contract deviation that shadowed those sprites — it's
-        // removed; hud::push_ship_2d emits TexturedShip from the loaded sprites.
+        // (#70) PLAYER = the faithful Aegis, live-3D. Install the GLB the tool
+        // baked (Aegis.glb, per the v5 render contract) as the player loft mesh:
+        // mesh_import → upload_imported keeps the authored materials + the unlit
+        // cyan engine glow. push_ship_2d emits a LoftShip for the player when this
+        // is installed (the loft 3D pass renders it lit, chase-cam posed, then
+        // blits into the lane), else falls back to the sprite/flat-box. Enemies
+        // stay flat placeholders (no enemy mesh installed — separate oncoming bake
+        // is a follow-up). The HUD + telegraph overlays are unaffected.
+        const AEGIS_GLB: &[u8] = include_bytes!("../../assets/ships/Aegis.glb");
+        match gfx.install_player_glb(AEGIS_GLB) {
+            Ok(()) => log::info!("loft: player Aegis hull installed from Aegis.glb ({} bytes)", AEGIS_GLB.len()),
+            Err(e) => log::warn!("loft: Aegis.glb import failed ({e}); player falls back to sprite/flat-box"),
+        }
         self.window = Some(window);
         self.gfx = Some(gfx);
     }
@@ -1298,9 +1307,26 @@ impl ApplicationHandler for App {
                 // (#57) Pan/recede the parallax background toward the player's
                 // column + the campaign level, eased per frame.
                 gfx.update_background(bg_level, player_col, 1.0 / 60.0);
-                // (#66) Loft pose sync removed — ships render from baked sprites
-                // (push_ship_2d → TexturedShip), not the loft, so there are no loft
-                // poses to drive.
+                // (#70) Sync + advance loft poses so installed-mesh ships (the
+                // player's Aegis GLB) have a live pose the loft pre-pass renders.
+                // sync_loft_pose creates a pose on first sight + reorients on a
+                // stance flip (no-op when unchanged); advance drives idle + any
+                // tween. Only ships with an installed mesh actually loft; the rest
+                // are a cheap no-op pose. The chase-cam camera yaw is applied in
+                // the loft render itself — this just keeps the pose alive.
+                let loft_ships: Vec<(String, Orientation)> = self
+                    .board
+                    .cells
+                    .iter()
+                    .flatten()
+                    .map(|s| (s.id.clone(), s.orientation))
+                    .collect();
+                for (id, orient) in &loft_ships {
+                    gfx.sync_loft_pose(id, *orient);
+                }
+                let live_ids: Vec<String> = loft_ships.iter().map(|(id, _)| id.clone()).collect();
+                gfx.retain_loft_poses(&live_ids);
+                let _ = gfx.advance_loft_poses(1.0 / 60.0);
                 // v2 render path (#43): the playable bin now composes the 2-D
                 // perspective scene (the SAME hud::compose_scene_2d encounter_
                 // preview uses) instead of the legacy 1-D flat-lane

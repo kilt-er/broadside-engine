@@ -836,7 +836,41 @@ fn push_ship_2d(
     // pending a separate enemy bake (lead escalated to Bruce). Do NOT route enemies
     // here; do NOT re-add the removed runtime loft.
     let class = ship.klass.as_deref().unwrap_or("frigate");
+
+    // (#70) LIVE-3D PLAYER: if a loft mesh is installed for the player (the Aegis
+    // GLB via mesh_import — the faithful render render_aegis proved), emit a
+    // LoftShip at the player's projected cell. gfx's loft pre-pass renders the
+    // real 3D hull LIT (chase-cam posed: stern toward camera, bow up-lane, engine
+    // glow bright) and blits it into the lane; HUD overlays + the engine-glow cue
+    // still layer on top below. This takes precedence over the sprite/flat-box —
+    // it's the "Aegis flies in-game" path. Enemies are NOT routed here (loft_kind
+    // returns None for them: no enemy mesh installed — oncoming bake is a
+    // follow-up), so they stay on the flat-box placeholder.
     if is_player {
+        if let Some(loft_kind) = sprites.loft_kind(&ship.id, true) {
+            // Hero-sized quad, lane-seated + clamped above the bottom HUD band —
+            // the same footprint the sprite path uses, so the 3D hull sits where
+            // the placeholder did. The pose/foreshortening lives inside the loft
+            // texture; this quad is just its dest-rect.
+            let w = (q.near_edge_width() * 1.9).max(16.0);
+            let h = w * 0.5;
+            let band_top = crate::gfx::VIRTUAL_H as f32 - 40.0;
+            let cy = center[1].min(band_top - h * 0.5 - 2.0);
+            let (l, r) = (center[0] - w * 0.5, center[0] + w * 0.5);
+            let (t, b) = (cy - h * 0.5, cy + h * 0.5);
+            out.push(DrawCommand::LoftShip(LoftShipInstance {
+                p0: [l, t],
+                p1: [r, t],
+                p2: [r, b],
+                p3: [l, b],
+                ship_id: SpriteSlug::new(&ship.id),
+                kind: loft_kind,
+            }));
+            // Pips/buffer cues on top (the lit hull + its baked engine glow own
+            // the hull + stern read, so the player chevron stays dropped).
+            push_ship_arrow_and_pips_2d(out, ship, center, 22.0 * q.depth_scale);
+            return;
+        }
         // aim lane = the ship's OWN board column; fan = its own-forward board dir
         // (see `facing_wheel::player_facing15`). One of 15.
         let facing = crate::facing_wheel::player_facing15(ship.facing, ship.pos.col);

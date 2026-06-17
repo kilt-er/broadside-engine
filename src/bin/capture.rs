@@ -116,14 +116,27 @@ fn main() {
 
     let mut gfx = pollster::block_on(Gfx::new_headless());
 
-    // (#66) Load the BAKED ship sprites exactly as the playable bin does
-    // (try_load_ship_sprites at broadside.rs:1085) so the capture faithfully shows
-    // the contract sprite path (editor-baked PNGs, drawn UNLIT) — NOT the dropped
-    // runtime loft. Aegis sprites live in assets/sprites/aegis_*.png.
+    // Load the baked ship sprites the playable bin loads (fallback path).
     let loaded = gfx.try_load_ship_sprites(std::path::Path::new("assets"));
     log::info!("capture: loaded {loaded} ship sprite(s)");
 
+    // (#70) Install the player's faithful Aegis GLB exactly as the playable bin
+    // does (broadside.rs install_player_glb) so the capture faithfully shows the
+    // LIVE-3D player ship, not the flat-box placeholder. Enemies stay flat (no
+    // enemy mesh installed), matching the live game.
+    const AEGIS_GLB: &[u8] = include_bytes!("../../assets/ships/Aegis.glb");
+    match gfx.install_player_glb(AEGIS_GLB) {
+        Ok(()) => log::info!("capture: player Aegis hull installed from Aegis.glb"),
+        Err(e) => log::warn!("capture: Aegis.glb import failed ({e}); player falls back to sprite/flat-box"),
+    }
+
     let board = capture_board();
+
+    // (#70) Sync the player's loft pose so the loft pre-pass has a pose to render
+    // (mirrors the playable bin's per-frame sync_loft_pose).
+    for s in board.cells.iter().flatten() {
+        gfx.sync_loft_pose(&s.id, s.orientation);
+    }
 
     let cfg = ProjectorConfig::default();
     let commands = compose_scene_2d_with(&board, &cfg, &gfx);
