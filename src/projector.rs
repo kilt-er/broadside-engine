@@ -384,33 +384,44 @@ pub fn cell_camera_point(pos: Pos, cfg: &ProjectorConfig) -> [f32; 3] {
 /// the hull at [`cell_camera_point`], yaws it about +Y to its world heading, and
 /// projects through this; all 4 facings × all cells come out correct.
 ///
-/// Output is in **virtual-pixel** space (origin top-left, y-down); the GPU side
-/// converts to NDC. Depth is written as `Zc` (linear) for the depth test —
-/// nearer (smaller `z`) must win, so the caller uses a `Greater`/reversed compare
-/// or negates as needed (documented at the call site).
+/// Output `clip.xy` is in **virtual-pixel** space (origin top-left, y-down) after
+/// the perspective divide; the GPU vertex shader converts xy to NDC. `clip.z/clip.w`
+/// is a LINEAR [0,1] depth over `[z_near, z_far·DEPTH_FAR_MARGIN]` (near = 0, far
+/// = 1) so the hull's own faces depth-test with `CompareFunction::Less` (nearer
+/// wins). The renderer places the hull at [`cell_camera_point`], yaws it about +Y
+/// to its world heading, and projects through this; all 4 facings × all cells +
+/// the hull's own self-occlusion come out correct by construction.
 pub fn camera_perspective(cfg: &ProjectorConfig) -> [f32; 16] {
-    // Column-major. Row form (what it computes per point p=(x,y,z,1)):
-    //   clip.x = x
-    //   clip.y = y
-    //   clip.z = z              (linear depth, passed through)
-    //   clip.w = z              (perspective divide by z)
-    // then screen = center + clip.xy / clip.w → (center_x + x/z, horizon + ...)
-    // We fold the center_x / horizon_y offsets in by adding them × w (= z) into
-    // x,y so after the /w divide they become the constant screen offset.
+    // Column-major (m[col*4 + row]). For a point p = (x, y, z, 1):
+    //   x' = x + cx·z          → x'/w = x/z + cx   (screen x)
+    //   y' = y + hy·z          → y'/w = y/z + hy   (screen y)
+    //   z' = k·z − k·z_near    → z'/w = k − k·z_near/z  ... NOT linear in z.
+    // We want z'/w LINEAR in z ([0,1] over [z_near, z_far_m]). Since w = z, set
+    //   z' = k·z² − k·z_near·z  → z'/w = k·z − k·z_near = k·(z − z_near).  But a
+    // mat4 can't make z². Instead use a SEPARATE near/far split that's linear in
+    // 1/z (standard perspective depth): z'/w = A + B/z. Map z_near→0, z_far_m→1:
+    //   A + B/z_near = 0 ;  A + B/z_far_m = 1  →  B = z_near·z_far_m/(z_near−z_far_m),
+    //   A = −B/z_near. With w=z: z' = A·z + B  (z'/w = A + B/z). ✓ mat-expressible.
     let cx = cfg.center_x();
     let hy = cfg.horizon_y;
-    // m * p, column-major (m[col*4 + row]):
-    //   x' = p.x + cx·p.z   (so x'/w = x/z + cx)
-    //   y' = p.y + hy·p.z   (so y'/w = y/z + hy)
-    //   z' = p.z
-    //   w' = p.z
+    let zn = cfg.z_near;
+    let zf = cfg.z_far * DEPTH_FAR_MARGIN;
+    let b = zn * zf / (zn - zf); // < 0 (zf > zn)
+    let a = -b / zn;
+    // z' = a·z + b  (col2 row2 = a ; col3 row3-as-const... but the constant goes in
+    // col 3 since p.w = 1). w' = z (col2 row3 = 1).
     [
         1.0, 0.0, 0.0, 0.0, // col 0
         0.0, 1.0, 0.0, 0.0, // col 1
-        cx, hy, 1.0, 1.0, // col 2 (adds cx·z to x, hy·z to y, z to z and w)
-        0.0, 0.0, 0.0, 0.0, // col 3
+        cx, hy, a, 1.0, // col 2: x+=cx·z, y+=hy·z, z'=a·z(+b below), w'=z
+        0.0, 0.0, b, 0.0, // col 3: +b into z' (constant, p.w=1)
     ]
 }
+
+/// How far past `z_far` the depth range extends, so a hull at the far row (or a
+/// hull whose bow reaches a touch beyond its cell's depth) still maps inside
+/// `[0,1]` and isn't clipped by the far plane.
+const DEPTH_FAR_MARGIN: f32 = 1.5;
 
 /// Project a camera-space point through [`camera_perspective`] to a virtual-pixel
 /// screen point (the perspective divide). Returns `None` if behind/at the camera
