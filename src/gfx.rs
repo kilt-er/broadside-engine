@@ -52,6 +52,61 @@ pub const VIRTUAL_H: u32 = 270;
 /// back to the largest integer scale that still fits (see `update_blit_uniform`).
 pub const FIXED_UPSCALE: u32 = 4;
 
+/// (#76 scene-res) The LIVE scene (offscreen) resolution, cycled by `;` / `'`.
+/// Initialized to [`VIRTUAL_W`]×[`VIRTUAL_H`] (so the default is byte-identical to
+/// the old fixed 480×270 path); [`Gfx::cycle_scene_res`] recreates the offscreen
+/// texture, view, and blit at the new size and updates these. Stored as
+/// process-global atomics rather than threaded through every signature because the
+/// renderer's free helper functions ([`crate::hud`], [`crate::background`]) need
+/// the runtime canvas size WITHOUT a `&Gfx` param — the lead's "gfx getter, no
+/// public-hud signature sweep" call. Read via [`scene_w`] / [`scene_h`]; written
+/// ONLY through [`Gfx::set_scene_size`] (constructor + cycle), which keeps them in
+/// lock-step with the actual offscreen texture.
+static SCENE_W: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(VIRTUAL_W);
+static SCENE_H: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(VIRTUAL_H);
+
+/// The current LIVE scene (offscreen) WIDTH in virtual pixels. Equals
+/// [`VIRTUAL_W`] until a `;`/`'` scene-res cycle changes it. The renderer's
+/// screen-space math ([`crate::hud`], [`crate::background`], the projector via
+/// [`crate::projector::ProjectorConfig::for_scene`]) reads this so every overlay
+/// tracks the live canvas. See [`SCENE_W`].
+pub fn scene_w() -> u32 {
+    SCENE_W.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// The current LIVE scene (offscreen) HEIGHT in virtual pixels. Equals
+/// [`VIRTUAL_H`] until a `;`/`'` scene-res cycle changes it. See [`scene_w`].
+pub fn scene_h() -> u32 {
+    SCENE_H.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// (#76 scene-res) The scene-resolution presets `;` / `'` step through, all 16:9
+/// and CENTRED on the 480×270 default (the middle preset is exactly the baseline,
+/// so a fresh launch + a there-and-back cycle returns to a pixel-identical frame).
+/// Smaller = chunkier whole-scene pixels (everything, not just ships); larger =
+/// finer. The default sits in the middle so `;` (prev) and `'` (next) both reach
+/// a neighbour. [`next_scene_res`] / [`prev_scene_res`] step this list, snapping an
+/// off-list current size to the default first.
+pub const SCENE_RES_PRESETS: [(u32, u32); 3] = [(320, 180), (480, 270), (640, 360)];
+
+/// The next scene-res preset after `(w, h)` (wraps). An off-list `(w, h)` returns
+/// the 480×270 default ([`SCENE_RES_PRESETS`] middle). See [`SCENE_RES_PRESETS`].
+pub fn next_scene_res(w: u32, h: u32) -> (u32, u32) {
+    match SCENE_RES_PRESETS.iter().position(|&p| p == (w, h)) {
+        Some(i) => SCENE_RES_PRESETS[(i + 1) % SCENE_RES_PRESETS.len()],
+        None => (VIRTUAL_W, VIRTUAL_H),
+    }
+}
+
+/// The previous scene-res preset before `(w, h)` (wraps). An off-list `(w, h)`
+/// returns the 480×270 default. See [`SCENE_RES_PRESETS`].
+pub fn prev_scene_res(w: u32, h: u32) -> (u32, u32) {
+    match SCENE_RES_PRESETS.iter().position(|&p| p == (w, h)) {
+        Some(i) => SCENE_RES_PRESETS[(i + SCENE_RES_PRESETS.len() - 1) % SCENE_RES_PRESETS.len()],
+        None => (VIRTUAL_W, VIRTUAL_H),
+    }
+}
+
 /// Maximum sprite instances in a frame. 4096 covers a worst-case scene
 /// (lane plate + parallax + 9 ships × ~8 composed sprites + ordnance +
 /// HUD glyphs) with generous headroom. Bumping this only costs one VRAM
@@ -715,6 +770,10 @@ struct BlitPipeline {
     pipeline: wgpu::RenderPipeline,
     ubo: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
+    /// (#76 scene-res) Kept so [`BlitPipeline::rebind`] can rebuild `bind_group`
+    /// against a NEW offscreen view after a scene-res cycle recreates the texture.
+    bgl: wgpu::BindGroupLayout,
+    sampler: wgpu::Sampler,
 }
 
 /// Blits the loft pipeline's posterized output texture onto a lane-positioned
@@ -901,25 +960,14 @@ impl Gfx {
         format: wgpu::TextureFormat,
         config: wgpu::SurfaceConfiguration,
     ) -> Self {
-        let offscreen = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("offscreen virtual-res target"),
-            size: wgpu::Extent3d {
-                width: VIRTUAL_W,
-                height: VIRTUAL_H,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: OFFSCREEN_FORMAT,
-            // COPY_SRC so the headless capture tool can read the rendered frame
-            // back for a PNG (harmless for the windowed path).
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                | wgpu::TextureUsages::TEXTURE_BINDING
-                | wgpu::TextureUsages::COPY_SRC,
-            view_formats: &[],
-        });
-        let offscreen_view = offscreen.create_view(&wgpu::TextureViewDescriptor::default());
+        // (#76 scene-res) Each fresh Gfx starts at the 480×270 default — reset the
+        // process-global scene size so a tool/test that built a prior Gfx and
+        // cycled its res doesn't leak that into this one (the statics are global).
+        Self::set_scene_size(VIRTUAL_W, VIRTUAL_H);
+        // Create the offscreen at the LIVE scene size (now the default). One helper
+        // so the constructor and the live `cycle_scene_res` build an identical
+        // texture.
+        let (offscreen, offscreen_view) = Self::make_offscreen(&device, scene_w(), scene_h());
 
         let atlas_data = atlas::generate_atlas();
         let atlas_size = wgpu::Extent3d {
@@ -1001,15 +1049,99 @@ impl Gfx {
             background: Some(background),
         };
 
-        let view = ViewUniform {
-            px_to_ndc: [2.0 / VIRTUAL_W as f32, 2.0 / VIRTUAL_H as f32],
-            _pad: [0.0, 0.0],
-        };
-        g.queue
-            .write_buffer(&g.sprites.view_ubo, 0, bytemuck::bytes_of(&view));
-
+        // (#76 scene-res) px→NDC from the LIVE scene size (default 480×270). The
+        // scene-res cycle rewrites this so virtual-pixel coords map to NDC over the
+        // resized offscreen.
+        g.update_view_uniform();
         g.update_blit_uniform();
         g
+    }
+
+    /// (#76 scene-res) Build the offscreen render target + its view at `(w, h)`.
+    /// One body for the constructor and the live [`Self::cycle_scene_res`] so the
+    /// texture is identical (same format + usages); the COPY_SRC usage lets the
+    /// headless capture read the frame back.
+    fn make_offscreen(
+        device: &wgpu::Device,
+        w: u32,
+        h: u32,
+    ) -> (wgpu::Texture, wgpu::TextureView) {
+        let tex = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("offscreen virtual-res target"),
+            size: wgpu::Extent3d {
+                width: w.max(1),
+                height: h.max(1),
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: OFFSCREEN_FORMAT,
+            // COPY_SRC so the headless capture tool can read the rendered frame
+            // back for a PNG (harmless for the windowed path).
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
+        (tex, view)
+    }
+
+    /// (#76 scene-res) Write the sprite/polygon view uniform's px→NDC from the
+    /// LIVE scene size, so a virtual-pixel position maps to NDC over the current
+    /// offscreen. Called at startup and after a scene-res cycle.
+    fn update_view_uniform(&self) {
+        let view = ViewUniform {
+            px_to_ndc: [2.0 / scene_w() as f32, 2.0 / scene_h() as f32],
+            _pad: [0.0, 0.0],
+        };
+        self.queue
+            .write_buffer(&self.sprites.view_ubo, 0, bytemuck::bytes_of(&view));
+    }
+
+    /// (#76 scene-res) Set the process-global scene size statics ([`SCENE_W`] /
+    /// [`SCENE_H`]) so the renderer's free helpers ([`crate::hud`],
+    /// [`crate::background`], the projector) read the live canvas. Called by the
+    /// constructor (to the default) and the live cycle; the ACTUAL offscreen
+    /// texture is recreated alongside in [`Self::cycle_scene_res`].
+    fn set_scene_size(w: u32, h: u32) {
+        SCENE_W.store(w.max(1), std::sync::atomic::Ordering::Relaxed);
+        SCENE_H.store(h.max(1), std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// (#76 scene-res) Cycle the LIVE scene (offscreen) resolution — `forward`
+    /// steps to the next [`SCENE_RES_PRESETS`] (`'` key), else the previous (`;`).
+    /// Recreates the offscreen texture at the new size, repoints the blit pipeline
+    /// to the new view, and rewrites the px→NDC view + blit uniforms; the next
+    /// frame composites the WHOLE scene (background + lanes + ships + HUD) at the
+    /// new pixel count. The bin rebuilds its `ProjectorConfig` via
+    /// [`crate::projector::ProjectorConfig::for_scene`] off the returned `(w, h)`
+    /// so the lane geometry reprojects to match. Returns the new `(w, h)` for the
+    /// bin's "SCENE wxh" readout.
+    pub fn cycle_scene_res(&mut self, forward: bool) -> (u32, u32) {
+        let (w, h) = (scene_w(), scene_h());
+        let (nw, nh) = if forward {
+            next_scene_res(w, h)
+        } else {
+            prev_scene_res(w, h)
+        };
+        Self::set_scene_size(nw, nh);
+        let (tex, view) = Self::make_offscreen(&self.device, nw, nh);
+        self.offscreen_tex = tex;
+        self.offscreen_view = view;
+        // The blit pipeline samples the offscreen view; rebuild its bind group to
+        // point at the NEW view (the old one is dropped with the old texture).
+        self.blit.rebind(&self.device, &self.offscreen_view);
+        self.update_view_uniform();
+        self.update_blit_uniform();
+        (nw, nh)
+    }
+
+    /// The current LIVE scene (offscreen) resolution `(w, h)` — for the bin's
+    /// readout. Mirrors the [`scene_w`] / [`scene_h`] globals.
+    pub fn scene_res(&self) -> (u32, u32) {
+        (scene_w(), scene_h())
     }
 
     /// HEADLESS constructor for the offscreen PNG capture tool (no window or
@@ -1084,11 +1216,15 @@ impl Gfx {
         //    existing offscreen. We kept its handle via offscreen_view's texture;
         //    but TextureView doesn't expose its texture, so capture keeps its own
         //    readback by copying through a dedicated capture texture.
+        // (#76 scene-res) Read back at the LIVE scene size (default 480×270) so a
+        // capture after a `;`/`'` cycle saves the resized frame, not a clipped /
+        // overrun 480×270 window of it.
+        let (cap_w, cap_h) = (scene_w(), scene_h());
         let bytes_per_pixel = 4u32;
-        let unpadded = VIRTUAL_W * bytes_per_pixel;
+        let unpadded = cap_w * bytes_per_pixel;
         let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT; // 256
         let padded = unpadded.div_ceil(align) * align;
-        let buf_size = (padded * VIRTUAL_H) as u64;
+        let buf_size = (padded * cap_h) as u64;
         let readback = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("capture readback"),
             size: buf_size,
@@ -1112,12 +1248,12 @@ impl Gfx {
                 layout: wgpu::TexelCopyBufferLayout {
                     offset: 0,
                     bytes_per_row: Some(padded),
-                    rows_per_image: Some(VIRTUAL_H),
+                    rows_per_image: Some(cap_h),
                 },
             },
             wgpu::Extent3d {
-                width: VIRTUAL_W,
-                height: VIRTUAL_H,
+                width: cap_w,
+                height: cap_h,
                 depth_or_array_layers: 1,
             },
         );
@@ -1136,8 +1272,8 @@ impl Gfx {
 
         // 4) Strip the per-row padding into a tight RGBA buffer.
         let data = slice.get_mapped_range();
-        let mut rgba = Vec::with_capacity((unpadded * VIRTUAL_H) as usize);
-        for row in 0..VIRTUAL_H {
+        let mut rgba = Vec::with_capacity((unpadded * cap_h) as usize);
+        for row in 0..cap_h {
             let start = (row * padded) as usize;
             rgba.extend_from_slice(&data[start..start + unpadded as usize]);
         }
@@ -1145,14 +1281,8 @@ impl Gfx {
         readback.unmap();
 
         // 5) Save PNG (RGBA8). image is in-tree (the bg loader uses it).
-        image::save_buffer(
-            path,
-            &rgba,
-            VIRTUAL_W,
-            VIRTUAL_H,
-            image::ColorType::Rgba8,
-        )
-        .map_err(|e| format!("png save: {e}"))?;
+        image::save_buffer(path, &rgba, cap_w, cap_h, image::ColorType::Rgba8)
+            .map_err(|e| format!("png save: {e}"))?;
         Ok(())
     }
 
@@ -1738,11 +1868,16 @@ impl Gfx {
         // matching v1's full-screen feel. Trade: non-integer Nearest upscaling can
         // shimmer slightly, but full-screen > pixel-perfect integer here (Bruce's
         // call). Aspect preserved (fit, not crop) so nothing is cut off.
+        // (#76 scene-res) Fit the LIVE offscreen size (default 480×270) into the
+        // window. All presets are 16:9 like the default, so the fit-to-window math
+        // is unchanged at any preset — the source is just a different pixel count
+        // of the same aspect, NEAREST-upscaled to fill.
+        let (sw, sh) = (scene_w() as f32, scene_h() as f32);
         let wf = w as f32;
         let hf = h as f32;
-        let scale = (wf / VIRTUAL_W as f32).min(hf / VIRTUAL_H as f32).max(1.0);
-        let scaled_w = VIRTUAL_W as f32 * scale;
-        let scaled_h = VIRTUAL_H as f32 * scale;
+        let scale = (wf / sw).min(hf / sh).max(1.0);
+        let scaled_w = sw * scale;
+        let scaled_h = sh * scale;
         // Center the scaled canvas; any leftover (off-aspect window) is letterbox.
         let offset_x = (wf - scaled_w) * 0.5;
         let offset_y = (hf - scaled_h) * 0.5;
@@ -2104,7 +2239,9 @@ impl Gfx {
                         p1: q.p1,
                         p2: q.p2,
                         p3: q.p3,
-                        px_to_ndc: [2.0 / VIRTUAL_W as f32, 2.0 / VIRTUAL_H as f32],
+                        // (#76 scene-res) px→NDC over the LIVE offscreen size so the
+                        // loft dest-quad lands on the right cell at any scene res.
+                        px_to_ndc: [2.0 / scene_w() as f32, 2.0 / scene_h() as f32],
                         _pad: [0.0, 0.0],
                     };
                     self.queue
@@ -2890,7 +3027,33 @@ impl BlitPipeline {
             pipeline,
             ubo,
             bind_group,
+            bgl,
+            sampler,
         }
+    }
+
+    /// (#76 scene-res) Repoint the blit at a NEW offscreen view (after a scene-res
+    /// cycle recreates the offscreen texture). Rebuilds the bind group binding the
+    /// SAME ubo + sampler to the new view; the pipeline + layout are unchanged.
+    fn rebind(&mut self, device: &wgpu::Device, src_view: &wgpu::TextureView) {
+        self.bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("blit bg"),
+            layout: &self.bgl,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: self.ubo.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(src_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(&self.sampler),
+                },
+            ],
+        });
     }
 }
 

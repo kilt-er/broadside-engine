@@ -194,20 +194,42 @@ pub struct ProjectorConfig {
 }
 
 impl Default for ProjectorConfig {
+    /// The 480×270 default look — `for_scene(VIRTUAL_W, VIRTUAL_H)`, so the
+    /// hardcoded tuning below lives in ONE place and the default is byte-identical
+    /// to a `for_scene` call at the virtual canvas size.
     fn default() -> Self {
-        // Tuned for 480×270. The board occupies the lower ~70% of the frame; the
+        Self::for_scene(crate::gfx::VIRTUAL_W as f32, crate::gfx::VIRTUAL_H as f32)
+    }
+}
+
+impl ProjectorConfig {
+    /// (#76 scene-res) The default look SCALED to a `frame_w × frame_h` canvas, so
+    /// a live scene-resolution change ([`crate::gfx::cycle_scene_res`]) reprojects
+    /// the SAME scene at a different pixel count instead of leaving the board
+    /// pinned to 480×270 coordinates in a resized offscreen. The vertical anchors
+    /// (`horizon_y`, `near_row_y`) scale by `h / 270` and the lateral fan
+    /// (`fan_half_width`) by `w / 480`, so every proportion — horizon fraction,
+    /// near-row-above-HUD clearance, lane spread — is preserved across presets.
+    /// `for_scene(VIRTUAL_W, VIRTUAL_H)` reproduces [`Self::default`] exactly
+    /// (the scale factors are both 1.0), which the pixel-identity gate relies on.
+    pub fn for_scene(frame_w: f32, frame_h: f32) -> Self {
+        // Tuned for 480×270 (the reference canvas); the sx/sy factors carry the
+        // look to any preset. The board occupies the lower ~70% of the frame; the
         // top ~30% is headroom for the parallax backdrop, the far nebula, the
         // range-band ruler, and the enemy telegraph icons that float above the
         // back row.
+        let sx = frame_w / crate::gfx::VIRTUAL_W as f32;
+        let sy = frame_h / crate::gfx::VIRTUAL_H as f32;
         Self {
-            frame_w: crate::gfx::VIRTUAL_W as f32,
-            frame_h: crate::gfx::VIRTUAL_H as f32,
+            frame_w,
+            frame_h,
             // (#62) Match Bruce's art-tool chase-cam reference: a LOW camera where
             // the lanes recede like a road to a vanishing point near mid-screen
             // (his tool reads ~20° pitch). Deep recession — z_far/z_near = 6.0 ⇒
             // the back row draws at ~17% the near-row size, so the five lanes
             // converge tightly toward the horizon instead of staying a shallow
-            // top-down board (was 2.4 = a flat ~42% overhead board).
+            // top-down board (was 2.4 = a flat ~42% overhead board). z_* are
+            // unitless depths — unaffected by the pixel canvas size.
             z_near: 1.0,
             z_far: 6.0,
             // Horizon near mid-screen (was 70, high): the vanishing point sits at
@@ -216,15 +238,17 @@ impl Default for ProjectorConfig {
             // band (band = frame_h-40 = y230..270): the road must end above the
             // status area, NOT run behind it (#64, Bruce live: the board + hero ship
             // were cut off by the gray band). 228 = near edge just clears the band.
-            horizon_y: 120.0,
-            near_row_y: 226.0,
+            // Scaled by sy so the same FRACTIONS hold at any vertical resolution.
+            horizon_y: 120.0 * sy,
+            near_row_y: 226.0 * sy,
             // Near-row fan WIDE (lead pass-2: the road was a small central trapezoid
             // with empty starfield in the lower corners; the ref fans the near lanes
             // out toward the bottom corners and fills the lower ~2/3). 290 px each
             // side = a 580 px near row that spills past the 480 frame edges, so the
             // outer lanes run off the bottom corners like the reference road. The
-            // deep z_far still converges the far rows to a tight central band.
-            fan_half_width: 290.0,
+            // deep z_far still converges the far rows to a tight central band. Scaled
+            // by sx so the lane spread tracks the horizontal resolution.
+            fan_half_width: 290.0 * sx,
             cols: COLS,
             rows: ROWS,
         }
@@ -853,5 +877,52 @@ mod tests {
     fn point2_to_array_roundtrips() {
         let p = Point2::new(12.5, -3.0);
         assert_eq!(p.to_array(), [12.5, -3.0]);
+    }
+
+    /// (#76 scene-res GATE) `for_scene` at the virtual canvas size is BYTE-identical
+    /// to `default()` — the invariant the pixel-identity gate stands on (a scene-res
+    /// cycle at the 480×270 default must reproduce the baseline frame exactly). All
+    /// look fields must match, not just the framing, so a future field added to one
+    /// constructor can't silently drift the default.
+    #[test]
+    fn for_scene_at_virtual_size_equals_default() {
+        let d = ProjectorConfig::default();
+        let s = ProjectorConfig::for_scene(
+            crate::gfx::VIRTUAL_W as f32,
+            crate::gfx::VIRTUAL_H as f32,
+        );
+        assert_eq!(d.frame_w, s.frame_w);
+        assert_eq!(d.frame_h, s.frame_h);
+        assert_eq!(d.z_near, s.z_near);
+        assert_eq!(d.z_far, s.z_far);
+        assert_eq!(d.horizon_y, s.horizon_y);
+        assert_eq!(d.near_row_y, s.near_row_y);
+        assert_eq!(d.fan_half_width, s.fan_half_width);
+        assert_eq!(d.cols, s.cols);
+        assert_eq!(d.rows, s.rows);
+        // And projecting any cell gives the identical quad.
+        let q_d = grid_cell_quad(Pos::new(0, 0), &d);
+        let q_s = grid_cell_quad(Pos::new(0, 0), &s);
+        assert_eq!(q_d, q_s);
+    }
+
+    /// (#76 scene-res) A scaled scene preserves the look's PROPORTIONS: doubling the
+    /// canvas doubles the vertical anchors + lateral fan (the fractions — horizon
+    /// position, near-row clearance, lane spread — are invariant), while the
+    /// unitless camera depths stay put. This is what makes a larger/smaller preset
+    /// render the SAME scene rather than a board pinned to 480×270 coordinates.
+    #[test]
+    fn for_scene_scales_anchors_proportionally() {
+        let base = ProjectorConfig::for_scene(480.0, 270.0);
+        let big = ProjectorConfig::for_scene(960.0, 540.0);
+        assert!(approx(big.horizon_y, base.horizon_y * 2.0, 1e-3));
+        assert!(approx(big.near_row_y, base.near_row_y * 2.0, 1e-3));
+        assert!(approx(big.fan_half_width, base.fan_half_width * 2.0, 1e-3));
+        // Unitless depths unchanged by the pixel canvas size.
+        assert_eq!(big.z_near, base.z_near);
+        assert_eq!(big.z_far, base.z_far);
+        // The center column still lands on the (now-doubled) frame centre.
+        let mid = grid_cell_quad(Pos::new(COLS / 2, ROWS - 1), &big);
+        assert!(approx(mid.center[0], big.frame_w * 0.5, 1e-3));
     }
 }

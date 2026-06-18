@@ -19,8 +19,8 @@
 //! | `R` / `Space` | `CommitTurn` | Run `resolve_round`; re-renders next frame |
 //! | `Enter` | `Restart` | Reset the board to its initial state (also the only key accepted while a run-end overlay is showing) |
 //! | `1` / `2` / `3` (overloaded) | Path choice | While the EncounterComplete overlay is up: 1 = repair (+2 hull), 2 = upgrade (placeholder), 3 = continue to next encounter |
-//! | `[` / `]` | rotate camera | Cycle through `[0, 15, 30, 45, 60, 75, 90]°` |
-//! | `,` / `.` | ship-render res (#76) | Cycle the loft offscreen size `160×100 → 220×138 → 320×200` (live) |
+//! | `,` / `.` | ship-render res (#76) | Cycle the loft offscreen size `160×100 → 220×138 → 320×200 → 480×300` (live) |
+//! | `;` / `'` | scene res (#76) | Cycle the whole-scene offscreen size `320×180 → 480×270 → 640×360` (live; everything scales together) |
 //! | `Esc` | exit | Close the window |
 //!
 //! Run with:
@@ -1142,12 +1142,11 @@ impl ApplicationHandler for App {
                     return;
                 }
                 // (#76) `,` / `.` cycle the SHIP loft-render resolution LIVE
-                // (chunky <-> crisp ship pixels). Renderer-owned binding, handled
-                // before the content key map (like the `[`/`]` camera control).
-                // NOTE: the lead proposed `[`/`]` for this, but those are taken by
-                // the camera-angle scrubber above, so ship-res rides `,`/`.` until
-                // bindings are reshuffled. Scene-res (`-`/`=`) is deferred (the
-                // VIRTUAL_W/H const->runtime threading is a separate change).
+                // (chunky <-> crisp ship pixels); `;` / `'` cycle the WHOLE-SCENE
+                // (offscreen) resolution LIVE (everything — background, lanes,
+                // ships, HUD — gets chunkier/finer together). Both are renderer-
+                // owned bindings, handled before the content key map as raw
+                // KeyCodes (same pattern as the old `[`/`]` camera control).
                 if let Some(gfx) = self.gfx.as_mut() {
                     if code == KeyCode::Comma {
                         let (w, h) = gfx.cycle_loft_res(false);
@@ -1158,6 +1157,22 @@ impl ApplicationHandler for App {
                     if code == KeyCode::Period {
                         let (w, h) = gfx.cycle_loft_res(true);
                         log::info!("ship res: {w}x{h}");
+                        if let Some(win) = self.window.as_ref() { win.request_redraw(); }
+                        return;
+                    }
+                    // `;` = previous scene res, `'` = next. The gfx side recreates
+                    // the offscreen + view + blit; the render path below rebuilds the
+                    // projector via `for_scene(scene_w, scene_h)` so the lane geometry
+                    // reprojects to the new canvas.
+                    if code == KeyCode::Semicolon {
+                        let (w, h) = gfx.cycle_scene_res(false);
+                        log::info!("scene res: {w}x{h}");
+                        if let Some(win) = self.window.as_ref() { win.request_redraw(); }
+                        return;
+                    }
+                    if code == KeyCode::Quote {
+                        let (w, h) = gfx.cycle_scene_res(true);
+                        log::info!("scene res: {w}x{h}");
                         if let Some(win) = self.window.as_ref() { win.request_redraw(); }
                         return;
                     }
@@ -1321,10 +1336,19 @@ impl ApplicationHandler for App {
                     .map(|s| s.pos.col)
                     .unwrap_or(broadside_engine::grid::COLS / 2);
                 let bg_level = self.board.level;
+                // (#76 scene-res) The projector for THIS frame, scaled to the LIVE
+                // scene (offscreen) size so the lane geometry reprojects when `;`/`'`
+                // change the resolution. At the 480×270 default `for_scene` ==
+                // `default()`, so this is identical to the old fixed path until a
+                // cycle. Built from the gfx scene-size globals (free fns, no borrow).
+                let scene_cfg = ProjectorConfig::for_scene(
+                    broadside_engine::gfx::scene_w() as f32,
+                    broadside_engine::gfx::scene_h() as f32,
+                );
                 // (#79) Per-ship slide/turn tween for THIS frame — computed BEFORE
                 // the gfx mutable borrow (it reads &self). Empty when nothing is
                 // mid-move, so the render is identical to the static path at rest.
-                let scene_tween = self.tween_2d(&ProjectorConfig::default(), now);
+                let scene_tween = self.tween_2d(&scene_cfg, now);
                 let Some(gfx) = self.gfx.as_mut() else { return };
                 // (#57) Pan/recede the parallax background toward the player's
                 // column + the campaign level, eased per frame.
@@ -1373,7 +1397,7 @@ impl ApplicationHandler for App {
                 // per-ship loft pose is synced/advanced above.
                 let mut instances = hud::compose_scene_2d_tweened(
                     &self.board,
-                    &ProjectorConfig::default(),
+                    &scene_cfg,
                     &*gfx,
                     &scene_tween,
                 );
@@ -1396,12 +1420,9 @@ impl ApplicationHandler for App {
                         hud::push_player_readout(&mut instances, p.pos, p.facing);
                     }
                     // (#76) Live resolution readout: SHIP <w>x<h> (cyclable via
-                    // `,`/`.`) + SCENE <w>x<h>, under the POS/FACE line.
-                    hud::push_res_readout(
-                        &mut instances,
-                        gfx.loft_res(),
-                        (broadside_engine::gfx::VIRTUAL_W, broadside_engine::gfx::VIRTUAL_H),
-                    );
+                    // `,`/`.`) + SCENE <w>x<h> (cyclable via `;`/`'`), under the
+                    // POS/FACE line.
+                    hud::push_res_readout(&mut instances, gfx.loft_res(), gfx.scene_res());
                     // (#63) Controls legend removed — Bruce: the move-help text crowded
                     // the screen. Keybinds are discoverable in-game; no on-screen overlay.
                     // Player danger legibility (#67): screen hit-flash on damage.

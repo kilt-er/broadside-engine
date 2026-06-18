@@ -502,7 +502,6 @@ pub fn compose_scene_2d_tweened(
 /// heat/heat_max), locked-out (red), on-cooldown (dim) — with the hotkey digit +
 /// a weapon-archetype glyph. No-op if there's no player ship.
 fn push_bottom_hud_2d(out: &mut Vec<DrawCommand>, board: &Board) {
-    use crate::gfx::{VIRTUAL_H, VIRTUAL_W};
     let Some(player) = board
         .cells
         .iter()
@@ -511,8 +510,10 @@ fn push_bottom_hud_2d(out: &mut Vec<DrawCommand>, board: &Board) {
     else {
         return;
     };
-    let w = VIRTUAL_W as f32;
-    let h = VIRTUAL_H as f32;
+    // (#76 scene-res) Read the LIVE scene size so the HUD band spans + sits at the
+    // bottom of the current offscreen, not a fixed 480×270 (== at the default).
+    let w = crate::gfx::scene_w() as f32;
+    let h = crate::gfx::scene_h() as f32;
     let band_h = 40.0;
     let band_top = h - band_h;
 
@@ -1040,7 +1041,8 @@ fn push_ship_2d(
             // facing frames read ~2:1 (length:height) like the old side art.
             let w = (near_edge_width * 1.9).max(16.0);
             let h = w * 0.5;
-            let band_top = crate::gfx::VIRTUAL_H as f32 - 40.0;
+            // (#76 scene-res) Clamp above the bottom HUD band of the LIVE scene.
+            let band_top = crate::gfx::scene_h() as f32 - 40.0;
             // PIVOT (#67 / contract §5): the wheel registers each facing against the
             // hull's board-center. Until the bake ships per-facing trim metadata,
             // anchor on the quad center (the loader uploads untrimmed frames, so the
@@ -2387,23 +2389,26 @@ pub fn win_state(board: &Board) -> WinState {
 }
 
 pub fn push_end_state_overlay(out: &mut Vec<DrawCommand>, state: WinState) {
-    use crate::gfx::{VIRTUAL_H, VIRTUAL_W};
     let (tint, banner) = match state {
         WinState::Playing => return,
         WinState::Defeat => (DEFEAT_TINT, "DEFEATED - PRESS ENTER TO RESTART"),
         WinState::Victory => (VICTORY_TINT, "VICTORY - PRESS ENTER TO RESTART"),
     };
-    // Full-canvas tinted overlay quad.
+    // (#76 scene-res) Full-canvas tinted overlay over the LIVE scene.
+    let (cx, cy) = (
+        crate::gfx::scene_w() as f32 / 2.0,
+        crate::gfx::scene_h() as f32 / 2.0,
+    );
     push_sprite(
         out,
         SpriteInstance::axis_aligned(
-            [VIRTUAL_W as f32 / 2.0, VIRTUAL_H as f32 / 2.0],
-            [VIRTUAL_W as f32 / 2.0, VIRTUAL_H as f32 / 2.0],
+            [cx, cy],
+            [cx, cy],
             tint,
             atlas::cell_uvs(atlas::SOLID_WHITE),
         ),
     );
-    push_centered_banner(out, banner, VIRTUAL_H as f32 / 2.0, 4.0);
+    push_centered_banner(out, banner, cy, 4.0);
 }
 
 /* =============================================================================
@@ -2424,14 +2429,14 @@ const PLAYER_HULL_CRIT: [f32; 4] = [0.95, 0.24, 0.22, 1.0]; // red, critical
 /// always knows how close to death they are. `hull`/`max_hull` come straight
 /// off the player ship.
 pub fn push_player_hull_bar(out: &mut Vec<DrawCommand>, hull: i32, max_hull: i32) {
-    use crate::gfx::VIRTUAL_H;
     let max = max_hull.max(1) as f32;
     let cur = hull.clamp(0, max_hull) as f32;
     let ratio = (cur / max).clamp(0.0, 1.0);
     let bar_w = 140.0;
     let bar_h = 12.0;
     let x_left = 20.0;
-    let y = VIRTUAL_H as f32 - 28.0;
+    // (#76 scene-res) Anchor to the bottom of the LIVE scene.
+    let y = crate::gfx::scene_h() as f32 - 28.0;
     // Track.
     push_sprite(
         out,
@@ -2476,16 +2481,20 @@ pub fn push_player_hull_bar(out: &mut Vec<DrawCommand>, hull: i32, max_hull: i32
 /// (0..1) is driven by the bin's hit-flash timer (decays after a hull drop).
 /// No-op at zero so it costs nothing on quiet frames.
 pub fn push_player_hit_flash(out: &mut Vec<DrawCommand>, intensity: f32) {
-    use crate::gfx::{VIRTUAL_H, VIRTUAL_W};
     if intensity <= 0.01 {
         return;
     }
     let alpha = 0.45 * intensity.clamp(0.0, 1.0);
+    // (#76 scene-res) Cover the full LIVE scene.
+    let (cx, cy) = (
+        crate::gfx::scene_w() as f32 / 2.0,
+        crate::gfx::scene_h() as f32 / 2.0,
+    );
     push_sprite(
         out,
         SpriteInstance::axis_aligned(
-            [VIRTUAL_W as f32 / 2.0, VIRTUAL_H as f32 / 2.0],
-            [VIRTUAL_W as f32 / 2.0, VIRTUAL_H as f32 / 2.0],
+            [cx, cy],
+            [cx, cy],
             [0.95, 0.18, 0.16, alpha],
             atlas::cell_uvs(atlas::SOLID_WHITE),
         ),
@@ -2509,9 +2518,9 @@ pub fn push_run_defeated_overlay_with_cause(
     salvage: u32,
     cause: Option<&str>,
 ) {
-    use crate::gfx::{VIRTUAL_H, VIRTUAL_W};
-    let center_x = VIRTUAL_W as f32 / 2.0;
-    let center_y = VIRTUAL_H as f32 / 2.0;
+    // (#76 scene-res) Full-canvas defeat overlay over the LIVE scene.
+    let center_x = crate::gfx::scene_w() as f32 / 2.0;
+    let center_y = crate::gfx::scene_h() as f32 / 2.0;
     push_sprite(
         out,
         SpriteInstance::axis_aligned(
@@ -2540,7 +2549,6 @@ pub fn push_run_defeated_overlay_with_cause(
 /// counter ticks up on each encounter win. Pushes a single row of
 /// 5×7 glyphs ~16px from the top-right canvas edge.
 pub fn push_salvage_hud(out: &mut Vec<DrawCommand>, salvage: u32) {
-    use crate::gfx::VIRTUAL_W;
     let banner = format!("SALVAGE: {}", salvage);
     let pixel = 2.0;
     let glyph_w_px = 5.0 * pixel;
@@ -2548,7 +2556,8 @@ pub fn push_salvage_hud(out: &mut Vec<DrawCommand>, salvage: u32) {
     let advance = glyph_w_px + space_px;
     let total_w: f32 = banner.len() as f32 * advance - space_px;
     let right_pad = 20.0;
-    let start_x = VIRTUAL_W as f32 - total_w - right_pad;
+    // (#76 scene-res) Right-align to the LIVE canvas edge.
+    let start_x = crate::gfx::scene_w() as f32 - total_w - right_pad;
     let y = 8.0;
     for (i, ch) in banner.chars().enumerate() {
         let x = start_x + i as f32 * advance;
@@ -2562,7 +2571,6 @@ pub fn push_salvage_hud(out: &mut Vec<DrawCommand>, salvage: u32) {
 /// controls produce, so "press Right → col+1, facing unchanged" is verifiable
 /// on screen. Small dim text (pixel=1) so it doesn't crowd the salvage banner.
 pub fn push_player_readout(out: &mut Vec<DrawCommand>, pos: crate::grid::Pos, facing: Facing) {
-    use crate::gfx::VIRTUAL_W;
     const DIM: [f32; 4] = [0.62, 0.70, 0.80, 0.85];
     let face = match facing {
         Facing::Bow(Dir4::N) => "N",
@@ -2577,25 +2585,28 @@ pub fn push_player_readout(out: &mut Vec<DrawCommand>, pos: crate::grid::Pos, fa
     let advance = 5.0 * pixel + pixel; // glyph + 1px space (matches push_text_left)
     let total_w = text.len() as f32 * advance - pixel;
     let right_pad = 20.0;
-    let start_x = VIRTUAL_W as f32 - total_w - right_pad;
+    // (#76 scene-res) Right-align to the LIVE canvas edge.
+    let start_x = crate::gfx::scene_w() as f32 - total_w - right_pad;
     // Just below the SALVAGE banner (salvage sits at y=8 with pixel=2 → ~14px
     // tall; place this at y=26).
     push_text_left(out, &text, start_x, 26.0, pixel, DIM);
 }
 
 /// (#76) Top-right resolution readout under the POS/FACE line: `SHIP <w>x<h>`
-/// (the loft-render pixel size, cycled with `[`/`]`) and `SCENE <w>x<h>` (the
-/// virtual canvas). Right-aligned, dim, so Bruce sees the live res while tuning.
-/// Stacked at y=38 / y=48 (the POS/FACE line sits at y=26).
+/// (the loft-render pixel size, cycled with `,`/`.`) and `SCENE <w>x<h>` (the
+/// whole-scene offscreen size, cycled with `;`/`'`). Right-aligned, dim, so Bruce
+/// sees the live res while tuning. Stacked at y=38 / y=48 (the POS/FACE line sits
+/// at y=26).
 pub fn push_res_readout(out: &mut Vec<DrawCommand>, ship: (u32, u32), scene: (u32, u32)) {
-    use crate::gfx::VIRTUAL_W;
     const DIM: [f32; 4] = [0.62, 0.70, 0.80, 0.85];
     let pixel = 1.0;
     let advance = 5.0 * pixel + pixel;
     let right_pad = 20.0;
+    // (#76 scene-res) Right-align to the LIVE canvas edge.
+    let canvas_w = crate::gfx::scene_w() as f32;
     let right_align = |out: &mut Vec<DrawCommand>, text: &str, y: f32| {
         let total_w = text.len() as f32 * advance - pixel;
-        let start_x = VIRTUAL_W as f32 - total_w - right_pad;
+        let start_x = canvas_w - total_w - right_pad;
         push_text_left(out, text, start_x, y, pixel, DIM);
     };
     right_align(out, &format!("SHIP {}x{}", ship.0, ship.1), 38.0);
@@ -3310,13 +3321,13 @@ fn push_text_left(
 /// title-style banners, 2 for body text). `y` is the vertical center
 /// of the rendered glyph row.
 fn push_centered_banner(out: &mut Vec<DrawCommand>, banner: &str, y_center: f32, pixel: f32) {
-    use crate::gfx::VIRTUAL_W;
     let glyph_w_px = 5.0 * pixel;
     let glyph_h_px = 7.0 * pixel;
     let space_px = pixel;
     let advance = glyph_w_px + space_px;
     let total_w: f32 = banner.len() as f32 * advance - space_px;
-    let start_x = (VIRTUAL_W as f32 - total_w) / 2.0;
+    // (#76 scene-res) Centre on the LIVE canvas width.
+    let start_x = (crate::gfx::scene_w() as f32 - total_w) / 2.0;
     let y = y_center - glyph_h_px / 2.0;
     for (i, ch) in banner.chars().enumerate() {
         let x = start_x + i as f32 * advance;
@@ -3353,9 +3364,9 @@ pub enum BetweenEncounterChoice {
 /// No-op when neither state applies — the bin should only call this
 /// while between-encounter or run-complete state is active.
 pub fn push_between_encounter_overlay(out: &mut Vec<DrawCommand>, choice: BetweenEncounterChoice) {
-    use crate::gfx::{VIRTUAL_H, VIRTUAL_W};
-    let center_x = VIRTUAL_W as f32 / 2.0;
-    let center_y = VIRTUAL_H as f32 / 2.0;
+    // (#76 scene-res) Full-canvas overlay over the LIVE scene.
+    let center_x = crate::gfx::scene_w() as f32 / 2.0;
+    let center_y = crate::gfx::scene_h() as f32 / 2.0;
     let tint = match choice {
         BetweenEncounterChoice::EncounterComplete { .. } => [0.10, 0.20, 0.35, 0.65],
         BetweenEncounterChoice::RunComplete { .. } => VICTORY_TINT,

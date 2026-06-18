@@ -143,13 +143,29 @@ fn main() {
 
     // (#76) Optional BROADSIDE_SHIP_RES=N env cycles the SHIP loft res forward N
     // steps before the capture, so a headless shot can verify the live ship-res
-    // change (160x100 -> 220x138 -> 320x200) renders correctly. Default 0 = the
-    // baseline res. Mirrors the live `,`/`.` control via `Gfx::cycle_loft_res`.
+    // change (160x100 -> 220x138 -> 320x200 -> 480x300) renders correctly. Default
+    // 0 = the baseline res. Mirrors the live `,`/`.` control via
+    // `Gfx::cycle_loft_res`.
     if let Ok(n) = std::env::var("BROADSIDE_SHIP_RES") {
         if let Ok(steps) = n.parse::<u32>() {
             for _ in 0..steps {
                 let (w, h) = gfx.cycle_loft_res(true);
                 log::info!("capture: cycled ship res -> {w}x{h}");
+            }
+        }
+    }
+
+    // (#76) Optional BROADSIDE_SCENE_RES=N env cycles the WHOLE-SCENE (offscreen)
+    // res forward N steps before the capture (320x180 -> 480x270 -> 640x360),
+    // mirroring the live `;`/`'` control via `Gfx::cycle_scene_res`. Default 0 =
+    // the 480x270 baseline, which the pixel-identity gate diffs against the
+    // pre-scene-res reference PNG. The projector `cfg` below is built AFTER this so
+    // it reprojects to whatever scene size we land on.
+    if let Ok(n) = std::env::var("BROADSIDE_SCENE_RES") {
+        if let Ok(steps) = n.parse::<u32>() {
+            for _ in 0..steps {
+                let (w, h) = gfx.cycle_scene_res(true);
+                log::info!("capture: cycled scene res -> {w}x{h}");
             }
         }
     }
@@ -189,7 +205,12 @@ fn main() {
         gfx.sync_loft_pose(&s.id, s.orientation);
     }
 
-    let cfg = ProjectorConfig::default();
+    // (#76) Project to the LIVE scene size (default 480x270 == ProjectorConfig
+    // ::default(); a BROADSIDE_SCENE_RES cycle above reprojects to the new canvas).
+    let cfg = ProjectorConfig::for_scene(
+        broadside_engine::gfx::scene_w() as f32,
+        broadside_engine::gfx::scene_h() as f32,
+    );
     let commands = compose_scene_2d_with(&board, &cfg, &gfx);
     // Ensure the output dir exists so the save never trips os-error-3 on a fresh
     // checkout / unusual cwd (the default `bugs/` dir, or any custom path).
