@@ -1550,6 +1550,64 @@ mod tests {
         }
     }
 
+    /// (#76 scene-res POSE BUG regression) The player's chase-cam ground yaw must
+    /// be IDENTICAL at every scene-resolution preset. The bug: the live loft render
+    /// computed the lane-aim vanishing point from `ProjectorConfig::default()`
+    /// (480x270) while `aim_at` came from the resized `for_scene(w,h)` projector, so
+    /// at a non-default scene res `alpha`/`psi` were nonzero even for a centred ship
+    /// and the hull yawed ~20deg on a `;`/`'` toggle. With aim_at AND the VP both
+    /// from the same `for_scene` cfg, the yaw is invariant across presets (all
+    /// presets are 16:9, so the scaled screen geometry is similar → identical
+    /// angles). Covers the centred column (must be exactly the base yaw, psi=0) and
+    /// off-centre columns (nonzero psi, but the SAME at every res).
+    #[test]
+    fn player_chase_yaw_is_identical_across_scene_presets() {
+        use crate::gfx::SCENE_RES_PRESETS;
+        use crate::grid::{Dir4, Facing, Pos, COLS, ROWS};
+        use crate::projector::{grid_cell_quad, ProjectorConfig};
+
+        let facing_yaw = |f: Facing| match f {
+            Facing::Bow(Dir4::N) => 0.0_f32,
+            Facing::Bow(Dir4::E) => 90.0,
+            Facing::Bow(Dir4::S) => 180.0,
+            Facing::Bow(Dir4::W) => -90.0,
+            _ => unreachable!("cardinal bow facings only"),
+        };
+        let row = ROWS - 1; // the player's front row
+        for &col in &[0usize, COLS / 2, COLS - 1] {
+            for facing in [
+                Facing::Bow(Dir4::N),
+                Facing::Bow(Dir4::S),
+                Facing::Bow(Dir4::E),
+                Facing::Bow(Dir4::W),
+            ] {
+                // The yaw at the 480x270 default is the reference.
+                let ref_cfg = ProjectorConfig::for_scene(480.0, 270.0);
+                let ref_aim = grid_cell_quad(Pos::new(col, row), &ref_cfg).center;
+                let ref_yaw =
+                    chase_cam_ground_yaw_deg(ref_aim, facing_yaw(facing), &ref_cfg);
+                for &(w, h) in &SCENE_RES_PRESETS {
+                    let cfg = ProjectorConfig::for_scene(w as f32, h as f32);
+                    let aim = grid_cell_quad(Pos::new(col, row), &cfg).center;
+                    let yaw = chase_cam_ground_yaw_deg(aim, facing_yaw(facing), &cfg);
+                    assert!(
+                        (yaw - ref_yaw).abs() < 1e-3,
+                        "scene {w}x{h} col {col} {facing:?}: yaw {yaw:.4} != default {ref_yaw:.4} \
+                         (lane-aim VP must scale WITH aim_at — the ship must NOT rotate on a scene-res toggle)"
+                    );
+                }
+                // The centred column must be exactly the base+facing yaw (psi == 0).
+                if col == COLS / 2 {
+                    let base = CHASE_CAM_BASE_YAW_DEG + facing_yaw(facing);
+                    assert!(
+                        (ref_yaw - base).abs() < 1e-2,
+                        "centred col {facing:?}: yaw {ref_yaw:.4} should be the base {base:.4} (no lane-aim)"
+                    );
+                }
+            }
+        }
+    }
+
     #[test]
     fn imported_colors_expand_groups_and_fall_back_to_grey() {
         use crate::loft::HullMesh;

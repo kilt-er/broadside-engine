@@ -80,14 +80,14 @@ pub fn scene_h() -> u32 {
     SCENE_H.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-/// (#76 scene-res) The scene-resolution presets `;` / `'` step through, all 16:9
-/// and CENTRED on the 480×270 default (the middle preset is exactly the baseline,
-/// so a fresh launch + a there-and-back cycle returns to a pixel-identical frame).
-/// Smaller = chunkier whole-scene pixels (everything, not just ships); larger =
-/// finer. The default sits in the middle so `;` (prev) and `'` (next) both reach
-/// a neighbour. [`next_scene_res`] / [`prev_scene_res`] step this list, snapping an
-/// off-list current size to the default first.
-pub const SCENE_RES_PRESETS: [(u32, u32); 3] = [(320, 180), (480, 270), (640, 360)];
+/// (#76 scene-res) The scene-resolution presets `;` / `'` step through, all 16:9.
+/// 480×270 is the MINIMUM + the boot default + the pixel-identity baseline (Bruce:
+/// 480 is the floor — the old 320×180 was dropped as too chunky); the others step
+/// UP to crisper whole-scene pixels (everything, not just ships). `'` (next) from
+/// 480 goes to 640→960→wraps; `;` (prev) from 480 wraps to 960 (the max).
+/// [`next_scene_res`] / [`prev_scene_res`] step this list, snapping an off-list
+/// current size to the 480×270 default first.
+pub const SCENE_RES_PRESETS: [(u32, u32); 3] = [(480, 270), (640, 360), (960, 540)];
 
 /// The next scene-res preset after `(w, h)` (wraps). An off-list `(w, h)` returns
 /// the 480×270 default ([`SCENE_RES_PRESETS`] middle). See [`SCENE_RES_PRESETS`].
@@ -1331,16 +1331,24 @@ impl Gfx {
     /// albedo lands a medium-dark hull, not black. Was [0.706,0.776,0.878] (pale).
     const LOFT_HULL_ALBEDO: [f32; 3] = [0.12, 0.14, 0.20];
 
+    /// RED tint multiplier for the PLAYER Aegis hull (Bruce: the player ship is
+    /// red). A per-channel multiply over the GLB's authored albedo — boosts red,
+    /// pulls green/blue down — so the hull reads clearly red while keeping its
+    /// shape + Lambert shading. EMISSIVE is untouched by `upload_imported_tinted`,
+    /// so the unlit cyan stern engine glow stays bright + readable (lead: don't
+    /// wash out the glow).
+    const PLAYER_RED_TINT: [f32; 3] = [1.6, 0.42, 0.40];
+
     /// Install the PLAYER's faithful class hull directly from a `.glb` — the
     /// Aegis export (`assets/ships/Aegis.glb`) Bruce's tool bakes per the v5
     /// render contract. Imports via [`crate::mesh_import::load_glb`] and uploads
-    /// through [`crate::loft_gpu::LoftGpu::upload_imported`] so the AUTHORED
-    /// per-group materials (albedo + emissive + the unlit cyan engine glow) reach
-    /// the shader UNTINTED — i.e. the exact faithful render `render_aegis` proved
-    /// (X-length 12, wide-low, stern nacelles). Uploaded as
-    /// [`LoftMeshKind::PlayerLoft`], which [`Self::loft_kind`] prefers over the
-    /// generic tinted CAD hull. This is the LIVE-GAME player ship path; preferred
-    /// over [`Self::install_player_loft_mesh`] (which re-lofts + tints) now that
+    /// through [`crate::loft_gpu::LoftGpu::upload_imported_tinted`] with
+    /// [`Self::PLAYER_RED_TINT`] so the hull reads RED (Bruce's call) while the
+    /// AUTHORED emissive (the unlit cyan engine glow) is left untouched and stays
+    /// readable. Geometry is the faithful Aegis `render_aegis` proved (X-length 12,
+    /// wide-low, stern nacelles). Uploaded as [`LoftMeshKind::PlayerLoft`], which
+    /// [`Self::loft_kind`] prefers over the generic CAD hull. This is the LIVE-GAME
+    /// player ship path; preferred over [`Self::install_player_loft_mesh`] now that
     /// the GLB pipeline carries the real mesh. Idempotent; per-ship pose created
     /// lazily by [`Self::sync_loft_pose`]. Returns the import error if the bytes
     /// don't parse (caller logs + falls back to 2D / sprite).
@@ -1349,7 +1357,9 @@ impl Gfx {
         glb_bytes: &[u8],
     ) -> Result<(), crate::mesh_import::ImportError> {
         let ship = crate::mesh_import::load_glb(glb_bytes)?;
-        let hull = self.loft.upload_imported(&self.device, &ship);
+        let hull = self
+            .loft
+            .upload_imported_tinted(&self.device, &ship, Self::PLAYER_RED_TINT);
         self.loft_meshes.insert(
             crate::sprites::LoftMeshKind::PlayerLoft,
             LoftMesh {
@@ -1415,18 +1425,20 @@ impl Gfx {
         Ok(())
     }
 
-    /// RED tint multiplier for the ENEMY copy of the Aegis hull (boosts red, pulls
-    /// green/blue down) so the enemy fleet reads as the player's ship-CLASS in a
-    /// clearly hostile colour, distinct from the player's natural/cool hull
-    /// ([`Self::install_enemy_glb`]). A multiply over the GLB's authored albedo, so
-    /// the hull keeps its shape/shading and just shifts hue toward red.
-    const ENEMY_TINT: [f32; 3] = [1.45, 0.40, 0.38];
+    /// Neutral STEEL-GREY tint multiplier for the ENEMY copy of the Aegis hull. The
+    /// PLAYER is now RED ([`Self::PLAYER_RED_TINT`], Bruce's call), so enemies take a
+    /// neutral grey (lead: "prefer grey over cyan") — max contrast with the red hero
+    /// AND it won't clash with the player's CYAN fire beams the way a blue hull
+    /// would. Near-equal channels, a hair cool. A multiply over the GLB's authored
+    /// albedo — keeps the hull shape/shading, desaturates to grey. (Was red, then
+    /// steel-blue — both superseded by the lead's final grey-vs-red plan.)
+    const ENEMY_TINT: [f32; 3] = [0.64, 0.67, 0.72];
 
     /// Install the ENEMY hull from the SAME Aegis `.glb` the player uses
-    /// ([`Self::install_player_glb`]) but RED-tinted via [`Self::ENEMY_TINT`], so
-    /// every enemy renders as the Aegis ship-class in a hostile colour instead of
-    /// the generic CAD box (Bruce: enemies should be the Aegis mesh, tinted red).
-    /// Uploaded as [`crate::sprites::LoftMeshKind::EnemyLoft`], which
+    /// ([`Self::install_player_glb`]) but COOL STEEL-BLUE-tinted via
+    /// [`Self::ENEMY_TINT`], so every enemy renders as the Aegis ship-class in a
+    /// cool tone that reads apart from the RED player hull, instead of the generic
+    /// CAD box. Uploaded as [`crate::sprites::LoftMeshKind::EnemyLoft`], which
     /// [`Self::loft_kind`] prefers over [`crate::sprites::LoftMeshKind::EnemyCad`].
     /// Enemies face the player (bow-on / oncoming), so the hull renders toward the
     /// camera — the `loft_facing_ground_yaw` Bow(S)=180 case. Runtime tint only, no
@@ -2244,7 +2256,20 @@ impl Gfx {
                     // test that replicates THIS ortho loft camera (not the scene-space
                     // pinhole the earlier oracle wrongly tested). Aim from the true
                     // CELL centre (`q.aim_at`), not the dragged-down hero quad.
-                    let cfg = crate::projector::ProjectorConfig::default();
+                    //
+                    // (#76 scene-res POSE BUG) The lane-aim `vanishing_point` MUST be
+                    // computed in the SAME coordinate space as `q.aim_at` — which the
+                    // hud builds from the LIVE-scene projector `for_scene(scene_w,
+                    // scene_h)`. Using `default()` (480x270) here while aim_at is in a
+                    // resized space (e.g. 640x360) put the VP at the wrong screen
+                    // point, so `alpha`/`psi` were nonzero even for a centred ship →
+                    // the hull yawed ~20deg on a scene-res toggle. Build the cfg from
+                    // the live scene size so the VP scales WITH aim_at and psi==0 at
+                    // every preset (Bruce: ship rotated left on `;`/`'`).
+                    let cfg = crate::projector::ProjectorConfig::for_scene(
+                        scene_w() as f32,
+                        scene_h() as f32,
+                    );
                     let base_yaw = crate::loft_gpu::chase_cam_ground_yaw_deg(
                         q.aim_at,
                         q.facing_yaw_deg,
