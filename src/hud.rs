@@ -4935,7 +4935,7 @@ mod tests {
 
     /* ---- v2 2-D compositor (D3) smoke tests ------------------------------ */
 
-    use crate::grid::{Axis, Dir4, Facing, Pos};
+    use crate::grid::{Dir4, Facing, Pos};
     use crate::projector::ProjectorConfig;
 
     /// `compose_scene_2d` draws the grid wireframe even with no ships, and adds
