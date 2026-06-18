@@ -415,11 +415,23 @@ fn queue_index(ship: &Ship, action_id: &str) -> Option<usize> {
     ship.queue.iter().position(|q| q == action_id)
 }
 
-/// (#100) Whether `action`, fired by `ship` from its CURRENT pos/facing, would
-/// hit anything — the fire-gate single-source `resolve_targeting_2d`. Drives the
-/// tile's "no target / can't bear" cue. A non-targeted action (empty pattern that
-/// still self-resolves, e.g. SELF/cards) reads as fireable.
+/// (#100/#102) Whether `action`, fired by `ship` from its CURRENT pos/facing,
+/// would hit anything — the fire-gate single-source `resolve_targeting_2d`.
+/// Drives the tile's "no target / can't bear" cue.
+///
+/// (#102 fix) The can't-bear cue only makes sense for an AIMED weapon — one that
+/// bears on a target cell via an arc/line. A non-aimed action (a SELF buff or a
+/// DEPLOYED_CELL placement, i.e. the field-kit utility cards mass_lock /
+/// mass_breach / sensor_pulse) has no "does it bear" concept; `resolve_targeting_2d`
+/// returns empty for it by construction, which previously veiled + slashed those
+/// card tiles ("what is the slash through 5?"). So such actions ALWAYS read as
+/// fireable — the veil never applies to a utility/self ability, only to a weapon
+/// that genuinely can't bring its arc onto an enemy from here.
 fn action_can_fire(action: &broadside_engine::types::Action, board: &Board, ship: &Ship) -> bool {
+    use broadside_engine::types::TargetingPattern;
+    if matches!(action.targeting.pattern, TargetingPattern::SELF | TargetingPattern::DEPLOYED_CELL) {
+        return true;
+    }
     !broadside_engine::resolve::resolve_targeting_2d(action, board, ship.pos).is_empty()
 }
 
@@ -1889,6 +1901,41 @@ mod tests {
             "committing the turn consumes the queued action (indicator clears)"
         );
         eprintln!("=== END REPRO ===");
+    }
+
+    /// (#102 REGRESSION) The #100 "no target / can't bear" cue must NEVER fire on a
+    /// utility/self ability. The field-kit cards (mass_lock / mass_breach /
+    /// sensor_pulse) are `TargetingPattern::SELF`, so `resolve_targeting_2d` is
+    /// empty for them by construction — which used to veil + slash their tiles
+    /// ("what is the slash through 5?"). `action_can_fire` now structurally returns
+    /// `true` for SELF / DEPLOYED_CELL, so the veil can't apply. Lock that: every
+    /// card action reads as fireable regardless of board state, while an aimed
+    /// weapon out of bears still reads `false`.
+    #[test]
+    fn card_abilities_never_show_cant_bear_cue() {
+        let content = fresh_content();
+        let board = fresh_board();
+        let player = board.cells.iter().flatten().find(|s| s.faction == Faction::Player).cloned().unwrap();
+
+        for cid in ["mass_lock", "mass_breach", "sensor_pulse"] {
+            let synth = synthetic_card_action_id(cid);
+            let action = content
+                .action(&synth)
+                .unwrap_or_else(|| panic!("card {cid} synthetic action registered"));
+            assert!(
+                action_can_fire(action, &board, &player),
+                "utility/self card {cid} must read as fireable (no can't-bear veil/slash)"
+            );
+        }
+
+        // Sanity: an AIMED weapon that genuinely can't bear from the spawn pose
+        // still reports false (the cue is preserved where it belongs). The player's
+        // broadside_battery does not bear bow-N at spawn (proven in the #100 repro).
+        let bb = content.action("broadside_battery").expect("broadside_battery exists");
+        assert!(
+            !action_can_fire(bb, &board, &player),
+            "an aimed weapon out of bears must still read can't-fire (the cue is real for weapons)"
+        );
     }
 
     #[test]
