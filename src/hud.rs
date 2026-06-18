@@ -600,15 +600,15 @@ fn push_bottom_hud_2d(out: &mut Vec<DrawCommand>, board: &Board) {
 
 /// (#98 Bruce) The player's ability-tile row in the bottom HUD band — Shogun-
 /// Showdown style, drawn from the bin's [`AbilityTile`]s (the only place carrying
-/// per-weapon damage + cooldown_max; the Board doesn't). Per tile: the weapon ICON
-/// centred (abilities identifiable); the DAMAGE figure as a NUMBER top-left (0 =
-/// blank, non-damage); the KEY (slot char) as a small NUMBER bottom-right; and
-/// COOLDOWN as TICKS along the bottom edge, one per `cooldown_max` — white for an
-/// elapsed/ready round, grey for a round still remaining (ready = all white,
-/// just-fired = all grey, one flips grey→white each round; `cooldown_max == 0` =
-/// no ticks). Border tints teal (ready) / dim violet (on cooldown). The bin calls
-/// this after the scene compose (it holds the tiles); replaces the old mount-only
-/// tile row.
+/// per-weapon damage / range / cooldown_max; the Board doesn't). Per tile: the
+/// weapon ICON centred; a LARGE DAMAGE number top-left (blank if 0); a smaller
+/// RANGE number (cells) top-right (blank if 0); the KEY (slot char) bottom-right;
+/// and COOLDOWN as TICKS along the bottom edge, one per `cooldown_max`, GREY by
+/// default and charging WHITE from the RIGHT as each round passes (rightmost fills
+/// first). When all ticks are white (cooldown elapsed) — or `cooldown_max == 0`
+/// (no ticks) — the whole tile gets a WHITE BORDER = "ready to queue"; a charging
+/// tile keeps a dim violet frame. The bin calls this after the scene compose (it
+/// holds the tiles); replaces the old mount-only tile row.
 pub fn push_ability_tiles_2d(out: &mut Vec<DrawCommand>, tiles: &[AbilityTile]) {
     if tiles.is_empty() {
         return;
@@ -626,9 +626,12 @@ pub fn push_ability_tiles_2d(out: &mut Vec<DrawCommand>, tiles: &[AbilityTile]) 
     let tile_y = band_top + (band_h - tile) / 2.0;
     for (i, t) in tiles.iter().enumerate() {
         let tx = start_x + i as f32 * (tile + gap);
-        let on_cd = t.cooldown > 0;
-        let border = if on_cd { TILE_COOLDOWN } else { TILE_READY };
-        // Tile bg + border.
+        // READY = no cooldown active (cooldown_max 0 is always ready; otherwise all
+        // ticks charged white = cooldown elapsed). A ready tile gets a WHITE BORDER
+        // ("queue me"); a charging tile keeps the dim cooldown frame.
+        let ready = t.cooldown <= 0;
+        let border = if ready { TILE_BORDER_READY } else { TILE_COOLDOWN };
+        // Tile bg + border (2px when ready so the white frame reads as a clear cue).
         push_polygon(
             out,
             PolygonInstance::flat(
@@ -643,8 +646,9 @@ pub fn push_ability_tiles_2d(out: &mut Vec<DrawCommand>, tiles: &[AbilityTile]) 
             [tx + tile, tile_y + tile],
             [tx, tile_y + tile],
         ];
+        let bth = if ready { 2.0 } else { 1.0 };
         for k in 0..4 {
-            push_line(out, pt(c[k]), pt(c[(k + 1) % 4]), 1.0, border);
+            push_line(out, pt(c[k]), pt(c[(k + 1) % 4]), bth, border);
         }
         // Icon, centred (nudged up a touch to leave room for the bottom tick row).
         push_sprite(
@@ -656,19 +660,28 @@ pub fn push_ability_tiles_2d(out: &mut Vec<DrawCommand>, tiles: &[AbilityTile]) 
                 atlas::cell_uvs(t.icon.atlas_cell()),
             ),
         );
-        // DAMAGE number, TOP-LEFT (skip 0 = non-damage ability).
+        // DAMAGE = LARGE number, TOP-LEFT (pixel=2; skip 0 = non-damage ability).
         if t.damage > 0 {
-            push_text_left(out, &t.damage.to_string(), tx + 2.0, tile_y + 2.0, 1.0, TILE_DAMAGE);
+            push_text_left(out, &t.damage.to_string(), tx + 2.0, tile_y + 2.0, 2.0, TILE_DAMAGE);
         }
-        // KEY number, BOTTOM-RIGHT (one glyph, 5px wide at pixel=1).
+        // RANGE = smaller number, TOP-RIGHT (cells; skip 0 = non-targeted).
+        if t.range > 0 {
+            let s = t.range.to_string();
+            // Right-align: one glyph is 5px at pixel=1.
+            let rx = tx + tile - 2.0 - (s.len() as f32 * 6.0 - 1.0);
+            push_text_left(out, &s, rx, tile_y + 2.0, 1.0, TILE_RANGE);
+        }
+        // KEY = number, BOTTOM-RIGHT.
         let key = t.slot.to_string();
         push_text_left(out, &key, tx + tile - 6.0, tile_y + tile - 8.0, 1.0, HUD_LABEL);
-        // COOLDOWN TICKS along the bottom edge: one per cooldown_max, white =
-        // elapsed (cooldown_max - cooldown of them), grey = remaining.
+        // COOLDOWN TICKS along the bottom edge: one per cooldown_max, GREY by
+        // default, charging WHITE from the RIGHT as each round passes (rightmost
+        // fills first). `elapsed = cooldown_max - cooldown` ticks are charged, and
+        // they're the RIGHTMOST ones: tick k (0=leftmost) is white iff
+        // k >= cooldown_remaining. All white (cooldown 0) => the ready border above.
         if t.cooldown_max > 0 {
             let ticks = t.cooldown_max;
             let remaining = t.cooldown.clamp(0, ticks);
-            let elapsed = ticks - remaining;
             let pad = 2.0;
             let tick_gap = 1.0;
             let avail = tile - 2.0 * pad;
@@ -676,7 +689,8 @@ pub fn push_ability_tiles_2d(out: &mut Vec<DrawCommand>, tiles: &[AbilityTile]) 
             let ty = tile_y + tile - 3.0;
             for k in 0..ticks {
                 let kx = tx + pad + k as f32 * (tw + tick_gap);
-                let col = if k < elapsed { TILE_TICK_ELAPSED } else { TILE_TICK_REMAIN };
+                // Charge from the right: the leftmost `remaining` stay grey.
+                let col = if k >= remaining { TILE_TICK_ELAPSED } else { TILE_TICK_REMAIN };
                 push_polygon(
                     out,
                     PolygonInstance::flat(
@@ -2915,6 +2929,9 @@ pub struct AbilityTile {
     pub icon: AbilityIcon,
     /// Damage figure for the damage indicator (`0` = non-damage ability).
     pub damage: i32,
+    /// (#98) RANGE in cells = the weapon's max reach (Adjacent=1, Near=2, Far=3),
+    /// shown top-right. `0` = no meaningful range (non-targeted / self) — blank.
+    pub range: i32,
     /// Turns remaining on cooldown (`0` = ready).
     pub cooldown: i32,
     /// Cooldown length when fired; `0` = no cooldown.
@@ -2924,10 +2941,13 @@ pub struct AbilityTile {
     pub queued_index: Option<usize>,
 }
 
-const TILE_READY: [f32; 4] = [0.329, 0.812, 0.788, 1.0]; // teal = available
+const TILE_READY: [f32; 4] = [0.329, 0.812, 0.788, 1.0]; // teal (1-D emit_tile path)
+// (#98) Ready 2-D tile = WHITE border ("queue me"); charging tile = dim violet.
+const TILE_BORDER_READY: [f32; 4] = [0.96, 0.98, 1.0, 1.0]; // white = ready to queue
 const TILE_COOLDOWN: [f32; 4] = [0.42, 0.40, 0.50, 1.0]; // dim violet = on CD
 const TILE_BG: [f32; 4] = [0.094, 0.110, 0.149, 0.92];
 const TILE_DAMAGE: [f32; 4] = [0.95, 0.62, 0.30, 1.0]; // orange damage pips
+const TILE_RANGE: [f32; 4] = [0.62, 0.82, 0.95, 1.0]; // cool blue = range cells
 const TILE_ICON: [f32; 4] = [0.92, 0.94, 0.98, 1.0];
 const TILE_ENEMY: [f32; 4] = [0.90, 0.34, 0.30, 1.0]; // enemy-intent red frame
 // (#98) Cooldown TICKS along a tile's bottom edge: white = elapsed/ready round,

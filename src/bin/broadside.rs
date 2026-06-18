@@ -392,6 +392,24 @@ fn action_damage(action: &broadside_engine::types::Action) -> i32 {
         .unwrap_or(0)
 }
 
+/// (#98) The action's RANGE in cells for the tile readout = the MAX band it can
+/// fire at, mapped Adjacent=1 / Near=2 / Far=3. `0` when the action has no range
+/// band (non-targeted / self) → the tile shows no range number.
+fn action_range(action: &broadside_engine::types::Action) -> i32 {
+    use broadside_engine::grid::Range;
+    action
+        .targeting
+        .range_band
+        .iter()
+        .map(|r| match r {
+            Range::Adjacent => 1,
+            Range::Near => 2,
+            Range::Far => 3,
+        })
+        .max()
+        .unwrap_or(0)
+}
+
 /// `Some(position)` of `action_id` in `ship.queue`, else `None`.
 fn queue_index(ship: &Ship, action_id: &str) -> Option<usize> {
     ship.queue.iter().position(|q| q == action_id)
@@ -408,6 +426,7 @@ fn build_ship_tiles(ship: &Ship, content: &dyn Content) -> Vec<hud::AbilityTile>
                 slot: (b'1' + i as u8) as char,
                 icon: archetype_icon(action.archetype),
                 damage: action_damage(action),
+                range: action_range(action),
                 cooldown: ship.cooldowns.get(&mount.weapon).copied().unwrap_or(0).max(0),
                 cooldown_max: action.cost.cooldown_max.max(0),
                 queued_index: queue_index(ship, &mount.weapon),
@@ -424,6 +443,7 @@ fn build_ship_tiles(ship: &Ship, content: &dyn Content) -> Vec<hud::AbilityTile>
                     slot: *slot,
                     icon: archetype_icon(action.archetype),
                     damage: action_damage(action),
+                    range: action_range(action),
                     cooldown: 0,
                     cooldown_max: 0,
                     queued_index: queue_index(ship, &synth),

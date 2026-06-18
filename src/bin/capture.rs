@@ -313,9 +313,9 @@ fn main() {
     if std::env::var("BROADSIDE_QUEUE_DEMO").is_ok_and(|v| v != "0") {
         use broadside_engine::hud::{AbilityIcon, AbilityTile};
         let tiles = vec![
-            AbilityTile { slot: '1', icon: AbilityIcon::Beam, damage: 3, cooldown: 0, cooldown_max: 0, queued_index: None },
-            AbilityTile { slot: '2', icon: AbilityIcon::Ordnance, damage: 6, cooldown: 2, cooldown_max: 4, queued_index: None },
-            AbilityTile { slot: '3', icon: AbilityIcon::Defensive, damage: 0, cooldown: 0, cooldown_max: 3, queued_index: None },
+            AbilityTile { slot: '1', icon: AbilityIcon::Beam, damage: 3, range: 1, cooldown: 0, cooldown_max: 0, queued_index: None },
+            AbilityTile { slot: '2', icon: AbilityIcon::Ordnance, damage: 6, range: 3, cooldown: 2, cooldown_max: 4, queued_index: None },
+            AbilityTile { slot: '3', icon: AbilityIcon::Defensive, damage: 0, range: 0, cooldown: 0, cooldown_max: 3, queued_index: None },
         ];
         broadside_engine::hud::push_ability_tiles_2d(&mut commands, &tiles);
     }
