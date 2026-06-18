@@ -56,8 +56,14 @@ const ENEMY_HULL_STROKE: [f32; 4] = [0.878, 0.478, 0.235, 1.0];
 
 // (#62) Brighter, cooler grid lanes to read like the art-tool reference's crisp
 // cyan road (was a dim slate that barely registered against the starfield).
-const LANE_STROKE: [f32; 4] = [0.33, 0.52, 0.62, 1.0];
-const LANE_TICK: [f32; 4] = [0.50, 0.74, 0.84, 1.0]; // brighter front row
+// (#76 grid polish, Bruce: thinner + more transparent) The lane wireframe reads
+// as a FAINT lattice, not bold lines. Lines stay 1px (the pixel-art floor — a
+// sub-px quad flickers under nearest sampling), so TRANSPARENCY carries the
+// "thinner" read: the far rows are a low-alpha hairline, the front (player) row a
+// touch stronger so "near = where you are" still reads. RGB unchanged (cool
+// cyan-slate); only alpha dropped from the old fully-opaque 1.0.
+const LANE_STROKE: [f32; 4] = [0.33, 0.52, 0.62, 0.28];
+const LANE_TICK: [f32; 4] = [0.50, 0.74, 0.84, 0.42]; // brighter front row
 
 const BAND_POINT_BLANK: [f32; 4] = [0.878, 0.400, 0.290, 0.6];
 const BAND_CLOSE: [f32; 4] = [0.878, 0.635, 0.235, 0.6];
