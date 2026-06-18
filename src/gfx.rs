@@ -1337,7 +1337,12 @@ impl Gfx {
     /// shape + Lambert shading. EMISSIVE is untouched by `upload_imported_tinted`,
     /// so the unlit cyan stern engine glow stays bright + readable (lead: don't
     /// wash out the glow).
-    const PLAYER_RED_TINT: [f32; 3] = [1.6, 0.42, 0.40];
+    // (#109) TRUE saturated red. The old [1.6, 0.42, 0.40] kept G+B near 0.4,
+    // which desaturated the hull toward PINK (Bruce: "why is the player ship
+    // pink? make it red"). Crushing green/blue hard while boosting red gives a
+    // saturated true red; the AUTHORED emissive (cyan engine glow) is still
+    // untouched by upload_imported_tinted so it stays readable over the red hull.
+    const PLAYER_RED_TINT: [f32; 3] = [1.9, 0.16, 0.14];
 
     /// Install the PLAYER's faithful class hull directly from a `.glb` — the
     /// Aegis export (`assets/ships/Aegis.glb`) Bruce's tool bakes per the v5

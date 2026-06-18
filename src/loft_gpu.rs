@@ -862,21 +862,35 @@ impl LoftGpu {
         self.upload_hull(device, &ship.mesh, &colors, &emissive)
     }
 
-    /// Like [`Self::upload_imported`] but multiplies every vertex's albedo by
-    /// `tint` (per-channel) — used to recolour the shared CAD hull a distinct
-    /// hue for the player so it reads apart from the enemy fleet. Emissive is
-    /// left untouched so any glow accent keeps its authored colour.
+    /// Like [`Self::upload_imported`] but multiplies every vertex's albedo AND
+    /// emissive by `tint` (per-channel) — used to recolour the shared CAD hull a
+    /// distinct hue for the player so it reads apart from the enemy fleet.
+    ///
+    /// (#105) Emissive is now tinted TOO. The Aegis has a large CYAN unlit engine
+    /// group (~half its verts); leaving its emissive untouched meant the bright
+    /// cyan washed the red hull toward PINK (Bruce: "why is the player ship pink?
+    /// make it red"). Tinting emissive by the same factor takes the cyan glow into
+    /// the hull's hue — the player's engine reads red, the enemy's grey — so the
+    /// whole ship reads its tint colour instead of a hull/glow two-tone wash. The
+    /// `unlit` flag (`emissive.w`) is preserved by `imported_vertex_attrs`, so the
+    /// glow still skips Lambert; only its colour is biased.
     pub fn upload_imported_tinted(
         &self,
         device: &wgpu::Device,
         ship: &crate::mesh_import::ImportedShip,
         tint: [f32; 3],
     ) -> UploadedHull {
-        let (mut colors, emissive) = imported_vertex_attrs(ship);
+        let (mut colors, mut emissive) = imported_vertex_attrs(ship);
         for c in &mut colors {
             c[0] *= tint[0];
             c[1] *= tint[1];
             c[2] *= tint[2];
+        }
+        for e in &mut emissive {
+            // Tint rgb; KEEP w (the unlit flag) so the glow still skips Lambert.
+            e[0] *= tint[0];
+            e[1] *= tint[1];
+            e[2] *= tint[2];
         }
         self.upload_hull(device, &ship.mesh, &colors, &emissive)
     }
