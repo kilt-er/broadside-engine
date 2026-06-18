@@ -126,12 +126,13 @@ const SHIELD_PIP_CHARGE: [f32; 4] = [0.329, 0.812, 0.788, 1.0];
 // the colour so re-enabling is a one-liner).
 #[allow(dead_code)]
 const BOW_MARK_PLAYER: [f32; 4] = [1.0, 0.91, 0.62, 1.0]; // warm gold-white (vs cool hull)
-// (#99 Bruce) Enemy facing/move arrow = YELLOW. Was cyan-white [0.72,0.97,1.0],
-// which read as white and got lost against the white background stars. Saturated
-// yellow pops against both the dark field and the stars.
-const BOW_MARK_ENEMY: [f32; 4] = [1.0, 0.86, 0.20, 1.0]; // yellow (vs white starfield)
-// (#99) BOW_MARK_SHADOW removed — the move arrow is now a filled yellow shaft+head
-// (push_move_arrow_2d), no chevron-sprite drop-shadow.
+// (#112) BOW_MARK_ENEMY + the enemy move-arrow were REMOVED in the back-row
+// declutter — an enemy now reads as just its posed hull (no arrow/bars/telegraph
+// pile). The player's heading is carried by its hero hull + motion.
+// (#112 A) Enemy loft render-yaw offset off pure bow-on (Bow(S)=180) so the hull
+// presents a readable 3/4 silhouette instead of an edge-on wedge that reads as a
+// blob — still clearly oncoming toward the player.
+const ENEMY_THREE_QUARTER_YAW_DEG: f32 = 28.0;
 
 // (#62) Player engine glow — the reference ship's signature read: a cluster of
 // bright cyan thruster lights at the stern (toward the camera). Bright core +
@@ -501,15 +502,18 @@ pub fn compose_scene_2d_tweened(
     // hero hull's size, the small cell-anchored bar collided with the big hull.
     // The player's health reads from the prominent bottom band; enemies (no
     // bottom bar) keep their lane hull bars. Queue tiles stay for both.
+    // (#112 declutter) Enemies get NO per-ship in-space overlay — no hull bar, no
+    // shield bar, no telegraph/queue-tile stack, no move-arrow/pips. At the tiny
+    // back-row scale those 5 layers x ~3 enemies piled into an illegible mess of
+    // squares + lines ("what are all the squares around the enemy?", Bruce). The
+    // enemy now reads as just its (decluttered, posed + scaled) ship hull; the
+    // PLAYER keeps its queue-tile cue and its bottom-HUD hull/shield. Threat cells
+    // (push_threats_2d, the danger-cell outline) stay — that's the legible
+    // "this cell is dangerous" read, drawn separately under the ships.
     for ship in &ships {
-        if ship.faction != Faction::Player {
-            push_hull_bar_2d(&mut out, ship, cfg);
-            // (#107) Shield pool bar just below the enemy hull bar (no-op if the
-            // ship has no shield capacity). The player's shield reads from the
-            // bottom HUD band instead (push_bottom_hud_2d), matching its hull.
-            push_shield_bar_2d(&mut out, ship, cfg);
+        if ship.faction == Faction::Player {
+            push_queue_tiles_2d(&mut out, ship, cfg);
         }
-        push_queue_tiles_2d(&mut out, ship, cfg);
     }
     // (#90) Resolved weapon fire on TOP of the hulls (Bruce: see weapons firing +
     // results clearly): bright faction-tinted beams along each shot line + an
@@ -869,151 +873,16 @@ fn push_queue_tiles_2d(out: &mut Vec<DrawCommand>, ship: &Ship, cfg: &ProjectorC
     }
 }
 
-/// A compact per-ship hull/health bar floating just above the ship's cell on the
-/// 2D board (Bruce's "who's hurt" readability). A dark background bar with a
-/// left-aligned fill = `hull / max_hull`, colored green → amber → red as health
-/// drops. Width tracks the hull box and the bar shrinks with `depth_scale`, so a
-/// back-row ship gets a smaller bar — consistent with the perspective. Drawn for
-/// every ship (player + enemies); skipped if `max_hull <= 0` (degenerate).
-fn push_hull_bar_2d(out: &mut Vec<DrawCommand>, ship: &Ship, cfg: &ProjectorConfig) {
-    if ship.max_hull <= 0 {
-        return;
-    }
-    let q = grid_cell_quad(ship.pos, cfg);
-    let scale = q.depth_scale;
-    // Match the hull box half-width used in push_ship_2d (base = 22 * depth_scale).
-    let base = 22.0 * scale;
-    // (#101) MIN on-screen size. A back-row ship's depth_scale shrinks the bar to
-    // a near-imperceptible sliver, so a 1-2 hull drop was impossible to SEE land
-    // (Bruce: "I don't see the enemy health bar dropping"). Floor the half-width
-    // and height so even the farthest bar stays readable. The bar still scales
-    // DOWN with distance for nearer ships (perspective preserved) — this only
-    // clamps the far end. The vertical position still tracks the scaled hull.
-    const HULL_BAR_MIN_HALF_W: f32 = 11.0; // ~22px wide minimum
-    const HULL_BAR_MIN_H: f32 = 2.5;
-    let half_w = base.max(HULL_BAR_MIN_HALF_W); // bar spans the hull width (min-clamped)
-    let bar_h = (3.0 * scale).max(HULL_BAR_MIN_H);
-    // Float above the hull: cell center − (hull half-height + gap). Use the
-    // bow-stance vertical half-extent (the taller case) so the bar clears the hull.
-    let cy = q.center[1] - (base + 6.0 * scale);
-    let cx = q.center[0];
-    let left = cx - half_w;
-
-    // Background.
-    push_polygon(
-        out,
-        PolygonInstance::flat(
-            [
-                [left, cy - bar_h * 0.5],
-                [left + half_w * 2.0, cy - bar_h * 0.5],
-                [left + half_w * 2.0, cy + bar_h * 0.5],
-                [left, cy + bar_h * 0.5],
-            ],
-            HULL_BAR_BG,
-            atlas::cell_uvs(atlas::SOLID_WHITE),
-        ),
-    );
-
-    // Fill = hull fraction, left-aligned.
-    let frac = (ship.hull as f32 / ship.max_hull as f32).clamp(0.0, 1.0);
-    if frac > 0.0 {
-        let fill_w = half_w * 2.0 * frac;
-        let color = if frac > 0.6 {
-            HULL_BAR_HIGH
-        } else if frac > 0.3 {
-            HULL_BAR_MID
-        } else {
-            HULL_BAR_LOW
-        };
-        push_polygon(
-            out,
-            PolygonInstance::flat(
-                [
-                    [left, cy - bar_h * 0.5],
-                    [left + fill_w, cy - bar_h * 0.5],
-                    [left + fill_w, cy + bar_h * 0.5],
-                    [left, cy + bar_h * 0.5],
-                ],
-                color,
-                atlas::cell_uvs(atlas::SOLID_WHITE),
-            ),
-        );
-    }
-}
-
-/// (#107) A SHIELD pool bar just BELOW the lane hull bar, showing a ship's shield
-/// charge as `sum(charge) / sum(armour)` across its four faces (approach A: per
-/// content, `ShieldFace.charge` = the live depleting pool, `ShieldFace.armour` =
-/// that face's capacity). A thinner cyan bar so it reads as a distinct
-/// shield layer under the hull bar; left-aligned fill = current/max. No-op when
-/// the ship has no shield capacity (Σarmour == 0) so unshielded ships show only
-/// their hull bar. Mirrors `push_hull_bar_2d`'s geometry + min-size clamp so it
-/// tracks the hull bar at any depth; drawn right after it in the overlay loop.
-fn push_shield_bar_2d(out: &mut Vec<DrawCommand>, ship: &Ship, cfg: &ProjectorConfig) {
-    let sp = &ship.shield_profile;
-    let cap: i32 = sp.bow.armour + sp.stern.armour + sp.port.armour + sp.starboard.armour;
-    if cap <= 0 {
-        return; // unshielded → no shield bar at all
-    }
-    let cur: i32 = sp.bow.charge + sp.stern.charge + sp.port.charge + sp.starboard.charge;
-    let q = grid_cell_quad(ship.pos, cfg);
-    let scale = q.depth_scale;
-    let base = 22.0 * scale;
-    // Match the hull bar's width/clamps so the two bars align.
-    let half_w = base.max(11.0);
-    let hull_bar_h = (3.0 * scale).max(2.5);
-    let bar_h = (2.0 * scale).max(2.0); // shield bar a touch thinner than the hull bar
-    // Hull bar centre (see push_hull_bar_2d); the shield bar sits just below it.
-    let hull_cy = q.center[1] - (base + 6.0 * scale);
-    let gap = 1.5;
-    let cy = hull_cy + hull_bar_h * 0.5 + gap + bar_h * 0.5;
-    let cx = q.center[0];
-    let left = cx - half_w;
-
-    // Background track.
-    push_polygon(
-        out,
-        PolygonInstance::flat(
-            [
-                [left, cy - bar_h * 0.5],
-                [left + half_w * 2.0, cy - bar_h * 0.5],
-                [left + half_w * 2.0, cy + bar_h * 0.5],
-                [left, cy + bar_h * 0.5],
-            ],
-            HULL_BAR_BG,
-            atlas::cell_uvs(atlas::SOLID_WHITE),
-        ),
-    );
-    // Charge fill (cyan), left-aligned = current / capacity.
-    let frac = (cur as f32 / cap as f32).clamp(0.0, 1.0);
-    if frac > 0.0 {
-        let fill_w = half_w * 2.0 * frac;
-        push_polygon(
-            out,
-            PolygonInstance::flat(
-                [
-                    [left, cy - bar_h * 0.5],
-                    [left + fill_w, cy - bar_h * 0.5],
-                    [left + fill_w, cy + bar_h * 0.5],
-                    [left, cy + bar_h * 0.5],
-                ],
-                SHIELD_PIP_CHARGE,
-                atlas::cell_uvs(atlas::SOLID_WHITE),
-            ),
-        );
-    }
-}
-
-/// (#101) A brief DAMAGE FLASH on a ship's hull bar, so even a 1-2 hull drop
-/// visibly registers while the balance numbers get tuned (Bruce: "I don't see the
-/// enemy health bar dropping"). `intensity` is the fade value the bin drives from
-/// its per-ship hull-drop timer (1.0 at the moment of the hit → 0.0 when the
-/// flash expires); a `<= 0` intensity is a no-op so resting ships cost nothing.
-/// Draws a bright outline RING hugging the same bar rect `push_hull_bar_2d` uses
-/// (matching the min-size clamp so a far bar still flashes legibly) plus a thin
-/// upward tick — a quick pop that draws the eye to exactly which ship just took
-/// damage. Pure cosmetic; reads the ship's CURRENT pos only. Drawn AFTER the bars
-/// (the bin calls it in its overlay pass) so the flash sits on top.
+/// (#101/#112) A brief DAMAGE FLASH on a ship when its hull drops, so even a 1-2
+/// hull loss visibly registers (Bruce: "I don't see damage landing"). `intensity`
+/// is the fade the bin drives from its per-ship hull-drop timer (1.0 at the hit →
+/// 0.0 when it expires); `<= 0` is a no-op so resting ships cost nothing.
+///
+/// (#112) The enemy hull/shield BARS were removed to declutter the back row, so
+/// the flash now frames the SHIP HULL itself (a bright outline RING around the
+/// hull box at the ship's cell) rather than a bar rect — it still pops on the ship
+/// that took damage, for player + enemies. Min-clamped so a far hit still reads.
+/// Pure cosmetic; reads the ship's CURRENT pos. Drawn in the bin's overlay pass.
 pub fn push_hull_flash_2d(out: &mut Vec<DrawCommand>, ship: &Ship, intensity: f32, cfg: &ProjectorConfig) {
     if intensity <= 0.0 || ship.max_hull <= 0 {
         return;
@@ -1022,22 +891,18 @@ pub fn push_hull_flash_2d(out: &mut Vec<DrawCommand>, ship: &Ship, intensity: f3
     let q = grid_cell_quad(ship.pos, cfg);
     let scale = q.depth_scale;
     let base = 22.0 * scale;
-    // Mirror push_hull_bar_2d's geometry + min-size clamp so the flash frames the
-    // SAME rect the bar drew (otherwise a far flash would miss the clamped bar).
-    let half_w = base.max(11.0);
-    let bar_h = (3.0 * scale).max(2.5);
-    let cy = q.center[1] - (base + 6.0 * scale);
+    // Frame the hull box (half-extent ~base), min-clamped so a back-row hit still
+    // shows a visible ring rather than a sub-pixel dot.
+    let half = base.max(9.0);
     let cx = q.center[0];
-    let left = cx - half_w;
-    // Flash colour = hot white-red, alpha driven by the fade. A 2px ring around
-    // the bar rect reads as a pulse without obscuring the fill underneath.
-    let col = [1.0, 0.55, 0.45, a];
+    let cy = q.center[1];
+    let col = [1.0, 0.55, 0.45, a]; // hot white-red, alpha = fade
     let pad = 1.5;
     let r = [
-        [left - pad, cy - bar_h * 0.5 - pad],
-        [left + half_w * 2.0 + pad, cy - bar_h * 0.5 - pad],
-        [left + half_w * 2.0 + pad, cy + bar_h * 0.5 + pad],
-        [left - pad, cy + bar_h * 0.5 + pad],
+        [cx - half - pad, cy - half - pad],
+        [cx + half + pad, cy - half - pad],
+        [cx + half + pad, cy + half + pad],
+        [cx - half - pad, cy + half + pad],
     ];
     let th = 2.0;
     for k in 0..4 {
@@ -1534,13 +1399,21 @@ fn push_ship_2d(
     // loft pre-pass renders the hull lit + posed; HUD overlays layer on top below.
     if !is_player {
         if let Some(loft_kind) = sprites.loft_kind(&ship.id, false) {
-            // Seat on the cell: width from the cell's near-edge (already perspective-
-            // scaled), height from the loft aspect (#74 no squash). Centred on the
-            // cell centre (not the bottom band — enemies aren't the foreground hero).
-            let w = (near_edge_width * 0.92).max(10.0);
+            // (#112 A+B) Seat on the cell, but SCALED UP + posed at 3/4 so the enemy
+            // reads as a clear oncoming SHIP, not a tiny shapeless bow-on blob
+            // (Bruce: "what is that blob?"). B: width = a bigger fraction of the
+            // near-edge with a higher min floor, so even a back-row enemy is a
+            // legible silhouette. Height from the loft aspect (#74 no squash).
+            let w = (near_edge_width * 1.35).max(18.0);
             let h = w / LOFT_TEXTURE_ASPECT;
             let (l, r) = (center[0] - w * 0.5, center[0] + w * 0.5);
             let (t, b) = (center[1] - h * 0.5, center[1] + h * 0.5);
+            // A: nudge the render yaw ~28° OFF pure bow-on (Bow(S)=180) so the hull
+            // presents a 3/4 silhouette (you see its length + flank), while still
+            // clearly oncoming/toward the player — pure bow-on is an edge-on wedge
+            // that reads as a blob. A fixed offset (not facing-derived) since every
+            // back-row enemy is bow-S toward the player.
+            let enemy_yaw = facing_yaw_deg + ENEMY_THREE_QUARTER_YAW_DEG;
             out.push(DrawCommand::LoftShip(LoftShipInstance {
                 p0: [l, t],
                 p1: [r, t],
@@ -1549,13 +1422,10 @@ fn push_ship_2d(
                 ship_id: SpriteSlug::new(&ship.id),
                 kind: loft_kind,
                 aim_at: center,
-                // Enemy facing as the flat ground-plane yaw — Bow(S)=180 renders the
-                // hull oncoming (bow toward the camera/player), the bow-to-bow read.
-                facing_yaw_deg,
+                facing_yaw_deg: enemy_yaw,
             }));
-            // Bow chevron + shield pips still layer on top so the enemy's threat/
-            // orientation telegraph reads over the lit hull.
-            push_ship_arrow_and_pips_2d(out, ship, center, 22.0 * depth_scale, cfg);
+            // (#112) NO per-enemy overlay (no arrow/pips/bars/telegraph) — the
+            // decluttered hull + the separate threat-cell outline carry the read.
             return;
         }
     }
@@ -1602,79 +1472,17 @@ fn push_ship_arrow_and_pips_2d(
     base: f32,
     cfg: &ProjectorConfig,
 ) {
-    // (#99) Direction the move arrow points — the projected ground-plane step to
-    // the next cell in the ship's facing (perspective), screen-axis fallback at the
-    // grid edge. Also feeds the shield-pip layout.
-    let (dx, dy) = ground_facing_dir(ship, center, cfg).unwrap_or_else(|| bow_screen_dir(ship.facing));
-    // (#99 Bruce, refined geometry) The enemy's intended-MOVE arrow, drawn FLAT in
-    // the grid with true VANISHING-POINT perspective: a foreshortened arrow from
-    // the ship's CELL centre toward the adjacent cell in its move direction, both
-    // projected through the SAME projector as the grid — so an up-lane arrow
-    // narrows/shortens toward the VP, a near-lane one is longer/wider. ENEMY ONLY
-    // (the player's heading is carried by the hero hull + its motion). Yellow,
-    // smaller. Falls back to nothing if there's no adjacent cell (board edge).
+    // (#112 declutter) ENEMIES get NO arrow/pips — the move-arrow + shield pips were
+    // part of the illegible back-row pile. An enemy now reads as just its posed +
+    // scaled hull (+ the separate threat-cell outline). Only the PLAYER keeps its
+    // orientation/shield-pip cue (foreground hero, not cluttered).
     if ship.faction != Faction::Player {
-        if let Some(next_center) = ground_move_target(ship, cfg) {
-            push_move_arrow_2d(out, center, next_center, BOW_MARK_ENEMY);
-        }
+        return;
     }
-
+    // Direction the player's shield-pip layout keys off — the projected ground-plane
+    // step in its facing, screen-axis fallback at the grid edge.
+    let (dx, dy) = ground_facing_dir(ship, center, cfg).unwrap_or_else(|| bow_screen_dir(ship.facing));
     push_shield_pips_2d(out, ship, center, base, (dx, dy));
-}
-
-/// (#99) The PROJECTED screen-space centre of the cell one step in `ship`'s facing
-/// `Dir4` — the far anchor of its move arrow, run through the SAME projector as the
-/// grid so the arrow foreshortens toward the VP. `None` at the board edge.
-fn ground_move_target(ship: &Ship, cfg: &ProjectorConfig) -> Option<[f32; 2]> {
-    use crate::grid::Dir4;
-    let dir4 = match ship.facing {
-        Facing::Bow(d) => d,
-        Facing::Broadside(axis) => match axis {
-            Axis::NorthSouth => Dir4::S,
-            Axis::EastWest => Dir4::E,
-        },
-    };
-    let next = crate::grid::offset(ship.pos, dir4.to_dir8(), 1)?;
-    Some(grid_cell_quad(next, cfg).center)
-}
-
-/// (#99 Bruce) Draw a FORESHORTENED move arrow from `from` (ship cell centre) toward
-/// `to` (adjacent cell centre), both already projected — so it lies flat in the grid
-/// and converges toward the VP. A tapered shaft (thicker at the near `from` end,
-/// thinner toward `to`) plus a filled arrowhead at the far end. Sized as a fraction
-/// of the projected cell step, so it shrinks with distance automatically.
-fn push_move_arrow_2d(out: &mut Vec<DrawCommand>, from: [f32; 2], to: [f32; 2], color: [f32; 4]) {
-    let (vx, vy) = (to[0] - from[0], to[1] - from[1]);
-    let len = (vx * vx + vy * vy).sqrt();
-    if len < 4.0 {
-        return; // degenerate (cells overlap on screen) — nothing to draw
-    }
-    let (ux, uy) = (vx / len, vy / len); // unit toward `to`
-    let (px, py) = (-uy, ux); // perpendicular (for the head's base width)
-    // Shaft from just past the hull centre to ~65% of the way to the next cell;
-    // the arrowhead caps the remaining reach. Width scales with the step length so
-    // a far (short) arrow stays proportionate, clamped so it never vanishes.
-    let head_len = (len * 0.32).clamp(4.0, 16.0);
-    let shaft_w = (len * 0.05).clamp(1.0, 3.0);
-    let tail = [from[0] + ux * (len * 0.18), from[1] + uy * (len * 0.18)];
-    let head_base = [to[0] - ux * head_len, to[1] - uy * head_len];
-    // Shaft as a thin quad (so it tapers cleanly + reads at any angle).
-    let shaft = [
-        [tail[0] + px * shaft_w, tail[1] + py * shaft_w],
-        [head_base[0] + px * shaft_w, head_base[1] + py * shaft_w],
-        [head_base[0] - px * shaft_w, head_base[1] - py * shaft_w],
-        [tail[0] - px * shaft_w, tail[1] - py * shaft_w],
-    ];
-    push_polygon(out, PolygonInstance::flat(shaft, color, atlas::cell_uvs(atlas::SOLID_WHITE)));
-    // Filled arrowhead triangle: base across the shaft at head_base, tip at `to`.
-    let hw = (head_len * 0.6).max(shaft_w + 1.5);
-    let tri = [
-        [to[0], to[1]],
-        [head_base[0] + px * hw, head_base[1] + py * hw],
-        [head_base[0] - px * hw, head_base[1] - py * hw],
-        [to[0], to[1]], // 4th == tip so the flat-quad helper renders a triangle
-    ];
-    push_polygon(out, PolygonInstance::flat(tri, color, atlas::cell_uvs(atlas::SOLID_WHITE)));
 }
 
 /// (#99) The ship's facing direction as a SCREEN unit vector that lies FLAT in the
@@ -4232,44 +4040,6 @@ mod tests {
         assert!(expired.is_empty(), "a fully-faded number (intensity 0) must be a no-op");
     }
 
-    /// (#107) The shield pool bar renders when the ship HAS shield capacity
-    /// (Σarmour > 0) and is a no-op for an unshielded ship (Σarmour == 0), so an
-    /// unshielded loadout shows only its hull bar. The bar binds Σcharge / Σarmour
-    /// (approach A: charge = live pool, armour = capacity).
-    #[test]
-    fn shield_bar_renders_only_with_capacity() {
-        use crate::projector::ProjectorConfig;
-        let cfg = ProjectorConfig::default();
-
-        // Shielded ship (default frigate profile carries per-face armour) → bar.
-        let mut shielded = frigate_at(0, Faction::Enemy, Orientation::BowOn { bow: LaneEnd::Fore });
-        shielded.shield_profile.bow.charge = shielded.shield_profile.bow.armour;
-        let mut with_cap = Vec::new();
-        push_shield_bar_2d(&mut with_cap, &shielded, &cfg);
-        assert!(
-            !with_cap.is_empty(),
-            "a ship with shield capacity must draw a shield bar"
-        );
-
-        // Strip ALL face capacity → unshielded → no shield bar.
-        let mut bare = frigate_at(0, Faction::Enemy, Orientation::BowOn { bow: LaneEnd::Fore });
-        for f in [
-            &mut bare.shield_profile.bow,
-            &mut bare.shield_profile.stern,
-            &mut bare.shield_profile.port,
-            &mut bare.shield_profile.starboard,
-        ] {
-            f.armour = 0;
-            f.charge = 0;
-        }
-        let mut no_cap = Vec::new();
-        push_shield_bar_2d(&mut no_cap, &bare, &cfg);
-        assert!(
-            no_cap.is_empty(),
-            "an unshielded ship (no capacity) must NOT draw a shield bar"
-        );
-    }
-
     /// Stub registry that reports the requested class+stance as having
     /// BOTH side and top loaded — verifies the `compose_scene_with`
     /// branch that emits a textured-quad command instead of the
@@ -5196,60 +4966,6 @@ mod tests {
             "a ship should add commands ({} vs {})",
             with_ship.len(),
             grid_only.len()
-        );
-    }
-
-    /// The bow arrow encodes `Facing::forward_axis()`: a ship facing N puts its
-    /// chevron ABOVE the hull center (smaller y, screen-down), facing S puts it
-    /// BELOW — the orientation-obvious contract shared with `facing_zone`.
-    #[test]
-    fn bow_arrow_points_along_forward_axis() {
-        // (#99) The enemy move arrow is now a PROJECTED polygon arrow (yellow
-        // BOW_MARK_ENEMY shaft + head) pointing toward the next cell in the ship's
-        // facing — not a chevron sprite. Assert its FARTHEST vertex from the ship
-        // centre lies on the correct side (the arrow tip = the next cell direction).
-        let cfg = ProjectorConfig::default();
-        // Use a MID cell (row 1) so every cardinal has an in-board neighbour to
-        // project toward (a back/front-edge cell has no N/S neighbour).
-        let pos = Pos::new(2, 1);
-        let center = grid_cell_quad(pos, &cfg).center;
-
-        // The arrow's extreme point (max distance from centre) across all yellow
-        // move-arrow polygon vertices, for a given facing.
-        let arrow_tip = |facing: Facing| -> [f32; 2] {
-            let mut s = frigate_at(0, Faction::Enemy, Orientation::Broadside);
-            s.pos = pos;
-            s.facing = facing;
-            let mut out = Vec::new();
-            push_ship_2d(&mut out, &s, &cfg, &EmptySpriteRegistry, None);
-            let mut best = center;
-            let mut best_d = -1.0_f32;
-            for c in &out {
-                if let DrawCommand::Polygon(p) = c {
-                    if p.color != BOW_MARK_ENEMY {
-                        continue;
-                    }
-                    for v in [p.p0, p.p1, p.p2, p.p3] {
-                        let d = (v[0] - center[0]).powi(2) + (v[1] - center[1]).powi(2);
-                        if d > best_d {
-                            best_d = d;
-                            best = v;
-                        }
-                    }
-                }
-            }
-            assert!(best_d >= 0.0, "a yellow move-arrow polygon should be emitted");
-            best
-        };
-
-        // N (toward row 0 / up the board) ⇒ tip above centre (smaller y).
-        assert!(arrow_tip(Facing::Bow(Dir4::N))[1] < center[1], "N arrow points up-lane");
-        // S (toward the player / down) ⇒ tip below centre (larger y).
-        assert!(arrow_tip(Facing::Bow(Dir4::S))[1] > center[1], "S arrow points toward camera");
-        // Broadside(EastWest) points +E ⇒ tip to the right of centre.
-        assert!(
-            arrow_tip(Facing::Broadside(Axis::EastWest))[0] > center[0],
-            "EastWest broadside arrow points +E (right)"
         );
     }
 
