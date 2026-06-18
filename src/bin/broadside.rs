@@ -232,16 +232,17 @@ pub fn apply_intent(
             }
         }
 
-        // --- QueueAction: push the action id to the player's queue. The
-        // queue is NOT fired here — the player commits later via Enter /
-        // Space. Time still advances. ---
+        // --- QueueAction: push the action id to the player's queue ONLY. Queuing
+        // is PLANNING — it does NOT advance the world (#97, content-confirmed): the
+        // old code ran run_world_phase here, so pressing 1/2/3 to plan a shot let
+        // enemies act + damage the player before they committed (Bruce ate a full
+        // enemy turn just for queuing). Time advances ONLY on CommitTurn (Space/R),
+        // which fires the queue then runs the world phase — clean plan-then-execute. ---
         Intent::QueueAction(_) => {
             let Some(id) = intent_to_action_id(&intent) else {
                 return false;
             };
-            let pushed = append_to_player_queue(board, id.to_string());
-            run_world_phase(board, content);
-            pushed
+            append_to_player_queue(board, id.to_string())
         }
 
         // --- CommitTurn: fire whatever is in the queue (empty queue =
