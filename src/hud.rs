@@ -84,6 +84,15 @@ const THREAT_FILL_STATUS: [f32; 4] = [0.608, 0.549, 0.859, 0.42]; // debuff
 const THREAT_FILL_OTHER: [f32; 4] = [0.55, 0.55, 0.55, 0.34]; // catch-all
 const THREAT_BEAM: [f32; 4] = [0.878, 0.300, 0.250, 0.50]; // source→target intent line
 
+// (#90) Fired-shot VFX in the 2-D scene (Bruce: see weapons firing + results
+// clearly). A bright BEAM along the shot line + an IMPACT flash on the struck
+// cell, both well above the faint threat-beam alpha so a fired shot READS as a
+// discrete event, not the standing intent line. Colour comes from the firing
+// faction (player cyan / enemy red, via `vfx::faction_beam_tint`); a MISS draws
+// dimmer. Impact = a bright near-white core flash so the hit cell pops.
+const IMPACT_FLASH: [f32; 4] = [1.0, 0.93, 0.72, 0.85]; // warm white impact core
+const DESTROY_FLASH: [f32; 4] = [1.0, 0.62, 0.28, 0.8]; // orange destruction burst
+
 // Player weapon-arc legibility (`push_weapon_arcs_2d`): a cool player-accent
 // outline on cells the player's weapons currently bear on (so "where can I fire"
 // reads, and the broadside gun's coverage visibly appears on reorient).
@@ -493,6 +502,13 @@ pub fn compose_scene_2d_tweened(
         }
         push_queue_tiles_2d(&mut out, ship, cfg);
     }
+    // (#90) Resolved weapon fire on TOP of the hulls (Bruce: see weapons firing +
+    // results clearly): bright faction-tinted beams along each shot line + an
+    // impact flash on every struck cell, then a destruction burst on any ship at
+    // zero hull. Driven straight off the board (fire_events + hull) — the live bin
+    // holds these for the round, so they read as the round's combat result.
+    push_fire_2d(&mut out, board, cfg);
+    push_destruction_2d(&mut out, board, cfg);
     // Bottom HUD band LAST of all — a screen-space fixed (NOT projected) health
     // bar + large weapon-tile row, drawn on top of everything (Bruce: a fixed
     // centered Shogun-Showdown-style bottom bar so health + abilities always read).
@@ -791,6 +807,90 @@ fn push_threats_2d(out: &mut Vec<DrawCommand>, board: &Board, cfg: &ProjectorCon
             let to = q.center;
             push_line(out, pt(from), pt(to), 1.0, THREAT_BEAM);
         }
+    }
+}
+
+/// (#90) Draw the RESOLVED weapon fire for this round in the 2-D scene (Bruce:
+/// "see weapons firing better and the results more cleanly"). For each
+/// [`crate::types::FireEvent`] in `board.fire_events` (the resolver's single
+/// source — one event per attacker→target shot): a bright archetype-styled BEAM
+/// along the shot line, faction-tinted (player cyan / enemy red via
+/// [`crate::vfx::faction_beam_tint`]), dimmed on a MISS; plus an IMPACT flash on
+/// the struck cell for a hit. This is the 2-D analog of the 1-D `vfx` beams
+/// (which positioned via the old `LaneGeometry` and were dropped from the 2-D
+/// path in #43) — driven straight off the board so it needs no separate timing
+/// state: the live bin holds the events for the round + redraws.
+///
+/// Drawn AFTER ships (over the hulls) so the shot + impact read on top. The fade
+/// over a shot's life still lives in the windowed `vfx` system for the 1-D path;
+/// here the beam is the full-strength round read (clarity over a micro-fade —
+/// Bruce wants to SEE the shots), which the next round's events replace.
+fn push_fire_2d(out: &mut Vec<DrawCommand>, board: &Board, cfg: &ProjectorConfig) {
+    for fe in &board.fire_events {
+        let (thickness, _life) = crate::vfx::archetype_beam_style(fe.archetype);
+        let tint = crate::vfx::faction_beam_tint(fe.attacker_faction);
+        let from = grid_cell_quad(fe.from_pos, cfg).center;
+        let to = grid_cell_quad(fe.to_pos, cfg).center;
+        // A hit reads full + bright; a miss is dimmer + thinner so "fired but
+        // didn't connect" reads without faking a separate animation.
+        let (alpha, th) = if fe.hit {
+            (0.95, thickness)
+        } else {
+            (0.45, thickness * 0.7)
+        };
+        let beam = [tint[0], tint[1], tint[2], alpha];
+        push_line(out, pt(from), pt(to), th, beam);
+        // Impact flash on the struck cell (hits only) — a bright warm-white core so
+        // the result POPS where the shot landed.
+        if fe.hit {
+            let q = grid_cell_quad(fe.to_pos, cfg);
+            let r = (q.near_edge_width() * 0.5).clamp(6.0, 26.0);
+            push_sprite(
+                out,
+                SpriteInstance::axis_aligned(
+                    q.center,
+                    [r, r],
+                    IMPACT_FLASH,
+                    atlas::cell_uvs(atlas::SOLID_WHITE),
+                ),
+            );
+        }
+    }
+}
+
+/// (#90) Draw a DESTRUCTION burst on the cell of any ship at zero hull this frame
+/// — a clear "a ship died here" cue (Bruce: results read cleanly). A bright
+/// expanding orange square at the dead ship's projected cell. Derived from the
+/// live board (hull <= 0) so it needs no vanish-tracking state; the dead ship is
+/// removed from `board.cells` next round, so this shows the frame(s) it lingers
+/// at zero hull before cleanup. Drawn last (over everything) so the burst reads.
+fn push_destruction_2d(out: &mut Vec<DrawCommand>, board: &Board, cfg: &ProjectorConfig) {
+    for ship in board.cells.iter().flatten() {
+        if ship.hull > 0 {
+            continue;
+        }
+        let q = grid_cell_quad(ship.pos, cfg);
+        let r = (q.near_edge_width() * 0.7).clamp(8.0, 34.0);
+        // A two-layer burst: a wide soft orange halo + a bright near-white core, so
+        // a kill reads as a clear flash rather than a flat square.
+        push_sprite(
+            out,
+            SpriteInstance::axis_aligned(
+                q.center,
+                [r, r],
+                DESTROY_FLASH,
+                atlas::cell_uvs(atlas::SOLID_WHITE),
+            ),
+        );
+        push_sprite(
+            out,
+            SpriteInstance::axis_aligned(
+                q.center,
+                [r * 0.5, r * 0.5],
+                IMPACT_FLASH,
+                atlas::cell_uvs(atlas::SOLID_WHITE),
+            ),
+        );
     }
 }
 

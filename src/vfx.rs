@@ -384,7 +384,9 @@ fn emit_beam(
 /// Visual style for a fired shot, by weapon archetype: `(thickness, life_secs)`.
 /// Cheap differentiation so a beam reads instant-and-thin, ordnance slow-and-fat,
 /// a broadside short-and-wide, etc. Colour comes from the firing faction.
-fn archetype_beam_style(a: crate::types::WeaponArchetype) -> (f32, f32) {
+/// `pub(crate)` so the 2-D scene compositor ([`crate::hud::push_fire_2d`]) styles
+/// its fire beams from the SAME archetype table (single source).
+pub(crate) fn archetype_beam_style(a: crate::types::WeaponArchetype) -> (f32, f32) {
     use crate::types::WeaponArchetype as W;
     match a {
         W::Beam => (2.5, 0.20),      // instant thin bolt

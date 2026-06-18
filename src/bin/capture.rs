@@ -201,8 +201,53 @@ fn main() {
         .nth(4)
         .and_then(|s| s.parse::<usize>().ok())
         .unwrap_or_else(|| player_start_pos().row);
-    let board = capture_board(player_col, player_row, player_facing);
+    let mut board = capture_board(player_col, player_row, player_facing);
     log::info!("capture: player at col {player_col} row {player_row}, facing {player_facing:?}");
+
+    // (#90) Optional BROADSIDE_VFX_DEMO=1 injects sample combat RESULTS so the
+    // headless capture can verify the new fire/impact/destruction VFX: a player→
+    // enemy HIT beam + impact, an enemy→player MISS beam (dimmer), and one enemy
+    // marked at zero hull (destruction burst). Off by default so normal captures
+    // (incl. the pixel-identity gate) are unaffected.
+    if std::env::var("BROADSIDE_VFX_DEMO").is_ok_and(|v| v != "0") {
+        use broadside_engine::types::{FireEvent, WeaponArchetype};
+        let ppos = board
+            .cells
+            .iter()
+            .flatten()
+            .find(|s| s.faction == Faction::Player)
+            .map(|s| s.pos)
+            .unwrap_or_else(|| Pos::new(2, 3));
+        let mid = COLS / 2;
+        let tgt = Pos::new(mid, 0); // centre back-row enemy
+        board.fire_events.push(FireEvent {
+            from_cell: ppos.to_index(),
+            to_cell: tgt.to_index(),
+            from_pos: ppos,
+            to_pos: tgt,
+            archetype: WeaponArchetype::Beam,
+            attacker_faction: Faction::Player,
+            hit: true,
+        });
+        board.fire_events.push(FireEvent {
+            from_cell: tgt.to_index(),
+            to_cell: ppos.to_index(),
+            from_pos: tgt,
+            to_pos: ppos,
+            archetype: WeaponArchetype::Beam,
+            attacker_faction: Faction::Enemy,
+            hit: false, // a miss — renders dimmer
+        });
+        // Mark the struck enemy as destroyed (zero hull) for the destruction burst.
+        if let Some(s) = board
+            .cells
+            .get_mut(tgt.to_index())
+            .and_then(|c| c.as_mut())
+        {
+            s.hull = 0;
+        }
+        log::info!("capture: VFX demo — injected player HIT + enemy MISS + a kill at {tgt:?}");
+    }
 
     // (#70) Sync the player's loft pose so the loft pre-pass has a pose to render
     // (mirrors the playable bin's per-frame sync_loft_pose).
