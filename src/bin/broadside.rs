@@ -1490,6 +1490,11 @@ impl ApplicationHandler for App {
                     // live-scene projector. Gated to Playing so a board reset / overlay
                     // frame never bursts. Recorded only on a combat-turn resolve.
                     hud::push_destruction_at(&mut instances, &kill_cells, &scene_cfg);
+                    // (#98) Player ability-tile row in the bottom HUD band — drawn
+                    // from the real AbilityTile data (damage / cooldown_max), which the
+                    // board alone doesn't carry. Damage # top-left, key # bottom-right,
+                    // cooldown ticks along the bottom.
+                    hud::push_ability_tiles_2d(&mut instances, &player_tiles);
                 }
                 // Push the appropriate demo-state overlay on top.
                 // Compose no longer auto-pushes — the bin owns the

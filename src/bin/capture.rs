@@ -307,6 +307,18 @@ fn main() {
     if let Some(killed) = vfx_demo_kill {
         broadside_engine::hud::push_destruction_at(&mut commands, &[killed], &cfg);
     }
+    // (#98) With QUEUE_DEMO, append a representative ability-tile row so the headless
+    // shot shows the new layout (damage # top-left, key # bottom-right, cooldown
+    // ticks). The capture has no Content, so hand-build tiles in varied states.
+    if std::env::var("BROADSIDE_QUEUE_DEMO").is_ok_and(|v| v != "0") {
+        use broadside_engine::hud::{AbilityIcon, AbilityTile};
+        let tiles = vec![
+            AbilityTile { slot: '1', icon: AbilityIcon::Beam, damage: 3, cooldown: 0, cooldown_max: 0, queued_index: None },
+            AbilityTile { slot: '2', icon: AbilityIcon::Ordnance, damage: 6, cooldown: 2, cooldown_max: 4, queued_index: None },
+            AbilityTile { slot: '3', icon: AbilityIcon::Defensive, damage: 0, cooldown: 0, cooldown_max: 3, queued_index: None },
+        ];
+        broadside_engine::hud::push_ability_tiles_2d(&mut commands, &tiles);
+    }
     // (#90 yellow-square repro) With QUEUE_DEMO, dump any LARGE draw command (a
     // sprite half-size > 60px or a polygon spanning > 120px in either axis) + its
     // colour — pinpoints the giant fill covering the ship/field without eyeballing.

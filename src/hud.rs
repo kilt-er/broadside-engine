@@ -110,8 +110,8 @@ const HULL_BAR_LOW: [f32; 4] = [0.878, 0.286, 0.235, 1.0]; // <=30% red
 // weapon-tile row (Shogun-Showdown style).
 const HUD_BAND_BG: [f32; 4] = [0.055, 0.067, 0.094, 0.92]; // dark panel
 const HUD_LABEL: [f32; 4] = [0.70, 0.78, 0.88, 0.9]; // small text
-const HUD_TILE_BG: [f32; 4] = [0.118, 0.137, 0.180, 0.95]; // tile fill
-const HUD_TILE_COOLDOWN: [f32; 4] = [0.42, 0.45, 0.52, 0.9]; // dim = cooling
+// (#98) HUD_TILE_BG / HUD_TILE_COOLDOWN removed with the old mount-tile row —
+// the ability tiles now use the TILE_* palette in push_ability_tiles_2d.
 
 const SHIELD_PIP_CHARGE: [f32; 4] = [0.329, 0.812, 0.788, 1.0];
 
@@ -592,37 +592,48 @@ fn push_bottom_hud_2d(out: &mut Vec<DrawCommand>, board: &Board) {
         }
     }
 
-    // --- Weapon TILES (centered row, large) ---
-    let n = player.mounts.len();
-    if n == 0 {
+    // (#98) Weapon TILES moved to `push_ability_tiles_2d` (the bin calls it with
+    // the real AbilityTile data — damage / cooldown_max — which the Board alone
+    // doesn't carry). This fn now owns just the band + health bar.
+    let _ = (w, band_h); // (kept for the band geometry above)
+}
+
+/// (#98 Bruce) The player's ability-tile row in the bottom HUD band — Shogun-
+/// Showdown style, drawn from the bin's [`AbilityTile`]s (the only place carrying
+/// per-weapon damage + cooldown_max; the Board doesn't). Per tile: the weapon ICON
+/// centred (abilities identifiable); the DAMAGE figure as a NUMBER top-left (0 =
+/// blank, non-damage); the KEY (slot char) as a small NUMBER bottom-right; and
+/// COOLDOWN as TICKS along the bottom edge, one per `cooldown_max` — white for an
+/// elapsed/ready round, grey for a round still remaining (ready = all white,
+/// just-fired = all grey, one flips grey→white each round; `cooldown_max == 0` =
+/// no ticks). Border tints teal (ready) / dim violet (on cooldown). The bin calls
+/// this after the scene compose (it holds the tiles); replaces the old mount-only
+/// tile row.
+pub fn push_ability_tiles_2d(out: &mut Vec<DrawCommand>, tiles: &[AbilityTile]) {
+    if tiles.is_empty() {
         return;
     }
+    let w = crate::gfx::scene_w() as f32;
+    let h = crate::gfx::scene_h() as f32;
+    let band_h = 40.0;
+    let band_top = h - band_h;
     let tile = 30.0;
     let gap = 8.0;
+    let n = tiles.len();
     let row_w = n as f32 * tile + (n as f32 - 1.0) * gap;
-    // Center the tile row in the band's right portion (after the health bar).
+    // Centre the row in the band's right portion (after the left-edge health bar).
     let start_x = (w - row_w) / 2.0 + 60.0;
     let tile_y = band_top + (band_h - tile) / 2.0;
-    for (i, mount) in player.mounts.iter().enumerate() {
+    for (i, t) in tiles.iter().enumerate() {
         let tx = start_x + i as f32 * (tile + gap);
-        // State tint: cooldown (dim) > locked-out (red) > heated (amber) > ready.
-        let on_cd = player.cooldowns.get(&mount.weapon).copied().unwrap_or(0) > 0;
-        let heat_frac = (player.heat as f32 / player.heat_max.max(1) as f32).clamp(0.0, 1.0);
-        let border = if on_cd {
-            HUD_TILE_COOLDOWN
-        } else if player.locked_out {
-            HEAT_LOCKOUT
-        } else if heat_frac > 0.5 {
-            HEAT_FILL
-        } else {
-            PLAYER_HULL_STROKE
-        };
-        // Tile background + border (4 edge lines).
+        let on_cd = t.cooldown > 0;
+        let border = if on_cd { TILE_COOLDOWN } else { TILE_READY };
+        // Tile bg + border.
         push_polygon(
             out,
             PolygonInstance::flat(
                 [[tx, tile_y], [tx + tile, tile_y], [tx + tile, tile_y + tile], [tx, tile_y + tile]],
-                HUD_TILE_BG,
+                TILE_BG,
                 atlas::cell_uvs(atlas::SOLID_WHITE),
             ),
         );
@@ -635,43 +646,53 @@ fn push_bottom_hud_2d(out: &mut Vec<DrawCommand>, board: &Board) {
         for k in 0..4 {
             push_line(out, pt(c[k]), pt(c[(k + 1) % 4]), 1.0, border);
         }
-        // Hotkey digit (top-left of the tile).
-        let digit = [b'1' + i as u8];
-        if let Ok(s) = std::str::from_utf8(&digit) {
-            push_text_left(out, s, tx + 2.0, tile_y + 2.0, 1.0, HUD_LABEL);
-        }
-        // Weapon archetype glyph (centered in the tile).
-        let glyph = archetype_to_glyph(weapon_archetype(&mount.weapon));
+        // Icon, centred (nudged up a touch to leave room for the bottom tick row).
         push_sprite(
             out,
             SpriteInstance::axis_aligned(
-                [tx + tile / 2.0, tile_y + tile / 2.0 + 2.0],
-                [8.0, 8.0],
-                border,
-                atlas::cell_uvs(glyph),
+                [tx + tile / 2.0, tile_y + tile / 2.0 - 1.0],
+                [7.0, 7.0],
+                TILE_ICON,
+                atlas::cell_uvs(t.icon.atlas_cell()),
             ),
         );
+        // DAMAGE number, TOP-LEFT (skip 0 = non-damage ability).
+        if t.damage > 0 {
+            push_text_left(out, &t.damage.to_string(), tx + 2.0, tile_y + 2.0, 1.0, TILE_DAMAGE);
+        }
+        // KEY number, BOTTOM-RIGHT (one glyph, 5px wide at pixel=1).
+        let key = t.slot.to_string();
+        push_text_left(out, &key, tx + tile - 6.0, tile_y + tile - 8.0, 1.0, HUD_LABEL);
+        // COOLDOWN TICKS along the bottom edge: one per cooldown_max, white =
+        // elapsed (cooldown_max - cooldown of them), grey = remaining.
+        if t.cooldown_max > 0 {
+            let ticks = t.cooldown_max;
+            let remaining = t.cooldown.clamp(0, ticks);
+            let elapsed = ticks - remaining;
+            let pad = 2.0;
+            let tick_gap = 1.0;
+            let avail = tile - 2.0 * pad;
+            let tw = ((avail - (ticks as f32 - 1.0) * tick_gap) / ticks as f32).max(1.0);
+            let ty = tile_y + tile - 3.0;
+            for k in 0..ticks {
+                let kx = tx + pad + k as f32 * (tw + tick_gap);
+                let col = if k < elapsed { TILE_TICK_ELAPSED } else { TILE_TICK_REMAIN };
+                push_polygon(
+                    out,
+                    PolygonInstance::flat(
+                        [[kx, ty], [kx + tw, ty], [kx + tw, ty + 2.0], [kx, ty + 2.0]],
+                        col,
+                        atlas::cell_uvs(atlas::SOLID_WHITE),
+                    ),
+                );
+            }
+        }
     }
 }
 
-/// Map a weapon's action id to a [`WeaponArchetype`] for its HUD glyph, by id
-/// substring (the bin loadout: pulse_laser → Beam, torpedo/missile → Ordnance,
-/// broadside → Broadside). Falls back to `Beam`. A pragmatic stand-in until
-/// weapons carry an explicit archetype; keeps the bottom-HUD tile icons readable.
-fn weapon_archetype(weapon_id: &str) -> WeaponArchetype {
-    let id = weapon_id.to_ascii_lowercase();
-    if id.contains("torp") || id.contains("missile") || id.contains("ordnance") {
-        WeaponArchetype::Ordnance
-    } else if id.contains("broadside") {
-        WeaponArchetype::Broadside
-    } else if id.contains("displace") || id.contains("push") || id.contains("pull") {
-        WeaponArchetype::Displacement
-    } else if id.contains("vent") || id.contains("brace") || id.contains("shield") {
-        WeaponArchetype::Defensive
-    } else {
-        WeaponArchetype::Beam
-    }
-}
+// (#98) weapon_archetype removed with the old mount-tile row — the ability tiles
+// now carry their icon via AbilityTile::icon (the bin maps it from the catalog
+// action archetype, the real source, not an id substring).
 
 /// Queued-action tiles above a ship on the 2D board — the v1 "tiles" Bruce
 /// misses, showing what a ship has lined up. A horizontal row of small glyph
@@ -2909,6 +2930,10 @@ const TILE_BG: [f32; 4] = [0.094, 0.110, 0.149, 0.92];
 const TILE_DAMAGE: [f32; 4] = [0.95, 0.62, 0.30, 1.0]; // orange damage pips
 const TILE_ICON: [f32; 4] = [0.92, 0.94, 0.98, 1.0];
 const TILE_ENEMY: [f32; 4] = [0.90, 0.34, 0.30, 1.0]; // enemy-intent red frame
+// (#98) Cooldown TICKS along a tile's bottom edge: white = elapsed/ready round,
+// grey = a round still remaining.
+const TILE_TICK_ELAPSED: [f32; 4] = [0.92, 0.94, 0.98, 1.0]; // white = ready/elapsed
+const TILE_TICK_REMAIN: [f32; 4] = [0.40, 0.42, 0.50, 1.0]; // grey = round remaining
 
 /// Square tile edge (virtual px).
 const TILE_SIZE: f32 = 30.0;
