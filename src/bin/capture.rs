@@ -307,15 +307,22 @@ fn main() {
     if let Some(killed) = vfx_demo_kill {
         broadside_engine::hud::push_destruction_at(&mut commands, &[killed], &cfg);
     }
-    // (#98) With QUEUE_DEMO, append a representative ability-tile row so the headless
-    // shot shows the new layout (damage # top-left, key # bottom-right, cooldown
-    // ticks). The capture has no Content, so hand-build tiles in varied states.
+    // (#98/#100) With QUEUE_DEMO, append a representative ability-tile row so the
+    // headless shot shows the layout (damage # top-left, key # bottom-right,
+    // cooldown ticks) AND the #100 cues. The capture has no Content, so hand-build
+    // tiles in varied states:
+    //   * slot 1 = QUEUED + bears: amber border + order badge "2", no veil;
+    //   * slot 2 = resting, on cooldown (grey ticks), not queued;
+    //   * slot 3 = QUEUED but CAN'T BEAR (Bruce's press-3 bug): amber border +
+    //     order badge "1" + dark veil + red slash = "won't fire from here";
+    //   * slot 5 = resting, ready (white border), not queued.
     if std::env::var("BROADSIDE_QUEUE_DEMO").is_ok_and(|v| v != "0") {
         use broadside_engine::hud::{AbilityIcon, AbilityTile};
         let tiles = vec![
-            AbilityTile { slot: '1', icon: AbilityIcon::Beam, damage: 3, range: 1, cooldown: 0, cooldown_max: 0, queued_index: None },
-            AbilityTile { slot: '2', icon: AbilityIcon::Ordnance, damage: 6, range: 3, cooldown: 2, cooldown_max: 4, queued_index: None },
-            AbilityTile { slot: '3', icon: AbilityIcon::Defensive, damage: 0, range: 0, cooldown: 0, cooldown_max: 3, queued_index: None },
+            AbilityTile { slot: '1', icon: AbilityIcon::Beam, damage: 3, range: 1, cooldown: 0, cooldown_max: 0, queued_index: Some(1), can_fire: true },
+            AbilityTile { slot: '2', icon: AbilityIcon::Ordnance, damage: 6, range: 3, cooldown: 2, cooldown_max: 4, queued_index: None, can_fire: true },
+            AbilityTile { slot: '3', icon: AbilityIcon::Defensive, damage: 5, range: 2, cooldown: 0, cooldown_max: 3, queued_index: Some(0), can_fire: false },
+            AbilityTile { slot: '5', icon: AbilityIcon::Defensive, damage: 0, range: 0, cooldown: 0, cooldown_max: 0, queued_index: None, can_fire: true },
         ];
         broadside_engine::hud::push_ability_tiles_2d(&mut commands, &tiles);
     }
