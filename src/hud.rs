@@ -130,7 +130,8 @@ const BOW_MARK_PLAYER: [f32; 4] = [1.0, 0.91, 0.62, 1.0]; // warm gold-white (vs
 // which read as white and got lost against the white background stars. Saturated
 // yellow pops against both the dark field and the stars.
 const BOW_MARK_ENEMY: [f32; 4] = [1.0, 0.86, 0.20, 1.0]; // yellow (vs white starfield)
-const BOW_MARK_SHADOW: [f32; 4] = [0.02, 0.03, 0.05, 0.9]; // dark backing
+// (#99) BOW_MARK_SHADOW removed — the move arrow is now a filled yellow shaft+head
+// (push_move_arrow_2d), no chevron-sprite drop-shadow.
 
 // (#62) Player engine glow — the reference ship's signature read: a cluster of
 // bright cyan thruster lights at the stern (toward the camera). Bright core +
@@ -1324,52 +1325,79 @@ fn push_ship_arrow_and_pips_2d(
     base: f32,
     cfg: &ProjectorConfig,
 ) {
-    // (#99) The arrow direction follows the GROUND-PLANE lane (perspective), not a
-    // pure screen axis — so it lies FLAT in the grid (Bruce). Derive it from the
-    // projected step to the next cell in the ship's facing; falls back to the
-    // screen-axis dir at the grid edge (no neighbour to project).
+    // (#99) Direction the move arrow points — the projected ground-plane step to
+    // the next cell in the ship's facing (perspective), screen-axis fallback at the
+    // grid edge. Also feeds the shield-pip layout.
     let (dx, dy) = ground_facing_dir(ship, center, cfg).unwrap_or_else(|| bow_screen_dir(ship.facing));
-    // Bow-direction chevron — ENEMY ONLY in the chase view. The enemy's facing
-    // varies and matters (telegraph read), so it keeps the chevron; the PLAYER's is
-    // dropped (the hero hull + its motion carry the player's facing). Pips both.
+    // (#99 Bruce, refined geometry) The enemy's intended-MOVE arrow, drawn FLAT in
+    // the grid with true VANISHING-POINT perspective: a foreshortened arrow from
+    // the ship's CELL centre toward the adjacent cell in its move direction, both
+    // projected through the SAME projector as the grid — so an up-lane arrow
+    // narrows/shortens toward the VP, a near-lane one is longer/wider. ENEMY ONLY
+    // (the player's heading is carried by the hero hull + its motion). Yellow,
+    // smaller. Falls back to nothing if there's no adjacent cell (board edge).
     if ship.faction != Faction::Player {
-        let rot = dy.atan2(dx);
-        // (#99 Bruce) SMALLER than before (was base*0.7, floor 7) — it was bulky.
-        let arrow_sz = (base * 0.5).max(5.0);
-        // (#99 Bruce) On the ship's CENTRE LINE: seat it a short reach along the
-        // facing dir from the hull centre (closer than the old base+sz+5 push), so
-        // it reads as the ship's heading marker, not a far-flung floating arrow.
-        let reach = base * 0.55 + arrow_sz;
-        let tip = [center[0] + dx * reach, center[1] + dy * reach];
-        let (uv0, uv1) = atlas::cell_uvs(atlas::BOW_CHEVRON);
-        // Shadow first (pulled back toward the hull by ~1px so it haloes the mark).
-        push_sprite(
-            out,
-            SpriteInstance {
-                pos: [tip[0] - dx * 1.0, tip[1] - dy * 1.0],
-                half_size: [arrow_sz * 1.18, arrow_sz * 1.18],
-                color: BOW_MARK_SHADOW,
-                uv_min: uv0,
-                uv_max: uv1,
-                rotation_rad: rot,
-                _pad: [0.0; 3],
-            },
-        );
-        push_sprite(
-            out,
-            SpriteInstance {
-                pos: tip,
-                half_size: [arrow_sz, arrow_sz],
-                color: BOW_MARK_ENEMY,
-                uv_min: uv0,
-                uv_max: uv1,
-                rotation_rad: rot,
-                _pad: [0.0; 3],
-            },
-        );
+        if let Some(next_center) = ground_move_target(ship, cfg) {
+            push_move_arrow_2d(out, center, next_center, BOW_MARK_ENEMY);
+        }
     }
 
     push_shield_pips_2d(out, ship, center, base, (dx, dy));
+}
+
+/// (#99) The PROJECTED screen-space centre of the cell one step in `ship`'s facing
+/// `Dir4` — the far anchor of its move arrow, run through the SAME projector as the
+/// grid so the arrow foreshortens toward the VP. `None` at the board edge.
+fn ground_move_target(ship: &Ship, cfg: &ProjectorConfig) -> Option<[f32; 2]> {
+    use crate::grid::Dir4;
+    let dir4 = match ship.facing {
+        Facing::Bow(d) => d,
+        Facing::Broadside(axis) => match axis {
+            Axis::NorthSouth => Dir4::S,
+            Axis::EastWest => Dir4::E,
+        },
+    };
+    let next = crate::grid::offset(ship.pos, dir4.to_dir8(), 1)?;
+    Some(grid_cell_quad(next, cfg).center)
+}
+
+/// (#99 Bruce) Draw a FORESHORTENED move arrow from `from` (ship cell centre) toward
+/// `to` (adjacent cell centre), both already projected — so it lies flat in the grid
+/// and converges toward the VP. A tapered shaft (thicker at the near `from` end,
+/// thinner toward `to`) plus a filled arrowhead at the far end. Sized as a fraction
+/// of the projected cell step, so it shrinks with distance automatically.
+fn push_move_arrow_2d(out: &mut Vec<DrawCommand>, from: [f32; 2], to: [f32; 2], color: [f32; 4]) {
+    let (vx, vy) = (to[0] - from[0], to[1] - from[1]);
+    let len = (vx * vx + vy * vy).sqrt();
+    if len < 4.0 {
+        return; // degenerate (cells overlap on screen) — nothing to draw
+    }
+    let (ux, uy) = (vx / len, vy / len); // unit toward `to`
+    let (px, py) = (-uy, ux); // perpendicular (for the head's base width)
+    // Shaft from just past the hull centre to ~65% of the way to the next cell;
+    // the arrowhead caps the remaining reach. Width scales with the step length so
+    // a far (short) arrow stays proportionate, clamped so it never vanishes.
+    let head_len = (len * 0.32).clamp(4.0, 16.0);
+    let shaft_w = (len * 0.05).clamp(1.0, 3.0);
+    let tail = [from[0] + ux * (len * 0.18), from[1] + uy * (len * 0.18)];
+    let head_base = [to[0] - ux * head_len, to[1] - uy * head_len];
+    // Shaft as a thin quad (so it tapers cleanly + reads at any angle).
+    let shaft = [
+        [tail[0] + px * shaft_w, tail[1] + py * shaft_w],
+        [head_base[0] + px * shaft_w, head_base[1] + py * shaft_w],
+        [head_base[0] - px * shaft_w, head_base[1] - py * shaft_w],
+        [tail[0] - px * shaft_w, tail[1] - py * shaft_w],
+    ];
+    push_polygon(out, PolygonInstance::flat(shaft, color, atlas::cell_uvs(atlas::SOLID_WHITE)));
+    // Filled arrowhead triangle: base across the shaft at head_base, tip at `to`.
+    let hw = (head_len * 0.6).max(shaft_w + 1.5);
+    let tri = [
+        [to[0], to[1]],
+        [head_base[0] + px * hw, head_base[1] + py * hw],
+        [head_base[0] - px * hw, head_base[1] - py * hw],
+        [to[0], to[1]], // 4th == tip so the flat-quad helper renders a triangle
+    ];
+    push_polygon(out, PolygonInstance::flat(tri, color, atlas::cell_uvs(atlas::SOLID_WHITE)));
 }
 
 /// (#99) The ship's facing direction as a SCREEN unit vector that lies FLAT in the
@@ -4798,45 +4826,53 @@ mod tests {
     /// BELOW — the orientation-obvious contract shared with `facing_zone`.
     #[test]
     fn bow_arrow_points_along_forward_axis() {
+        // (#99) The enemy move arrow is now a PROJECTED polygon arrow (yellow
+        // BOW_MARK_ENEMY shaft + head) pointing toward the next cell in the ship's
+        // facing — not a chevron sprite. Assert its FARTHEST vertex from the ship
+        // centre lies on the correct side (the arrow tip = the next cell direction).
         let cfg = ProjectorConfig::default();
-        let center = grid_cell_quad(Pos::new(2, ROWS_LOCAL - 1), &cfg).center;
+        // Use a MID cell (row 1) so every cardinal has an in-board neighbour to
+        // project toward (a back/front-edge cell has no N/S neighbour).
+        let pos = Pos::new(2, 1);
+        let center = grid_cell_quad(pos, &cfg).center;
 
-        // Extract the BOW_CHEVRON sprite y for a given facing.
-        let chevron_y = |facing: Facing| -> f32 {
+        // The arrow's extreme point (max distance from centre) across all yellow
+        // move-arrow polygon vertices, for a given facing.
+        let arrow_tip = |facing: Facing| -> [f32; 2] {
             let mut s = frigate_at(0, Faction::Enemy, Orientation::Broadside);
-            s.pos = Pos::new(2, ROWS_LOCAL - 1);
+            s.pos = pos;
             s.facing = facing;
             let mut out = Vec::new();
             push_ship_2d(&mut out, &s, &cfg, &EmptySpriteRegistry, None);
-            let (mn, mx) = atlas::cell_uvs(atlas::BOW_CHEVRON);
-            out.iter()
-                .find_map(|c| match c {
-                    DrawCommand::Sprite(sp) if sp.uv_min == mn && sp.uv_max == mx => Some(sp.pos[1]),
-                    _ => None,
-                })
-                .expect("a bow chevron sprite should be emitted")
+            let mut best = center;
+            let mut best_d = -1.0_f32;
+            for c in &out {
+                if let DrawCommand::Polygon(p) = c {
+                    if p.color != BOW_MARK_ENEMY {
+                        continue;
+                    }
+                    for v in [p.p0, p.p1, p.p2, p.p3] {
+                        let d = (v[0] - center[0]).powi(2) + (v[1] - center[1]).powi(2);
+                        if d > best_d {
+                            best_d = d;
+                            best = v;
+                        }
+                    }
+                }
+            }
+            assert!(best_d >= 0.0, "a yellow move-arrow polygon should be emitted");
+            best
         };
 
-        // N (toward row 0 / up the board) ⇒ chevron above center (smaller y).
-        assert!(chevron_y(Facing::Bow(Dir4::N)) < center[1]);
-        // S (toward the player / down) ⇒ chevron below center (larger y).
-        assert!(chevron_y(Facing::Bow(Dir4::S)) > center[1]);
-        // Broadside(EastWest) points along +E ⇒ chevron to the right, same y as
-        // center (no vertical offset).
-        let mut s = frigate_at(0, Faction::Enemy, Orientation::Broadside);
-        s.pos = Pos::new(2, ROWS_LOCAL - 1);
-        s.facing = Facing::Broadside(Axis::EastWest);
-        let mut out = Vec::new();
-        push_ship_2d(&mut out, &s, &cfg, &EmptySpriteRegistry, None);
-        let (mn, mx) = atlas::cell_uvs(atlas::BOW_CHEVRON);
-        let chev = out
-            .iter()
-            .find_map(|c| match c {
-                DrawCommand::Sprite(sp) if sp.uv_min == mn && sp.uv_max == mx => Some(sp.pos),
-                _ => None,
-            })
-            .expect("chevron present");
-        assert!(chev[0] > center[0], "EastWest broadside arrow points +E (right)");
+        // N (toward row 0 / up the board) ⇒ tip above centre (smaller y).
+        assert!(arrow_tip(Facing::Bow(Dir4::N))[1] < center[1], "N arrow points up-lane");
+        // S (toward the player / down) ⇒ tip below centre (larger y).
+        assert!(arrow_tip(Facing::Bow(Dir4::S))[1] > center[1], "S arrow points toward camera");
+        // Broadside(EastWest) points +E ⇒ tip to the right of centre.
+        assert!(
+            arrow_tip(Facing::Broadside(Axis::EastWest))[0] > center[0],
+            "EastWest broadside arrow points +E (right)"
+        );
     }
 
     /// Shield pips: a ship with bow+port charges emits exactly that many pip
