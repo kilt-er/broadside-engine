@@ -331,7 +331,9 @@ fn main() {
             .find(|s| s.faction == Faction::Enemy)
         {
             broadside_engine::hud::push_hull_flash_2d(&mut commands, victim, 1.0, &cfg);
-            log::info!("capture: #101 hull-flash demo on surviving enemy {} at {:?}", victim.id, victim.pos);
+            // (#106) Floating damage number above the same enemy (demo amount).
+            broadside_engine::hud::push_damage_number_2d(&mut commands, victim, 3, 1.0, &cfg);
+            log::info!("capture: #101/#106 hull-flash + damage number on surviving enemy {} at {:?}", victim.id, victim.pos);
         }
     }
     // (#98/#100) With QUEUE_DEMO, append a representative ability-tile row so the

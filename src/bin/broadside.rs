@@ -818,14 +818,14 @@ struct App {
     /// frame — this prev-vs-current diff is the renderer-side death signal (the 2-D
     /// analog of `vfx::CombatVfx`'s vanish detection).
     kill_bursts: Vec<(Pos, Instant)>,
-    /// (#101) Per-ship hull-DROP flash timers: ship id -> when its hull last fell.
+    /// (#101/#106) Per-ship hull-DROP record: ship id -> (amount lost, when).
     /// Recorded on a combat resolve by diffing pre-vs-current hull (the 2-D analog
-    /// of the player's `hit_flash`, but for EVERY ship's lane hull bar). The redraw
-    /// fades each entry over `HULL_FLASH_SECS` and drives `hud::push_hull_flash_2d`
-    /// so even a 1-2 hull drop visibly pops on the enemy bar while damage balance
-    /// gets tuned (Bruce: "I don't see the enemy health bar dropping"). Pruned on
-    /// expiry; cleared on restart so a fresh board shows no stale flashes.
-    hull_flash: std::collections::HashMap<String, Instant>,
+    /// of the player's `hit_flash`, but for EVERY ship). The redraw fades each entry
+    /// over `HULL_FLASH_SECS` and drives BOTH `hud::push_hull_flash_2d` (the bar
+    /// flash, #101 — so even a 1-2 drop pops while damage balance is tuned) AND
+    /// `hud::push_damage_number_2d` (the floating amount, #106). Pruned on expiry;
+    /// cleared on restart so a fresh board shows no stale flashes/numbers.
+    hull_flash: std::collections::HashMap<String, (i32, Instant)>,
     /// Shared audio state. `None` if the `audio` feature is off OR the
     /// audio backend failed to open on startup (headless CI, missing
     /// driver). When present, the bus is re-installed on every
@@ -1365,7 +1365,8 @@ impl ApplicationHandler for App {
                     for ship in self.board.cells.iter().flatten() {
                         if let Some(&prev_hull) = prev_hulls.get(&ship.id) {
                             if ship.hull < prev_hull {
-                                self.hull_flash.insert(ship.id.clone(), now);
+                                // Record the amount lost (#106) + timestamp (#101).
+                                self.hull_flash.insert(ship.id.clone(), (prev_hull - ship.hull, now));
                             }
                         }
                     }
@@ -1491,17 +1492,17 @@ impl ApplicationHandler for App {
                 // few flashing ships keeps push_hull_flash_2d able to take &Ship
                 // without holding a board borrow across the gfx mutable borrow.
                 self.hull_flash
-                    .retain(|_, t| now.duration_since(*t).as_secs_f32() < HULL_FLASH_SECS);
-                let hull_flashes: Vec<(Ship, f32)> = self
+                    .retain(|_, (_, t)| now.duration_since(*t).as_secs_f32() < HULL_FLASH_SECS);
+                let hull_flashes: Vec<(Ship, i32, f32)> = self
                     .board
                     .cells
                     .iter()
                     .flatten()
                     .filter_map(|s| {
-                        self.hull_flash.get(&s.id).map(|t| {
+                        self.hull_flash.get(&s.id).map(|(amount, t)| {
                             let intensity =
                                 1.0 - (now.duration_since(*t).as_secs_f32() / HULL_FLASH_SECS);
-                            (s.clone(), intensity.clamp(0.0, 1.0))
+                            (s.clone(), *amount, intensity.clamp(0.0, 1.0))
                         })
                     })
                     .collect();
@@ -1595,8 +1596,10 @@ impl ApplicationHandler for App {
                     // back-row enemy's bar both stays readable AND flashes when hit.
                     // Drawn after the bars (compose_scene_2d_tweened) so it sits on
                     // top. Gated to Playing alongside the kill bursts.
-                    for (ship, intensity) in &hull_flashes {
+                    for (ship, amount, intensity) in &hull_flashes {
                         hud::push_hull_flash_2d(&mut instances, ship, *intensity, &scene_cfg);
+                        // (#106) Floating damage NUMBER above the ship, same timer.
+                        hud::push_damage_number_2d(&mut instances, ship, *amount, *intensity, &scene_cfg);
                     }
                     // (#98) Player ability-tile row in the bottom HUD band — drawn
                     // from the real AbilityTile data (damage / cooldown_max), which the

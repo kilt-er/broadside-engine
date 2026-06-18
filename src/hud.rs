@@ -935,6 +935,47 @@ pub fn push_hull_flash_2d(out: &mut Vec<DrawCommand>, ship: &Ship, intensity: f3
     }
 }
 
+/// (#106) A FLOATING DAMAGE NUMBER above a ship that just took a hit — the amount
+/// (a positive integer) pops over the hull, RISES a little, and fades out as the
+/// bin drives `intensity` 1.0 -> 0.0 over its ~0.5s timer. Reuses the same
+/// prev-vs-current hull diff seam as the hull-flash (the bin records the DELTA),
+/// so it fires for player + enemies alike and exactly tracks real hull loss.
+/// `amount <= 0` or a faded-out `intensity <= 0` is a no-op. Centred over the
+/// ship's cell, above the hull bar; drawn in the overlay pass so it sits on top.
+pub fn push_damage_number_2d(
+    out: &mut Vec<DrawCommand>,
+    ship: &Ship,
+    amount: i32,
+    intensity: f32,
+    cfg: &ProjectorConfig,
+) {
+    if amount <= 0 || intensity <= 0.0 {
+        return;
+    }
+    let a = intensity.clamp(0.0, 1.0);
+    let q = grid_cell_quad(ship.pos, cfg);
+    let scale = q.depth_scale;
+    let base = 22.0 * scale;
+    // Text size: scale with depth but floor it so a far hit is still readable.
+    let pixel = (1.5 * scale).max(1.0);
+    let s = amount.to_string();
+    // 5px glyph + 1px space per char at pixel=1 -> advance = (5+1)*pixel.
+    let advance = 6.0 * pixel;
+    let total_w = s.len() as f32 * advance - pixel;
+    let cx = q.center[0];
+    // Start just above the hull bar (which floats at center.y − (base + 6*scale))
+    // and RISE with the fade (the more faded, the higher it has drifted).
+    let rise = (1.0 - a) * 10.0 * scale;
+    let y = q.center[1] - (base + 16.0 * scale) - rise;
+    let left = cx - total_w * 0.5;
+    // Hot damage colour, alpha = fade. A 1px dark shadow under it keeps the number
+    // legible over a bright hull / beam.
+    let shadow = [0.0, 0.0, 0.0, a * 0.8];
+    let col = [1.0, 0.86, 0.30, a]; // amber-gold = damage taken
+    push_text_left(out, &s, left + pixel * 0.5, y + pixel * 0.5, pixel, shadow);
+    push_text_left(out, &s, left, y, pixel, col);
+}
+
 /// D4: render the enemy-intent telegraph from `board.threats` (the resolver's
 /// ThreatMap — single source, populated by R8 from each enemy's queued action).
 /// Per threat:
@@ -4051,6 +4092,28 @@ mod tests {
         let mut neg = Vec::new();
         push_hull_flash_2d(&mut neg, &ship, -0.5, &cfg);
         assert!(neg.is_empty(), "a negative intensity must be a no-op (defensive)");
+    }
+
+    /// (#106) The floating damage number renders only for a positive amount that
+    /// is still fading; a zero/negative amount (no real loss) or an expired fade
+    /// is a no-op. Locks the gate that drives the per-frame pop.
+    #[test]
+    fn damage_number_emits_only_for_positive_amount_and_fade() {
+        use crate::projector::ProjectorConfig;
+        let cfg = ProjectorConfig::default();
+        let ship = frigate_at(0, Faction::Enemy, Orientation::BowOn { bow: LaneEnd::Fore });
+
+        let mut shown = Vec::new();
+        push_damage_number_2d(&mut shown, &ship, 4, 1.0, &cfg);
+        assert!(!shown.is_empty(), "a positive amount mid-fade must render glyphs");
+
+        let mut zero = Vec::new();
+        push_damage_number_2d(&mut zero, &ship, 0, 1.0, &cfg);
+        assert!(zero.is_empty(), "amount 0 (no loss) must be a no-op");
+
+        let mut expired = Vec::new();
+        push_damage_number_2d(&mut expired, &ship, 4, 0.0, &cfg);
+        assert!(expired.is_empty(), "a fully-faded number (intensity 0) must be a no-op");
     }
 
     /// Stub registry that reports the requested class+stance as having
