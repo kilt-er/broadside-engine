@@ -38,7 +38,7 @@ use broadside_engine::resolve::{resolve_round, resolve_targeting_2d, Content};
 use broadside_engine::runs::{encounter_outcome, EncounterOutcome};
 use broadside_engine::types::{
     Action, ActionCost, Arc, Effect, Faction, Projectile, RangeBand, Ship, Targeting,
-    TargetingPattern, WeaponArchetype,
+    TargetingPattern, Trait, WeaponArchetype,
 };
 
 mod common;
@@ -410,4 +410,103 @@ fn q92_player_bow_ew_fires_broadside_up_lane() {
         cells.contains(&Pos::new(2, 1)),
         "#92: a bow-E player's broadside bears N (a flank) on the up-column target; got {cells:?}",
     );
+}
+
+/* =========================================================================
+ * #103/#104 SHIELD-POOL payoff: the headline of the combat-model overhaul —
+ * a per-face shield POOL that DEPLETES on the hit face, overflows to hull once
+ * empty, and RECHARGES only on faces that did NOT take fire this round (the
+ * under-fire pause). Integer throughout. Locks the live behavior the way the
+ * demo_scenarios pin the directional claim, so a future edit that re-breaks
+ * the live path (e.g. reverting apply_damage_2d back to the 1-D absorb) fails
+ * here, not silently in-game.
+ * ====================================================================== */
+
+/// A bow shield pool with `cap` capacity, full; the other faces empty. Lets a
+/// southward shot land on a Bow(S) ship's bow pool and watch it deplete.
+fn bow_pool(cap: i32) -> broadside_engine::types::ShieldProfile {
+    use broadside_engine::types::{ShieldFace, ShieldProfile};
+    ShieldProfile {
+        bow: ShieldFace { armour: cap, charge: cap },
+        stern: ShieldFace { armour: 0, charge: 0 },
+        port: ShieldFace { armour: 0, charge: 0 },
+        starboard: ShieldFace { armour: 0, charge: 0 },
+    }
+}
+
+#[test]
+fn shield_pool_depletes_then_overflows_to_hull_under_sustained_fire() {
+    // Player at (2,3) Bow(N) fires pc_beam (raw 4, falloff OFF) straight up the
+    // column at an enemy at (2,1) Bow(S) — the shot lands on the enemy's BOW.
+    // The enemy carries a bow POOL of 3 (other faces empty) and hull 10. The
+    // player NEVER takes fire (enemy is mountless), so only the enemy's shields
+    // matter.
+    let mut player = ship_2d("p", Faction::Player, Pos::new(2, 3), 40, Facing::Bow(Dir4::N), Arc::Forward, "pc_beam");
+    player.shield_profile = naked_shields();
+    let mut enemy = ship_2d("e", Faction::Enemy, Pos::new(2, 1), 10, Facing::Bow(Dir4::S), Arc::Forward, "noop");
+    enemy.shield_profile = bow_pool(3);
+    enemy.mounts.clear(); // pure target; never fires back
+    enemy.traits = vec![Trait::Anchored]; // hold position so the shot keeps hitting the bow (stable geometry)
+    let mut board = board_2d(vec![player, enemy]);
+    let content = CanaryContent::new(4, 1);
+
+    let bow_charge = |b: &broadside_engine::types::Board| -> i32 {
+        b.cells.iter().flatten().find(|s| s.id == "e").unwrap().shield_profile.bow.charge
+    };
+    let hull = |b: &broadside_engine::types::Board| -> i32 {
+        b.cells.iter().flatten().find(|s| s.id == "e").unwrap().hull
+    };
+
+    // Round 1: the 4-raw hit lands on the bow pool (3) -> soak 3, pool 0, overflow
+    // 1 -> hull 9. The bow took fire this round so the under-fire pause holds it
+    // at 0 (no end-of-turn regen).
+    queue_player_action(&mut board, &content);
+    resolve_round(&mut board, &content);
+    assert_eq!(bow_charge(&board), 0, "bow pool drained by the hit; under-fire pause = no regen");
+    assert_eq!(hull(&board), 9, "1 overflow past the emptied pool reaches hull");
+
+    // Round 2: pool 0, the full 4 overflows -> hull 5. Bow still under fire, still
+    // pinned at 0 (this is the regression the pause must hold — a hit on an empty
+    // pool still counts as "under fire").
+    queue_player_action(&mut board, &content);
+    resolve_round(&mut board, &content);
+    assert_eq!(bow_charge(&board), 0, "empty pool stays empty under continued fire (pause holds even with 0 to absorb)");
+    assert_eq!(hull(&board), 5, "full hit reaches hull once the pool is gone (4 -> hull 5)");
+}
+
+#[test]
+fn shield_pool_recharges_when_a_face_stops_taking_fire() {
+    // Same enemy bow pool (3), but the player only fires ONCE then stops, so the
+    // bow face goes quiet and recharges +1/turn back toward its capacity. Proves
+    // the "recharge" half of the model (the under-fire pause lifts on a quiet
+    // turn). Enemy is mountless so the player is never hit.
+    let mut player = ship_2d("p", Faction::Player, Pos::new(2, 3), 40, Facing::Bow(Dir4::N), Arc::Forward, "pc_beam");
+    player.shield_profile = naked_shields();
+    let mut enemy = ship_2d("e", Faction::Enemy, Pos::new(2, 1), 10, Facing::Bow(Dir4::S), Arc::Forward, "noop");
+    enemy.shield_profile = bow_pool(3);
+    enemy.mounts.clear();
+    enemy.traits = vec![Trait::Anchored]; // hold position (stable geometry across the quiet turns)
+    let mut board = board_2d(vec![player, enemy]);
+    let content = CanaryContent::new(2, 1); // raw 2: drains the pool but leaves hull
+
+    let bow_charge = |b: &broadside_engine::types::Board| -> i32 {
+        b.cells.iter().flatten().find(|s| s.id == "e").unwrap().shield_profile.bow.charge
+    };
+
+    // Round 1: fire raw 2 onto the bow pool (3) -> soak 2 -> pool 1, 0 overflow.
+    // Bow took fire -> no regen this round. Pool ends at 1.
+    queue_player_action(&mut board, &content);
+    resolve_round(&mut board, &content);
+    assert_eq!(bow_charge(&board), 1, "raw-2 hit drains the 3-pool to 1 (no regen the turn it's hit)");
+
+    // Rounds 2-3: the player does NOT fire (we don't queue it), so the bow face
+    // is quiet and recharges +1/turn toward its capacity (3): 1 -> 2 -> 3.
+    resolve_round(&mut board, &content);
+    assert_eq!(bow_charge(&board), 2, "quiet bow face recharges +1 (1 -> 2)");
+    resolve_round(&mut board, &content);
+    assert_eq!(bow_charge(&board), 3, "recharge continues up to capacity (2 -> 3)");
+
+    // Round 4: at capacity, regen clamps (does not overfill past 3).
+    resolve_round(&mut board, &content);
+    assert_eq!(bow_charge(&board), 3, "recharge clamps at capacity, never overfills");
 }
