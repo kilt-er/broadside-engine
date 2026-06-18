@@ -44,13 +44,14 @@ use crate::types::{LaneEnd, Orientation};
 pub const LOW_W: u32 = 160;
 pub const LOW_H: u32 = 100;
 
-/// (#76) The SHIP-res cycle Bruce steps through with `[` / `]` (chunky → crisp):
-/// 160×100 (default) → 220×138 → 320×200, then wraps. All ~1.6:1 so the lane
-/// dest-quad aspect ([`crate::hud`]'s `LOFT_TEXTURE_ASPECT`) stays valid and the
-/// hull never re-squashes (#74). Bigger = finer ship pixels. [`next_loft_res`] /
-/// [`prev_loft_res`] step this list, snapping an off-list current size to the
-/// nearest neighbour first.
-pub const LOFT_RES_PRESETS: [(u32, u32); 3] = [(160, 100), (220, 138), (320, 200)];
+/// (#76) The SHIP-res cycle Bruce steps through with `,` / `.` (chunky → crisp):
+/// 160×100 (default) → 220×138 → 320×200 → 480×300, then wraps. All ~1.6:1 so the
+/// lane dest-quad aspect ([`crate::hud`]'s `LOFT_TEXTURE_ASPECT`) stays valid and
+/// the hull never re-squashes (#74; 480/1.6 = 300). Bigger = finer ship pixels —
+/// 480×300 is the crisp-hull step Bruce asked for past the old 320 max.
+/// [`next_loft_res`] / [`prev_loft_res`] step this list, snapping an off-list
+/// current size to the default first.
+pub const LOFT_RES_PRESETS: [(u32, u32); 4] = [(160, 100), (220, 138), (320, 200), (480, 300)];
 
 /// The next ship-res preset after `(w, h)` (wraps). If `(w, h)` isn't in the
 /// list, returns the first preset. See [`LOFT_RES_PRESETS`].
