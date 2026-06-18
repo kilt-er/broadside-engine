@@ -17,10 +17,10 @@
 //! | `Tab` | `ReorientFlip` (#75) | 180° about-face: the bin overrides the synthetic to two `RotateRight` (reverses the bow N↔S / E↔W) so the hull visibly turns |
 //! | `V` | `Vent` | Queue synthetic `__vent` |
 //! | `R` / `Space` | `CommitTurn` | Run `resolve_round`; re-renders next frame |
-//! | `Enter` | `Restart` | Reset the board to its initial state (also the only key accepted while a run-end overlay is showing) |
+//! | `Enter` | `Restart` (end-state ONLY) | Restart the run — accepted ONLY on a run-end overlay (defeat / victory). A NO-OP during active combat (#97: it used to rebuild the board mid-fight) |
 //! | `1` / `2` / `3` (overloaded) | Path choice | While the EncounterComplete overlay is up: 1 = repair (+2 hull), 2 = upgrade (placeholder), 3 = continue to next encounter |
 //! | `,` / `.` | ship-render res (#76) | Cycle the loft offscreen size `160×100 → 220×138 → 320×200 → 480×300` (live) |
-//! | `;` / `'` | scene res (#76) | Cycle the whole-scene offscreen size `320×180 → 480×270 → 640×360` (live; everything scales together) |
+//! | `;` / `'` | scene res (#76) | Cycle the whole-scene offscreen size `480×270 → 640×360 → 960×540` (live; 480 is the min + default; everything scales together) |
 //! | `Esc` | exit | Close the window |
 //!
 //! Run with:
@@ -1224,6 +1224,17 @@ impl ApplicationHandler for App {
                         return;
                     }
                     DemoState::Playing => {}
+                }
+
+                // (#97 Enter footgun) During active Playing combat, Enter is a NO-OP.
+                // It used to map to Intent::Restart (via key_to_intent) and rebuild
+                // the board MID-FIGHT — Bruce hit Enter expecting "commit" and nuked
+                // his run (enemies reset to full hull = "health never goes down").
+                // Restart is now reachable ONLY from the end-state overlays (the
+                // RunComplete / RunDefeated arms above). Commit-turn stays on
+                // Space / R; Enter does nothing while fighting.
+                if key == Key::Enter {
+                    return;
                 }
 
                 // Defeat-mid-encounter still goes through the existing
