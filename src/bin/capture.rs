@@ -204,6 +204,44 @@ fn main() {
     let mut board = capture_board(player_col, player_row, player_facing);
     log::info!("capture: player at col {player_col} row {player_row}, facing {player_facing:?}");
 
+    // (#90 yellow-square repro) Optional BROADSIDE_QUEUE_DEMO=1 queues the player's
+    // mount weapon (what pressing `1` does) so the queue-driven overlays render —
+    // reproduces Bruce's "yellow square covers the ship when I queue an ability".
+    if std::env::var("BROADSIDE_QUEUE_DEMO").is_ok_and(|v| v != "0") {
+        if let Some(p) = board
+            .cells
+            .iter_mut()
+            .flatten()
+            .find(|s| s.faction == Faction::Player)
+        {
+            let w = p.mounts.first().map(|m| m.weapon.clone()).unwrap_or_default();
+            // Queue it three times — match Bruce queuing several abilities.
+            for _ in 0..3 {
+                p.queue.push(w.clone());
+            }
+            log::info!("capture: QUEUE demo — player queued '{w}' x{}", p.queue.len());
+        }
+        // The LIVE queue runs the enemy world-phase (apply_intent → run_world_phase),
+        // which paints board.threats (enemy intent). A capture's manual queue-push
+        // does NOT, so simulate it: an enemy threat on the PLAYER's NEAR cell — the
+        // largest cell quad on screen — to test whether the threat FILL is the
+        // field-covering warm square Bruce sees (#78 was a red-slab version of this).
+        use broadside_engine::types::{Threat, ThreatKind};
+        let ppos = board
+            .cells
+            .iter()
+            .flatten()
+            .find(|s| s.faction == Faction::Player)
+            .map(|s| s.pos)
+            .unwrap_or_else(|| Pos::new(2, 3));
+        board.threats.push(Threat {
+            pos: ppos,
+            kind: ThreatKind::Damage { amount: 9 }, // ≥ hull ⇒ LETHAL fill (brightest)
+            source: Pos::new(COLS / 2, 0),
+        });
+        log::info!("capture: QUEUE demo — injected a LETHAL threat on the player cell {ppos:?}");
+    }
+
     // (#90) Optional BROADSIDE_VFX_DEMO=1 injects sample combat RESULTS so the
     // headless capture can verify the new fire/impact/destruction VFX: a player→
     // enemy HIT beam + impact, an enemy→player MISS beam (dimmer), and one enemy
@@ -268,6 +306,48 @@ fn main() {
     // headless demo shows the post-kill burst.
     if let Some(killed) = vfx_demo_kill {
         broadside_engine::hud::push_destruction_at(&mut commands, &[killed], &cfg);
+    }
+    // (#90 yellow-square repro) With QUEUE_DEMO, dump any LARGE draw command (a
+    // sprite half-size > 60px or a polygon spanning > 120px in either axis) + its
+    // colour — pinpoints the giant fill covering the ship/field without eyeballing.
+    if std::env::var("BROADSIDE_QUEUE_DEMO").is_ok_and(|v| v != "0") {
+        use broadside_engine::gfx::DrawCommand;
+        // A "yellow-ish" tint: high R+G, low B (gold/amber/warm-white).
+        let yellowish = |c: &[f32; 4]| c[0] > 0.7 && c[1] > 0.6 && c[2] < 0.6 && c[3] > 0.2;
+        for (i, c) in commands.iter().enumerate() {
+            match c {
+                DrawCommand::Sprite(s) if yellowish(&s.color) => {
+                    log::info!(
+                        "YELLOW sprite #{i}: pos {:?} half {:?} color {:?}",
+                        s.pos, s.half_size, s.color
+                    );
+                }
+                DrawCommand::Sprite(s) if s.half_size[0] > 40.0 || s.half_size[1] > 40.0 => {
+                    log::info!(
+                        "BIG sprite #{i}: pos {:?} half {:?} color {:?}",
+                        s.pos, s.half_size, s.color
+                    );
+                }
+                DrawCommand::Polygon(p) if yellowish(&p.color) => {
+                    log::info!(
+                        "YELLOW polygon #{i}: p0 {:?} p2 {:?} color {:?}",
+                        p.p0, p.p2, p.color
+                    );
+                }
+                DrawCommand::Polygon(p) => {
+                    let wspan = (p.p1[0] - p.p0[0]).abs().max((p.p2[0] - p.p3[0]).abs());
+                    let hspan = (p.p3[1] - p.p0[1]).abs().max((p.p2[1] - p.p1[1]).abs());
+                    if wspan > 120.0 || hspan > 120.0 {
+                        log::info!(
+                            "BIG polygon #{i}: p0 {:?} p2 {:?} (span {wspan:.0}x{hspan:.0}) color {:?}",
+                            p.p0, p.p2, p.color
+                        );
+                    }
+                }
+                _ => {}
+            }
+        }
+        log::info!("capture: {} total draw commands", commands.len());
     }
     // Ensure the output dir exists so the save never trips os-error-3 on a fresh
     // checkout / unusual cwd (the default `bugs/` dir, or any custom path).

@@ -771,14 +771,21 @@ fn push_hull_bar_2d(out: &mut Vec<DrawCommand>, ship: &Ship, cfg: &ProjectorConf
 
 /// D4: render the enemy-intent telegraph from `board.threats` (the resolver's
 /// ThreatMap — single source, populated by R8 from each enemy's queued action).
-/// Two cues per threat:
-///   1. a tinted FILL under the threatened cell — colour by [`ThreatKind`]
-///      (red = damage, brighter red = lethal, blue = displace, violet = status),
-///      so "this cell is dangerous, move" reads at a glance;
-///   2. a thin intent BEAM from the threatening enemy (`Threat::source`) to the
+/// Per threat:
+///   1. a bright cell OUTLINE — colour by [`ThreatKind`] (red = damage, brighter
+///      red = lethal, blue = displace, violet = status) — so "this cell is
+///      dangerous, move" reads at a glance;
+///   2. a FAINT tint inside the cell (very low alpha) so the cell reads as
+///      threatened WITHOUT burying the ship/field;
+///   3. a thin intent BEAM from the threatening enemy (`Threat::source`) to the
 ///      target cell, so the player sees WHO is threatening WHERE.
 ///
-/// Drawn after the grid, before ships (fills sit under hulls).
+/// (Bruce-facing fix) The telegraph was a FULL-CELL OPAQUE FILL. On the PLAYER's
+/// NEAR (front) cell — the largest trapezoid on screen — that became a big
+/// salmon-orange SLAB covering the ship + most of the lower field ("an
+/// incomprehensible square covers my ship"). The fix: outline + a hairline-faint
+/// fill, so a near-row threat no longer slabs the playfield. Drawn after the grid,
+/// before ships.
 fn push_threats_2d(out: &mut Vec<DrawCommand>, board: &Board, cfg: &ProjectorConfig) {
     use crate::types::ThreatKind;
     for threat in &board.threats {
@@ -797,10 +804,24 @@ fn push_threats_2d(out: &mut Vec<DrawCommand>, board: &Board, cfg: &ProjectorCon
             ThreatKind::Status => THREAT_FILL_STATUS,
             ThreatKind::Other => THREAT_FILL_OTHER,
         };
+        // VERY FAINT interior tint — just enough to read as a coloured cell, never
+        // an opaque slab over the hull (the OUTLINE carries the cue). A lethal
+        // threat gets a touch more so it still stands out.
+        let faint_a = if lethal { 0.10 } else { 0.06 };
+        let faint = [fill[0], fill[1], fill[2], faint_a];
         push_polygon(
             out,
-            PolygonInstance::flat(q.corners, fill, atlas::cell_uvs(atlas::SOLID_WHITE)),
+            PolygonInstance::flat(q.corners, faint, atlas::cell_uvs(atlas::SOLID_WHITE)),
         );
+        // Bright cell OUTLINE in the threat colour (full alpha) — the crisp "this
+        // cell is threatened" cue that survives without slabbing the field.
+        let outline = [fill[0], fill[1], fill[2], 1.0];
+        let th = if lethal { 2.0 } else { 1.0 };
+        let c = q.corners;
+        push_line(out, pt(c[0]), pt(c[1]), th, outline);
+        push_line(out, pt(c[1]), pt(c[2]), th, outline);
+        push_line(out, pt(c[2]), pt(c[3]), th, outline);
+        push_line(out, pt(c[3]), pt(c[0]), th, outline);
         // Intent beam: source ship center → threatened cell center. Skip when the
         // source IS the target (self-targeted, no meaningful line).
         if threat.source != threat.pos {
