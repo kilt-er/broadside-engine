@@ -669,6 +669,10 @@ fn make_ship(
 /// input. ~200ms reads as crisp without feeling laggy at 60Hz.
 const TWEEN_DURATION_MS: u32 = 120;
 
+/// (#90 kill-burst) How long a ship-destruction burst stays on screen after the
+/// killing round. ~0.35s reads as a clear flash without lingering.
+const KILL_BURST_SECS: f32 = 0.35;
+
 /// (#79) Per-ship "where + which way was this ship before the move, and when did
 /// the slide/turn begin?" anchor. Recorded by `App::record_tween_anchors` after
 /// each input mutation; consumed by `App::tween_2d` each frame to ease the
@@ -756,6 +760,16 @@ struct App {
     /// between frames we bump the flash to 1.0; the redraw fades it.
     player_hull_prev: Option<i32>,
     hit_flash: f32,
+    /// (#90 kill-burst) Destruction bursts pending render: the BOARD cell a ship
+    /// died on + when it died. Recorded ONLY on a combat-turn resolve (a ship id
+    /// present pre-turn but gone after) — never on a board reset / restart / encounter
+    /// rebuild, where all ids vanish at once (that would burst the whole board). The
+    /// redraw prunes entries older than [`KILL_BURST_SECS`] and draws the rest via
+    /// `hud::push_destruction_at`. Resolver removes a dead ship same-action
+    /// (`destroy()` → `cells[c].take()`), so a hull<=0 ship never survives to a
+    /// frame — this prev-vs-current diff is the renderer-side death signal (the 2-D
+    /// analog of `vfx::CombatVfx`'s vanish detection).
+    kill_bursts: Vec<(Pos, Instant)>,
     /// Shared audio state. `None` if the `audio` feature is off OR the
     /// audio backend failed to open on startup (headless CI, missing
     /// driver). When present, the bus is re-installed on every
@@ -801,6 +815,7 @@ impl App {
             frame_clock: 0.0,
             player_hull_prev: None,
             hit_flash: 0.0,
+            kill_bursts: Vec::new(),
             #[cfg(feature = "audio")]
             audio: None,
         };
@@ -914,6 +929,7 @@ impl App {
             .unwrap_or_else(render_example_board);
         self.demo_state = DemoState::Playing;
         self.tween_anchors.clear();
+        self.kill_bursts.clear(); // (#90) no stale bursts into the fresh board
         self.reinstall_audio();
     }
 
@@ -1011,7 +1027,7 @@ impl App {
     /// Record fresh tween anchors after `apply_intent` ran: for every ship whose
     /// logical pos OR facing changed vs its pre-mutation snapshot, plant an
     /// anchor at the OLD pos/facing so the next frames interpolate from there.
-    fn record_tween_anchors(&mut self, prev: HashMap<String, (Pos, Facing)>, now: Instant) {
+    fn record_tween_anchors(&mut self, prev: &HashMap<String, (Pos, Facing)>, now: Instant) {
         // Drop anchors for ships that no longer exist (destroyed / Restart).
         self.tween_anchors
             .retain(|id, _| self.board.cells.iter().flatten().any(|s| &s.id == id));
@@ -1246,7 +1262,22 @@ impl ApplicationHandler for App {
                 if is_restart {
                     self.restart_run();
                 } else if changed {
-                    self.record_tween_anchors(prev_visual, now);
+                    self.record_tween_anchors(&prev_visual, now);
+                    // (#90 kill-burst) Any ship id present BEFORE this combat turn
+                    // but gone AFTER was destroyed this round — record a burst at its
+                    // last-known cell (the resolver removed it same-action, so it
+                    // never survives to a frame for a hull<=0 check). GUARDED to the
+                    // combat-turn path (`changed && !is_restart`): a board reset /
+                    // restart / encounter rebuild vanishes every id at once and goes
+                    // through `restart_run()` / a fresh board, NOT here — so the whole
+                    // board can never burst at once (the lead's guard).
+                    for id in prev_visual.keys() {
+                        if !self.board.cells.iter().flatten().any(|s| &s.id == id) {
+                            if let Some(&(pos, _)) = prev_visual.get(id) {
+                                self.kill_bursts.push((pos, now));
+                            }
+                        }
+                    }
                     // Post-mutation: did this turn end an encounter?
                     match encounter_outcome(&self.board) {
                         EncounterOutcome::Won => {
@@ -1356,6 +1387,13 @@ impl ApplicationHandler for App {
                 // the gfx mutable borrow (it reads &self). Empty when nothing is
                 // mid-move, so the render is identical to the static path at rest.
                 let scene_tween = self.tween_2d(&scene_cfg, now);
+                // (#90 kill-burst) Prune bursts past their lifetime, then collect the
+                // live ones' cells for this frame. Both BEFORE the gfx borrow (reads
+                // &mut self). Only emitted in the Playing block below, so an overlay
+                // frame never shows a burst.
+                self.kill_bursts
+                    .retain(|(_, t)| now.duration_since(*t).as_secs_f32() < KILL_BURST_SECS);
+                let kill_cells: Vec<Pos> = self.kill_bursts.iter().map(|(p, _)| *p).collect();
                 let Some(gfx) = self.gfx.as_mut() else { return };
                 // (#57) Pan/recede the parallax background toward the player's
                 // column + the campaign level, eased per frame.
@@ -1435,6 +1473,11 @@ impl ApplicationHandler for App {
                     // Player danger legibility (#67): screen hit-flash on damage.
                     // (The lane-anchored hull bar returns as a 2-D overlay.)
                     hud::push_player_hit_flash(&mut instances, self.hit_flash);
+                    // (#90 kill-burst) Destruction bursts at the cells where ships
+                    // died this/last round (~0.35s), projected onto the board via the
+                    // live-scene projector. Gated to Playing so a board reset / overlay
+                    // frame never bursts. Recorded only on a combat-turn resolve.
+                    hud::push_destruction_at(&mut instances, &kill_cells, &scene_cfg);
                 }
                 // Push the appropriate demo-state overlay on top.
                 // Compose no longer auto-pushes — the bin owns the

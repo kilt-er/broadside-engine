@@ -209,6 +209,7 @@ fn main() {
     // enemy HIT beam + impact, an enemy→player MISS beam (dimmer), and one enemy
     // marked at zero hull (destruction burst). Off by default so normal captures
     // (incl. the pixel-identity gate) are unaffected.
+    let mut vfx_demo_kill: Option<Pos> = None;
     if std::env::var("BROADSIDE_VFX_DEMO").is_ok_and(|v| v != "0") {
         use broadside_engine::types::{FireEvent, WeaponArchetype};
         let ppos = board
@@ -238,15 +239,15 @@ fn main() {
             attacker_faction: Faction::Enemy,
             hit: false, // a miss — renders dimmer
         });
-        // Mark the struck enemy as destroyed (zero hull) for the destruction burst.
-        if let Some(s) = board
-            .cells
-            .get_mut(tgt.to_index())
-            .and_then(|c| c.as_mut())
-        {
-            s.hull = 0;
+        // REMOVE the struck enemy (mirrors the resolver's destroy() take()), then
+        // remember its cell so we append a kill-burst to the commands below — the
+        // faithful post-kill frame (the bin drives the burst off a prev-vs-current
+        // id diff, which a single static capture can't reproduce).
+        if let Some(slot) = board.cells.get_mut(tgt.to_index()) {
+            *slot = None;
         }
-        log::info!("capture: VFX demo — injected player HIT + enemy MISS + a kill at {tgt:?}");
+        vfx_demo_kill = Some(tgt);
+        log::info!("capture: VFX demo — player HIT + enemy MISS + a kill (burst) at {tgt:?}");
     }
 
     // (#70) Sync the player's loft pose so the loft pre-pass has a pose to render
@@ -261,7 +262,13 @@ fn main() {
         broadside_engine::gfx::scene_w() as f32,
         broadside_engine::gfx::scene_h() as f32,
     );
-    let commands = compose_scene_2d_with(&board, &cfg, &gfx);
+    let mut commands = compose_scene_2d_with(&board, &cfg, &gfx);
+    // (#90) VFX-demo kill burst at the destroyed enemy's cell — the bin emits this
+    // off its prev-vs-current id diff each frame; here we append it directly so the
+    // headless demo shows the post-kill burst.
+    if let Some(killed) = vfx_demo_kill {
+        broadside_engine::hud::push_destruction_at(&mut commands, &[killed], &cfg);
+    }
     // Ensure the output dir exists so the save never trips os-error-3 on a fresh
     // checkout / unusual cwd (the default `bugs/` dir, or any custom path).
     if let Some(parent) = std::path::Path::new(&path).parent() {

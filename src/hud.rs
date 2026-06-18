@@ -504,11 +504,12 @@ pub fn compose_scene_2d_tweened(
     }
     // (#90) Resolved weapon fire on TOP of the hulls (Bruce: see weapons firing +
     // results clearly): bright faction-tinted beams along each shot line + an
-    // impact flash on every struck cell, then a destruction burst on any ship at
-    // zero hull. Driven straight off the board (fire_events + hull) — the live bin
-    // holds these for the round, so they read as the round's combat result.
+    // impact flash on every struck cell. Driven straight off the board
+    // (fire_events) — the live bin holds these for the round. The DESTRUCTION
+    // burst is NOT here: a dead ship is removed same-action so a board scan can't
+    // see it; the bin diffs prev-vs-current ship ids on a combat resolve + calls
+    // `push_destruction_at` with the vanished cells (see broadside.rs kill_bursts).
     push_fire_2d(&mut out, board, cfg);
-    push_destruction_2d(&mut out, board, cfg);
     // Bottom HUD band LAST of all — a screen-space fixed (NOT projected) health
     // bar + large weapon-tile row, drawn on top of everything (Bruce: a fixed
     // centered Shogun-Showdown-style bottom bar so health + abilities always read).
@@ -858,21 +859,25 @@ fn push_fire_2d(out: &mut Vec<DrawCommand>, board: &Board, cfg: &ProjectorConfig
     }
 }
 
-/// (#90) Draw a DESTRUCTION burst on the cell of any ship at zero hull this frame
-/// — a clear "a ship died here" cue (Bruce: results read cleanly). A bright
-/// expanding orange square at the dead ship's projected cell. Derived from the
-/// live board (hull <= 0) so it needs no vanish-tracking state; the dead ship is
-/// removed from `board.cells` next round, so this shows the frame(s) it lingers
-/// at zero hull before cleanup. Drawn last (over everything) so the burst reads.
-fn push_destruction_2d(out: &mut Vec<DrawCommand>, board: &Board, cfg: &ProjectorConfig) {
-    for ship in board.cells.iter().flatten() {
-        if ship.hull > 0 {
-            continue;
-        }
-        let q = grid_cell_quad(ship.pos, cfg);
+/// (#90 kill-burst) Draw a DESTRUCTION burst at each given board cell — a clear "a
+/// ship died here" cue (Bruce: results read cleanly). A bright two-layer flash
+/// (wide soft orange halo + near-white core) at each cell's projected centre,
+/// sized by the cell's near-edge width so far kills read smaller in perspective.
+///
+/// Takes EXPLICIT cells (not a board scan) because the resolver removes a dead
+/// ship the same action it dies (`destroy()` → `cells[c].take()`), so a hull<=0
+/// ship never survives to a frame. The bin supplies the cells by diffing the
+/// previous vs current ship-id set on a combat-turn resolve (the renderer-side
+/// death signal — the 2-D analog of `vfx::CombatVfx`'s vanish detection) and
+/// holds each for ~0.35s. Drawn last (over everything) so the burst reads.
+pub fn push_destruction_at(
+    out: &mut Vec<DrawCommand>,
+    cells: &[crate::grid::Pos],
+    cfg: &ProjectorConfig,
+) {
+    for &pos in cells {
+        let q = grid_cell_quad(pos, cfg);
         let r = (q.near_edge_width() * 0.7).clamp(8.0, 34.0);
-        // A two-layer burst: a wide soft orange halo + a bright near-white core, so
-        // a kill reads as a clear flash rather than a flat square.
         push_sprite(
             out,
             SpriteInstance::axis_aligned(
