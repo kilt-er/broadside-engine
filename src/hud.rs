@@ -694,6 +694,14 @@ pub fn push_ability_tiles_2d(out: &mut Vec<DrawCommand>, tiles: &[AbilityTile]) 
         // KEY = number, BOTTOM-RIGHT.
         let key = t.slot.to_string();
         push_text_left(out, &key, tx + tile - 6.0, tile_y + tile - 8.0, 1.0, HUD_LABEL);
+        // (#108) ARC letter, BOTTOM-LEFT — F/B/T/R = which side the weapon fires
+        // from, so a SIDE weapon (B) reads apart from a forward one (F) at a glance.
+        // Broadside gets a brighter tint (it's the stance-dependent one Bruce most
+        // needs to notice); the rest use the dim label colour. None = utility card.
+        if let Some(arc) = t.arc {
+            let arc_col = if arc == 'B' { TILE_RANGE } else { HUD_LABEL };
+            push_text_left(out, &arc.to_string(), tx + 2.0, tile_y + tile - 8.0, 1.0, arc_col);
+        }
         // COOLDOWN TICKS along the bottom edge: one per cooldown_max, GREY by
         // default, charging WHITE from the RIGHT as each round passes (rightmost
         // fills first). `elapsed = cooldown_max - cooldown` ticks are charged, and
@@ -3141,6 +3149,12 @@ pub struct AbilityTile {
     /// instead of "nothing happens forever". Non-targeted abilities (cards, self)
     /// are `true` (always "fireable").
     pub can_fire: bool,
+    /// (#108) Firing ARC letter for the weapon-side indicator: `'F'` Forward,
+    /// `'B'` Broadside, `'T'` Turret, `'R'` Rear — drawn small in a tile corner so
+    /// the player can tell at a glance that key 3 is a SIDE weapon vs a forward
+    /// one. The bin maps it from `mount.arc`. `None` for utility/self cards (no
+    /// firing arc) — the indicator is then skipped.
+    pub arc: Option<char>,
 }
 
 const TILE_READY: [f32; 4] = [0.329, 0.812, 0.788, 1.0]; // teal (1-D emit_tile path)

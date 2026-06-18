@@ -435,6 +435,19 @@ fn action_can_fire(action: &broadside_engine::types::Action, board: &Board, ship
     !broadside_engine::resolve::resolve_targeting_2d(action, board, ship.pos).is_empty()
 }
 
+/// (#108) One-letter firing-arc tag for a mount's [`Arc`], drawn on its ability
+/// tile so the player can tell a SIDE weapon from a forward one without firing:
+/// `F` Forward, `B` Broadside, `T` Turret, `R` Rear.
+fn arc_letter(arc: broadside_engine::types::Arc) -> char {
+    use broadside_engine::types::Arc;
+    match arc {
+        Arc::Forward => 'F',
+        Arc::BroadsideArc => 'B',
+        Arc::Turret => 'T',
+        Arc::Rear => 'R',
+    }
+}
+
 /// Build one ship's ability tiles (mounts → 1/2/3, cards → 5/6/7). `icon` /
 /// `damage` / `range` / `cooldown_max` come from the action def; `cooldown` from
 /// the ship; `queued_index` from the ship's queue; `can_fire` from the fire-gate
@@ -452,6 +465,9 @@ fn build_ship_tiles(ship: &Ship, content: &dyn Content, board: &Board) -> Vec<hu
                 cooldown_max: action.cost.cooldown_max.max(0),
                 queued_index: queue_index(ship, &mount.weapon),
                 can_fire: action_can_fire(action, board, ship),
+                // (#108) Firing-arc letter from the mount so the player can tell a
+                // SIDE weapon (key 3) from a forward one at a glance.
+                arc: Some(arc_letter(mount.arc)),
             });
         }
     }
@@ -471,6 +487,8 @@ fn build_ship_tiles(ship: &Ship, content: &dyn Content, board: &Board) -> Vec<hu
                     queued_index: queue_index(ship, &synth),
                     // Cards (SELF/support) aren't position-gated — always "fireable".
                     can_fire: true,
+                    // Cards have no firing arc — skip the side indicator.
+                    arc: None,
                 });
             }
         }
@@ -2003,6 +2021,34 @@ mod tests {
             !action_can_fire(bb, &board, &player),
             "an aimed weapon out of bears must still read can't-fire (the cue is real for weapons)"
         );
+    }
+
+    /// (#108) The arc-letter mapping for the weapon-side tile indicator + that
+    /// mount tiles carry it while utility cards don't. Locks the lookup Bruce reads
+    /// to tell a SIDE weapon (B) from a forward one (F).
+    #[test]
+    fn ability_tile_carries_arc_letter_for_mounts_not_cards() {
+        use broadside_engine::types::Arc;
+        assert_eq!(arc_letter(Arc::Forward), 'F');
+        assert_eq!(arc_letter(Arc::BroadsideArc), 'B');
+        assert_eq!(arc_letter(Arc::Turret), 'T');
+        assert_eq!(arc_letter(Arc::Rear), 'R');
+
+        let content = fresh_content();
+        let board = fresh_board();
+        let player = board.cells.iter().flatten().find(|s| s.faction == Faction::Player).cloned().unwrap();
+        let tiles = build_ship_tiles(&player, &content, &board);
+        // Every mount tile (slots 1..3) carries an arc letter; card tiles (5..7) don't.
+        for t in &tiles {
+            if ('1'..='3').contains(&t.slot) {
+                assert!(t.arc.is_some(), "mount tile slot {} must carry a firing-arc letter", t.slot);
+            } else {
+                assert!(t.arc.is_none(), "card tile slot {} has no firing arc", t.slot);
+            }
+        }
+        // The player's m3 (broadside_battery) mounts on the BroadsideArc -> 'B'.
+        let m3 = tiles.iter().find(|t| t.slot == '3').expect("m3 tile present");
+        assert_eq!(m3.arc, Some('B'), "the broadside mount tile must read 'B' (side weapon)");
     }
 
     #[test]
