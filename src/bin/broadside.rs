@@ -415,10 +415,19 @@ fn queue_index(ship: &Ship, action_id: &str) -> Option<usize> {
     ship.queue.iter().position(|q| q == action_id)
 }
 
+/// (#100) Whether `action`, fired by `ship` from its CURRENT pos/facing, would
+/// hit anything — the fire-gate single-source `resolve_targeting_2d`. Drives the
+/// tile's "no target / can't bear" cue. A non-targeted action (empty pattern that
+/// still self-resolves, e.g. SELF/cards) reads as fireable.
+fn action_can_fire(action: &broadside_engine::types::Action, board: &Board, ship: &Ship) -> bool {
+    !broadside_engine::resolve::resolve_targeting_2d(action, board, ship.pos).is_empty()
+}
+
 /// Build one ship's ability tiles (mounts → 1/2/3, cards → 5/6/7). `icon` /
-/// `damage` / `cooldown_max` come from the action def; `cooldown` from the
-/// ship; `queued_index` from the ship's queue order.
-fn build_ship_tiles(ship: &Ship, content: &dyn Content) -> Vec<hud::AbilityTile> {
+/// `damage` / `range` / `cooldown_max` come from the action def; `cooldown` from
+/// the ship; `queued_index` from the ship's queue; `can_fire` from the fire-gate
+/// against `board` at the ship's current pos/facing (#100).
+fn build_ship_tiles(ship: &Ship, content: &dyn Content, board: &Board) -> Vec<hud::AbilityTile> {
     let mut tiles = Vec::new();
     for (i, mount) in ship.mounts.iter().take(3).enumerate() {
         if let Some(action) = content.action(&mount.weapon) {
@@ -430,6 +439,7 @@ fn build_ship_tiles(ship: &Ship, content: &dyn Content) -> Vec<hud::AbilityTile>
                 cooldown: ship.cooldowns.get(&mount.weapon).copied().unwrap_or(0).max(0),
                 cooldown_max: action.cost.cooldown_max.max(0),
                 queued_index: queue_index(ship, &mount.weapon),
+                can_fire: action_can_fire(action, board, ship),
             });
         }
     }
@@ -447,6 +457,8 @@ fn build_ship_tiles(ship: &Ship, content: &dyn Content) -> Vec<hud::AbilityTile>
                     cooldown: 0,
                     cooldown_max: 0,
                     queued_index: queue_index(ship, &synth),
+                    // Cards (SELF/support) aren't position-gated — always "fireable".
+                    can_fire: true,
                 });
             }
         }
@@ -1391,7 +1403,7 @@ impl ApplicationHandler for App {
                     .iter()
                     .flatten()
                     .find(|s| s.faction == Faction::Player)
-                    .map(|p| build_ship_tiles(p, &self.content))
+                    .map(|p| build_ship_tiles(p, &self.content, &self.board))
                     .unwrap_or_default();
                 let ability_active = self.ability_hud.advance(&player_tiles, 1.0 / 60.0);
                 // (#57) Player column + campaign level drive the parallax: the
@@ -1787,6 +1799,96 @@ mod tests {
         assert_eq!(player.pos.row, before.row, "strafe keeps the row");
         assert_eq!(player.facing, Facing::Bow(Dir4::N), "facing unchanged by strafe");
         assert!(player.queue.is_empty(), "instant intent must NOT push to queue");
+    }
+
+    /// (#100 REGRESSION, was the #97 follow-up diagnostic) Bruce's exact live
+    /// sequence headlessly: campaign spawn (player bow-N front) -> press 3 (queue
+    /// broadside_battery) -> press Space (commit). This LOCKS the two #100 render
+    /// cues at the data layer (the bottom-HUD tile renderer reads exactly these
+    /// fields):
+    ///   * pressing 3 populates the queue, so the queued tile reports
+    ///     `queued_index == Some(_)` — the data the AMBER queued highlight + order
+    ///     badge render from (the "no queue indicator" Bruce reported is a
+    ///     regression iff this goes back to `None`);
+    ///   * the queued tile's `can_fire` equals the fire-gate `resolve_targeting_2d`
+    ///     verdict from the ship's current pose — the data the "NO TARGET /
+    ///     can't bear" veil renders from (so the veil can never disagree with
+    ///     whether a shot actually bears).
+    /// It still prints the full repro (run with `-- --nocapture`) for eyeballing,
+    /// but now FAILS on regression rather than only logging.
+    #[test]
+    fn combat_repro_3_space_diagnostic() {
+        use broadside_engine::resolve::resolve_targeting_2d;
+
+        let mut board = fresh_board();
+        let mut content = fresh_content();
+        let hulls = |b: &Board| -> Vec<(String, i32)> {
+            b.cells.iter().flatten().map(|s| (s.id.clone(), s.hull)).collect()
+        };
+        let player = |b: &Board| b.cells.iter().flatten().find(|s| s.faction == Faction::Player).cloned().unwrap();
+
+        eprintln!("=== COMBAT REPRO: spawn ===");
+        let p0 = player(&board);
+        eprintln!("player pos={:?} facing={:?} mounts={:?}", p0.pos, p0.facing,
+            p0.mounts.iter().map(|m| (m.id.as_str(), format!("{:?}", m.arc), m.weapon.as_str())).collect::<Vec<_>>());
+        eprintln!("hulls={:?}", hulls(&board));
+        assert!(p0.mounts.len() >= 3, "player loadout has the 3 mount slots Bruce presses 1/2/3");
+
+        // Independent fire-gate verdict for m3 from the spawn pose (the value the
+        // tile's `can_fire` MUST mirror).
+        let m3 = p0.mounts[2].weapon.clone();
+        let m3_action = content.action(&m3).expect("broadside_battery is a real action").clone();
+        let bears_at_spawn = !resolve_targeting_2d(&m3_action, &board, p0.pos).is_empty();
+        eprintln!("broadside_battery bears from {:?} (spawn) = {bears_at_spawn}", p0.pos);
+
+        // --- press 3: queue m3 (broadside_battery). The bin maps Key::D3 ->
+        // QueueAction(mounts[2].weapon). ---
+        eprintln!("=== press 3: QueueAction({m3}) ===");
+        apply_intent(Intent::QueueAction(m3.clone()), &mut board, &mut content, &fresh_board);
+        let p1 = player(&board);
+        eprintln!("after press 3: player.queue={:?}", p1.queue);
+        assert!(
+            p1.queue.contains(&m3),
+            "press 3 must QUEUE broadside_battery (so the queue indicator has data to render)"
+        );
+
+        // Build the tiles the bottom HUD would show + report each tile's state.
+        let tiles = build_ship_tiles(&p1, &content, &board);
+        for t in &tiles {
+            eprintln!("  tile slot={} dmg={} range={} cd={}/{} queued_index={:?} can_fire={}",
+                t.slot, t.damage, t.range, t.cooldown, t.cooldown_max, t.queued_index, t.can_fire);
+        }
+        // The m3 tile is the one Bruce queued: its slot is '3'.
+        let m3_tile = tiles.iter().find(|t| t.slot == '3').expect("m3 tile present");
+        assert!(
+            m3_tile.queued_index.is_some(),
+            "the queued tile must carry queued_index = Some (drives the amber highlight + order badge)"
+        );
+        assert_eq!(
+            m3_tile.can_fire, bears_at_spawn,
+            "the tile's can_fire must mirror the fire-gate (drives the NO-TARGET veil; never disagree with reality)"
+        );
+
+        // --- press Space: commit. ---
+        eprintln!("=== press Space: CommitTurn ===");
+        let before = hulls(&board);
+        apply_intent(Intent::CommitTurn, &mut board, &mut content, &fresh_board);
+        let after = hulls(&board);
+        eprintln!("fire_events this round: {}", board.fire_events.len());
+        for fe in &board.fire_events {
+            eprintln!("  FireEvent {:?}->{:?} arch={:?} faction={:?} hit={}",
+                fe.from_pos, fe.to_pos, fe.archetype, fe.attacker_faction, fe.hit);
+        }
+        eprintln!("hull BEFORE={before:?}");
+        eprintln!("hull AFTER ={after:?}");
+        eprintln!("player.queue after commit={:?}", player(&board).queue);
+        // The commit consumes the queue (whether or not the shot bore): the
+        // indicator clears, matching the round actually resolving.
+        assert!(
+            !player(&board).queue.contains(&m3),
+            "committing the turn consumes the queued action (indicator clears)"
+        );
+        eprintln!("=== END REPRO ===");
     }
 
     #[test]

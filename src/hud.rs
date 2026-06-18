@@ -631,8 +631,19 @@ pub fn push_ability_tiles_2d(out: &mut Vec<DrawCommand>, tiles: &[AbilityTile]) 
         // ticks charged white = cooldown elapsed). A ready tile gets a WHITE BORDER
         // ("queue me"); a charging tile keeps the dim cooldown frame.
         let ready = t.cooldown <= 0;
-        let border = if ready { TILE_BORDER_READY } else { TILE_COOLDOWN };
-        // Tile bg + border (2px when ready so the white frame reads as a clear cue).
+        // (#100) QUEUED beats everything else for the border: when this ability is
+        // lined up, the tile gets a bright AMBER frame so "this is what I queued"
+        // reads instantly (Bruce's "no queue indicator" bug). Otherwise the usual
+        // white-ready / dim-cooldown frame.
+        let queued = t.queued_index.is_some();
+        let border = if queued {
+            TILE_QUEUED
+        } else if ready {
+            TILE_BORDER_READY
+        } else {
+            TILE_COOLDOWN
+        };
+        // Tile bg + border (2px when ready/queued so the frame reads as a clear cue).
         push_polygon(
             out,
             PolygonInstance::flat(
@@ -647,7 +658,13 @@ pub fn push_ability_tiles_2d(out: &mut Vec<DrawCommand>, tiles: &[AbilityTile]) 
             [tx + tile, tile_y + tile],
             [tx, tile_y + tile],
         ];
-        let bth = if ready { 2.0 } else { 1.0 };
+        let bth = if queued {
+            3.0
+        } else if ready {
+            2.0
+        } else {
+            1.0
+        };
         for k in 0..4 {
             push_line(out, pt(c[k]), pt(c[(k + 1) % 4]), bth, border);
         }
@@ -666,7 +683,9 @@ pub fn push_ability_tiles_2d(out: &mut Vec<DrawCommand>, tiles: &[AbilityTile]) 
             push_text_left(out, &t.damage.to_string(), tx + 2.0, tile_y + 2.0, 2.0, TILE_DAMAGE);
         }
         // RANGE = smaller number, TOP-RIGHT (cells; skip 0 = non-targeted).
-        if t.range > 0 {
+        // (#100) Suppressed while QUEUED — the top-right corner is taken by the
+        // queue-order badge, which is the more urgent read when a shot is lined up.
+        if t.range > 0 && !queued {
             let s = t.range.to_string();
             // Right-align: one glyph is 5px at pixel=1.
             let rx = tx + tile - 2.0 - (s.len() as f32 * 6.0 - 1.0);
@@ -701,6 +720,64 @@ pub fn push_ability_tiles_2d(out: &mut Vec<DrawCommand>, tiles: &[AbilityTile]) 
                     ),
                 );
             }
+        }
+        // (#100) NO-TARGET / can't-bear veil. A QUEUED weapon that won't fire from
+        // the ship's current pos/facing (resolve found nothing in arc/range) draws a
+        // dark veil over the whole tile + a red diagonal slash, so the player reads
+        // "this is queued but won't hit from here — turn broadside (Q/E) or close in"
+        // rather than "I pressed it and nothing happened forever". Only veil QUEUED
+        // tiles: a resting tile being out of bears is just normal (you haven't
+        // committed it yet), so we don't clutter the whole row with red.
+        if queued && !t.can_fire {
+            push_polygon(
+                out,
+                PolygonInstance::flat(
+                    [
+                        [tx, tile_y],
+                        [tx + tile, tile_y],
+                        [tx + tile, tile_y + tile],
+                        [tx, tile_y + tile],
+                    ],
+                    TILE_NO_TARGET_VEIL,
+                    atlas::cell_uvs(atlas::SOLID_WHITE),
+                ),
+            );
+            // Red slash corner-to-corner = the universal "no / can't".
+            push_line(
+                out,
+                pt([tx + 3.0, tile_y + 3.0]),
+                pt([tx + tile - 3.0, tile_y + tile - 3.0]),
+                2.0,
+                TILE_NO_TARGET_MARK,
+            );
+        }
+        // (#100) QUEUE-ORDER BADGE: a small number in the TOP-RIGHT corner showing
+        // this ability's 1-based fire order, so a multi-weapon queue reads "1 then 2
+        // then 3". Drawn last so it sits above the veil. Bumped left of the range
+        // number's spot — range is blanked while queued is what matters here, but
+        // keep them from colliding by placing the badge hard in the corner on its
+        // own amber chip.
+        if let Some(qi) = t.queued_index {
+            let label = (qi + 1).to_string();
+            // Amber chip behind the order number (top-right), ~7px square.
+            let chip = 7.0;
+            let cx0 = tx + tile - chip;
+            let cy0 = tile_y;
+            push_polygon(
+                out,
+                PolygonInstance::flat(
+                    [
+                        [cx0, cy0],
+                        [cx0 + chip, cy0],
+                        [cx0 + chip, cy0 + chip],
+                        [cx0, cy0 + chip],
+                    ],
+                    TILE_QUEUED,
+                    atlas::cell_uvs(atlas::SOLID_WHITE),
+                ),
+            );
+            // Order number in dark ink on the amber chip (readable contrast).
+            push_text_left(out, &label, cx0 + 1.0, cy0 + 1.0, 1.0, TILE_BG);
         }
     }
 }
@@ -2967,6 +3044,13 @@ pub struct AbilityTile {
     /// `Some(i)` when this ability is queued at position `i` (0-based); `None`
     /// when resting. Drives the below-lane ↔ above-ship animation target.
     pub queued_index: Option<usize>,
+    /// (#100) Whether this weapon WOULD hit something from the ship's CURRENT
+    /// pos/facing (the bin sets it from `resolve_targeting_2d(..).is_empty()`).
+    /// `false` ⇒ the tile draws a "NO TARGET / can't bear" state so the player
+    /// understands why a queued shot does nothing (turn broadside / close in)
+    /// instead of "nothing happens forever". Non-targeted abilities (cards, self)
+    /// are `true` (always "fireable").
+    pub can_fire: bool,
 }
 
 const TILE_READY: [f32; 4] = [0.329, 0.812, 0.788, 1.0]; // teal (1-D emit_tile path)
@@ -2974,6 +3058,12 @@ const TILE_READY: [f32; 4] = [0.329, 0.812, 0.788, 1.0]; // teal (1-D emit_tile 
 const TILE_BORDER_READY: [f32; 4] = [0.96, 0.98, 1.0, 1.0]; // white = ready to queue
 const TILE_COOLDOWN: [f32; 4] = [0.42, 0.40, 0.50, 1.0]; // dim violet = on CD
 const TILE_BG: [f32; 4] = [0.094, 0.110, 0.149, 0.92];
+// (#100) A QUEUED tile gets a bright cyan-gold border + a queue-order badge, so
+// the player sees what they lined up + in what order. NO-TARGET / can't-bear gets
+// a dark veil over the tile + a red corner mark = "this won't fire from here".
+const TILE_QUEUED: [f32; 4] = [1.0, 0.84, 0.30, 1.0]; // bright amber = QUEUED
+const TILE_NO_TARGET_VEIL: [f32; 4] = [0.04, 0.05, 0.07, 0.55]; // dark veil
+const TILE_NO_TARGET_MARK: [f32; 4] = [0.95, 0.32, 0.28, 0.95]; // red "can't bear"
 const TILE_DAMAGE: [f32; 4] = [0.95, 0.62, 0.30, 1.0]; // orange damage pips
 const TILE_RANGE: [f32; 4] = [0.62, 0.82, 0.95, 1.0]; // cool blue = range cells
 const TILE_ICON: [f32; 4] = [0.92, 0.94, 0.98, 1.0];
