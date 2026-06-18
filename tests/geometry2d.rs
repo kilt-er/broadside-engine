@@ -435,11 +435,29 @@ fn forward_and_rear_never_bear_on_a_broadside_hull() {
 }
 
 #[test]
-fn broadside_arc_never_bears_on_a_bow_hull() {
+fn broadside_arc_bears_on_a_bow_hulls_perpendicular_flanks() {
+    // Model D (#92, Bruce's bow-cardinal model): a BroadsideArc on a BOW hull
+    // bears out EXACTLY the two flank cardinals perpendicular to the bow — turning
+    // the bow E/W puts the flanks N/S, which IS broadsiding. The bow's own axis
+    // (bow + stern cardinals) and every diagonal do NOT bear. (Supersedes the old
+    // "broadside never bears on a bow hull" — there's no separate Broadside stance
+    // in v2.)
+    use broadside_engine::grid::Axis;
     for dir in ALL_DIR4 {
         let f = Facing::Bow(dir);
+        // The two flank cardinals = the perpendicular axis's dirs.
+        let off = match dir.axis() {
+            Axis::NorthSouth => Axis::EastWest,
+            Axis::EastWest => Axis::NorthSouth,
+        };
+        let (fa, fb) = off.dirs();
         for d in ALL_DIR8 {
-            assert!(!arc_bears(f, Arc::BroadsideArc, d), "Bow({dir:?}) broadsideArc {d:?}");
+            let want = d == fa.to_dir8() || d == fb.to_dir8();
+            assert_eq!(
+                arc_bears(f, Arc::BroadsideArc, d),
+                want,
+                "Bow({dir:?}) broadsideArc toward {d:?}: bears iff a perpendicular flank cardinal",
+            );
         }
     }
 }

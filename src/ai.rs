@@ -202,18 +202,23 @@ pub fn decide_enemy_action(enemy_cell: usize, board: &mut Board, content: &dyn C
             return;
         }
     }
-    // 3b (Q3 rotate-to-bear): reaching here means we couldn't FIRE, Rung 2 held
-    // (in band but off-ARC) or declined, and no weapon self-reorients. A
-    // mis-pointed hull (bow not aimed at the player) would otherwise fall to
-    // Rung 3.5 and CLOSE forever, mashing the player's cell without ever turning
-    // its gun to bear — the "camp + never fire" bug. So if the enemy's bow does
-    // NOT already point at the player's cardinal bearing, queue a synthetic
-    // ROTATE that turns the bow toward it (shortest turn). The rotate is
-    // resolver-served (`resolver_ai_move`), so no Content dependency. Skipped for
-    // a locked-out enemy (prefers VENT) and Anchored (positional anchors hold +
-    // vent rather than spin). Next phase the turned bow bears -> Rung 1 fires.
+    // 3b (Q3 rotate-to-bear, ARC-AGNOSTIC #92): reaching here means we couldn't
+    // FIRE, Rung 2 held (in band but off-ARC) or declined, and no weapon
+    // self-reorients. A mis-ORIENTED hull would otherwise fall to Rung 3.5 and
+    // CLOSE forever, mashing the player's cell without ever turning its gun to
+    // bear — the "camp + never fire" bug. So queue a synthetic ROTATE toward the
+    // facing that makes the enemy's own weapon BEAR on the player — bow-on for a
+    // Forward gun, SIDE-on for a BroadsideArc gun, etc. The bearing test IS
+    // `resolve_targeting_2d` (the single source — `rotate_to_make_weapon_bear`
+    // probes each candidate facing through it), so it's arc-agnostic: no
+    // bow-vs-broadside hardcode. Resolver-served rotate (`resolver_ai_move`), so
+    // no Content-action dependency. Skipped for locked-out (prefers VENT) +
+    // Anchored (hold + vent, don't spin). Next phase the new facing bears ->
+    // Rung 1 fires.
     if !locked_out && !anchored {
-        if let Some(rot_id) = rotate_toward_player(enemy_pos, player_pos, board) {
+        if let Some(rot_id) =
+            rotate_to_make_weapon_bear(&mount_weapons, enemy_pos, player_pos, board, content)
+        {
             if let Some(s) = board.ship_at_mut(enemy_pos) {
                 s.queue.push(rot_id.to_string());
                 return;
@@ -424,54 +429,98 @@ fn synthetic_move_for_dir(dir: Dir8) -> Option<&'static str> {
     }
 }
 
-/// Q3 (rotate-to-bear): pick the synthetic ROTATE id that turns the enemy's bow
-/// the SHORTEST way toward the player's cardinal bearing, or `None` if the bow
-/// already points there (no rotation needed — let the close/hold rungs act).
+/// Q3 (#86) generalized to ARC-AGNOSTIC rotate-to-bear (#92): pick the synthetic
+/// ROTATE id that turns the enemy the SHORTEST way to a `Bow` facing from which
+/// its OWN weapon BEARS on the player — bow-on for a Forward gun, SIDE-on for a
+/// BroadsideArc gun, etc. `None` if it already bears (let the close/hold rungs
+/// act) or no facing bears (no point spinning).
 ///
-/// The player's bearing is snapped from the 8-way `from_to` to a `Dir4`: the
-/// dominant offset axis (ties → the depth axis S/N, the common down-the-board
-/// case). The enemy's "forward" cardinal is the bow for a `Bow` stance, or the
-/// axis's increasing-coordinate cardinal for a `Broadside` stance (matching the
-/// resolver's arc-less forward convention). Turn choice: a quarter-turn CW
-/// (`__rotate_right`) if that lands on the target, CCW (`__rotate_left`) if that
-/// does, else the bow is 180° off → either quarter-turn closes the gap so we
-/// pick `__rotate_right` (the next phase re-decides and finishes the turn).
+/// ## Single source of truth (no bow-vs-broadside hardcode)
 ///
-/// Returns a resolver-served id (`resolver_ai_move`), so no `Content` dependency.
-fn rotate_toward_player(enemy_pos: Pos, player_pos: Pos, board: &Board) -> Option<&'static str> {
+/// "Does my weapon bear from facing F?" is answered by the SAME
+/// `resolve_targeting_2d` the shot fires through (V4): we probe each candidate
+/// [`Dir4`] `Bow(F)` by temporarily setting the enemy's `facing`, running
+/// `resolve_targeting_2d` for its dominant weapon, and checking whether the
+/// player's cell is in the result — then RESTORE the facing (pure probe, no
+/// lasting board mutation). This is why a BroadsideArc enemy will orient
+/// PERPENDICULAR to the player (its `arc_bears` only returns true for a
+/// `Broadside` stance whose axis is across the bearing) while a Forward enemy
+/// orients bow-on — all from the one targeting path, never a hardcoded stance
+/// rule. (We only rotate among the four `Bow` cardinals; the resolver's
+/// REORIENT::RotateLeft/Right cycle the bow, and `orientation_from_facing` maps
+/// Bow(E)/Bow(W) to a Broadside `orientation`, so a quarter-turn into the E/W
+/// bow IS the broadside stance the arc test wants.)
+///
+/// Turn choice: shortest quarter-turn (CW=`__rotate_right`, CCW=`__rotate_left`)
+/// onto the nearest bearing facing; a 180°-only target picks `__rotate_right`
+/// (next phase finishes the turn). Resolver-served id (`resolver_ai_move`), so no
+/// Content-action dependency for the rotate itself.
+fn rotate_to_make_weapon_bear(
+    mount_weapons: &[String],
+    enemy_pos: Pos,
+    player_pos: Pos,
+    board: &mut Board,
+    content: &dyn Content,
+) -> Option<&'static str> {
     use crate::grid::{Dir4, Facing};
     use crate::input::{SYNTHETIC_ROTATE_LEFT, SYNTHETIC_ROTATE_RIGHT};
 
-    let enemy = board.ship_at(enemy_pos)?;
-    // The enemy's current forward cardinal.
-    let forward: Dir4 = match enemy.facing {
+    // Dominant weapon (highest summed DAMAGE) — the one we want to bring to bear.
+    // Cloned so we don't hold a `content` borrow across the board mutation below.
+    let dominant = mount_weapons
+        .iter()
+        .filter_map(|id| content.action(id))
+        .max_by_key(|a| {
+            a.effects
+                .iter()
+                .filter_map(|e| match e {
+                    Effect::DAMAGE { amount, .. } => Some(*amount),
+                    _ => None,
+                })
+                .sum::<i32>()
+        })?
+        .clone();
+
+    // Current bow cardinal (only meaningful for a Bow stance; a Broadside stance
+    // is reached via the E/W bow cardinals, so treat its forward axis cardinal as
+    // the current bow-equivalent for shortest-turn math).
+    let current: Dir4 = match board.ship_at(enemy_pos)?.facing {
         Facing::Bow(d) => d,
         Facing::Broadside(axis) => axis.dirs().0,
     };
 
-    // Snap the player's bearing to the dominant-axis cardinal (tie -> depth).
-    let dc = player_pos.col as i32 - enemy_pos.col as i32;
-    let dr = player_pos.row as i32 - enemy_pos.row as i32;
-    let target: Dir4 = if dc == 0 && dr == 0 {
-        return None; // co-located (shouldn't happen); nothing to aim at
-    } else if dr.abs() >= dc.abs() {
-        if dr > 0 { Dir4::S } else { Dir4::N } // toward / away along depth
-    } else if dc > 0 {
-        Dir4::E
-    } else {
-        Dir4::W
+    // Probe each of the 4 Bow facings: does `dominant` bear on the player from it?
+    // Temporarily set facing, test via the single source, restore.
+    let saved = board.ship_at(enemy_pos)?.facing;
+    let bears_from = |board: &mut Board, dir: Dir4| -> bool {
+        if let Some(s) = board.ship_at_mut(enemy_pos) {
+            s.facing = Facing::Bow(dir);
+        }
+        let hits = resolve_targeting_2d(&dominant, board, enemy_pos).contains(&player_pos);
+        if let Some(s) = board.ship_at_mut(enemy_pos) {
+            s.facing = saved;
+        }
+        hits
     };
 
-    if forward == target {
-        return None; // already bearing — don't spin; let Rung 3.5 close
+    // If the current facing already bears, don't spin (shouldn't reach here —
+    // Rung 1 would have fired — but guard anyway).
+    if bears_from(board, current) {
+        return None;
     }
-    // Shortest turn toward the target cardinal.
-    if forward.rotate_cw() == target {
+
+    // Among the bearing facings, pick the one needing the FEWEST quarter-turns.
+    let cw1 = current.rotate_cw();
+    let ccw1 = current.rotate_ccw();
+    let opp = current.opposite();
+    if bears_from(board, cw1) {
         Some(SYNTHETIC_ROTATE_RIGHT)
-    } else if forward.rotate_ccw() == target {
+    } else if bears_from(board, ccw1) {
         Some(SYNTHETIC_ROTATE_LEFT)
-    } else {
+    } else if bears_from(board, opp) {
         // 180° off — either quarter-turn reduces the gap; finish next phase.
         Some(SYNTHETIC_ROTATE_RIGHT)
+    } else {
+        None // no facing brings this weapon to bear (e.g. out of band) — hold
     }
 }

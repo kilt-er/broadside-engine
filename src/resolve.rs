@@ -1081,18 +1081,23 @@ fn bearing_cardinals(facing: Facing, arc: Option<Arc>) -> Vec<Dir8> {
             F::Bow(dir) => vec![dir.to_dir8().opposite()],
             F::Broadside(_) => Vec::new(),
         },
-        // Broadside battery: both off-axis flank cardinals, only when turned.
-        Arc::BroadsideArc => match facing {
-            F::Bow(_) => Vec::new(),
-            F::Broadside(axis) => {
-                let off = match axis {
-                    Axis::NorthSouth => Axis::EastWest,
-                    Axis::EastWest => Axis::NorthSouth,
-                };
-                let (a, b) = off.dirs();
-                vec![a.to_dir8(), b.to_dir8()]
-            }
-        },
+        // Broadside battery (Model D, #92): fires out the two flank cardinals
+        // PERPENDICULAR to the bow — turning the bow E/W puts the flanks N/S,
+        // which IS broadsiding (Bruce's bow-cardinal model; no separate
+        // Facing::Broadside stance). MUST mirror geometry2d::arc_bears's
+        // BroadsideArc arm exactly (gate == firing, "one model").
+        Arc::BroadsideArc => {
+            let axis = match facing {
+                F::Bow(dir) => dir.axis(),
+                F::Broadside(axis) => axis,
+            };
+            let off = match axis {
+                Axis::NorthSouth => Axis::EastWest,
+                Axis::EastWest => Axis::NorthSouth,
+            };
+            let (a, b) = off.dirs();
+            vec![a.to_dir8(), b.to_dir8()]
+        }
     }
 }
 

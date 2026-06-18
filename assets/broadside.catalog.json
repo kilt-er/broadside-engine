@@ -980,7 +980,8 @@
       "traits": [],
       "sector": "Ion Reefs",
       "weapons": [
-        "Beam Cannon"
+        "Beam Cannon",
+        "Broadside Battery"
       ]
     },
     {
@@ -1004,7 +1005,8 @@
       ],
       "sector": "Spindle Port",
       "weapons": [
-        "Pulse Laser"
+        "Pulse Laser",
+        "Railgun Broadside"
       ]
     },
     {

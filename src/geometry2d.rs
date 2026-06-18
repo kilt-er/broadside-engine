@@ -318,20 +318,28 @@ pub fn arc_bears(facing: Facing, arc: Arc, toward: Dir8) -> bool {
             Facing::Bow(dir) => toward == dir.to_dir8().opposite(),
             Facing::Broadside(_) => false,
         },
-        // Broadside battery: only when turned broadside, firing out either exact
-        // flank cardinal (perpendicular to the hull axis). The on-axis hull ends
-        // and all diagonals do not bear.
-        Arc::BroadsideArc => match facing {
-            Facing::Bow(_) => false,
-            Facing::Broadside(axis) => {
-                let off = match axis {
-                    Axis::NorthSouth => Axis::EastWest,
-                    Axis::EastWest => Axis::NorthSouth,
-                };
-                let (a, b) = off.dirs();
-                toward == a.to_dir8() || toward == b.to_dir8()
-            }
-        },
+        // Broadside battery (Model D, #92 — Bruce's bow-cardinal stance model):
+        // fires out the two flank cardinals PERPENDICULAR to the bow. Turning the
+        // bow E/W puts the flanks N/S — that IS broadsiding; there is no separate
+        // `Facing::Broadside` stance in v2 (the canonical-TS turned-stance is
+        // legacy 1-D, kept only as the vestigial Broadside arm). On-axis (the bow
+        // cardinal + its opposite stern) and all diagonals do NOT bear.
+        // DELIBERATELY deviates from the TS `arc_bears` (which required a Broadside
+        // stance); firing (`bearing_cardinals`) mirrors this exactly so the gate
+        // and the shot stay one model.
+        Arc::BroadsideArc => {
+            let axis = match facing {
+                Facing::Bow(dir) => dir.axis(),
+                Facing::Broadside(axis) => axis,
+            };
+            // Flanks are perpendicular to the hull's forward axis.
+            let off = match axis {
+                Axis::NorthSouth => Axis::EastWest,
+                Axis::EastWest => Axis::NorthSouth,
+            };
+            let (a, b) = off.dirs();
+            toward == a.to_dir8() || toward == b.to_dir8()
+        }
     }
 }
 
@@ -652,23 +660,39 @@ mod tests {
 
     #[test]
     fn arc_bears_broadside_fires_exact_flank_cardinals_only() {
-        // EastWest hull: flanks face the exact cardinals N and S.
+        // Model D (#92): a BroadsideArc bears out the two flank cardinals
+        // PERPENDICULAR to the hull's forward axis — for BOTH a Bow stance (the
+        // bow's perpendicular flanks; Bruce's bow-cardinal model) AND the
+        // vestigial Broadside stance. On-axis (the forward cardinal + its
+        // opposite) and all diagonals do NOT bear.
+
+        // EastWest forward axis: flanks face the exact cardinals N and S.
         let f = Facing::Broadside(Axis::EastWest);
         assert!(arc_bears(f, Arc::BroadsideArc, Dir8::N));
         assert!(arc_bears(f, Arc::BroadsideArc, Dir8::S));
-        // diagonals do NOT bear — a broadside cannot fire at a diagonal target
-        // (this is the bug the tester's T2 caught: SE is off-axis from a flank).
+        // diagonals do NOT bear — a broadside cannot fire at a diagonal target.
         assert!(!arc_bears(f, Arc::BroadsideArc, Dir8::NE));
         assert!(!arc_bears(f, Arc::BroadsideArc, Dir8::SE));
         assert!(!arc_bears(f, Arc::BroadsideArc, Dir8::NW));
         assert!(!arc_bears(f, Arc::BroadsideArc, Dir8::SW));
-        // the hull ends (E/W) do NOT bear a broadside battery
+        // the on-axis cardinals (E/W) do NOT bear a broadside battery.
         assert!(!arc_bears(f, Arc::BroadsideArc, Dir8::E));
         assert!(!arc_bears(f, Arc::BroadsideArc, Dir8::W));
-        // a Bow stance never bears a broadside arc
-        assert!(!arc_bears(Facing::Bow(Dir4::N), Arc::BroadsideArc, Dir8::E));
-        // NorthSouth hull: flanks are the exact cardinals E and W; SE (the
-        // tester's case) is off-axis and must NOT bear.
+
+        // Model D: a BOW stance bears the broadside off its PERPENDICULAR flanks.
+        // Bow N/S (NorthSouth axis) -> flanks E/W bear; the bow axis N/S does NOT.
+        assert!(arc_bears(Facing::Bow(Dir4::N), Arc::BroadsideArc, Dir8::E));
+        assert!(arc_bears(Facing::Bow(Dir4::N), Arc::BroadsideArc, Dir8::W));
+        assert!(!arc_bears(Facing::Bow(Dir4::N), Arc::BroadsideArc, Dir8::N), "on-axis (bow) does not bear");
+        assert!(!arc_bears(Facing::Bow(Dir4::N), Arc::BroadsideArc, Dir8::S), "on-axis (stern) does not bear");
+        assert!(!arc_bears(Facing::Bow(Dir4::N), Arc::BroadsideArc, Dir8::NE), "diagonal does not bear");
+        // Bow E/W (EastWest axis) -> flanks N/S bear.
+        assert!(arc_bears(Facing::Bow(Dir4::E), Arc::BroadsideArc, Dir8::N));
+        assert!(arc_bears(Facing::Bow(Dir4::E), Arc::BroadsideArc, Dir8::S));
+        assert!(!arc_bears(Facing::Bow(Dir4::E), Arc::BroadsideArc, Dir8::E), "on-axis (bow) does not bear");
+
+        // NorthSouth forward axis (vestigial Broadside stance): flanks E/W; SE
+        // (the tester's old case) is off-axis and must NOT bear.
         let ns = Facing::Broadside(Axis::NorthSouth);
         assert!(arc_bears(ns, Arc::BroadsideArc, Dir8::E));
         assert!(arc_bears(ns, Arc::BroadsideArc, Dir8::W));

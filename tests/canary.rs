@@ -305,3 +305,109 @@ fn q3_misfacing_enemy_rotates_to_bear_then_fires() {
     // And it didn't waste the whole window: connected within the bound.
     assert!(rounds < cap, "#86: enemy rotates + fires within {cap} rounds, not stuck");
 }
+
+/* =========================================================================
+ * #92 BROADSIDE payoff (Model D): a BroadsideArc weapon bears off the bow's
+ * PERPENDICULAR flanks. Verify (1) a broadside-armed enemy orients flank-to-
+ * player + lands a shot (rotates side-on, doesn't bow-rush/spin), and (2) the
+ * player at bow-E fires a broadside up-lane.
+ * ====================================================================== */
+
+/// A BroadsideArc beam. `raw` damage, all 2-D bands (range never gates), no
+/// falloff. Bears out the flanks perpendicular to the bow (Model D).
+fn broadside_beam(id: &str, raw: i32) -> Action {
+    Action {
+        id: id.into(),
+        name: id.into(),
+        archetype: WeaponArchetype::Broadside,
+        cost: ActionCost { heat: 1, cooldown_max: 0, advances_turn: true },
+        targeting: Targeting {
+            range_band: vec![grid::Range::Adjacent, grid::Range::Near, grid::Range::Far],
+            optimal_range: grid::Range::Adjacent,
+            pattern: TargetingPattern::BROADSIDE,
+            band: vec![RangeBand::PointBlank, RangeBand::Close, RangeBand::Mid],
+            optimal_band: RangeBand::PointBlank,
+            requires_arc: Some(Arc::BroadsideArc),
+            facing_relative: false,
+            hits_all: false,
+        },
+        effects: vec![Effect::DAMAGE { amount: raw, band_falloff: Some(false) }],
+        r#mod: None,
+        icon: None,
+    }
+}
+
+/// Serves one broadside weapon by id for the #92 payoff scenarios.
+struct BroadsideContent(Action);
+impl Content for BroadsideContent {
+    fn action(&self, id: &str) -> Option<&Action> {
+        (id == self.0.id).then_some(&self.0)
+    }
+    fn spawn_projectile(&self, _: &str, _: &Ship) -> Projectile {
+        panic!("broadside scenarios fire a beam, not ordnance");
+    }
+}
+
+#[test]
+fn q92_broadside_enemy_orients_flank_to_player_then_fires() {
+    // Enemy at (2,1) Bow(E) — its bow points E, straight AT the player at (4,1)
+    // due east (distance 2 = Near). A BroadsideArc bears off the PERPENDICULAR
+    // flanks (N/S here), NOT the bow axis (E/W), so it does NOT bear on the
+    // eastward player yet. To fire, the enemy must rotate its bow to N or S so a
+    // FLANK faces east — i.e. orient SIDE-on, not bow-on. Then the broadside
+    // bears down the row and fires. Stationary player (never queues) isolates
+    // "enemy turned side-on + shot".
+    let mut enemy = ship_2d("e", Faction::Enemy, Pos::new(2, 1), 9, Facing::Bow(Dir4::E), Arc::BroadsideArc, "bcannon");
+    enemy.shield_profile = naked_shields();
+    let mut player = ship_2d("p", Faction::Player, Pos::new(4, 1), 40, Facing::Bow(Dir4::N), Arc::Forward, "noop");
+    player.shield_profile = naked_shields();
+    player.mounts.clear(); // can't fire back; pure target
+    let mut board = board_2d(vec![enemy, player]);
+    let content = BroadsideContent(broadside_beam("bcannon", 5));
+
+    let player_hull_0 = 40;
+    let mut side_on_seen = false;
+    let cap = 12;
+    let mut rounds = 0;
+    while rounds < cap {
+        resolve_round(&mut board, &content);
+        rounds += 1;
+        if let Some(e) = board.cells.iter().flatten().find(|s| s.id == "e") {
+            // SIDE-on to an east player = bow turned off the E/W axis, i.e. N or S.
+            if matches!(e.facing, Facing::Bow(Dir4::N) | Facing::Bow(Dir4::S)) {
+                side_on_seen = true;
+            }
+        }
+        if board.cells.iter().flatten().find(|s| s.id == "p").map(|s| s.hull).unwrap_or(0) < player_hull_0 {
+            break;
+        }
+    }
+
+    assert!(side_on_seen, "#92: the broadside enemy must orient SIDE-on (bow N/S) so a flank faces the east player");
+    let p_hull = board.cells.iter().flatten().find(|s| s.id == "p").map(|s| s.hull).unwrap_or(0);
+    assert!(
+        p_hull < player_hull_0,
+        "#92: after going side-on, the broadside enemy FIRES + connects (player hull {p_hull} < {player_hull_0}); not spin/bow-rush",
+    );
+    assert!(rounds < cap, "#92: broadside enemy orients + fires within {cap} rounds");
+}
+
+#[test]
+fn q92_player_bow_ew_fires_broadside_up_lane() {
+    // Direct firing check (Model D): a player in bow-E stance fires a BroadsideArc
+    // weapon out its N/S flanks. Player at (2,3) Bow(E); a target due NORTH up the
+    // column at (2,1) (distance 2). The broadside bears N (a flank) → the shot
+    // resolves on the target. Proves the player gets the broadside hook from a bow
+    // cardinal (no separate stance needed).
+    use broadside_engine::resolve::resolve_targeting_2d;
+    let player = ship_2d("p", Faction::Player, Pos::new(2, 3), 30, Facing::Bow(Dir4::E), Arc::BroadsideArc, "bcannon");
+    let target = ship_2d("t", Faction::Enemy, Pos::new(2, 1), 5, Facing::Bow(Dir4::S), Arc::Forward, "noop");
+    let board = board_2d(vec![player, target]);
+    let content = BroadsideContent(broadside_beam("bcannon", 5));
+
+    let cells = resolve_targeting_2d(content.action("bcannon").unwrap(), &board, Pos::new(2, 3));
+    assert!(
+        cells.contains(&Pos::new(2, 1)),
+        "#92: a bow-E player's broadside bears N (a flank) on the up-column target; got {cells:?}",
+    );
+}
