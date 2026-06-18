@@ -1082,6 +1082,42 @@ fn push_ship_2d(
         // through to the clean flat-box placeholder. Placeholder > wrong ship.
     }
 
+    // (#89) LIVE-3D ENEMY: if an enemy loft mesh is installed (the RED-tinted Aegis
+    // hull via install_enemy_glb), emit a LoftShip at the enemy's projected cell so
+    // the fleet renders as the player's ship-class in a hostile colour instead of
+    // the flat box (Bruce). Unlike the player's hero-foreground anchor, an enemy
+    // seats ON its own cell quad and scales with depth (far enemies smaller), so
+    // the back-row fleet reads in perspective. Enemies face the player (bow-on /
+    // oncoming) — facing_yaw_deg carries the Bow(S)=180 toward-camera pose. The
+    // loft pre-pass renders the hull lit + posed; HUD overlays layer on top below.
+    if !is_player {
+        if let Some(loft_kind) = sprites.loft_kind(&ship.id, false) {
+            // Seat on the cell: width from the cell's near-edge (already perspective-
+            // scaled), height from the loft aspect (#74 no squash). Centred on the
+            // cell centre (not the bottom band — enemies aren't the foreground hero).
+            let w = (near_edge_width * 0.92).max(10.0);
+            let h = w / LOFT_TEXTURE_ASPECT;
+            let (l, r) = (center[0] - w * 0.5, center[0] + w * 0.5);
+            let (t, b) = (center[1] - h * 0.5, center[1] + h * 0.5);
+            out.push(DrawCommand::LoftShip(LoftShipInstance {
+                p0: [l, t],
+                p1: [r, t],
+                p2: [r, b],
+                p3: [l, b],
+                ship_id: SpriteSlug::new(&ship.id),
+                kind: loft_kind,
+                aim_at: center,
+                // Enemy facing as the flat ground-plane yaw — Bow(S)=180 renders the
+                // hull oncoming (bow toward the camera/player), the bow-to-bow read.
+                facing_yaw_deg,
+            }));
+            // Bow chevron + shield pips still layer on top so the enemy's threat/
+            // orientation telegraph reads over the lit hull.
+            push_ship_arrow_and_pips_2d(out, ship, center, 22.0 * depth_scale);
+            return;
+        }
+    }
+
     // Inset hull box, scaled by depth so far ships are smaller. Bow stance is
     // longer along the bow axis; broadside is wider across the hull axis — a
     // coarse stance read under the (always-present) arrow.

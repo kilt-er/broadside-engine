@@ -72,6 +72,12 @@ pub enum LoftMeshKind {
     /// The vendored CAD ship import (`assets/ships/broadside-ship.glb`) — its
     /// authored colours (orange accent) — used for the enemy placeholders.
     EnemyCad,
+    /// The same Aegis GLB hull as [`Self::PlayerLoft`] but tinted RED for ENEMIES,
+    /// so the fleet reads as the player's ship-class in a hostile colour (Bruce:
+    /// enemies should be the Aegis mesh, tinted red). Preferred over
+    /// [`Self::EnemyCad`] when installed. Enemies face the player (bow-on), so the
+    /// hull renders oncoming — see the `loft_facing_ground_yaw` Bow(S)=180 case.
+    EnemyLoft,
 }
 
 /// A decoded sprite ready to upload to the GPU.

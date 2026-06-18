@@ -1103,13 +1103,20 @@ impl ApplicationHandler for App {
         // mesh_import → upload_imported keeps the authored materials + the unlit
         // cyan engine glow. push_ship_2d emits a LoftShip for the player when this
         // is installed (the loft 3D pass renders it lit, chase-cam posed, then
-        // blits into the lane), else falls back to the sprite/flat-box. Enemies
-        // stay flat placeholders (no enemy mesh installed — separate oncoming bake
-        // is a follow-up). The HUD + telegraph overlays are unaffected.
+        // blits into the lane), else falls back to the sprite/flat-box. The HUD +
+        // telegraph overlays are unaffected.
         const AEGIS_GLB: &[u8] = include_bytes!("../../assets/ships/Aegis.glb");
         match gfx.install_player_glb(AEGIS_GLB) {
             Ok(()) => log::info!("loft: player Aegis hull installed from Aegis.glb ({} bytes)", AEGIS_GLB.len()),
             Err(e) => log::warn!("loft: Aegis.glb import failed ({e}); player falls back to sprite/flat-box"),
+        }
+        // (#89) ENEMIES = the SAME Aegis hull, RED-tinted (Bruce): every enemy
+        // renders as the player's ship-class in a hostile colour instead of the
+        // flat CAD box. Enemies face the player (bow-on), so the hull renders
+        // oncoming. loft_kind prefers EnemyLoft once this is installed.
+        match gfx.install_enemy_glb(AEGIS_GLB) {
+            Ok(()) => log::info!("loft: enemy Aegis hull (red) installed from Aegis.glb"),
+            Err(e) => log::warn!("loft: enemy Aegis.glb import failed ({e}); enemies fall back to CAD/2D"),
         }
         self.window = Some(window);
         self.gfx = Some(gfx);

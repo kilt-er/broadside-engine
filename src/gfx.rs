@@ -885,7 +885,11 @@ impl crate::sprites::SpriteRegistry for Gfx {
                 .has_loft_mesh(LoftMeshKind::PlayerCad)
                 .then_some(LoftMeshKind::PlayerCad);
         }
-        // Enemies → authored-colour CAD hull (only if uploaded; else 2D).
+        // Enemies → the RED-tinted Aegis hull if installed (preferred, Bruce's
+        // ask), else the authored-colour CAD hull, else 2D silhouette.
+        if self.has_loft_mesh(LoftMeshKind::EnemyLoft) {
+            return Some(LoftMeshKind::EnemyLoft);
+        }
         self.has_loft_mesh(LoftMeshKind::EnemyCad)
             .then_some(LoftMeshKind::EnemyCad)
     }
@@ -1402,6 +1406,43 @@ impl Gfx {
         let hull = self.loft.upload_imported(&self.device, &ship);
         self.loft_meshes.insert(
             crate::sprites::LoftMeshKind::EnemyCad,
+            LoftMesh {
+                vbuf: hull.vbuf,
+                vcount: hull.vcount,
+                center_y: hull.center_y,
+            },
+        );
+        Ok(())
+    }
+
+    /// RED tint multiplier for the ENEMY copy of the Aegis hull (boosts red, pulls
+    /// green/blue down) so the enemy fleet reads as the player's ship-CLASS in a
+    /// clearly hostile colour, distinct from the player's natural/cool hull
+    /// ([`Self::install_enemy_glb`]). A multiply over the GLB's authored albedo, so
+    /// the hull keeps its shape/shading and just shifts hue toward red.
+    const ENEMY_TINT: [f32; 3] = [1.45, 0.40, 0.38];
+
+    /// Install the ENEMY hull from the SAME Aegis `.glb` the player uses
+    /// ([`Self::install_player_glb`]) but RED-tinted via [`Self::ENEMY_TINT`], so
+    /// every enemy renders as the Aegis ship-class in a hostile colour instead of
+    /// the generic CAD box (Bruce: enemies should be the Aegis mesh, tinted red).
+    /// Uploaded as [`crate::sprites::LoftMeshKind::EnemyLoft`], which
+    /// [`Self::loft_kind`] prefers over [`crate::sprites::LoftMeshKind::EnemyCad`].
+    /// Enemies face the player (bow-on / oncoming), so the hull renders toward the
+    /// camera — the `loft_facing_ground_yaw` Bow(S)=180 case. Runtime tint only, no
+    /// GLB re-export. Idempotent; per-ship pose created lazily by
+    /// [`Self::sync_loft_pose`]. Returns the import error if the bytes don't parse
+    /// (caller logs + falls back to the CAD/2D enemy path).
+    pub fn install_enemy_glb(
+        &mut self,
+        glb_bytes: &[u8],
+    ) -> Result<(), crate::mesh_import::ImportError> {
+        let ship = crate::mesh_import::load_glb(glb_bytes)?;
+        let hull = self
+            .loft
+            .upload_imported_tinted(&self.device, &ship, Self::ENEMY_TINT);
+        self.loft_meshes.insert(
+            crate::sprites::LoftMeshKind::EnemyLoft,
             LoftMesh {
                 vbuf: hull.vbuf,
                 vcount: hull.vcount,

@@ -133,12 +133,17 @@ fn main() {
 
     // (#70) Install the player's faithful Aegis GLB exactly as the playable bin
     // does (broadside.rs install_player_glb) so the capture faithfully shows the
-    // LIVE-3D player ship, not the flat-box placeholder. Enemies stay flat (no
-    // enemy mesh installed), matching the live game.
+    // LIVE-3D player ship, not the flat-box placeholder.
     const AEGIS_GLB: &[u8] = include_bytes!("../../assets/ships/Aegis.glb");
     match gfx.install_player_glb(AEGIS_GLB) {
         Ok(()) => log::info!("capture: player Aegis hull installed from Aegis.glb"),
         Err(e) => log::warn!("capture: Aegis.glb import failed ({e}); player falls back to sprite/flat-box"),
+    }
+    // (#89) ENEMIES = the same Aegis hull, RED-tinted (matches the live bin) so the
+    // capture faithfully shows the oncoming red enemy ships, not flat boxes.
+    match gfx.install_enemy_glb(AEGIS_GLB) {
+        Ok(()) => log::info!("capture: enemy Aegis hull (red) installed from Aegis.glb"),
+        Err(e) => log::warn!("capture: enemy Aegis.glb import failed ({e}); enemies fall back to CAD/2D"),
     }
 
     // (#76) Optional BROADSIDE_SHIP_RES=N env cycles the SHIP loft res forward N
