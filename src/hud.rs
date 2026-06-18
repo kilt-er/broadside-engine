@@ -504,6 +504,10 @@ pub fn compose_scene_2d_tweened(
     for ship in &ships {
         if ship.faction != Faction::Player {
             push_hull_bar_2d(&mut out, ship, cfg);
+            // (#107) Shield pool bar just below the enemy hull bar (no-op if the
+            // ship has no shield capacity). The player's shield reads from the
+            // bottom HUD band instead (push_bottom_hud_2d), matching its hull.
+            push_shield_bar_2d(&mut out, ship, cfg);
         }
         push_queue_tiles_2d(&mut out, ship, cfg);
     }
@@ -587,6 +591,41 @@ fn push_bottom_hud_2d(out: &mut Vec<DrawCommand>, board: &Board) {
                 PolygonInstance::flat(
                     [[hp_x, hp_y], [hp_x + fw, hp_y], [hp_x + fw, hp_y + hp_h], [hp_x, hp_y + hp_h]],
                     color,
+                    atlas::cell_uvs(atlas::SOLID_WHITE),
+                ),
+            );
+        }
+    }
+
+    // --- (#107) Player SHIELD bar, directly BELOW the hull bar ---
+    // Shield pool = Σcharge / Σarmour across the four faces (approach A: charge =
+    // live pool, armour = capacity). A thinner cyan bar so it reads as a distinct
+    // shield layer under the hull bar. Skipped when the player has no shield
+    // capacity (Σarmour == 0) so an unshielded loadout shows only the hull bar.
+    let sp = &player.shield_profile;
+    let shield_cap: i32 = sp.bow.armour + sp.stern.armour + sp.port.armour + sp.starboard.armour;
+    if shield_cap > 0 {
+        let shield_cur: i32 = sp.bow.charge + sp.stern.charge + sp.port.charge + sp.starboard.charge;
+        let sh_y = hp_y + hp_h + 2.0;
+        let sh_h = 4.0;
+        push_text_left(out, "SHLD", hp_x + hp_w + 6.0, sh_y - 2.0, 1.0, HUD_LABEL);
+        // Track.
+        push_polygon(
+            out,
+            PolygonInstance::flat(
+                [[hp_x, sh_y], [hp_x + hp_w, sh_y], [hp_x + hp_w, sh_y + sh_h], [hp_x, sh_y + sh_h]],
+                HULL_BAR_BG,
+                atlas::cell_uvs(atlas::SOLID_WHITE),
+            ),
+        );
+        let frac = (shield_cur as f32 / shield_cap as f32).clamp(0.0, 1.0);
+        if frac > 0.0 {
+            let fw = hp_w * frac;
+            push_polygon(
+                out,
+                PolygonInstance::flat(
+                    [[hp_x, sh_y], [hp_x + fw, sh_y], [hp_x + fw, sh_y + sh_h], [hp_x, sh_y + sh_h]],
+                    SHIELD_PIP_CHARGE,
                     atlas::cell_uvs(atlas::SOLID_WHITE),
                 ),
             );
@@ -896,6 +935,69 @@ fn push_hull_bar_2d(out: &mut Vec<DrawCommand>, ship: &Ship, cfg: &ProjectorConf
                     [left, cy + bar_h * 0.5],
                 ],
                 color,
+                atlas::cell_uvs(atlas::SOLID_WHITE),
+            ),
+        );
+    }
+}
+
+/// (#107) A SHIELD pool bar just BELOW the lane hull bar, showing a ship's shield
+/// charge as `sum(charge) / sum(armour)` across its four faces (approach A: per
+/// content, `ShieldFace.charge` = the live depleting pool, `ShieldFace.armour` =
+/// that face's capacity). A thinner cyan bar so it reads as a distinct
+/// shield layer under the hull bar; left-aligned fill = current/max. No-op when
+/// the ship has no shield capacity (Σarmour == 0) so unshielded ships show only
+/// their hull bar. Mirrors `push_hull_bar_2d`'s geometry + min-size clamp so it
+/// tracks the hull bar at any depth; drawn right after it in the overlay loop.
+fn push_shield_bar_2d(out: &mut Vec<DrawCommand>, ship: &Ship, cfg: &ProjectorConfig) {
+    let sp = &ship.shield_profile;
+    let cap: i32 = sp.bow.armour + sp.stern.armour + sp.port.armour + sp.starboard.armour;
+    if cap <= 0 {
+        return; // unshielded → no shield bar at all
+    }
+    let cur: i32 = sp.bow.charge + sp.stern.charge + sp.port.charge + sp.starboard.charge;
+    let q = grid_cell_quad(ship.pos, cfg);
+    let scale = q.depth_scale;
+    let base = 22.0 * scale;
+    // Match the hull bar's width/clamps so the two bars align.
+    let half_w = base.max(11.0);
+    let hull_bar_h = (3.0 * scale).max(2.5);
+    let bar_h = (2.0 * scale).max(2.0); // shield bar a touch thinner than the hull bar
+    // Hull bar centre (see push_hull_bar_2d); the shield bar sits just below it.
+    let hull_cy = q.center[1] - (base + 6.0 * scale);
+    let gap = 1.5;
+    let cy = hull_cy + hull_bar_h * 0.5 + gap + bar_h * 0.5;
+    let cx = q.center[0];
+    let left = cx - half_w;
+
+    // Background track.
+    push_polygon(
+        out,
+        PolygonInstance::flat(
+            [
+                [left, cy - bar_h * 0.5],
+                [left + half_w * 2.0, cy - bar_h * 0.5],
+                [left + half_w * 2.0, cy + bar_h * 0.5],
+                [left, cy + bar_h * 0.5],
+            ],
+            HULL_BAR_BG,
+            atlas::cell_uvs(atlas::SOLID_WHITE),
+        ),
+    );
+    // Charge fill (cyan), left-aligned = current / capacity.
+    let frac = (cur as f32 / cap as f32).clamp(0.0, 1.0);
+    if frac > 0.0 {
+        let fill_w = half_w * 2.0 * frac;
+        push_polygon(
+            out,
+            PolygonInstance::flat(
+                [
+                    [left, cy - bar_h * 0.5],
+                    [left + fill_w, cy - bar_h * 0.5],
+                    [left + fill_w, cy + bar_h * 0.5],
+                    [left, cy + bar_h * 0.5],
+                ],
+                SHIELD_PIP_CHARGE,
                 atlas::cell_uvs(atlas::SOLID_WHITE),
             ),
         );
@@ -4128,6 +4230,44 @@ mod tests {
         let mut expired = Vec::new();
         push_damage_number_2d(&mut expired, &ship, 4, 0.0, &cfg);
         assert!(expired.is_empty(), "a fully-faded number (intensity 0) must be a no-op");
+    }
+
+    /// (#107) The shield pool bar renders when the ship HAS shield capacity
+    /// (Σarmour > 0) and is a no-op for an unshielded ship (Σarmour == 0), so an
+    /// unshielded loadout shows only its hull bar. The bar binds Σcharge / Σarmour
+    /// (approach A: charge = live pool, armour = capacity).
+    #[test]
+    fn shield_bar_renders_only_with_capacity() {
+        use crate::projector::ProjectorConfig;
+        let cfg = ProjectorConfig::default();
+
+        // Shielded ship (default frigate profile carries per-face armour) → bar.
+        let mut shielded = frigate_at(0, Faction::Enemy, Orientation::BowOn { bow: LaneEnd::Fore });
+        shielded.shield_profile.bow.charge = shielded.shield_profile.bow.armour;
+        let mut with_cap = Vec::new();
+        push_shield_bar_2d(&mut with_cap, &shielded, &cfg);
+        assert!(
+            !with_cap.is_empty(),
+            "a ship with shield capacity must draw a shield bar"
+        );
+
+        // Strip ALL face capacity → unshielded → no shield bar.
+        let mut bare = frigate_at(0, Faction::Enemy, Orientation::BowOn { bow: LaneEnd::Fore });
+        for f in [
+            &mut bare.shield_profile.bow,
+            &mut bare.shield_profile.stern,
+            &mut bare.shield_profile.port,
+            &mut bare.shield_profile.starboard,
+        ] {
+            f.armour = 0;
+            f.charge = 0;
+        }
+        let mut no_cap = Vec::new();
+        push_shield_bar_2d(&mut no_cap, &bare, &cfg);
+        assert!(
+            no_cap.is_empty(),
+            "an unshielded ship (no capacity) must NOT draw a shield bar"
+        );
     }
 
     /// Stub registry that reports the requested class+stance as having

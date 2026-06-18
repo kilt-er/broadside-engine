@@ -297,6 +297,33 @@ fn main() {
             if victim.max_hull > 0 {
                 victim.hull = (victim.max_hull / 2).max(1);
             }
+            // (#107) Half-charge the victim's shields so its lane SHIELD bar reads
+            // partial under the hull bar.
+            for f in [
+                &mut victim.shield_profile.bow,
+                &mut victim.shield_profile.stern,
+                &mut victim.shield_profile.port,
+                &mut victim.shield_profile.starboard,
+            ] {
+                f.charge = (f.armour + 1) / 2;
+            }
+        }
+        // (#107) Half-charge the PLAYER's shields too so the bottom-HUD SHIELD bar
+        // (below HULL) reads partial in the capture.
+        if let Some(p) = board
+            .cells
+            .iter_mut()
+            .flatten()
+            .find(|s| s.faction == Faction::Player)
+        {
+            for f in [
+                &mut p.shield_profile.bow,
+                &mut p.shield_profile.stern,
+                &mut p.shield_profile.port,
+                &mut p.shield_profile.starboard,
+            ] {
+                f.charge = (f.armour + 1) / 2;
+            }
         }
         log::info!("capture: VFX demo — player HIT + enemy MISS + a kill (burst) at {tgt:?}");
     }
