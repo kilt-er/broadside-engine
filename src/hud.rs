@@ -82,7 +82,8 @@ const THREAT_FILL_LETHAL: [f32; 4] = [0.961, 0.341, 0.286, 0.62]; // would-kill 
 const THREAT_FILL_DISPLACE: [f32; 4] = [0.353, 0.624, 0.878, 0.42]; // push/pull/swap
 const THREAT_FILL_STATUS: [f32; 4] = [0.608, 0.549, 0.859, 0.42]; // debuff
 const THREAT_FILL_OTHER: [f32; 4] = [0.55, 0.55, 0.55, 0.34]; // catch-all
-const THREAT_BEAM: [f32; 4] = [0.878, 0.300, 0.250, 0.50]; // source→target intent line
+// (#99) THREAT_BEAM (the persistent red enemy→cell intent line) removed — Bruce:
+// clutter. The threatened-cell outline is the cue; the fire beam shows the shot.
 
 // (#90) Fired-shot VFX in the 2-D scene (Bruce: see weapons firing + results
 // clearly). A bright BEAM along the shot line + an IMPACT flash on the struck
@@ -125,7 +126,10 @@ const SHIELD_PIP_CHARGE: [f32; 4] = [0.329, 0.812, 0.788, 1.0];
 // the colour so re-enabling is a one-liner).
 #[allow(dead_code)]
 const BOW_MARK_PLAYER: [f32; 4] = [1.0, 0.91, 0.62, 1.0]; // warm gold-white (vs cool hull)
-const BOW_MARK_ENEMY: [f32; 4] = [0.72, 0.97, 1.0, 1.0]; // cool cyan-white (vs warm hull)
+// (#99 Bruce) Enemy facing/move arrow = YELLOW. Was cyan-white [0.72,0.97,1.0],
+// which read as white and got lost against the white background stars. Saturated
+// yellow pops against both the dark field and the stars.
+const BOW_MARK_ENEMY: [f32; 4] = [1.0, 0.86, 0.20, 1.0]; // yellow (vs white starfield)
 const BOW_MARK_SHADOW: [f32; 4] = [0.02, 0.03, 0.05, 0.9]; // dark backing
 
 // (#62) Player engine glow — the reference ship's signature read: a cluster of
@@ -822,13 +826,12 @@ fn push_threats_2d(out: &mut Vec<DrawCommand>, board: &Board, cfg: &ProjectorCon
         push_line(out, pt(c[1]), pt(c[2]), th, outline);
         push_line(out, pt(c[2]), pt(c[3]), th, outline);
         push_line(out, pt(c[3]), pt(c[0]), th, outline);
-        // Intent beam: source ship center → threatened cell center. Skip when the
-        // source IS the target (self-targeted, no meaningful line).
-        if threat.source != threat.pos {
-            let from = grid_cell_quad(threat.source, cfg).center;
-            let to = q.center;
-            push_line(out, pt(from), pt(to), 1.0, THREAT_BEAM);
-        }
+        // (#99 Bruce) The persistent RED enemy→cell INTENT BEAM is REMOVED — it drew
+        // every frame an enemy held a threat ("a red line always projecting from the
+        // enemy" = clutter). The threatened-cell OUTLINE above is the dodge cue
+        // ("this cell will be hit, move"); the actual shot still shows as the
+        // momentary fire beam (`push_fire_2d`) on CommitTurn. So the enemy-fire
+        // telegraph survives without the standing line.
     }
 }
 
@@ -1160,7 +1163,7 @@ fn push_ship_2d(
             }));
             // Pips/buffer cues on top (the lit hull + its baked engine glow own
             // the hull + stern read, so the player chevron stays dropped).
-            push_ship_arrow_and_pips_2d(out, ship, center, 22.0 * depth_scale);
+            push_ship_arrow_and_pips_2d(out, ship, center, 22.0 * depth_scale, cfg);
             return;
         }
         // aim lane = the ship's OWN board column; fan = its own-forward board dir
@@ -1201,7 +1204,7 @@ fn push_ship_2d(
             push_engine_glow_2d(out, [center[0], glow_y], w);
             // Pips/buffer cues on top; the baked frame owns the hull + bow read, so
             // the player chevron stays dropped (enemy chevrons still telegraph).
-            push_ship_arrow_and_pips_2d(out, ship, center, 22.0 * depth_scale);
+            push_ship_arrow_and_pips_2d(out, ship, center, 22.0 * depth_scale, cfg);
             return;
         }
         // else: no facing frame loaded yet (the correct bake hasn't dropped) → fall
@@ -1239,7 +1242,7 @@ fn push_ship_2d(
             }));
             // Bow chevron + shield pips still layer on top so the enemy's threat/
             // orientation telegraph reads over the lit hull.
-            push_ship_arrow_and_pips_2d(out, ship, center, 22.0 * depth_scale);
+            push_ship_arrow_and_pips_2d(out, ship, center, 22.0 * depth_scale, cfg);
             return;
         }
     }
@@ -1272,7 +1275,7 @@ fn push_ship_2d(
         push_line(out, pt(hull[i]), pt(hull[(i + 1) % 4]), 1.0, stroke);
     }
 
-    push_ship_arrow_and_pips_2d(out, ship, center, base);
+    push_ship_arrow_and_pips_2d(out, ship, center, base, cfg);
 }
 
 /// Bow-direction arrow + per-zone shield pips for a ship, shared by both the
@@ -1284,22 +1287,24 @@ fn push_ship_arrow_and_pips_2d(
     ship: &Ship,
     center: [f32; 2],
     base: f32,
+    cfg: &ProjectorConfig,
 ) {
-    let (dx, dy) = bow_screen_dir(ship.facing);
-    // (#62) Bow-direction chevron — ENEMY ONLY in the chase view. The enemy's
-    // facing varies and matters (telegraph read), so it keeps the bold chevron.
-    // The PLAYER's chevron is DROPPED: it was redundant clutter (the hero hull
-    // model + its forward motion carry the player's facing; the ref has no player
-    // arrow). Pips still draw for both below. (Lead: holding the FINAL player-arrow
-    // drop for Bruce's nod, but testing it dropped now.)
+    // (#99) The arrow direction follows the GROUND-PLANE lane (perspective), not a
+    // pure screen axis — so it lies FLAT in the grid (Bruce). Derive it from the
+    // projected step to the next cell in the ship's facing; falls back to the
+    // screen-axis dir at the grid edge (no neighbour to project).
+    let (dx, dy) = ground_facing_dir(ship, center, cfg).unwrap_or_else(|| bow_screen_dir(ship.facing));
+    // Bow-direction chevron — ENEMY ONLY in the chase view. The enemy's facing
+    // varies and matters (telegraph read), so it keeps the chevron; the PLAYER's is
+    // dropped (the hero hull + its motion carry the player's facing). Pips both.
     if ship.faction != Faction::Player {
         let rot = dy.atan2(dx);
-        // Size to survive the perspective shrink on the BACK row (far ships shrink
-        // most, so the floor matters more than the ratio).
-        let arrow_sz = (base * 0.7).max(7.0);
-        // Seat the chevron clearly beyond the hull edge + its own half-size so it
-        // CLEARS the hull and reads as "pointing away from" the ship.
-        let reach = base + arrow_sz + 5.0;
+        // (#99 Bruce) SMALLER than before (was base*0.7, floor 7) — it was bulky.
+        let arrow_sz = (base * 0.5).max(5.0);
+        // (#99 Bruce) On the ship's CENTRE LINE: seat it a short reach along the
+        // facing dir from the hull centre (closer than the old base+sz+5 push), so
+        // it reads as the ship's heading marker, not a far-flung floating arrow.
+        let reach = base * 0.55 + arrow_sz;
         let tip = [center[0] + dx * reach, center[1] + dy * reach];
         let (uv0, uv1) = atlas::cell_uvs(atlas::BOW_CHEVRON);
         // Shadow first (pulled back toward the hull by ~1px so it haloes the mark).
@@ -1330,6 +1335,30 @@ fn push_ship_arrow_and_pips_2d(
     }
 
     push_shield_pips_2d(out, ship, center, base, (dx, dy));
+}
+
+/// (#99) The ship's facing direction as a SCREEN unit vector that lies FLAT in the
+/// perspective grid — the projected step from the ship's cell to the adjacent cell
+/// in its `Dir4` facing. Returns `None` at the grid edge (the neighbour is
+/// off-board), where the caller falls back to the pure screen-axis direction.
+fn ground_facing_dir(ship: &Ship, center: [f32; 2], cfg: &ProjectorConfig) -> Option<(f32, f32)> {
+    use crate::grid::Dir4;
+    let dir4 = match ship.facing {
+        Facing::Bow(d) => d,
+        // A broadside hull's "forward" for the marker = its axis's canonical dir.
+        Facing::Broadside(axis) => match axis {
+            Axis::NorthSouth => Dir4::S,
+            Axis::EastWest => Dir4::E,
+        },
+    };
+    let next = crate::grid::offset(ship.pos, dir4.to_dir8(), 1)?; // None at the board edge
+    let nc = grid_cell_quad(next, cfg).center;
+    let (vx, vy) = (nc[0] - center[0], nc[1] - center[1]);
+    let len = (vx * vx + vy * vy).sqrt();
+    if len < 1e-3 {
+        return None;
+    }
+    Some((vx / len, vy / len))
 }
 
 /// (#62) The player's stern ENGINE-GLOW cluster — the reference ship's signature
