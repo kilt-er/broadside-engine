@@ -665,13 +665,6 @@ fn make_ship(
  * App + event loop.
  * ========================================================================== */
 
-/// Seven fixed camera view angles in degrees, scrubbed via `[` / `]`. The
-/// lane stays flat at every angle; ship silhouettes and parallax planes
-/// foreshorten with the angle so the scene reads as a camera revolving
-/// around the lane. Default index 3 = 45° — the natural isometric middle.
-const CAMERA_ANGLE_STEPS_DEG: [f32; 7] = [0.0, 15.0, 30.0, 45.0, 60.0, 75.0, 90.0];
-const CAMERA_ANGLE_DEFAULT_INDEX: usize = 3;
-
 /// Duration of the per-ship snap → smooth lerp after a turn-advancing
 /// input. ~200ms reads as crisp without feeling laggy at 60Hz.
 const TWEEN_DURATION_MS: u32 = 120;
@@ -730,8 +723,6 @@ struct App {
     /// catalog-backed enemy synthesis (real hull / mounts / traits per
     /// the canonical `enemies[]`).
     catalog: Option<broadside_engine::types::Catalog>,
-    /// Index into `CAMERA_ANGLE_STEPS_DEG`. Cycled by `[` and `]`.
-    camera_angle_idx: usize,
     /// Per-ship tween anchors keyed by `Ship::id`. Populated whenever an
     /// input mutates the board; the redraw path interpolates `from_cell`
     /// → `ship.cell` over `TWEEN_DURATION_MS` using ease-out quad.
@@ -801,7 +792,6 @@ impl App {
             lane: demo_lane(),
             content,
             catalog,
-            camera_angle_idx: CAMERA_ANGLE_DEFAULT_INDEX,
             tween_anchors: HashMap::new(),
             sectors,
             run: Run::new(Self::fresh_player_ship()),
@@ -1149,21 +1139,6 @@ impl ApplicationHandler for App {
                 let PhysicalKey::Code(code) = event.physical_key else { return };
                 if code == KeyCode::Escape {
                     event_loop.exit();
-                    return;
-                }
-                // `[` / `]` cycle the camera angle. Handled before the
-                // canonical key-to-intent lookup so they remain a renderer-
-                // owned binding, not part of the content key map.
-                if code == KeyCode::BracketLeft {
-                    self.camera_angle_idx = self.camera_angle_idx.saturating_sub(1);
-                    log::info!("camera angle: {}°", CAMERA_ANGLE_STEPS_DEG[self.camera_angle_idx]);
-                    if let Some(w) = self.window.as_ref() { w.request_redraw(); }
-                    return;
-                }
-                if code == KeyCode::BracketRight {
-                    self.camera_angle_idx = (self.camera_angle_idx + 1).min(CAMERA_ANGLE_STEPS_DEG.len() - 1);
-                    log::info!("camera angle: {}°", CAMERA_ANGLE_STEPS_DEG[self.camera_angle_idx]);
-                    if let Some(w) = self.window.as_ref() { w.request_redraw(); }
                     return;
                 }
                 // (#76) `,` / `.` cycle the SHIP loft-render resolution LIVE
