@@ -419,12 +419,24 @@ fn queue_player_combat_action(board: &mut Board) {
         });
         if bears_on_hostile {
             weapon_id.clone()
-        } else if epos.col != ppos.col {
-            // Wrong column → strafe laterally to line up the enemy's column.
+        } else if epos.col != ppos.col && ppos.row <= epos.row + 1 {
+            // Wrong column but already row-adjacent to the enemy's rank → strafe
+            // laterally to line up its column. (Only strafe once close: see the
+            // close-first branch below.)
             if epos.col < ppos.col { SYNTHETIC_MOVE_LEFT } else { SYNTHETIC_MOVE_RIGHT }.to_string()
         } else if epos.row < ppos.row {
-            // Same column, enemy ahead (lower row) but out of band → close N.
+            // Enemy ahead (lower row) and out of band — close N. This runs BEFORE
+            // a far-column strafe so the player drives up onto the enemy's rank
+            // instead of mirroring its lateral dodge from the back row forever (a
+            // lone surviving straggler that strafes col-to-col would otherwise
+            // chase-livelock a back-row player — the #41 winnability canary's
+            // stall). Closing onto the enemy's row makes occupancy + adjacency
+            // force a resolution: the dodging enemy runs out of room and the beam
+            // bears. (Content-owned harness tweak; the engine model is unchanged.)
             SYNTHETIC_MOVE_UP.to_string()
+        } else if epos.col != ppos.col {
+            // Same row as the enemy, wrong column → strafe to line up.
+            if epos.col < ppos.col { SYNTHETIC_MOVE_LEFT } else { SYNTHETIC_MOVE_RIGHT }.to_string()
         } else {
             // Same column, enemy BEHIND (higher row) — face it. (Defensive: the
             // spawn layout keeps enemies in the back rows, so this is unreached.)

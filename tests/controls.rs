@@ -198,14 +198,13 @@ fn commit_turn_on_empty_queue_runs_only_end_of_turn() {
 
 #[test]
 fn queue_pulse_laser_then_commit_fires_once_against_a_target() {
-    // v2 (#40 restore): REAL 2-D fixture. solo_board's player is at pos (0,0);
-    // turn its bow EAST so the Forward gun bears down row 0, and place a
-    // zero-armour target at (2,0) = Near band (pulse_laser "close" → Near, dist 2
-    // per #28). Cell index 2 = Pos(2,0).to_index() (invariant A). The 2-D damage
-    // is floor(raw * 0.6) (Near falloff [1.0,0.6,0.3]) onto the stern (armour 0);
-    // the exact value is asserted from the live result below, not the old 1-D
-    // floor(raw*0.66). Does NOT touch solo_board or the movement tests (their
-    // lone player is unchanged; the target is local to this test).
+    // v2 (#40 restore) + #104 integer falloff: REAL 2-D fixture. solo_board's
+    // player is at pos (0,0); turn its bow EAST so the Forward gun bears down row
+    // 0, and place a zero-shield target at (2,0) = Near band (pulse_laser "close"
+    // -> Near, dist 2 per #28). Cell index 2 = Pos(2,0).to_index() (invariant A).
+    // The 2-D damage is the INTEGER falloff raw - 1 at Near = 4 - 1 = 3, onto the
+    // empty stern pool (charge 0 -> nothing soaked). Does NOT touch solo_board or
+    // the movement tests (their lone player is unchanged; the target is local).
     let mut board = solo_board();
     if let Some(p) = board.cells[0].as_mut() {
         p.facing = broadside_engine::grid::Facing::Bow(broadside_engine::grid::Dir4::E);
@@ -246,13 +245,13 @@ fn queue_pulse_laser_then_commit_fires_once_against_a_target() {
     apply_intent_lib(Intent::QueueAction("pulse_laser".into()), &mut board, &content);
     apply_intent_lib(Intent::CommitTurn, &mut board, &content);
 
-    // Exactly one OnDamageTaken on the target's cell, with the 2-D post-falloff
-    // amount (2: floor(4 raw * 0.6 Near) = 2 — coincidentally the same integer as
-    // the old 1-D floor(4*0.66), since both floor to 2).
+    // Exactly one OnDamageTaken on the target's cell, with the 2-D integer
+    // post-falloff amount (#104): raw 4 - 1 (Near penalty) = 3, onto an empty
+    // stern pool so all 3 reaches hull.
     assert_eq!(
         *log.borrow(),
-        vec![(target_pos.to_index(), 2)],
-        "exactly one OnDamageTaken emit for the target cell with the 2-D post-falloff 2 damage",
+        vec![(target_pos.to_index(), 3)],
+        "exactly one OnDamageTaken emit for the target cell with the integer post-falloff 3 damage",
     );
     let p = board.cells[0].as_ref().unwrap();
     assert!(p.queue.is_empty(), "queue should be drained after resolve_round");

@@ -37,7 +37,6 @@
 //! Leaves the still-live 1-D `tests/geometry.rs` untouched (it tests the 1-D
 //! module, which stays live until the A3 contract step).
 
-use broadside_engine::geometry as g1; // the 1-D engine, for verbatim-parity checks
 use broadside_engine::geometry2d::{
     absorb_shield, arc_bears, band_falloff, default_shield_profile, direction_to, distance,
     facing_zone, in_band, opposite, range_band,
@@ -500,16 +499,21 @@ fn broadside_battery_is_exactly_two_directions_wide_cardinal_exact() {
 // Ship fixtures land — not covered here.
 
 /* =========================================================================
- * band_falloff — the NEW [1.0, 0.6, 0.3] curve (decision #6), with a guard
- * against accidental reuse of the 1-D 5-value delta-from-optimal table.
+ * band_falloff — the INTEGER penalty-per-band curve (#104: no float in the
+ * damage math). Adjacent -0, Near -1, Far -2, floored at min 1 for a legal
+ * shot. Replaces the old float `[1.0, 0.6, 0.3]` curve. A guard below still
+ * rejects accidental reuse of the 1-D 5-value delta-from-optimal table.
  * ====================================================================== */
 
 #[test]
-fn band_falloff_is_the_three_value_absolute_curve() {
-    // Exact multipliers at a clean input so the factors are unambiguous.
-    assert_eq!(band_falloff(100, Range::Adjacent), 100, "Adjacent ×1.0");
-    assert_eq!(band_falloff(100, Range::Near), 60, "Near ×0.6");
-    assert_eq!(band_falloff(100, Range::Far), 30, "Far ×0.3");
+fn band_falloff_is_the_integer_penalty_per_band() {
+    // #104: integer penalty, NOT a float multiplier. Adjacent passes raw
+    // through; each band further out subtracts one more.
+    assert_eq!(band_falloff(100, Range::Adjacent), 100, "Adjacent -0");
+    assert_eq!(band_falloff(100, Range::Near), 99, "Near -1");
+    assert_eq!(band_falloff(100, Range::Far), 98, "Far -2");
+    // #44 fix: a raw-6 Far weapon keeps 4 (the old float curve floored it to 1).
+    assert_eq!(band_falloff(6, Range::Far), 4);
 }
 
 #[test]
@@ -527,12 +531,13 @@ fn band_falloff_is_not_the_old_1d_five_value_table() {
 }
 
 #[test]
-fn band_falloff_floors_to_integer() {
-    // floor(7 × 0.6) = floor(4.2) = 4; floor(7 × 0.3) = floor(2.1) = 2.
-    assert_eq!(band_falloff(7, Range::Near), 4);
-    assert_eq!(band_falloff(7, Range::Far), 2);
-    // floor(5 × 0.3) = floor(1.5) = 1 (rounds DOWN, not to nearest).
-    assert_eq!(band_falloff(5, Range::Far), 1);
+fn band_falloff_floors_a_legal_shot_at_one() {
+    // #104: a legal in-band shot never whiffs to 0 from falloff alone (>=1
+    // floor) — the over-extension deadzone gates ILLEGAL shots upstream.
+    assert_eq!(band_falloff(7, Range::Near), 6); // 7 - 1
+    assert_eq!(band_falloff(7, Range::Far), 5); //  7 - 2
+    assert_eq!(band_falloff(2, Range::Far), 1); // (2 - 2).max(1) = 1
+    assert_eq!(band_falloff(1, Range::Far), 1); // (1 - 2).max(1) = 1
 }
 
 #[test]
@@ -731,84 +736,77 @@ fn range_band_boundaries_are_the_three_band_chebyshev_cuts() {
 }
 
 /* =========================================================================
- * absorb_shield / default_shield_profile — PARITY with the 1-D engine.
- * Blueprint: "kept verbatim". We assert byte-for-byte equality of behavior
- * with crate::geometry, not just the constants — so a future edit to either
- * copy that breaks the verbatim contract fails here.
+ * absorb_shield / default_shield_profile — the per-face SHIELD POOL model
+ * (#103 Model A). `charge` is the live depleting pool, `armour` the per-face
+ * CAPACITY (no longer subtracted from damage). A hit soaks the pool down to 0;
+ * the overflow reaches hull. Integer-only (#104). This SUPERSEDES the old
+ * "verbatim parity with the 1-D engine" contract — the 1-D `crate::geometry`
+ * is the dead-for-live path and keeps the OLD charge-eats-hit / armour-subtract
+ * behavior, so parity is intentionally false now.
  * ====================================================================== */
 
 #[test]
-fn absorb_shield_matches_1d_over_a_grid_of_states() {
-    // Same (armour, charge, dmg) → same returned damage AND same post-state in
-    // both engines, across a representative cross-product.
-    for armour in [0, 1, 2, 5] {
-        for charge in [0, 1, 3] {
-            for dmg in [-3, 0, 1, 2, 5, 10] {
-                let mut f2 = ShieldFace { armour, charge };
-                let mut f1 = ShieldFace { armour, charge };
-                let r2 = absorb_shield(&mut f2, dmg);
-                let r1 = g1::absorb_shield(&mut f1, dmg);
-                assert_eq!(r2, r1, "through-damage parity (armour={armour},charge={charge},dmg={dmg})");
-                assert_eq!(f2, f1, "post-state parity (armour={armour},charge={charge},dmg={dmg})");
-            }
-        }
-    }
-}
-
-#[test]
-fn absorb_shield_charge_negates_then_is_consumed() {
-    // Pin the behavior directly too (not only via parity), so a matching bug in
-    // BOTH engines can't hide behind an equal-to-each-other check.
+fn absorb_shield_pool_soaks_down_to_zero_overflow_to_hull() {
+    // Pool 1 vs a 10 hit: soaks 1, 9 overflows to hull; pool now 0.
     let mut face = ShieldFace { armour: 5, charge: 1 };
-    assert_eq!(absorb_shield(&mut face, 10), 0, "charge eats the whole hit");
-    assert_eq!(face.charge, 0, "charge consumed");
-    assert_eq!(face.armour, 5, "armour untouched");
+    assert_eq!(absorb_shield(&mut face, 10), 9, "overflow past the pool reaches hull");
+    assert_eq!(face.charge, 0, "pool drained");
+    assert_eq!(face.armour, 5, "capacity untouched");
 }
 
 #[test]
-fn absorb_shield_armour_subtracts_and_persists_when_no_charge() {
+fn absorb_shield_empty_pool_passes_full_to_hull() {
+    // `armour`/capacity no longer subtracts: an empty pool lets the full hit
+    // through (the OLD model would have done 5 - 2 = 3).
     let mut face = ShieldFace { armour: 2, charge: 0 };
-    assert_eq!(absorb_shield(&mut face, 5), 3, "5 − 2 armour");
-    assert_eq!(face.armour, 2, "armour is permanent");
+    assert_eq!(absorb_shield(&mut face, 5), 5, "no flat-armour subtraction");
+    assert_eq!(face.armour, 2, "capacity untouched by a hit");
 }
 
 #[test]
-fn absorb_shield_ignores_nonpositive_and_keeps_charge() {
+fn absorb_shield_partial_soak_and_ignores_nonpositive() {
+    // Pool 3 vs a 2 hit: fully soaked, pool drops to 1, 0 reaches hull.
     let mut face = ShieldFace { armour: 5, charge: 3 };
-    assert_eq!(absorb_shield(&mut face, 0), 0);
-    assert_eq!(absorb_shield(&mut face, -4), 0);
-    assert_eq!(face.charge, 3, "no charge spent on a non-hit");
+    assert_eq!(absorb_shield(&mut face, 2), 0, "small hit fully absorbed");
+    assert_eq!(face.charge, 1, "pool spent by exactly the hit");
+    // A non-positive hit consumes nothing.
+    let mut other = ShieldFace { armour: 5, charge: 3 };
+    assert_eq!(absorb_shield(&mut other, 0), 0);
+    assert_eq!(absorb_shield(&mut other, -4), 0);
+    assert_eq!(other.charge, 3, "no pool spent on a non-hit");
 }
 
 #[test]
-fn default_shield_profile_equals_the_1d_frigate_profile() {
-    // The verbatim port must produce the identical starting Frigate hull.
-    let p2 = default_shield_profile();
-    let p1 = g1::default_shield_profile();
-    for zone in ALL_ZONES {
-        assert_eq!(p2.face(zone), p1.face(zone), "{zone:?} face parity");
-    }
-    // And the documented shape: strong bow 2, weak stern 0, medium flanks 1.
-    assert_eq!(*p2.face(HullZone::Bow), ShieldFace { armour: 2, charge: 0 });
-    assert_eq!(*p2.face(HullZone::Stern), ShieldFace { armour: 0, charge: 0 });
-    assert_eq!(*p2.face(HullZone::Port), ShieldFace { armour: 1, charge: 0 });
-    assert_eq!(*p2.face(HullZone::Starboard), ShieldFace { armour: 1, charge: 0 });
+fn default_shield_profile_is_the_frigate_pool() {
+    // #103 Model A caps (Bruce-tunable): bow 4 / flanks 3 / stern 1, pools start
+    // FULL (charge == capacity == `armour`).
+    let p = default_shield_profile();
+    assert_eq!(*p.face(HullZone::Bow), ShieldFace { armour: 4, charge: 4 });
+    assert_eq!(*p.face(HullZone::Stern), ShieldFace { armour: 1, charge: 1 });
+    assert_eq!(*p.face(HullZone::Port), ShieldFace { armour: 3, charge: 3 });
+    assert_eq!(*p.face(HullZone::Starboard), ShieldFace { armour: 3, charge: 3 });
 }
 
 proptest! {
-    /// Full parity over arbitrary states: for ANY (armour, charge, dmg), the 2-D
-    /// and 1-D `absorb_shield` return the same value and leave the same state.
-    /// This is the strongest form of the "kept verbatim" claim.
+    /// The pool model holds over arbitrary states: returned overflow = max(0,
+    /// dmg - soak) where soak = min(dmg, charge.max(0)) for a positive hit, and
+    /// the pool drops by exactly that soak. Never returns negative, never spends
+    /// on a non-hit, never touches capacity.
     #[test]
-    fn absorb_shield_is_byte_for_byte_1d_for_any_state(
-        armour in -2i32..8, charge in 0i32..5, dmg in -5i32..15
+    fn absorb_shield_pool_overflow_for_any_state(
+        capacity in 0i32..8, charge in 0i32..8, dmg in -5i32..15
     ) {
-        let mut f2 = ShieldFace { armour, charge };
-        let mut f1 = ShieldFace { armour, charge };
-        let r2 = absorb_shield(&mut f2, dmg);
-        let r1 = g1::absorb_shield(&mut f1, dmg);
-        prop_assert_eq!(r2, r1, "return parity");
-        prop_assert_eq!(f2.armour, f1.armour, "armour parity");
-        prop_assert_eq!(f2.charge, f1.charge, "charge parity");
+        let mut face = ShieldFace { armour: capacity, charge };
+        let overflow = absorb_shield(&mut face, dmg);
+        if dmg <= 0 {
+            prop_assert_eq!(overflow, 0, "non-positive hit -> 0");
+            prop_assert_eq!(face.charge, charge, "non-positive hit spends nothing");
+        } else {
+            let soak = dmg.min(charge.max(0));
+            prop_assert_eq!(overflow, (dmg - soak).max(0), "overflow = dmg - soak");
+            prop_assert_eq!(face.charge, charge - soak, "pool drops by soak");
+        }
+        prop_assert_eq!(face.armour, capacity, "capacity never changes");
+        prop_assert!(overflow >= 0, "never negative");
     }
 }

@@ -350,11 +350,16 @@ fn select_hull(def: &EnemyDef, _patrol_tier: u8) -> i32 {
 /// future tuning pass can diverge enemy vs player armour without touching
 /// the player path.
 fn enemy_shield_default() -> ShieldProfile {
+    // #103 Model A: `armour` is the per-face shield CAPACITY, `charge` the live
+    // pool (start FULL). Light enemy default: cap 2 bow + flanks, soft stern 0
+    // (the flank-me-from-behind invariant — a stern hit goes straight to hull).
+    // Bruce-tunable.
+    let face = |cap: i32| ShieldFace { armour: cap, charge: cap };
     ShieldProfile {
-        bow: ShieldFace { armour: 1, charge: 0 },
-        stern: ShieldFace { armour: 0, charge: 0 },
-        port: ShieldFace { armour: 1, charge: 0 },
-        starboard: ShieldFace { armour: 1, charge: 0 },
+        bow: face(2),
+        stern: face(0),
+        port: face(2),
+        starboard: face(2),
     }
 }
 

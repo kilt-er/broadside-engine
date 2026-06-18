@@ -38,6 +38,14 @@ use crate::types::{
     Status, StatusKind, Targeting, TargetingPattern, WeaponArchetype,
 };
 
+/// Shield-pool regen per turn (#103 Model A, Bruce-tunable). Each face's `charge`
+/// pool refills by this much toward its capacity (`armour`, repurposed) at the
+/// end of a turn — but ONLY on faces that did NOT take fire this round (the
+/// under-fire pause in [`end_of_turn`]; "stop getting shot to recover"). So
+/// sustained fire on one face keeps it pinned and the target eventually dies,
+/// while a disengaged ship recharges. Bruce tunes this rate.
+const SHIELD_REGEN_PER_TURN: i32 = 1;
+
 /* =============================================================================
  * Content trait — the resolver's view of the catalog + spawn table.
  * ========================================================================== */
@@ -900,6 +908,26 @@ pub fn end_of_turn(board: &mut Board, content: &dyn Content) {
     // by index without holding a borrow on `board.cells`.
     let cells: Vec<usize> = ships_of(board).iter().map(|s| s.cell).collect();
 
+    // PROBE(option B): faces that took FIRE this round do NOT regen (under-fire
+    // pause). Read it from `board.fire_events` (accumulated all round, cleared at
+    // resolve_round start) BEFORE the mutate loop. Map each hit to its HullZone
+    // via the SAME single-source the damage path uses (geometry2d::facing_zone of
+    // direction_to(target,attacker) against the target's facing).
+    let mut under_fire: std::collections::HashSet<(usize, crate::types::HullZone)> =
+        std::collections::HashSet::new();
+    for ev in &board.fire_events {
+        if !ev.hit {
+            continue;
+        }
+        let tcell = ev.to_pos.to_index();
+        if let Some(target) = board.cells.get(tcell).and_then(|c| c.as_ref()) {
+            if let Some(incoming_from) = crate::geometry2d::direction_to(ev.to_pos, ev.from_pos) {
+                let zone = crate::geometry2d::facing_zone(target.facing, incoming_from);
+                under_fire.insert((tcell, zone));
+            }
+        }
+    }
+
     for c in &cells {
         if let Some(s) = board.cells[*c].as_mut() {
             // Decrement every positive cooldown.
@@ -912,6 +940,26 @@ pub fn end_of_turn(board: &mut Board, content: &dyn Content) {
             s.heat = (s.heat - 1).max(0);
             if s.heat < s.heat_max {
                 s.locked_out = false;
+            }
+            // Shield regen (#103 Model A, option B): each face's pool (`charge`)
+            // refills by SHIELD_REGEN_PER_TURN toward its capacity (`armour`,
+            // repurposed) — but ONLY if that face did NOT take fire this round
+            // (under-fire pause). Sustained fire on a face keeps it pinned ->
+            // ships die -> campaign terminates; quiet faces recover. Integer (#104).
+            // Zone order MUST match `faces_mut()`: [bow, stern, port, starboard].
+            let zones = [
+                crate::types::HullZone::Bow,
+                crate::types::HullZone::Stern,
+                crate::types::HullZone::Port,
+                crate::types::HullZone::Starboard,
+            ];
+            for (zone, face) in zones.iter().zip(s.shield_profile.faces_mut()) {
+                if under_fire.contains(&(*c, *zone)) {
+                    continue;
+                }
+                if face.charge < face.armour {
+                    face.charge = (face.charge + SHIELD_REGEN_PER_TURN).min(face.armour);
+                }
             }
         }
         tick_statuses(*c, board, content);
@@ -1399,7 +1447,11 @@ pub fn apply_damage_2d(
             None => crate::types::HullZone::Bow,
         };
         let face = target.shield_profile.face_mut(zone);
-        absorb_shield(face, dmg)
+        // #103 Model A: the LIVE 2-D path uses the geometry2d POOL soak (charge
+        // depletes, overflow -> hull), NOT the 1-D `geometry::absorb_shield`
+        // (charge-eats-whole-hit + flat-armour-subtract) that the unqualified
+        // import at the top still binds for the dead 1-D `apply_damage`.
+        crate::geometry2d::absorb_shield(face, dmg)
     } else {
         return;
     };
@@ -2924,6 +2976,10 @@ fn detect_chain(board: &Board) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // The shared 1-D-legacy helpers (`make_ship`, the dead `apply_damage`
+    // fixtures) use the 1-D profile shape ({armour, charge:0}); the 2-D
+    // pool-soak tests that need a CHARGED pool build it explicitly (see
+    // `pooled_shield_profile` below).
     use crate::geometry::default_shield_profile;
     // `Arc` is imported here (not at module top) because every non-doc use of
     // it lives in this test module — importing it at the top would be an
@@ -2985,6 +3041,14 @@ mod tests {
             traits: Vec::new(),
             klass: None,
         }
+    }
+
+    /// The #103 Model A 2-D SHIELD POOL profile (bow {4,4} / flanks {3,3} /
+    /// stern {1,1}, pools start FULL). Used by the 2-D tests that exercise the
+    /// live pool-soak path (`crate::geometry2d::absorb_shield`); the 1-D-legacy
+    /// `make_ship`/`apply_damage` fixtures keep the old `default_shield_profile`.
+    fn pooled_shield_profile() -> ShieldProfile {
+        crate::geometry2d::default_shield_profile()
     }
 
     fn pulse_laser() -> Action {
@@ -4822,11 +4886,15 @@ mod tests {
     fn mod_targeting_laser_applies_target_lock_even_through_full_shield() {
         let mut p = armed_ship_2d("p", Faction::Player, crate::grid::Pos::new(2, 1), 5, crate::grid::Facing::Bow(crate::grid::Dir4::S), Arc::Forward, "tl", default_shield_profile());
         p.queue = vec!["tl".into()];
+        // #103 Model A: a FULL shield pool on every face (charge 99) soaks the
+        // whole hit on whichever zone the southward shot presents — so the hull
+        // damage is fully absorbed and we can prove the targetLock rider still
+        // lands. (`armour` is the pool CAPACITY now; `charge` is what absorbs.)
         let armoured = ShieldProfile {
-            bow: crate::types::ShieldFace { armour: 99, charge: 0 },
-            stern: crate::types::ShieldFace { armour: 99, charge: 0 },
-            port: crate::types::ShieldFace { armour: 99, charge: 0 },
-            starboard: crate::types::ShieldFace { armour: 99, charge: 0 },
+            bow: crate::types::ShieldFace { armour: 99, charge: 99 },
+            stern: crate::types::ShieldFace { armour: 99, charge: 99 },
+            port: crate::types::ShieldFace { armour: 99, charge: 99 },
+            starboard: crate::types::ShieldFace { armour: 99, charge: 99 },
         };
         let t = armed_ship_2d("t", Faction::Enemy, crate::grid::Pos::new(2, 2), 20, crate::grid::Facing::Bow(crate::grid::Dir4::N), Arc::Forward, "tl", armoured);
         let mut board = armed_board_2d(vec![p, t]);
@@ -5551,8 +5619,9 @@ mod tests {
         // incoming shot) -> the bow armour soaks it. Same ship, same payload,
         // but the strong bow now absorbs where a stern would not.
         let mut tgt = ship_2d("e", Faction::Enemy, Pos::new(2, 1), Facing::Bow(Dir4::W), Arc::Turret);
-        // default_shield_profile: bow armour 2, stern 0. Shot from W hits bow.
-        tgt.shield_profile = default_shield_profile();
+        // #103 Model A pool profile: bow pool {4,4}. Shot from W hits the bow ->
+        // its full pool soaks the falloff-2 torpedo, 0 reaches hull.
+        tgt.shield_profile = pooled_shield_profile();
         let hull_before = tgt.hull;
         let mut board = board_2d(vec![tgt]);
         board.ordnance.push(proj_2d(
@@ -5564,9 +5633,9 @@ mod tests {
             vec![Effect::DAMAGE { amount: 2, band_falloff: None }],
         ));
         advance_projectile_2d("t", &mut board, &NoContent);
-        // incoming_from = opposite(E) = W; facing Bow(W) -> bow zone, armour 2.
-        // floor(2 * 1.0) = 2 raw, max(0, 2 - 2) = 0 lands. Bow soaks it.
-        assert_eq!(board.ship_at(Pos::new(2, 1)).unwrap().hull, hull_before, "bow soaked the head-on shot");
+        // incoming_from = opposite(E) = W; facing Bow(W) -> bow zone, pool {4,4}.
+        // falloff at Adjacent = 2 raw; the bow pool soaks all 2, 0 reaches hull.
+        assert_eq!(board.ship_at(Pos::new(2, 1)).unwrap().hull, hull_before, "bow pool soaked the head-on shot");
     }
 
     #[test]

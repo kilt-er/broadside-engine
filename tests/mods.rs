@@ -218,7 +218,9 @@ fn m1_flak_splash_is_shield_mediated() {
     let a = ship("a", Faction::Player, 1, 5, Facing::Bow(Dir4::E));
     let t = ship("t", Faction::Enemy, 2, 5, Facing::Bow(Dir4::W));
     let mut foe = ship("foe", Faction::Enemy, 3, 5, Facing::Bow(Dir4::W));
-    foe.shield_profile.bow = ShieldFace { armour: 1, charge: 0 };
+    // #103 Model A: a bow shield POOL of 1 (charge 1) soaks the 1-point flak
+    // splash entirely (the splash routes through absorb_shield, not raw hull).
+    foe.shield_profile.bow = ShieldFace { armour: 1, charge: 1 };
     let mut b = board_2d(vec![a, t, foe]);
     let content = ModContent::new(vec![damage_action("w", 4, Some("flak_burst"), 0, 1)]);
 
@@ -228,7 +230,7 @@ fn m1_flak_splash_is_shield_mediated() {
     assert_eq!(
         hull_at(&b, 3),
         5,
-        "foe bow armour 1 absorbs the 1 flak splash entirely — splash routes through absorb_shield, not raw hull",
+        "foe bow pool 1 soaks the 1 flak splash entirely — splash routes through absorb_shield, not raw hull",
     );
 }
 
@@ -293,13 +295,14 @@ fn m3_incendiary_rider_lands_even_when_shield_eats_all_hull_damage() {
     use broadside_engine::grid::{Dir4, Facing};
     let a = ship("a", Faction::Player, 0, 5, Facing::Bow(Dir4::E));
     let mut t = ship("t", Faction::Enemy, 1, 5, Facing::Bow(Dir4::W));
-    t.shield_profile.bow = ShieldFace { armour: 5, charge: 0 };
+    // #103 Model A: a FULL bow pool (charge 5) soaks the 2 raw entirely.
+    t.shield_profile.bow = ShieldFace { armour: 5, charge: 5 };
     let mut b = board_2d(vec![a, t]);
     let content = ModContent::new(vec![damage_action("w", 2, Some("incendiary"), 0, 1)]);
 
     apply_instant_action("a", content.action("w").unwrap(), &mut b, &content);
 
-    assert_eq!(hull_at(&b, 1), 5, "bow armour 5 fully absorbs the 2 raw — no hull lost");
+    assert_eq!(hull_at(&b, 1), 5, "full bow pool (5) soaks the 2 raw — no hull lost");
     assert!(
         has_status(&b, 1, StatusKind::HullBreach),
         "incendiary rider lands on CONTACT regardless of shield absorption",
@@ -313,13 +316,14 @@ fn m3_emp_charge_rider_lands_through_shield() {
     use broadside_engine::grid::{Dir4, Facing};
     let a = ship("a", Faction::Player, 0, 5, Facing::Bow(Dir4::E));
     let mut t = ship("t", Faction::Enemy, 1, 5, Facing::Bow(Dir4::W));
-    t.shield_profile.bow = ShieldFace { armour: 5, charge: 0 };
+    // #103 Model A: a FULL bow pool (charge 5) soaks the 2 raw entirely.
+    t.shield_profile.bow = ShieldFace { armour: 5, charge: 5 };
     let mut b = board_2d(vec![a, t]);
     let content = ModContent::new(vec![damage_action("w", 2, Some("emp_charge"), 0, 1)]);
 
     apply_instant_action("a", content.action("w").unwrap(), &mut b, &content);
 
-    assert_eq!(hull_at(&b, 1), 5, "shield absorbs the hull damage");
+    assert_eq!(hull_at(&b, 1), 5, "full bow pool soaks the hull damage");
     assert!(
         has_status(&b, 1, StatusKind::SystemsOffline),
         "emp_charge applies SystemsOffline on contact",

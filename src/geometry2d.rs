@@ -33,9 +33,10 @@
 //! *exact-octant* direction), neighbours. This module adds the resolver-owned
 //! pieces grid.rs deliberately left out (see grid.rs's note on `from_to`):
 //!
-//! - [`band_falloff`] — the per-band damage multiplier `[1.0, 0.6, 0.3]`
-//!   (blueprint decision #6); grid.rs names the [`Range`] buckets, the falloff
-//!   table is the resolver's.
+//! - [`band_falloff`] — the per-band damage penalty (#104 INTEGER falloff:
+//!   Adjacent -0, Near -1, Far -2, replacing the old `[1.0, 0.6, 0.3]` float
+//!   curve from blueprint decision #6); grid.rs names the [`Range`] buckets, the
+//!   falloff table is the resolver's.
 //! - [`in_band`] — is a target inside a weapon's allowed band set.
 //! - [`direction_to`] — the **magnitude-aware** nearest-of-8 snap of an
 //!   arbitrary vector (grid.rs's `from_to` only handles the exact-octant case
@@ -43,9 +44,11 @@
 //! - [`arc_bears`] / [`bears`] — the 2-D firing-arc gate (cardinal-exact).
 //! - [`facing_zone`] — the correctness-critical 2-D quadrant table mapping an
 //!   incoming direction to the [`HullZone`] that eats the hit.
-//! - [`absorb_shield`] / [`default_shield_profile`] — **kept verbatim** from the
-//!   1-D engine; they are frame-agnostic (they never touched the lane), so the
-//!   port is a literal copy.
+//! - [`absorb_shield`] / [`default_shield_profile`] — the per-face SHIELD model
+//!   (#103 Model A): `charge` is the live depleting pool, `armour` the per-face
+//!   capacity; a hit soaks the pool and overflow reaches hull. Frame-agnostic
+//!   (they never touched the lane); the pool regenerates per-turn in
+//!   [`crate::resolve::end_of_turn`].
 //!
 //! [`opposite`], [`distance`], [`range_band`] are re-exposed here as thin
 //! wrappers that delegate to `grid.rs` so resolver code can import its whole
@@ -145,10 +148,16 @@ fn band_index(b: Range) -> usize {
 /// Adjacent) are enforced separately by [`in_band`] at targeting time; this
 /// function only scales damage once the shot is legal.
 pub fn band_falloff(raw: i32, actual: Range) -> i32 {
-    let factors = [1.0_f64, 0.6, 0.3];
-    let factor = factors[band_index(actual)];
-    let scaled = (raw as f64 * factor).floor() as i32;
-    scaled.max(0)
+    // #104: INTEGER-ONLY falloff — no float anywhere in the damage math (Bruce
+    // ruling). A flat integer PENALTY per band (further = bigger penalty)
+    // replaces the old `raw * [1.0,0.6,0.3]` float curve: Adjacent -0, Near -1,
+    // Far -2. Floored at >=1 because reaching here means the shot is already a
+    // LEGAL in-band hit (the over-extension deadzone gates ILLEGAL shots upstream
+    // via `in_band`), so a legal shot never whiffs to 0 from falloff alone — this
+    // also fixes #44 (a Far-only railgun no longer floors to 1 from x0.3; raw 6
+    // -> 4). The penalties are Bruce-tunable constants.
+    let penalty = [0, 1, 2][band_index(actual)];
+    (raw - penalty).max(1).min(raw.max(0))
 }
 
 /// Is `target` inside this weapon's `allowed` band set at the current
@@ -360,22 +369,31 @@ pub fn absorb_shield(face: &mut ShieldFace, dmg: i32) -> i32 {
     if dmg <= 0 {
         return 0;
     }
-    if face.charge > 0 {
-        face.charge -= 1;
-        return 0;
-    }
-    (dmg - face.armour).max(0)
+    // Combat overhaul (#103/#104, Model A): `charge` is the live DEPLETING shield
+    // POOL for this face; `armour` is repurposed as the pool's CAPACITY (set
+    // per-face in default_shield_profile / catalog — bow-high, stern-0). The pool
+    // soaks the hit down to 0; the OVERFLOW reaches hull. All integer (#104 — no
+    // float in the damage path). Flat `armour` subtraction is GONE; the pool
+    // regenerates over time in `crate::resolve::end_of_turn`.
+    let soak = dmg.min(face.charge.max(0));
+    face.charge -= soak;
+    (dmg - soak).max(0)
 }
 
-/// The starting Frigate's hull: strong bow (2), weak stern (0), medium flanks
-/// (1). **Kept verbatim** from the 1-D `geometry::default_shield_profile` /
-/// `defaultShieldProfile`; the [`HullZone`] set is unchanged by the 2-D move.
+/// The starting Frigate's per-face SHIELD profile (#103 Model A). `armour` is now
+/// the pool CAPACITY, `charge` the live pool (start FULL = capacity). Proposed
+/// caps (Bruce-tunable): strong bow 4, medium flanks 3, soft stern 1 — the
+/// directional gradient the design rewards flanking against (a bow-on player
+/// tanks chip fire on the bow pool; the stern cracks fast). Regen amount/cooldown
+/// are global consts in `crate::resolve` (#103 Model A: per-face regen is a later
+/// refinement).
 pub fn default_shield_profile() -> ShieldProfile {
+    let face = |cap: i32| ShieldFace { armour: cap, charge: cap };
     ShieldProfile {
-        bow: ShieldFace { armour: 2, charge: 0 },
-        stern: ShieldFace { armour: 0, charge: 0 },
-        port: ShieldFace { armour: 1, charge: 0 },
-        starboard: ShieldFace { armour: 1, charge: 0 },
+        bow: face(4),
+        stern: face(1),
+        port: face(3),
+        starboard: face(3),
     }
 }
 
@@ -457,22 +475,26 @@ mod tests {
     /* ---- range bands & falloff (decision #6) ---- */
 
     #[test]
-    fn band_falloff_table_is_one_point_six_point_three() {
-        assert_eq!(band_falloff(10, Range::Adjacent), 10); // ×1.0
-        assert_eq!(band_falloff(10, Range::Near), 6); //      ×0.6
-        assert_eq!(band_falloff(10, Range::Far), 3); //       ×0.3
+    fn band_falloff_is_integer_penalty_per_band() {
+        // #104: INTEGER penalty per band (no float): Adjacent -0, Near -1, Far -2.
+        assert_eq!(band_falloff(10, Range::Adjacent), 10); // -0
+        assert_eq!(band_falloff(10, Range::Near), 9); //       -1
+        assert_eq!(band_falloff(10, Range::Far), 8); //        -2
+        assert_eq!(band_falloff(4, Range::Near), 3);
+        assert_eq!(band_falloff(4, Range::Far), 2);
+        // #44 fix: a raw-6 Far weapon keeps 4 (was floor(6*0.3)=1).
+        assert_eq!(band_falloff(6, Range::Far), 4);
     }
 
     #[test]
-    fn band_falloff_floors_to_int_and_clamps_negatives() {
-        // floor(7 * 0.6) = floor(4.2) = 4
-        assert_eq!(band_falloff(7, Range::Near), 4);
-        // floor(7 * 0.3) = floor(2.1) = 2
-        assert_eq!(band_falloff(7, Range::Far), 2);
-        // negative raw clamps to 0
-        assert_eq!(band_falloff(-5, Range::Adjacent), 0);
-        // zero stays zero
+    fn band_falloff_floors_legal_shot_at_one_and_keeps_zero_zero() {
+        // A legal in-band shot never whiffs to 0 from falloff alone (>=1 floor):
+        // raw 1 at Far -> (1-2).max(1) = 1, not -1.
+        assert_eq!(band_falloff(1, Range::Far), 1);
+        assert_eq!(band_falloff(2, Range::Far), 1); // (2-2).max(1) = 1
+        // But 0-raw / negative stays 0 (no phantom damage): min(raw.max(0)).
         assert_eq!(band_falloff(0, Range::Far), 0);
+        assert_eq!(band_falloff(-5, Range::Adjacent), 0);
     }
 
     #[test]
@@ -702,35 +724,44 @@ mod tests {
 
     /* ---- shield absorption (verbatim port) ---- */
 
+    // #103 Model A: `charge` is the DEPLETING pool, soaked down to 0 with
+    // overflow -> hull; `armour` is the (unused-in-absorb) capacity. Integer-only.
     #[test]
-    fn absorb_shield_charge_negates_and_decrements() {
+    fn absorb_shield_pool_soaks_down_to_zero_overflow_to_hull() {
+        // Pool 1 vs a 10 hit: soaks 1, 9 overflows to hull; pool now 0.
         let mut face = ShieldFace { armour: 5, charge: 1 };
-        assert_eq!(absorb_shield(&mut face, 10), 0);
+        assert_eq!(absorb_shield(&mut face, 10), 9);
         assert_eq!(face.charge, 0);
     }
 
     #[test]
-    fn absorb_shield_falls_back_to_armour() {
+    fn absorb_shield_empty_pool_passes_full_to_hull() {
+        // Empty pool (armour/capacity no longer subtracts): full dmg reaches hull.
         let mut face = ShieldFace { armour: 2, charge: 0 };
-        assert_eq!(absorb_shield(&mut face, 5), 3);
-        assert_eq!(face.armour, 2); // permanent, unchanged
+        assert_eq!(absorb_shield(&mut face, 5), 5);
+        assert_eq!(face.armour, 2); // capacity untouched by a hit
     }
 
     #[test]
-    fn absorb_shield_clamps_and_ignores_nonpositive() {
-        let mut face = ShieldFace { armour: 5, charge: 0 };
-        assert_eq!(absorb_shield(&mut face, 2), 0); // armour > dmg
-        let mut charged = ShieldFace { armour: 5, charge: 3 };
-        assert_eq!(absorb_shield(&mut charged, 0), 0);
-        assert_eq!(charged.charge, 3); // not consumed on a no-op hit
+    fn absorb_shield_partial_soak_and_ignores_nonpositive() {
+        // Pool 3 vs a 2 hit: fully soaked, pool drops to 1, 0 to hull.
+        let mut face = ShieldFace { armour: 5, charge: 3 };
+        assert_eq!(absorb_shield(&mut face, 2), 0);
+        assert_eq!(face.charge, 1);
+        // No-op hit consumes nothing.
+        let mut other = ShieldFace { armour: 5, charge: 3 };
+        assert_eq!(absorb_shield(&mut other, 0), 0);
+        assert_eq!(other.charge, 3);
     }
 
     #[test]
-    fn default_shield_profile_matches_the_frigate() {
+    fn default_shield_profile_is_the_frigate_pool() {
+        // #103 Model A caps (Bruce-tunable): bow 4 / flanks 3 / stern 1, pools
+        // start FULL (charge == capacity == `armour`).
         let p = default_shield_profile();
-        assert_eq!(*p.face(HullZone::Bow), ShieldFace { armour: 2, charge: 0 });
-        assert_eq!(*p.face(HullZone::Stern), ShieldFace { armour: 0, charge: 0 });
-        assert_eq!(*p.face(HullZone::Port), ShieldFace { armour: 1, charge: 0 });
-        assert_eq!(*p.face(HullZone::Starboard), ShieldFace { armour: 1, charge: 0 });
+        assert_eq!(*p.face(HullZone::Bow), ShieldFace { armour: 4, charge: 4 });
+        assert_eq!(*p.face(HullZone::Stern), ShieldFace { armour: 1, charge: 1 });
+        assert_eq!(*p.face(HullZone::Port), ShieldFace { armour: 3, charge: 3 });
+        assert_eq!(*p.face(HullZone::Starboard), ShieldFace { armour: 3, charge: 3 });
     }
 }

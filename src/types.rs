@@ -498,6 +498,12 @@ impl ShieldProfile {
             HullZone::Starboard => &mut self.starboard,
         }
     }
+
+    /// Mutable refs to all four faces (any order) — for the per-turn shield-regen
+    /// pass (#103 Model A) in `crate::resolve::end_of_turn`.
+    pub fn faces_mut(&mut self) -> [&mut ShieldFace; 4] {
+        [&mut self.bow, &mut self.stern, &mut self.port, &mut self.starboard]
+    }
 }
 
 impl std::ops::Index<HullZone> for ShieldProfile {

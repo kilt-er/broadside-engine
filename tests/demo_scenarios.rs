@@ -22,7 +22,7 @@ use broadside_engine::grid::{Dir4, Facing, Pos};
 use broadside_engine::resolve::{resolve_round, Content};
 use broadside_engine::types::{
     Action, ActionCost, Arc, Board, Effect, EventBus, Faction, Hook, HookContext, Mount,
-    Orientation, Projectile, RangeBand, ShieldFace, ShieldProfile, Ship, Targeting,
+    Orientation, Projectile, RangeBand, Ship, Targeting,
     TargetingPattern, WeaponArchetype,
 };
 use std::cell::RefCell;
@@ -55,14 +55,10 @@ fn ship(id: &str, faction: Faction, pos: Pos, hull: i32, facing: Facing) -> Ship
         heat: 0,
         heat_max: 6,
         locked_out: false,
-        shield_profile: ShieldProfile {
-            // The canonical Frigate hull: strong bow, weak stern,
-            // medium flanks. Demo.ts uses `defaultShieldProfile()`.
-            bow: ShieldFace { armour: 2, charge: 0 },
-            stern: ShieldFace { armour: 0, charge: 0 },
-            port: ShieldFace { armour: 1, charge: 0 },
-            starboard: ShieldFace { armour: 1, charge: 0 },
-        },
+        // The canonical Frigate per-face SHIELD pool (#103 Model A): strong bow
+        // (cap 4), soft stern (cap 1), medium flanks (cap 3), pools start FULL.
+        // `charge` is the live depleting pool; `armour` the capacity.
+        shield_profile: broadside_engine::geometry2d::default_shield_profile(),
         mounts: vec![Mount {
             id: "m1".into(),
             arc: Arc::Forward,
@@ -191,9 +187,10 @@ fn demo_board(scout_facing: Facing) -> Board {
  * Mirrors demo.ts:64-79.
  * ====================================================================== */
 
-// 2-D port (#22): scout at (2,1) with bow N so its weak STERN faces the player
-// firing from the south at (2,3). Distance 2 = Near -> 2-D falloff factor 0.6 ->
-// floor(4 * 0.6) = 2. Stern armour 0 -> 2 lands. Scout 5 -> 3.
+// 2-D port (#22) + #103/#104 shield-pool model: scout at (2,1) with bow N so its
+// weak STERN faces the player firing from the south at (2,3). Distance 2 = Near
+// -> INTEGER falloff 4 - 1 = 3. The stern pool (cap 1, starts full) soaks 1; the
+// remaining 2 overflows to hull. Scout 5 -> 3.
 #[test]
 fn scenario_a_weak_stern_takes_post_falloff_damage() {
     let mut board = demo_board(Facing::Bow(Dir4::N));
@@ -205,7 +202,7 @@ fn scenario_a_weak_stern_takes_post_falloff_damage() {
     // Scout's hull dropped by exactly the post-falloff, post-armour damage.
     let scout_idx = Pos::new(2, 1).to_index();
     let scout_hull = board.cells[scout_idx].as_ref().expect("scout survives").hull;
-    assert_eq!(scout_hull, 3, "weak stern (armour 0) bleeds the full post-falloff 2 damage");
+    assert_eq!(scout_hull, 3, "soft stern pool (cap 1) soaks 1 of the falloff-3 hit; 2 overflows to hull");
 
     // Exactly one OnDamageTaken emit for the scout (cell index 7) with amount 2.
     assert_eq!(
@@ -246,12 +243,13 @@ fn scenario_a_weak_stern_takes_post_falloff_damage() {
 
 #[test]
 fn scenario_b_strong_bow_soaks_to_zero() {
-    // 2-D port (#22): scout at (2,1) with bow S so its strong BOW faces the
-    // player firing from the south. Distance 2 = Near -> post-falloff 2; bow
-    // armour 2 -> max(0, 2 - 2) = 0 lands. Scout stays 5. NOTE: pre-migration
-    // this test passed VACUOUSLY (the 1-D fixture stacked ships at (0,0) so no
-    // shot connected and the scout was untouched for the wrong reason); now the
-    // shot genuinely lands and the bow armour genuinely soaks it.
+    // 2-D port (#22) + #103/#104 shield-pool model: scout at (2,1) with bow S so
+    // its strong BOW faces the player firing from the south. Distance 2 = Near ->
+    // INTEGER falloff 4 - 1 = 3; the bow pool (cap 4, starts full) soaks all 3,
+    // so 0 reaches hull. Scout stays 5. NOTE: pre-migration this test passed
+    // VACUOUSLY (the 1-D fixture stacked ships at (0,0) so no shot connected and
+    // the scout was untouched for the wrong reason); now the shot genuinely lands
+    // and the bow shield pool genuinely soaks it.
     let mut board = demo_board(Facing::Bow(Dir4::S));
     let (damage, lethal) = wire_bus(&mut board);
     let content = DemoContent(pulse_laser());
@@ -259,7 +257,7 @@ fn scenario_b_strong_bow_soaks_to_zero() {
     resolve_round(&mut board, &content);
 
     let scout_hull = board.cells[Pos::new(2, 1).to_index()].as_ref().expect("scout survives").hull;
-    assert_eq!(scout_hull, 5, "strong bow (armour 2) soaks the post-falloff 2 damage to zero");
+    assert_eq!(scout_hull, 5, "strong bow pool (cap 4) soaks the falloff-3 hit to zero");
 
     // Crucial: NO OnDamageTaken emit. resolve.rs:467 gates the emit on
     // `final_dmg > 0`, and the bow armour brings final_dmg to 0. A port
@@ -318,8 +316,8 @@ fn orientation_alone_changes_the_outcome() {
     assert_eq!(
         hull_b - hull_a,
         2,
-        "the bow armour absorbs exactly the post-falloff damage (2). \
-         A different delta would mean the falloff math or the armour \
-         arithmetic changed.",
+        "the bow shield pool absorbs more of the falloff hit than the soft \
+         stern (delta 2). A different delta would mean the falloff math or \
+         the shield-pool arithmetic changed.",
     );
 }
