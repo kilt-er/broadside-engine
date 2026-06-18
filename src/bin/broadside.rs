@@ -717,6 +717,9 @@ const TWEEN_DURATION_MS: u32 = 120;
 /// (#90 kill-burst) How long a ship-destruction burst stays on screen after the
 /// killing round. ~0.35s reads as a clear flash without lingering.
 const KILL_BURST_SECS: f32 = 0.35;
+/// (#101) Lifetime of a per-ship hull-drop flash on its lane bar. Short enough to
+/// read as a "pop" on the round it happened, long enough to catch the eye.
+const HULL_FLASH_SECS: f32 = 0.45;
 
 /// (#79) Per-ship "where + which way was this ship before the move, and when did
 /// the slide/turn begin?" anchor. Recorded by `App::record_tween_anchors` after
@@ -815,6 +818,14 @@ struct App {
     /// frame — this prev-vs-current diff is the renderer-side death signal (the 2-D
     /// analog of `vfx::CombatVfx`'s vanish detection).
     kill_bursts: Vec<(Pos, Instant)>,
+    /// (#101) Per-ship hull-DROP flash timers: ship id -> when its hull last fell.
+    /// Recorded on a combat resolve by diffing pre-vs-current hull (the 2-D analog
+    /// of the player's `hit_flash`, but for EVERY ship's lane hull bar). The redraw
+    /// fades each entry over `HULL_FLASH_SECS` and drives `hud::push_hull_flash_2d`
+    /// so even a 1-2 hull drop visibly pops on the enemy bar while damage balance
+    /// gets tuned (Bruce: "I don't see the enemy health bar dropping"). Pruned on
+    /// expiry; cleared on restart so a fresh board shows no stale flashes.
+    hull_flash: std::collections::HashMap<String, Instant>,
     /// Shared audio state. `None` if the `audio` feature is off OR the
     /// audio backend failed to open on startup (headless CI, missing
     /// driver). When present, the bus is re-installed on every
@@ -861,6 +872,7 @@ impl App {
             player_hull_prev: None,
             hit_flash: 0.0,
             kill_bursts: Vec::new(),
+            hull_flash: std::collections::HashMap::new(),
             #[cfg(feature = "audio")]
             audio: None,
         };
@@ -975,6 +987,7 @@ impl App {
         self.demo_state = DemoState::Playing;
         self.tween_anchors.clear();
         self.kill_bursts.clear(); // (#90) no stale bursts into the fresh board
+        self.hull_flash.clear(); // (#101) no stale damage flashes into the fresh board
         self.reinstall_audio();
     }
 
@@ -1314,6 +1327,16 @@ impl ApplicationHandler for App {
                 // may itself be mid-tween).
                 let now = Instant::now();
                 let prev_visual = self.snapshot_pos_facing();
+                // (#101) Pre-turn hull per ship id, so we can flash any ship whose
+                // hull DROPS this resolve (the bar damage-flash). Cheap clone of
+                // (id -> hull); diffed against the post-resolve board below.
+                let prev_hulls: std::collections::HashMap<String, i32> = self
+                    .board
+                    .cells
+                    .iter()
+                    .flatten()
+                    .map(|s| (s.id.clone(), s.hull))
+                    .collect();
                 let changed = apply_intent(intent, &mut self.board, &mut self.content, &render_example_board);
                 if is_restart {
                     self.restart_run();
@@ -1331,6 +1354,18 @@ impl ApplicationHandler for App {
                         if !self.board.cells.iter().flatten().any(|s| &s.id == id) {
                             if let Some(&(pos, _)) = prev_visual.get(id) {
                                 self.kill_bursts.push((pos, now));
+                            }
+                        }
+                    }
+                    // (#101) Any SURVIVING ship whose hull fell this resolve gets a
+                    // damage-flash on its lane bar (a destroyed ship already gets the
+                    // kill burst above, so skip ids no longer on the board). Drives
+                    // hud::push_hull_flash_2d in the overlay pass so even a 1-2 drop
+                    // pops — the legibility win while damage balance gets tuned.
+                    for ship in self.board.cells.iter().flatten() {
+                        if let Some(&prev_hull) = prev_hulls.get(&ship.id) {
+                            if ship.hull < prev_hull {
+                                self.hull_flash.insert(ship.id.clone(), now);
                             }
                         }
                     }
@@ -1450,6 +1485,26 @@ impl ApplicationHandler for App {
                 self.kill_bursts
                     .retain(|(_, t)| now.duration_since(*t).as_secs_f32() < KILL_BURST_SECS);
                 let kill_cells: Vec<Pos> = self.kill_bursts.iter().map(|(p, _)| *p).collect();
+                // (#101) Prune expired hull-drop flashes, then collect the live ones
+                // as (ship clone, intensity) BEFORE the gfx borrow (same pattern as
+                // kill_cells). Intensity fades 1->0 over HULL_FLASH_SECS. Cloning the
+                // few flashing ships keeps push_hull_flash_2d able to take &Ship
+                // without holding a board borrow across the gfx mutable borrow.
+                self.hull_flash
+                    .retain(|_, t| now.duration_since(*t).as_secs_f32() < HULL_FLASH_SECS);
+                let hull_flashes: Vec<(Ship, f32)> = self
+                    .board
+                    .cells
+                    .iter()
+                    .flatten()
+                    .filter_map(|s| {
+                        self.hull_flash.get(&s.id).map(|t| {
+                            let intensity =
+                                1.0 - (now.duration_since(*t).as_secs_f32() / HULL_FLASH_SECS);
+                            (s.clone(), intensity.clamp(0.0, 1.0))
+                        })
+                    })
+                    .collect();
                 let Some(gfx) = self.gfx.as_mut() else { return };
                 // (#57) Pan/recede the parallax background toward the player's
                 // column + the campaign level, eased per frame.
@@ -1534,6 +1589,15 @@ impl ApplicationHandler for App {
                     // live-scene projector. Gated to Playing so a board reset / overlay
                     // frame never bursts. Recorded only on a combat-turn resolve.
                     hud::push_destruction_at(&mut instances, &kill_cells, &scene_cfg);
+                    // (#101) Damage-flash on the lane hull bar of every ship that
+                    // took a hit this round (fades over ~0.45s), so even a 1-2 hull
+                    // drop visibly pops — paired with the min-size bar clamp so a
+                    // back-row enemy's bar both stays readable AND flashes when hit.
+                    // Drawn after the bars (compose_scene_2d_tweened) so it sits on
+                    // top. Gated to Playing alongside the kill bursts.
+                    for (ship, intensity) in &hull_flashes {
+                        hud::push_hull_flash_2d(&mut instances, ship, *intensity, &scene_cfg);
+                    }
                     // (#98) Player ability-tile row in the bottom HUD band — drawn
                     // from the real AbilityTile data (damage / cooldown_max), which the
                     // board alone doesn't carry. Damage # top-left, key # bottom-right,

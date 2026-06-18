@@ -836,8 +836,16 @@ fn push_hull_bar_2d(out: &mut Vec<DrawCommand>, ship: &Ship, cfg: &ProjectorConf
     let scale = q.depth_scale;
     // Match the hull box half-width used in push_ship_2d (base = 22 * depth_scale).
     let base = 22.0 * scale;
-    let half_w = base; // bar spans the hull width
-    let bar_h = (3.0 * scale).max(1.5);
+    // (#101) MIN on-screen size. A back-row ship's depth_scale shrinks the bar to
+    // a near-imperceptible sliver, so a 1-2 hull drop was impossible to SEE land
+    // (Bruce: "I don't see the enemy health bar dropping"). Floor the half-width
+    // and height so even the farthest bar stays readable. The bar still scales
+    // DOWN with distance for nearer ships (perspective preserved) — this only
+    // clamps the far end. The vertical position still tracks the scaled hull.
+    const HULL_BAR_MIN_HALF_W: f32 = 11.0; // ~22px wide minimum
+    const HULL_BAR_MIN_H: f32 = 2.5;
+    let half_w = base.max(HULL_BAR_MIN_HALF_W); // bar spans the hull width (min-clamped)
+    let bar_h = (3.0 * scale).max(HULL_BAR_MIN_H);
     // Float above the hull: cell center − (hull half-height + gap). Use the
     // bow-stance vertical half-extent (the taller case) so the bar clears the hull.
     let cy = q.center[1] - (base + 6.0 * scale);
@@ -883,6 +891,47 @@ fn push_hull_bar_2d(out: &mut Vec<DrawCommand>, ship: &Ship, cfg: &ProjectorConf
                 atlas::cell_uvs(atlas::SOLID_WHITE),
             ),
         );
+    }
+}
+
+/// (#101) A brief DAMAGE FLASH on a ship's hull bar, so even a 1-2 hull drop
+/// visibly registers while the balance numbers get tuned (Bruce: "I don't see the
+/// enemy health bar dropping"). `intensity` is the fade value the bin drives from
+/// its per-ship hull-drop timer (1.0 at the moment of the hit → 0.0 when the
+/// flash expires); a `<= 0` intensity is a no-op so resting ships cost nothing.
+/// Draws a bright outline RING hugging the same bar rect `push_hull_bar_2d` uses
+/// (matching the min-size clamp so a far bar still flashes legibly) plus a thin
+/// upward tick — a quick pop that draws the eye to exactly which ship just took
+/// damage. Pure cosmetic; reads the ship's CURRENT pos only. Drawn AFTER the bars
+/// (the bin calls it in its overlay pass) so the flash sits on top.
+pub fn push_hull_flash_2d(out: &mut Vec<DrawCommand>, ship: &Ship, intensity: f32, cfg: &ProjectorConfig) {
+    if intensity <= 0.0 || ship.max_hull <= 0 {
+        return;
+    }
+    let a = intensity.clamp(0.0, 1.0);
+    let q = grid_cell_quad(ship.pos, cfg);
+    let scale = q.depth_scale;
+    let base = 22.0 * scale;
+    // Mirror push_hull_bar_2d's geometry + min-size clamp so the flash frames the
+    // SAME rect the bar drew (otherwise a far flash would miss the clamped bar).
+    let half_w = base.max(11.0);
+    let bar_h = (3.0 * scale).max(2.5);
+    let cy = q.center[1] - (base + 6.0 * scale);
+    let cx = q.center[0];
+    let left = cx - half_w;
+    // Flash colour = hot white-red, alpha driven by the fade. A 2px ring around
+    // the bar rect reads as a pulse without obscuring the fill underneath.
+    let col = [1.0, 0.55, 0.45, a];
+    let pad = 1.5;
+    let r = [
+        [left - pad, cy - bar_h * 0.5 - pad],
+        [left + half_w * 2.0 + pad, cy - bar_h * 0.5 - pad],
+        [left + half_w * 2.0 + pad, cy + bar_h * 0.5 + pad],
+        [left - pad, cy + bar_h * 0.5 + pad],
+    ];
+    let th = 2.0;
+    for k in 0..4 {
+        push_line(out, pt(r[k]), pt(r[(k + 1) % 4]), th, col);
     }
 }
 
@@ -3980,6 +4029,28 @@ mod tests {
             traits: Vec::new(),
             klass: None,
         }
+    }
+
+    /// (#101) The hull-bar damage FLASH emits draw commands only while fading
+    /// (intensity > 0) and is a no-op once expired (intensity <= 0), so a resting
+    /// ship costs nothing. Locks the fade gate that drives the per-frame flash.
+    #[test]
+    fn hull_flash_emits_only_while_intensity_positive() {
+        use crate::projector::ProjectorConfig;
+        let cfg = ProjectorConfig::default();
+        let ship = frigate_at(0, Faction::Enemy, Orientation::BowOn { bow: LaneEnd::Fore });
+
+        let mut lit = Vec::new();
+        push_hull_flash_2d(&mut lit, &ship, 1.0, &cfg);
+        assert!(!lit.is_empty(), "a full-intensity flash must emit the ring");
+
+        let mut faded = Vec::new();
+        push_hull_flash_2d(&mut faded, &ship, 0.0, &cfg);
+        assert!(faded.is_empty(), "an expired flash (intensity 0) must be a no-op");
+
+        let mut neg = Vec::new();
+        push_hull_flash_2d(&mut neg, &ship, -0.5, &cfg);
+        assert!(neg.is_empty(), "a negative intensity must be a no-op (defensive)");
     }
 
     /// Stub registry that reports the requested class+stance as having

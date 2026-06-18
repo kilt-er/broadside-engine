@@ -285,6 +285,19 @@ fn main() {
             *slot = None;
         }
         vfx_demo_kill = Some(tgt);
+        // (#101) Knock a SURVIVING enemy down to half hull BEFORE compose, so the
+        // hull bar renders PARTIAL — then we flash it (full intensity) after compose
+        // to show the damage-flash + min-size bar legibility win.
+        if let Some(victim) = board
+            .cells
+            .iter_mut()
+            .flatten()
+            .find(|s| s.faction == Faction::Enemy)
+        {
+            if victim.max_hull > 0 {
+                victim.hull = (victim.max_hull / 2).max(1);
+            }
+        }
         log::info!("capture: VFX demo — player HIT + enemy MISS + a kill (burst) at {tgt:?}");
     }
 
@@ -306,6 +319,20 @@ fn main() {
     // headless demo shows the post-kill burst.
     if let Some(killed) = vfx_demo_kill {
         broadside_engine::hud::push_destruction_at(&mut commands, &[killed], &cfg);
+        // (#101) Flash the hull bar of the SURVIVING enemy we knocked to half hull
+        // (above, before compose, so its bar already renders PARTIAL) at full
+        // intensity — the moment-of-hit pop — so the capture shows the new
+        // damage-flash + min-size bar (the "I don't see the enemy health bar
+        // dropping" legibility win).
+        if let Some(victim) = board
+            .cells
+            .iter()
+            .flatten()
+            .find(|s| s.faction == Faction::Enemy)
+        {
+            broadside_engine::hud::push_hull_flash_2d(&mut commands, victim, 1.0, &cfg);
+            log::info!("capture: #101 hull-flash demo on surviving enemy {} at {:?}", victim.id, victim.pos);
+        }
     }
     // (#98/#100) With QUEUE_DEMO, append a representative ability-tile row so the
     // headless shot shows the layout (damage # top-left, key # bottom-right,
