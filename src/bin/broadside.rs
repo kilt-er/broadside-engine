@@ -1207,7 +1207,7 @@ impl ApplicationHandler for App {
         // flat CAD box. Enemies face the player (bow-on), so the hull renders
         // oncoming. loft_kind prefers EnemyLoft once this is installed.
         match gfx.install_enemy_glb(AEGIS_GLB) {
-            Ok(()) => log::info!("loft: enemy Aegis hull (red) installed from Aegis.glb"),
+            Ok(()) => log::info!("loft: enemy Aegis hull (steel-grey) installed from Aegis.glb"),
             Err(e) => log::warn!("loft: enemy Aegis.glb import failed ({e}); enemies fall back to CAD/2D"),
         }
         self.window = Some(window);

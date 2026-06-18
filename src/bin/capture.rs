@@ -139,10 +139,11 @@ fn main() {
         Ok(()) => log::info!("capture: player Aegis hull installed from Aegis.glb"),
         Err(e) => log::warn!("capture: Aegis.glb import failed ({e}); player falls back to sprite/flat-box"),
     }
-    // (#89) ENEMIES = the same Aegis hull, RED-tinted (matches the live bin) so the
-    // capture faithfully shows the oncoming red enemy ships, not flat boxes.
+    // (#89/#93) ENEMIES = the same Aegis hull, STEEL-GREY-tinted (matches the live
+    // bin's ENEMY_TINT) so the capture shows the oncoming grey enemy ships (apart
+    // from the RED player), not flat boxes.
     match gfx.install_enemy_glb(AEGIS_GLB) {
-        Ok(()) => log::info!("capture: enemy Aegis hull (red) installed from Aegis.glb"),
+        Ok(()) => log::info!("capture: enemy Aegis hull (steel-grey) installed from Aegis.glb"),
         Err(e) => log::warn!("capture: enemy Aegis.glb import failed ({e}); enemies fall back to CAD/2D"),
     }
 

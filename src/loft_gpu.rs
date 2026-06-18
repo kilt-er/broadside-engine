@@ -862,35 +862,30 @@ impl LoftGpu {
         self.upload_hull(device, &ship.mesh, &colors, &emissive)
     }
 
-    /// Like [`Self::upload_imported`] but multiplies every vertex's albedo AND
-    /// emissive by `tint` (per-channel) — used to recolour the shared CAD hull a
-    /// distinct hue for the player so it reads apart from the enemy fleet.
+    /// Like [`Self::upload_imported`] but multiplies every vertex's ALBEDO by
+    /// `tint` (per-channel) — used to recolour the shared CAD hull a distinct hue
+    /// for the player so it reads apart from the enemy fleet. EMISSIVE is left
+    /// UNTOUCHED so the authored engine glow keeps its colour.
     ///
-    /// (#105) Emissive is now tinted TOO. The Aegis has a large CYAN unlit engine
-    /// group (~half its verts); leaving its emissive untouched meant the bright
-    /// cyan washed the red hull toward PINK (Bruce: "why is the player ship pink?
-    /// make it red"). Tinting emissive by the same factor takes the cyan glow into
-    /// the hull's hue — the player's engine reads red, the enemy's grey — so the
-    /// whole ship reads its tint colour instead of a hull/glow two-tone wash. The
-    /// `unlit` flag (`emissive.w`) is preserved by `imported_vertex_attrs`, so the
-    /// glow still skips Lambert; only its colour is biased.
+    /// (#111, reverting the #105 emissive-tint) #105 briefly tinted emissive too,
+    /// to stop the bright cyan engine washing the (then pinkish) hull toward pink —
+    /// but that turned the engine interiors RED, and Bruce wants RED hull + BLUE
+    /// engines. The real fix is the SATURATED red hull tint ([1.9,0.16,0.14], lit
+    /// ≈ [0.83,0.09,0.12]): against a deep-red hull the untouched cyan engine
+    /// (lit ≈ [0.46,0.86,1.0]) reads as a distinct BLUE accent, NOT an averaged
+    /// pink. So emissive stays authored — the player's engine is blue on a red
+    /// hull, the enemy's blue on a grey hull. (Probed numerically before the fix.)
     pub fn upload_imported_tinted(
         &self,
         device: &wgpu::Device,
         ship: &crate::mesh_import::ImportedShip,
         tint: [f32; 3],
     ) -> UploadedHull {
-        let (mut colors, mut emissive) = imported_vertex_attrs(ship);
+        let (mut colors, emissive) = imported_vertex_attrs(ship);
         for c in &mut colors {
             c[0] *= tint[0];
             c[1] *= tint[1];
             c[2] *= tint[2];
-        }
-        for e in &mut emissive {
-            // Tint rgb; KEEP w (the unlit flag) so the glow still skips Lambert.
-            e[0] *= tint[0];
-            e[1] *= tint[1];
-            e[2] *= tint[2];
         }
         self.upload_hull(device, &ship.mesh, &colors, &emissive)
     }
