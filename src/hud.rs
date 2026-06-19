@@ -132,13 +132,12 @@ const BOW_MARK_PLAYER: [f32; 4] = [1.0, 0.91, 0.62, 1.0]; // warm gold-white (vs
                                                           // (#112) BOW_MARK_ENEMY + the enemy move-arrow were REMOVED in the back-row
                                                           // declutter — an enemy now reads as just its posed hull (no arrow/bars/telegraph
                                                           // pile). The player's heading is carried by its hero hull + motion.
-                                                          // (#112 A) Enemy loft render-yaw offset off pure bow-on (Bow(S)=180) so the hull
-                                                          // presents a readable 3/4 silhouette instead of an edge-on wedge that reads as a
-                                                          // blob — still clearly oncoming toward the player.
-const ENEMY_THREE_QUARTER_YAW_DEG: f32 = 28.0;
-// (#118) Idle BOB: a gentle vertical sine on a resting ship so the scene feels
-// alive. Low amplitude + slow Hz — it breathes, it doesn't drift. Per-ship phase
-// offset (ship_phase_offset) keeps the fleet from bobbing in lockstep.
+                                                          // (#153) The enemy 3/4 render-yaw offset (ENEMY_THREE_QUARTER_YAW_DEG = 28°) was
+                                                          // removed — Bruce wants enemies snapped to the player's forward axis, no starting
+                                                          // rotation. The enemy loft now renders at the player's forward yaw (see push_ship_2d).
+                                                          // (#118) Idle BOB: a gentle vertical sine on a resting ship so the scene feels
+                                                          // alive. Low amplitude + slow Hz — it breathes, it doesn't drift. Per-ship phase
+                                                          // offset (ship_phase_offset) keeps the fleet from bobbing in lockstep.
 const IDLE_BOB_PX: f32 = 3.5;
 const IDLE_BOB_HZ: f32 = 0.16;
 
@@ -1699,22 +1698,22 @@ fn push_ship_2d(
     // loft pre-pass renders the hull lit + posed; HUD overlays layer on top below.
     if !is_player {
         if let Some(loft_kind) = sprites.loft_kind(&ship.id, false) {
-            // (#112 A+B) Seat on the cell, but SCALED UP + posed at 3/4 so the enemy
-            // reads as a clear oncoming SHIP, not a tiny shapeless bow-on blob
-            // (Bruce: "what is that blob?"). B: width = a bigger fraction of the
-            // near-edge with a higher min floor, so even a back-row enemy is a
-            // legible silhouette. Height from the loft aspect (#74 no squash).
-            // (#115 RULING) Bruce chose 1.5x — bumped from the 1.35x first pass.
-            let w = (near_edge_width * 1.5).max(18.0);
+            // (#153 Bruce) Enemies SNAP to the SAME scale + forward-pointing axis as
+            // the player ship: no per-enemy scale-up, no 3/4 starting rotation. Width
+            // uses the SAME factor + floor as the player loft (near_edge_width * 1.0,
+            // min 16) so a near enemy reads the player's size and far enemies scale
+            // down with depth. Height from the loft aspect (#74 no squash). This
+            // supersedes the #112/#115 1.5x + ~28° three-quarter pose (which Bruce
+            // added for "blob" readability but now wants gone for a uniform fleet).
+            let w = (near_edge_width * 1.0).max(16.0);
             let h = w / LOFT_TEXTURE_ASPECT;
             let (l, r) = (center[0] - w * 0.5, center[0] + w * 0.5);
             let (t, b) = (center[1] - h * 0.5, center[1] + h * 0.5);
-            // A: nudge the render yaw ~28° OFF pure bow-on (Bow(S)=180) so the hull
-            // presents a 3/4 silhouette (you see its length + flank), while still
-            // clearly oncoming/toward the player — pure bow-on is an edge-on wedge
-            // that reads as a blob. A fixed offset (not facing-derived) since every
-            // back-row enemy is bow-S toward the player.
-            let enemy_yaw = facing_yaw_deg + ENEMY_THREE_QUARTER_YAW_DEG;
+            // (#153) Render at the PLAYER's forward-axis yaw (up-lane / toward the
+            // vanishing point = 0°), NOT the enemy's own Bow(S)=180 and NOT the old
+            // +28° three-quarter offset — so every ship (player + enemies) points the
+            // SAME forward direction Bruce asked for, sterns toward the camera.
+            let enemy_yaw = loft_facing_ground_yaw(Facing::Bow(Dir4::N));
             out.push(DrawCommand::LoftShip(LoftShipInstance {
                 p0: [l, t],
                 p1: [r, t],
