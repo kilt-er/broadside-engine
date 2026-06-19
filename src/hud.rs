@@ -536,6 +536,10 @@ pub fn compose_scene_2d_tweened(
             push_queue_tiles_2d(&mut out, ship, cfg);
         }
     }
+    // (#131) Enemy IDENTITY number badges above-left of each enemy hull — the link
+    // between a ship on the board and its column in the top-left ENEMY INFO panel.
+    // After the hulls so the badge sits on top; tracks the tweened position.
+    push_enemy_id_badges_2d(&mut out, board, cfg, tween);
     // (#90) Resolved weapon fire on TOP of the hulls (Bruce: see weapons firing +
     // results clearly): bright faction-tinted beams along each shot line + an
     // impact flash on every struck cell. Driven straight off the board
@@ -3116,10 +3120,80 @@ pub fn push_player_queue_panel_2d(out: &mut Vec<DrawCommand>, tiles: &[AbilityTi
     }
 }
 
+/// (#131 Bruce) Stable per-enemy IDENTITY number (1-based). Defined as the RANK of
+/// this enemy's `id` among ALL live enemy ids sorted lexicographically — so it's
+/// glued to the SHIP (its id never changes), NOT to screen position: two enemies
+/// swapping horizontal sides keep their numbers. Both the on-board badge
+/// (`push_enemy_id_badges_2d`) and the panel column header (`push_enemy_info_panel_2d`)
+/// derive the number from this single helper, so they always agree. Interim id per
+/// Bruce ("for now") — contiguous 1..N; it renumbers if an enemy dies, which is
+/// acceptable for the placeholder identifier.
+pub fn enemy_badge_number(board: &Board, id: &str) -> u32 {
+    let mut ids: Vec<&str> = board
+        .cells
+        .iter()
+        .flatten()
+        .filter(|s| s.faction == Faction::Enemy)
+        .map(|s| s.id.as_str())
+        .collect();
+    ids.sort_unstable();
+    ids.iter().position(|x| *x == id).map(|i| i as u32 + 1).unwrap_or(0)
+}
+
+/// (#131 Bruce) Draw each LIVE enemy's IDENTITY number above-LEFT of its hull on the
+/// board, so the player can match a ship to its column in the top-left ENEMY INFO
+/// panel at a glance. The number travels with the ship (uses the tweened visual
+/// centre when sliding) and is the SAME number that heads the ship's panel column
+/// (`enemy_badge_number`). Amber chip + dark ink so it reads against the starfield.
+/// Drawn after the hulls so it sits on top. No-op when there are no enemies.
+pub fn push_enemy_id_badges_2d(
+    out: &mut Vec<DrawCommand>,
+    board: &Board,
+    cfg: &ProjectorConfig,
+    tween: &Tween2d,
+) {
+    for ship in board.cells.iter().flatten() {
+        if ship.faction != Faction::Enemy {
+            continue;
+        }
+        let n = enemy_badge_number(board, &ship.id);
+        if n == 0 {
+            continue;
+        }
+        let q = grid_cell_quad(ship.pos, cfg);
+        // Track the sliding hull: use the tweened visual centre when present.
+        let center = tween.visual.get(&ship.id).map(|v| v.center).unwrap_or(q.center);
+        let depth = tween.visual.get(&ship.id).map(|v| v.depth_scale).unwrap_or(q.depth_scale);
+        // Above-LEFT of the hull: left of centre, up by ~the hull half-height.
+        let half = (q.near_edge_width() * 0.5).max(10.0);
+        let bx = center[0] - half;
+        let by = center[1] - half - 10.0 * depth;
+        let label = n.to_string();
+        let pixel = (1.5 * depth).max(1.0);
+        let chip = 5.0 * pixel + 2.0;
+        // Amber chip backing.
+        push_polygon(
+            out,
+            PolygonInstance::flat(
+                [
+                    [bx - 1.0, by - 1.0],
+                    [bx + chip, by - 1.0],
+                    [bx + chip, by + 7.0 * pixel + 1.0],
+                    [bx - 1.0, by + 7.0 * pixel + 1.0],
+                ],
+                TILE_QUEUED,
+                atlas::cell_uvs(atlas::SOLID_WHITE),
+            ),
+        );
+        // Number in dark ink on the chip.
+        push_text_left(out, &label, bx, by, pixel, TILE_BG);
+    }
+}
+
 /// (#129/#130 Bruce) The ENEMY INFO panel, TOP-LEFT corner. One vertical COLUMN
 /// per LIVE enemy, placed side by side. Each column is LABELED at the top with that
-/// enemy's HEALTH (hull bar + number) + SHIELD (shield bar), and below the label a
-/// REVEALED QUEUE drawn as a FIFO column.
+/// enemy's IDENTITY number + HEALTH (hull bar + number) + SHIELD (shield bar), and
+/// below the label a REVEALED QUEUE drawn as a FIFO column.
 ///
 /// QUEUE direction (#130 Bruce): the queue is a VERTICAL FIFO column that builds UP
 /// — the head (`queue[0]`, which fires FIRST) sits at the BOTTOM, later entries
@@ -3135,7 +3209,14 @@ pub fn push_player_queue_panel_2d(out: &mut Vec<DrawCommand>, tiles: &[AbilityTi
 /// shield pool, `queue`). No-op with no enemies. Columns sit side by side so 1/2/3
 /// enemies fit; flagged to the lead if a full fleet crowds the panel.
 pub fn push_enemy_info_panel_2d(out: &mut Vec<DrawCommand>, board: &Board) {
-    let enemies: Vec<&Ship> = board
+    // (#131) Order columns left-to-right by the enemies' horizontal board position
+    // (screen-x), so the panel MIRRORS the board's arrangement — leftmost enemy =
+    // leftmost column. `pos.col` is monotonic in screen-x (the lane is horizontal),
+    // so sorting by col gives the on-screen left-to-right order; when two enemies
+    // swap sides their columns swap too. Their IDENTITY number (enemy_badge_number)
+    // stays glued to the ship through the swap — the reliable link; position is the
+    // bonus reinforcement.
+    let mut enemies: Vec<&Ship> = board
         .cells
         .iter()
         .flatten()
@@ -3144,6 +3225,7 @@ pub fn push_enemy_info_panel_2d(out: &mut Vec<DrawCommand>, board: &Board) {
     if enemies.is_empty() {
         return;
     }
+    enemies.sort_by_key(|s| s.pos.col);
 
     let left = 6.0;
     let top = 8.0;
@@ -3215,12 +3297,32 @@ pub fn push_enemy_info_panel_2d(out: &mut Vec<DrawCommand>, board: &Board) {
                 );
             }
         }
-        // Hull number to the RIGHT-ish, on the same line as the bar but the column
-        // is narrow — so draw it small ABOVE the bar, right-aligned in the column, to
-        // avoid the colour fill. (The colour-coded bar is the primary health read.)
+        // (#131) IDENTITY number = column header, LEFT, on an amber chip — the SAME
+        // number + chip style as the on-board badge (push_enemy_id_badges_2d), so the
+        // player matches this column to the ship on the board. enemy_badge_number is
+        // glued to the ship's id, so it stays put when columns reorder on a side-swap.
+        let idn = enemy_badge_number(board, &e.id);
+        let idn_s = idn.to_string();
+        let idn_chip = 5.0 + 2.0;
+        push_polygon(
+            out,
+            PolygonInstance::flat(
+                [
+                    [cx0 - 1.0, hy - 9.0],
+                    [cx0 + idn_chip, hy - 9.0],
+                    [cx0 + idn_chip, hy - 1.0],
+                    [cx0 - 1.0, hy - 1.0],
+                ],
+                TILE_QUEUED,
+                atlas::cell_uvs(atlas::SOLID_WHITE),
+            ),
+        );
+        push_text_left(out, &idn_s, cx0, hy - 8.0, 1.0, TILE_BG);
+        // Hull number small, ABOVE the bar right-aligned in the column (the colour-
+        // coded bar is the primary health read; this is the exact figure).
         let hn = format!("{}", e.hull.max(0));
         let hn_x = cx0 + bar_w - (hn.len() as f32 * 6.0 - 1.0);
-        push_text_left(out, &hn, hn_x, hy - 7.0, 1.0, HUD_LABEL);
+        push_text_left(out, &hn, hn_x, hy - 8.0, 1.0, HUD_LABEL);
 
         // --- LABEL: SHIELD bar (below hull), only if the enemy has shield capacity. ---
         let sp = &e.shield_profile;
