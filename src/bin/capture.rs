@@ -188,12 +188,22 @@ fn main() {
             }
         }
     }
-    // (#140) Optional BROADSIDE_GRID_STRETCH=1 turns STRETCH mode ON for the capture
-    // (mirrors the `T` key), so the pitch arc shots show the vertical-stretch /
-    // constant-ship-size top-down instead of the constant-footprint drawbridge.
-    if std::env::var("BROADSIDE_GRID_STRETCH").is_ok_and(|v| v != "0") {
-        let on = broadside_engine::gfx::toggle_grid_stretch();
-        log::info!("capture: grid stretch -> {}", if on { "ON" } else { "OFF" });
+    // (#140/#142) Optional grid-mode env (mirrors the `T` cycle), so the pitch-arc
+    // shots show each mode. BROADSIDE_GRID_STRETCH=1 -> stretch-curved (mode 1);
+    // BROADSIDE_GRID_STRAIGHT=1 -> stretch-straight (mode 2); neither -> drawbridge
+    // (mode 0). STRAIGHT wins if both set. Cycle the live GRID_MODE to the target.
+    let target_mode: u32 = if std::env::var("BROADSIDE_GRID_STRAIGHT").is_ok_and(|v| v != "0") {
+        2
+    } else if std::env::var("BROADSIDE_GRID_STRETCH").is_ok_and(|v| v != "0") {
+        1
+    } else {
+        0
+    };
+    while broadside_engine::gfx::grid_mode() != target_mode {
+        broadside_engine::gfx::cycle_grid_mode();
+    }
+    if target_mode != 0 {
+        log::info!("capture: grid mode -> {} ({})", target_mode, broadside_engine::gfx::grid_mode_tag());
     }
 
     // Optional 2nd arg = player column (0..COLS-1) so the capture can place the
@@ -401,19 +411,19 @@ fn main() {
 
     // (#76) Project to the LIVE scene size (default 480x270 == ProjectorConfig
     // ::default(); a BROADSIDE_SCENE_RES cycle above reprojects to the new canvas).
-    // (#139/#140) Apply the live pitch step in the ACTIVE mode — mirrors the bin's
-    // scene_projector(): STRETCH ON uses with_stretch (vertical stretch, constant
-    // ship size), OFF uses with_pitch (constant-footprint drawbridge). The capture's
-    // pitch global was toggled above by BROADSIDE_GRID_PITCH / BROADSIDE_GRID_STRETCH.
+    // (#139/#140/#142) Apply the live pitch step in the ACTIVE grid mode — mirrors the
+    // bin's scene_projector(): 0 drawbridge (with_pitch), 1 stretch-curved (with_stretch),
+    // 2 stretch-straight (with_stretch_straight). The mode + pitch globals were set above
+    // by BROADSIDE_GRID_PITCH / BROADSIDE_GRID_STRETCH / BROADSIDE_GRID_STRAIGHT.
     let base = ProjectorConfig::for_scene(
         broadside_engine::gfx::scene_w() as f32,
         broadside_engine::gfx::scene_h() as f32,
     );
     let pitch_t = broadside_engine::gfx::grid_pitch_t();
-    let cfg = if broadside_engine::gfx::grid_stretch_on() {
-        base.with_stretch(pitch_t)
-    } else {
-        base.with_pitch(pitch_t)
+    let cfg = match broadside_engine::gfx::grid_mode() {
+        1 => base.with_stretch(pitch_t),
+        2 => base.with_stretch_straight(pitch_t),
+        _ => base.with_pitch(pitch_t),
     };
     let mut commands = compose_scene_2d_with(&board, &cfg, &gfx);
     // (#127) SALVAGE readout — the live bin draws this in its Playing overlay (not

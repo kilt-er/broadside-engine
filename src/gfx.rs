@@ -116,23 +116,63 @@ pub fn cycle_grid_pitch() -> u32 {
     next
 }
 
-/// (#140 Bruce) STRETCH mode flag. `false` (default) = the constant-footprint
-/// drawbridge (with_pitch, the ballooning one — kept for comparison); `true` = the
-/// grid STRETCHES vertically toward a uniform top-down square with ~constant ship
-/// size (with_stretch). The `G` pitch step drives the arc within whichever mode is
-/// active; this picks which projection the step feeds. Toggled by the `T` key.
-static GRID_STRETCH: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// (#140/#142 Bruce) GRID MODE — which projection the `G` pitch arc feeds. The `T`
+/// key cycles three modes:
+///   0 = DRAWBRIDGE: constant-footprint `with_pitch` (the #139 ballooning one, kept
+///       for comparison);
+///   1 = STRETCH-CURVED: `with_stretch` — grid stretches vertically toward a uniform
+///       top-down square (~constant ship size); column edges BOW through the mid-arc;
+///   2 = STRETCH-STRAIGHT: `with_stretch_straight` — same stretch but the column edges
+///       STRAIGHTEN as the arc raises (Bruce: "I expected straight lines").
+/// At pitch step 0 all three are byte-identical to the chase-cam (each reduces to the
+/// perspective base), so the step-0 no-regression gate holds in every mode.
+static GRID_MODE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
-/// Whether STRETCH mode is ON (see [`GRID_STRETCH`]).
-pub fn grid_stretch_on() -> bool {
-    GRID_STRETCH.load(std::sync::atomic::Ordering::Relaxed)
+/// Number of grid modes the `T` key cycles through (drawbridge / stretch-curved /
+/// stretch-straight).
+pub const GRID_MODES: u32 = 3;
+
+/// The active grid mode `0..GRID_MODES` (see [`GRID_MODE`]).
+pub fn grid_mode() -> u32 {
+    GRID_MODE.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-/// (#140) Flip STRETCH mode; returns the new state. Bound to `T`.
-pub fn toggle_grid_stretch() -> bool {
-    let next = !grid_stretch_on();
-    GRID_STRETCH.store(next, std::sync::atomic::Ordering::Relaxed);
+/// (#140) Back-compat: whether ANY stretch mode is active (mode 1 or 2). The capture
+/// env + older call sites read this; the projector branch keys on [`grid_mode`].
+pub fn grid_stretch_on() -> bool {
+    grid_mode() != 0
+}
+
+/// (#142) Whether the active stretch mode is the STRAIGHT variant (mode 2).
+pub fn grid_stretch_straight() -> bool {
+    grid_mode() == 2
+}
+
+/// (#140/#142) Cycle the grid mode (drawbridge -> stretch-curved -> stretch-straight
+/// -> drawbridge); returns the new mode. Bound to `T`.
+pub fn cycle_grid_mode() -> u32 {
+    let next = (grid_mode() + 1) % GRID_MODES;
+    GRID_MODE.store(next, std::sync::atomic::Ordering::Relaxed);
     next
+}
+
+/// (#142) A short tag for the active grid mode, for the debug readout: "" (drawbridge,
+/// no tag), "STRETCH", or "STRAIGHT".
+pub fn grid_mode_tag() -> &'static str {
+    match grid_mode() {
+        1 => "STRETCH",
+        2 => "STRAIGHT",
+        _ => "",
+    }
+}
+
+/// (#140) Back-compat shim for the capture env, which flips stretch ON. Cycles to the
+/// first stretch mode (curved) if currently OFF, else back to drawbridge. Returns
+/// whether stretch is now on. Prefer [`cycle_grid_mode`] for the live `T` key.
+pub fn toggle_grid_stretch() -> bool {
+    let next = if grid_mode() == 0 { 1 } else { 0 };
+    GRID_MODE.store(next, std::sync::atomic::Ordering::Relaxed);
+    next != 0
 }
 
 /// (#140 Bruce ship-tilt) The LIVE loft-camera pitch (degrees) the player + enemy

@@ -204,6 +204,17 @@ pub struct ProjectorConfig {
     /// `with_pitch` (the OFF/constant-footprint mode); the bin picks one per its
     /// STRETCH toggle.
     pub stretch_t: f32,
+
+    /// (#142 Bruce) STRETCH-STRAIGHT variant. When `false` (the #140 default) the
+    /// stretch blend LERPs each perspective corner toward its uniform corner, which
+    /// leaves the column edges BOWED through the mid-arc (Bruce: "ok, but I expected
+    /// straight lines"). When `true` the column edges are STRAIGHTENED as the arc
+    /// raises — each column's far (top) edge x chases its near (bottom) edge x so the
+    /// whole column verticalizes, reaching perfectly straight columns + rows at full
+    /// stretch. Still byte-identical at `stretch_t == 0` (the blend block is skipped),
+    /// so the step-0 no-regression gate holds in this mode too. Set via
+    /// [`Self::with_stretch_straight`]. Only meaningful when `stretch_t > 0`.
+    pub stretch_straight: bool,
 }
 
 impl Default for ProjectorConfig {
@@ -265,6 +276,7 @@ impl ProjectorConfig {
             cols: COLS,
             rows: ROWS,
             stretch_t: 0.0, // (#140) pure perspective by default — byte-identical to today
+            stretch_straight: false, // (#142) curved stretch by default
         }
     }
 }
@@ -319,6 +331,19 @@ impl ProjectorConfig {
     pub fn with_stretch(self, t: f32) -> Self {
         Self {
             stretch_t: t.clamp(0.0, 1.0),
+            ..self
+        }
+    }
+
+    /// (#142 Bruce) STRETCH-STRAIGHT: the same vertical stretch as [`Self::with_stretch`]
+    /// but with the column edges STRAIGHTENED across the arc (no bow) — the third grid
+    /// mode Bruce asked for ("I expected straight lines"). `t = 0` == self (byte-
+    /// identical step 0); `t = 1` = a uniform straight top-down square. Sets both
+    /// `stretch_t` and the `stretch_straight` flag the [`grid_cell_quad`] blend reads.
+    pub fn with_stretch_straight(self, t: f32) -> Self {
+        Self {
+            stretch_t: t.clamp(0.0, 1.0),
+            stretch_straight: true,
             ..self
         }
     }
@@ -466,19 +491,66 @@ pub fn grid_cell_quad(pos: Pos, cfg: &ProjectorConfig) -> CellQuad {
         let ucol = |c: usize| ucenter_x - uspan + (uspan * 2.0) * (c as f32) / cols;
         let ux_l = ucol(pos.col);
         let ux_r = ucol(pos.col + 1);
-        let uniform = [
-            [ux_l, uy_far],
-            [ux_r, uy_far],
-            [ux_r, uy_near],
-            [ux_l, uy_near],
-        ];
-        let lerp = |a: f32, b: f32| a + (b - a) * t;
-        for k in 0..4 {
-            corners[k][0] = lerp(corners[k][0], uniform[k][0]);
-            corners[k][1] = lerp(corners[k][1], uniform[k][1]);
-        }
-        cx = lerp(cx, 0.25 * (ux_l + ux_r + ux_l + ux_r));
-        cy = lerp(cy, 0.5 * (uy_far + uy_near));
+        let lerp = |a: f32, b: f32| a + (b - a) * t; // by the arc factor t
+        let mix = |a: f32, b: f32, f: f32| a + (b - a) * f; // by an explicit factor
+
+        // Y stretch is shared by BOTH stretch modes (the curved & straight variants
+        // differ only in the X path): rows lerp toward the uniform stacked y's.
+        let ( y_far, y_near) = (lerp(corners[0][1], uy_far), lerp(corners[3][1], uy_near));
+
+        // X path:
+        //   * CURVED (#140): each corner's x lerps toward its own uniform x. The far
+        //     (top) and near (bottom) edges converge at different rates, so the column
+        //     edges BOW through the mid-arc (straight only at t=1).
+        //   * STRAIGHT (#142 Bruce): both the far + near x of a column boundary follow
+        //     ONE row-independent trajectory — lerp(per-row perspective x, [lerp(near-
+        //     row perspective x, uniform x, t)], t). At t->0 it returns the true per-row
+        //     perspective x (smooth from the skipped block); at t->1 it returns the
+        //     row-independent uniform x. Because the SAME column boundary uses the same
+        //     row-independent straightened target in every cell, the column verticalizes
+        //     as the arc raises and is perfectly straight (+ rows straight) at t=1.
+        let (xfl, xfr, xnl, xnr) = if cfg.stretch_straight {
+            // Row-independent perspective reference = the NEAR row's column-boundary x
+            // (the widest, the visual anchor), so all rows share one straightening target.
+            let inv_z_near_row = 1.0 / cfg.z_at(cfg.boundary_d(cfg.rows));
+            let near_ref_l = cfg.boundary_x(pos.col, inv_z_near_row);
+            let near_ref_r = cfg.boundary_x(pos.col + 1, inv_z_near_row);
+            // The straightened (row-independent) target each boundary heads toward:
+            // near-row x at low t -> uniform x at t=1 (so columns are row-independent =>
+            // straight ACROSS rows by t=1).
+            let straight_l = lerp(near_ref_l, ux_l); // by t
+            let straight_r = lerp(near_ref_r, ux_r);
+            // Step 1: lerp each corner's x from its perspective value toward the shared
+            // straightened boundary (smooth at t=0, the block being skipped there).
+            let mut xl_far = lerp(corners[0][0], straight_l);
+            let mut xr_far = lerp(corners[1][0], straight_r);
+            let mut xl_near = lerp(corners[3][0], straight_l);
+            let mut xr_near = lerp(corners[2][0], straight_r);
+            // Step 2: collapse the far x onto the near x by t so the column edge becomes
+            // VERTICAL within each cell (no bow). At t=1 far==near==straight target =>
+            // straight columns; at t->0 the collapse fades to 0 => smooth from perspective.
+            let ml = mix(xl_far, xl_near, 0.5);
+            let mr = mix(xr_far, xr_near, 0.5);
+            xl_far = lerp(xl_far, ml);
+            xl_near = lerp(xl_near, ml);
+            xr_far = lerp(xr_far, mr);
+            xr_near = lerp(xr_near, mr);
+            (xl_far, xr_far, xl_near, xr_near)
+        } else {
+            (
+                lerp(corners[0][0], ux_l),
+                lerp(corners[1][0], ux_r),
+                lerp(corners[3][0], ux_l),
+                lerp(corners[2][0], ux_r),
+            )
+        };
+        corners[0] = [xfl, y_far];
+        corners[1] = [xfr, y_far];
+        corners[2] = [xnr, y_near];
+        corners[3] = [xnl, y_near];
+
+        cx = 0.25 * (xfl + xfr + xnl + xnr);
+        cy = 0.5 * (y_far + y_near);
         depth_scale = lerp(depth_scale, 1.0); // uniform = near-size everywhere
     }
 
@@ -1116,5 +1188,55 @@ mod tests {
             assert!(approx(q.near_edge_width(), q.far_edge_width(), 0.5), "parallel columns at row {r}");
             assert!(approx(q.depth_scale, 1.0, 1e-3), "uniform depth_scale==1 at row {r}");
         }
+    }
+
+    /// (#142) STRETCH-STRAIGHT: byte-identical at t=0 (the block is skipped), and at
+    /// full stretch the columns are STRAIGHT — a single column's left-edge x is the SAME
+    /// at every row (the far/top edge no longer narrower than the near/bottom), so the
+    /// grid reads as a true rectangular top-down lattice (Bruce: "straight lines").
+    /// Also: at a MID arc step the straight variant's columns are STRAIGHTER (less x
+    /// spread across rows) than the curved variant — the whole point of the mode.
+    #[test]
+    fn with_stretch_straight_step0_identity_and_straight_columns() {
+        let base = cfg();
+        // Step-0 identity: with_stretch_straight(0) projects byte-identical to base.
+        let z = base.with_stretch_straight(0.0);
+        for r in 0..ROWS {
+            for c in 0..COLS {
+                let a = grid_cell_quad(Pos::new(c, r), &base);
+                let b = grid_cell_quad(Pos::new(c, r), &z);
+                assert_eq!(a.corners, b.corners, "straight(0) corners identical at ({c},{r})");
+            }
+        }
+        // Full stretch: a column's left-edge x is constant across rows (straight vertical).
+        let full = base.with_stretch_straight(1.0);
+        for c in 0..COLS {
+            let x0 = grid_cell_quad(Pos::new(c, 0), &full).top_left().x;
+            for r in 0..ROWS {
+                let q = grid_cell_quad(Pos::new(c, r), &full);
+                // far (top-left) and near (bottom-left) x equal => vertical edge, and the
+                // same across rows => one straight column.
+                assert!(approx(q.top_left().x, q.bottom_left().x, 0.5), "vertical col {c} edge at row {r}");
+                assert!(approx(q.top_left().x, x0, 0.5), "col {c} left-x constant across rows (row {r})");
+            }
+        }
+        // Mid arc: straight columns have LESS x-spread (far vs near) than curved.
+        let mid_curved = base.with_stretch(0.5);
+        let mid_straight = base.with_stretch_straight(0.5);
+        let edge_col = 0; // an off-centre column bows the most
+        let spread = |cfgm: &ProjectorConfig| {
+            let mut s = 0.0f32;
+            for r in 0..ROWS {
+                let q = grid_cell_quad(Pos::new(edge_col, r), cfgm);
+                s += (q.top_left().x - q.bottom_left().x).abs();
+            }
+            s
+        };
+        let curved_spread = spread(&mid_curved);
+        let straight_spread = spread(&mid_straight);
+        assert!(
+            straight_spread <= curved_spread + 1e-3,
+            "straight mid-arc columns should be straighter (spread {straight_spread} <= curved {curved_spread})"
+        );
     }
 }

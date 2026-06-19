@@ -103,24 +103,24 @@ fn keycode_to_key(code: KeyCode) -> Option<Key> {
     })
 }
 
-/// (#139/#140) The live scene projector: `for_scene` at the current scene size,
-/// re-pitched by the live grid-pitch step (`G`). The STRETCH toggle (`T`) picks the
-/// projection the pitch feeds: OFF = with_pitch (constant-footprint drawbridge);
-/// ON = with_stretch (grid stretches vertically toward a uniform top-down square,
-/// constant ship size). At pitch step 0 BOTH are byte-identical to the chase-cam
-/// (with_pitch(0) == with_stretch(0) == base) — the no-regression invariant. ONE
-/// place builds it so every projected element (grid, cells, movement, threats,
-/// ordnance) shares the identical projection (single spatial source).
+/// (#139/#140/#142) The live scene projector: `for_scene` at the current scene size,
+/// re-pitched by the live grid-pitch step (`G`). The `T` key cycles THREE modes the
+/// pitch feeds: 0 = with_pitch (constant-footprint drawbridge); 1 = with_stretch (grid
+/// stretches to a uniform top-down square, curved column edges mid-arc); 2 =
+/// with_stretch_straight (same stretch, STRAIGHT column edges). At pitch step 0 ALL
+/// THREE are byte-identical to the chase-cam (each == base at t==0) — the no-regression
+/// invariant. ONE place builds it so every projected element (grid, cells, movement,
+/// threats, ordnance) shares the identical projection (single spatial source).
 fn scene_projector() -> ProjectorConfig {
     let base = ProjectorConfig::for_scene(
         broadside_engine::gfx::scene_w() as f32,
         broadside_engine::gfx::scene_h() as f32,
     );
     let t = broadside_engine::gfx::grid_pitch_t();
-    if broadside_engine::gfx::grid_stretch_on() {
-        base.with_stretch(t)
-    } else {
-        base.with_pitch(t)
+    match broadside_engine::gfx::grid_mode() {
+        1 => base.with_stretch(t),
+        2 => base.with_stretch_straight(t),
+        _ => base.with_pitch(t),
     }
 }
 
@@ -1398,21 +1398,23 @@ impl ApplicationHandler for App {
                     // depth — the projector compensates the horizon). Renderer-owned
                     // raw binding like the res cycles; everything projector-derived
                     // (grid/cells/movement/threats/ordnance) reprojects via
-                    // scene_projector(). The loft player ship is baked to the chase-cam
-                    // angle, so it won't follow near top-down (expected — it's a
-                    // parameterization TEST).
+                    // scene_projector(). (#140) The loft player + enemy hulls TILT with
+                    // the plane via the live loft-camera pitch (gfx::loft_pitch_deg), so
+                    // they follow the arc toward top-down.
                     if code == KeyCode::KeyG {
                         let step = broadside_engine::gfx::cycle_grid_pitch();
                         log::info!("grid pitch step: {step}/{}", broadside_engine::gfx::GRID_PITCH_STEPS);
                         if let Some(win) = self.window.as_ref() { win.request_redraw(); }
                         return;
                     }
-                    // (#140) `T` toggles STRETCH mode (constant-footprint drawbridge
-                    // <-> grid stretches to a uniform top-down square w/ constant ship
-                    // size). The G pitch step drives the arc within the active mode.
+                    // (#140/#142) `T` cycles the GRID MODE: drawbridge (constant
+                    // footprint) -> stretch-curved (uniform top-down square, bowed edges)
+                    // -> stretch-straight (same stretch, STRAIGHT edges) -> back. The G
+                    // pitch step drives the arc within the active mode.
                     if code == KeyCode::KeyT {
-                        let on = broadside_engine::gfx::toggle_grid_stretch();
-                        log::info!("grid stretch mode: {}", if on { "ON" } else { "OFF" });
+                        let mode = broadside_engine::gfx::cycle_grid_mode();
+                        let name = match mode { 1 => "stretch-curved", 2 => "stretch-straight", _ => "drawbridge" };
+                        log::info!("grid mode: {mode} ({name})");
                         if let Some(win) = self.window.as_ref() { win.request_redraw(); }
                         return;
                     }
