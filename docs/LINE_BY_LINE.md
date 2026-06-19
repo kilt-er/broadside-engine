@@ -2741,10 +2741,79 @@ view_angle) + #77–#78 (between-encounter screen + salvage HUD).
 near the bottom (1 explicit + the integration suites consume the public surface).
 Reviewer audited.
 
-### Module rustdoc (lines 1–25)
+> **READ FIRST — the live path is `compose_scene_2d`, not the 1-D side-view below.**
+> Most of this section documents the original **1-D side-view** compositor
+> (`compose_scene` / `compose_scene_tweened`, a horizontal lane). The live game now
+> renders the **2-D grid** via `compose_scene_2d_tweened` (the bin calls *that*), with a
+> reorganized HUD (#127-#131) and combat-feel additions (#132-#138). The 2-D path is
+> documented in the next subsection; the 1-D material below is retained for the legacy
+> compositor + the shared `push_*` primitives (font, polygons, overlays) it still uses.
+
+### 2-D scene composition + HUD layout (current — #127–#138)
+
+**Entry point:** `compose_scene_2d_tweened(board, cfg, sprites, tween)` (hud.rs:489) — the
+live composer the bin calls each frame. `compose_scene_2d` (hud.rs:407) and
+`compose_scene_2d_with` (hud.rs:472) are the no-tween / no-sprite shims. `cfg` is the
+`ProjectorConfig` from the bin's `scene_projector()` (so it carries the live grid pitch +
+mode — see [Render modes](#render-modes--grid-pitch-g--grid-mode-t--ship-tilt-139140142)).
+Board-space draws use `grid_cell_quad(pos, cfg)` to project a cell to a depth-scaled quad.
+
+**HUD layout (the #127–#131 reorg).** The on-screen furniture moved to the four corners:
+
+- **Enemy INFO panel — TOP-LEFT** (`push_enemy_info_panel_2d`, hud.rs:3194; #129/#130). One
+  vertical **column per live enemy**, placed side by side, ordered left-to-right by the
+  enemy's screen-x board position (#131) so the panel mirrors the board. Each column shows
+  the enemy's **identity number**, **hull bar + number**, **shield bar** (Σcharge/Σarmour
+  across faces), and below them the enemy's **revealed queue** as a vertical FIFO column.
+  The enemy's **hand is hidden** — only what it has actually *queued* shows (learned live as
+  it telegraphs over turns; an unqueued enemy shows just its label bars).
+- **Player QUEUE panel — TOP-RIGHT** (`push_player_queue_panel_2d`, hud.rs:3030; #128). The
+  "moved out of the hand" half of Bruce's hand→queue move: a queued weapon's bottom-row
+  tile hollows out and its icon appears here instead. Filtered to tiles with a
+  `queued_index`; **5/6/7 cards never appear** (they are free instant actions, never queued).
+- **Vertical FIFO columns, bottom = head (#130).** Both queue columns (enemy + player) are
+  vertical FIFO stacks drawn **bottom-up**: the head — index 0, which fires **first** — sits
+  at the BOTTOM, and later entries stack upward, so the column grows up from a fixed bottom
+  as more is queued. (`fire_player_queue` consumes the queue in index order, so index 0 IS
+  the head.) The player column tags its bottom (head) tile "NEXT".
+- **Enemy ID badges on the board** (`push_enemy_id_badges_2d`, hud.rs:3132; #131). A small
+  number badge above-left of each enemy hull, matching its column header in the top-left
+  panel — the reliable ship↔column link that stays glued through a side-swap (position is
+  the bonus reinforcement).
+- **Salvage — BOTTOM-LEFT** (`push_salvage_hud`, hud.rs:2993; #127). Moved from top-right to
+  the bottom-left, tucked under the player hull/shield bars.
+
+**Combat-feel batch (#132–#138).**
+
+- **In-flight ordnance render** (`push_ordnance_2d`, hud.rs:1189; #132). The 2-D path
+  previously drew **no** projectiles, so a torpedo/missile crossed the board invisibly and
+  its damage landed as a "delayed mystery hit." Now each `board.ordnance` projectile is
+  drawn at its projected cell, faction-tinted, oriented by `heading8`, depth-scaled. Drawn
+  **over** the hulls so it reads on top. Does NOT change travel timing — the resolver's
+  `advance_projectile_2d` still steps one cell per turn; this only renders where it already
+  is. (Together with the #133 beat below this is the "damage conveys on the same turn, not a
+  turn late" fix — #132 is in_progress.)
+- **~0.5s BEAT between multi-ability hits** — lives in the **bin**, not hud: see
+  [`BeatPlayback`](#srcbinbroadsidesrs) (`BEAT_SECS = 0.5`, src/bin/broadside.rs:822). When
+  the player commits a volley of 2+ beams, the bin keeps the first on the board and drains
+  the rest into `beat_playback`, releasing one per `BEAT_SECS` off the frame clock so the
+  hits read as distinct in-turn beats. Gameplay input is locked during playback (the
+  turn-based model still holds — input is just suspended for the brief animation). #133.
+- **On-cooldown queue block + cue** (`push_cant_queue_*`, hud.rs:~873; #136). Queuing a
+  weapon that is still recharging is **blocked**, with a "CD" recharging cue on the tile so
+  the rejection reads (a recharging weapon can't be queued — it forces a move or a wait,
+  the canonical-loop tension).
+- The remaining #134/#135/#137/#138 are bin/gfx-side polish (debug readouts to
+  bottom-right; 640×360 scene boot default; blanked nearest parallax layers; removed player
+  shield pips) — documented at their owners.
+
+---
+
+### Module rustdoc (lines 1–25) — the 1-D side-view compositor (legacy)
 
 The 25-line `//!` block sets the layout philosophy and the **canonical render
-order** every frame must follow. Read it before touching any `push_*` function.
+order** every frame must follow for the **1-D side-view** path. Read it before touching the
+legacy compositor or the shared `push_*` primitives.
 
 **Layout:** flat side-view. A horizontal lane bisects the canvas at
 `LaneGeometry::center_y`; the area above is the "sky" (back-wall parallax:
@@ -2791,12 +2860,12 @@ design document by inspection.
 
 ---
 
-### Entry points: three compose_scene shims (lines 81–175)
+### Entry points: three 1-D `compose_scene` shims (lines 81–175) — legacy side-view
 
-Three public entry points form a chain. **The bin calls
-`compose_scene_tweened` directly;** the other two exist for hud's own tests and
-for callers that don't need a tween state. Renderer flagged the call hierarchy
-explicitly:
+Three public entry points form a chain for the **1-D side-view** compositor. **These are
+NOT what the live bin calls** — the bin calls `compose_scene_2d_tweened` (see the 2-D
+section above). These remain for hud's own tests / legacy callers. Renderer flagged the call
+hierarchy explicitly:
 
 ```
 compose_scene(board, lane, view_angle_rad)

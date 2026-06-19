@@ -57,7 +57,56 @@ Five things to know up front:
 
 ---
 
-## The three compose_scene shims
+## 2-D scene composition + HUD layout (current — #127–#138)
+
+> **READ FIRST.** Most of this companion documents the original **1-D side-view**
+> compositor. The live game renders the **2-D grid** via `compose_scene_2d_tweened`
+> (hud.rs:489) — the bin calls *that*, not `compose_scene_tweened`. The 1-D material below
+> is retained for the legacy compositor + the shared `push_*` primitives (font, polygons,
+> overlays) it still uses.
+
+**Live entry point:** `compose_scene_2d_tweened(board, cfg, sprites, tween)`. `cfg` is the
+bin's `scene_projector()` `ProjectorConfig`, carrying the live grid pitch + mode (see
+[gfx.md → Render modes](gfx.md)). Board-space draws project cells via `grid_cell_quad(pos, cfg)`.
+
+**HUD layout (the #127–#131 reorg) — four corners:**
+
+- **Enemy INFO panel, TOP-LEFT** (`push_enemy_info_panel_2d`; #129/#130) — one vertical
+  column per live enemy, ordered left-to-right by board screen-x (#131): identity number,
+  hull bar + number, shield bar (Σcharge/Σarmour), and the enemy's **revealed queue** as a
+  bottom-up FIFO column. The enemy's hand is **hidden** — only what it has actually queued
+  shows (learned live as it telegraphs).
+- **Player QUEUE panel, TOP-RIGHT** (`push_player_queue_panel_2d`; #128) — queued weapon
+  icons (the hand→queue move's "out of hand" half); 5/6/7 cards never appear (free, never
+  queued).
+- **Vertical FIFO, bottom = head (#130)** — both queue columns draw bottom-up: index 0
+  (fires first) at the bottom, growing up. Player column tags the head "NEXT".
+- **Enemy ID badges on the board** (`push_enemy_id_badges_2d`; #131) — a number above-left of
+  each hull matching its panel column header; stays glued through a side-swap.
+- **Salvage, BOTTOM-LEFT** (`push_salvage_hud`; #127) — moved from top-right, under the
+  player hull/shield bars.
+
+**Combat-feel batch (#132–#138):**
+
+- **In-flight ordnance** (`push_ordnance_2d`; #132) — the 2-D path drew no projectiles, so
+  ordnance crossed invisibly and damage read a turn late. Now each `board.ordnance` is drawn
+  at its projected cell, faction-tinted, `heading8`-oriented, depth-scaled, over the hulls.
+  Render-only — travel timing is unchanged (`advance_projectile_2d` still steps one cell per
+  turn).
+- **~0.5s beat between multi-hit volleys (#133)** — in the **bin** (`BeatPlayback`,
+  `BEAT_SECS = 0.5`), not hud: a committed 2+ beam volley releases one beam per beat off the
+  frame clock; input locks during playback (turn model still holds).
+- **On-cooldown queue block + cue (#136)** — queuing a recharging weapon is blocked with a
+  "CD" cue (`push_cant_queue_*`).
+- #134/#135/#137/#138 are bin/gfx polish (debug readout placement; 640×360 scene boot
+  default; blanked nearest parallax; removed player shield pips).
+
+---
+
+## The three compose_scene shims (1-D side-view, legacy)
+
+> Not the live path — the bin calls `compose_scene_2d_tweened` (above). Kept for the legacy
+> side-view compositor + hud's own tests.
 
 ```
 compose_scene(board, lane, view_angle_rad)
