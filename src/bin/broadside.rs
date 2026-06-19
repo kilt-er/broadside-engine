@@ -792,6 +792,13 @@ const HULL_FLASH_SECS: f32 = 0.45;
 /// (#119) Tint of the ship-death explosion particle burst — hot orange-white, so
 /// the spray reads as fire/debris against the dark starfield.
 const EXPLOSION_PARTICLE_COLOR: [f32; 4] = [1.0, 0.72, 0.32, 1.0];
+/// (#133 Bruce) The "beat" between the player's queued ABILITIES landing on a
+/// commit. When the player fires a multi-weapon volley, each weapon's beam +
+/// impact + damage number is revealed ONE AT A TIME with this pause between, so
+/// each hit reads distinctly instead of all landing on one frame. This is an
+/// in-turn VISUAL playback pause — the turn-based model is preserved, input is
+/// just locked for the brief playback. Tunable (Bruce dials the feel).
+const BEAT_SECS: f32 = 0.5;
 
 /// (#79) Per-ship "where + which way was this ship before the move, and when did
 /// the slide/turn begin?" anchor. Recorded by `App::record_tween_anchors` after
@@ -828,6 +835,21 @@ enum DemoState {
     /// `WinState::Defeat` (which is per-encounter) — this flips on
     /// `mark_defeated` and the Run carries the flag forward.
     RunDefeated,
+}
+
+/// (#133 Bruce) In-turn BEAT playback of the player's committed volley. On a
+/// CommitTurn the resolver fires the whole queue atomically (all beams + hull
+/// drops land at once); to make each ability read distinctly we DRAIN the player's
+/// fire-events off the board into here and release them ONE AT A TIME, BEAT_SECS
+/// apart, each re-pushed onto `board.fire_events` so both beam-render paths animate
+/// it + an impact/number recorded at that moment. Input is LOCKED while this is
+/// `Some` (the turn-based model holds — input is just suspended for the brief
+/// playback). Enemy fire stays immediate (scope: player-volley-only).
+struct BeatPlayback {
+    /// Player fire-events not yet revealed, in fire (queue) order.
+    pending: std::collections::VecDeque<broadside_engine::types::FireEvent>,
+    /// When to release the next beat.
+    next_at: Instant,
 }
 
 struct App {
@@ -904,6 +926,10 @@ struct App {
     /// `hud::push_damage_number_2d` (the floating amount, #106). Pruned on expiry;
     /// cleared on restart so a fresh board shows no stale flashes/numbers.
     hull_flash: std::collections::HashMap<String, (i32, Instant)>,
+    /// (#133) Active in-turn beat playback of the player's committed volley, or
+    /// `None` when idle. While `Some`, gameplay input is locked and the redraw loop
+    /// releases one queued beam per `BEAT_SECS` off the frame clock.
+    beat_playback: Option<BeatPlayback>,
     /// Shared audio state. `None` if the `audio` feature is off OR the
     /// audio backend failed to open on startup (headless CI, missing
     /// driver). When present, the bus is re-installed on every
@@ -952,6 +978,7 @@ impl App {
             kill_bursts: Vec::new(),
             particles: broadside_engine::vfx::ParticlePool::new(),
             hull_flash: std::collections::HashMap::new(),
+            beat_playback: None,
             #[cfg(feature = "audio")]
             audio: None,
         };
@@ -1068,6 +1095,7 @@ impl App {
         self.kill_bursts.clear(); // (#90) no stale bursts into the fresh board
         self.particles.clear(); // (#119) no stale explosion particles into the fresh board
         self.hull_flash.clear(); // (#101) no stale damage flashes into the fresh board
+        self.beat_playback = None; // (#133) abort any in-flight volley playback on restart
         self.reinstall_audio();
     }
 
@@ -1340,6 +1368,14 @@ impl ApplicationHandler for App {
                 }
                 let Some(key) = keycode_to_key(code) else { return };
 
+                // (#133) Lock gameplay input while the player's committed volley is
+                // playing out beat-by-beat. The turn-based model holds — input is just
+                // suspended for the brief in-turn playback (Esc + res cycles above are
+                // already handled, so they still work). Unlocks when the last beat lands.
+                if self.beat_playback.is_some() {
+                    return;
+                }
+
                 // Modal-overlay states gate input. Phase 3 introduced
                 // EncounterComplete / RunComplete / RunDefeated; each
                 // accepts only a small key set, everything else is
@@ -1401,6 +1437,9 @@ impl ApplicationHandler for App {
                 // Restart resets both the board AND the content so card
                 // charges + subsystems come back as a fresh game.
                 let is_restart = matches!(intent, Intent::Restart);
+                // (#133) Only a CommitTurn fires the player's queued volley — the beat
+                // playback applies to that, not to a move/queue/wait/card.
+                let was_commit = matches!(intent, Intent::CommitTurn);
                 // Snapshot per-ship visual positions BEFORE mutating, so
                 // the tween anchor points at where each ship was already
                 // rendering (not its logical pre-mutation cell, which
@@ -1484,6 +1523,46 @@ impl ApplicationHandler for App {
                             self.particles.spawn_burst(c, 12, EXPLOSION_PARTICLE_COLOR, 0.30);
                         }
                     }
+                    // (#133) BEAT PLAYBACK: when the player COMMITS a volley of 2+
+                    // weapons, the resolver fired them all atomically — every beam landed
+                    // on this frame. Stagger them: keep the FIRST player beam (+ all enemy
+                    // beams) on the board to draw now, and DRAIN the rest into beat_playback
+                    // to release one per BEAT_SECS (the redraw driver re-pushes each onto
+                    // board.fire_events so both beam paths animate it). Input is locked
+                    // while the playback runs. A single-beam (or no-beam) commit is left
+                    // untouched — no beat needed. fire_player_queue produces fire_events in
+                    // queue order, so draining preserves fire order.
+                    if was_commit {
+                        let player_beams: Vec<usize> = self
+                            .board
+                            .fire_events
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, fe)| fe.attacker_faction == Faction::Player)
+                            .map(|(i, _)| i)
+                            .collect();
+                        if player_beams.len() >= 2 {
+                            // Drain all player beams EXCEPT the first into the playback,
+                            // in order; the first stays on the board to fire this frame.
+                            let mut pending = std::collections::VecDeque::new();
+                            // Walk from the back so removing by index stays valid; collect
+                            // in reverse then restore order.
+                            let mut to_remove: Vec<usize> = player_beams[1..].to_vec();
+                            to_remove.sort_unstable_by(|a, b| b.cmp(a)); // descending
+                            let mut drained: Vec<broadside_engine::types::FireEvent> = Vec::new();
+                            for idx in to_remove {
+                                drained.push(self.board.fire_events.remove(idx));
+                            }
+                            drained.reverse(); // back to fire order
+                            for fe in drained {
+                                pending.push_back(fe);
+                            }
+                            self.beat_playback = Some(BeatPlayback {
+                                pending,
+                                next_at: now + std::time::Duration::from_secs_f32(BEAT_SECS),
+                            });
+                        }
+                    }
                     // Post-mutation: did this turn end an encounter?
                     match encounter_outcome(&self.board) {
                         EncounterOutcome::Won => {
@@ -1513,6 +1592,44 @@ impl ApplicationHandler for App {
             }
             WindowEvent::RedrawRequested => {
                 let now = Instant::now();
+                // (#133) BEAT driver: while a committed volley is playing out, release
+                // the next queued player beam every BEAT_SECS. Each released beam is
+                // pushed onto board.fire_events (both beam-render paths animate the new
+                // event, since its signature changes) + gets an impact spark and a
+                // damage-number/flash on its target at THIS moment — so the volley reads
+                // as distinct hits with the beat between. Input stays locked until the
+                // queue empties (then beat_playback -> None unlocks it). Only fires while
+                // Playing; an overlay freezes it.
+                if self.demo_state == DemoState::Playing {
+                    // Pop the next due beam WITHOUT holding a borrow across the
+                    // self.particles / self.board accesses below (disjoint-field borrow
+                    // would otherwise alias). due = the FireEvent to reveal this frame.
+                    let due: Option<broadside_engine::types::FireEvent> = match self.beat_playback.as_mut() {
+                        Some(pb) if now >= pb.next_at => {
+                            let fe = pb.pending.pop_front();
+                            pb.next_at = now + std::time::Duration::from_secs_f32(BEAT_SECS);
+                            fe
+                        }
+                        _ => None,
+                    };
+                    if let Some(fe) = due {
+                        // Impact spark on the struck cell, timed to the beat.
+                        if fe.hit {
+                            let pcfg = ProjectorConfig::for_scene(
+                                broadside_engine::gfx::scene_w() as f32,
+                                broadside_engine::gfx::scene_h() as f32,
+                            );
+                            let c = broadside_engine::projector::grid_cell_quad(fe.to_pos, &pcfg).center;
+                            self.particles.spawn_burst(c, 8, EXPLOSION_PARTICLE_COLOR, 0.25);
+                        }
+                        // Re-push the beam so it draws + animates this frame.
+                        self.board.fire_events.push(fe);
+                    }
+                    // Empty queue -> playback done, unlock input.
+                    if self.beat_playback.as_ref().map(|p| p.pending.is_empty()).unwrap_or(false) {
+                        self.beat_playback = None;
+                    }
+                }
                 // (#43) `angle` (legacy camera-revolve) and the per-ship `tween`
                 // fed the 1-D compose_scene_tweened; the 2-D path
                 // (compose_scene_2d) takes neither in pass 1. `active_tween` is
