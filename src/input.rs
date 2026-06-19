@@ -58,6 +58,10 @@ pub enum Key {
     E,
     /// Letter V. Vent heat.
     V,
+    /// Letter W. WAIT — pass the turn: hold position + facing and let the world
+    /// advance one turn (#126, turn-based model). Bruce moves with the ARROW
+    /// keys, so W is free; mnemonic "Wait", sits by the QWE cluster.
+    W,
     /// Digit 1.
     D1,
     /// Digit 2.
@@ -121,6 +125,11 @@ pub enum Intent {
     PlayCard(String),
     /// Resolve the current round (call `resolve_round`).
     CommitTurn,
+    /// WAIT — pass the turn (#126, turn-based model): the player takes no
+    /// action of their own; the bin just advances the world one turn
+    /// (`run_world_phase`). Control-flow like [`CommitTurn`] (not queued):
+    /// [`intent_to_action_id`] returns `None` for it; the bin handles it.
+    Wait,
     /// Restart the scene (rebuild Board from scratch).
     Restart,
 }
@@ -139,6 +148,7 @@ pub enum Intent {
 /// | `Down`         | [`Intent::MoveDown`] (S, toward the player)  |
 /// | `Tab`          | [`Intent::ReorientFlip`]                     |
 /// | `V`            | [`Intent::Vent`]                             |
+/// | `W`            | [`Intent::Wait`] (pass the turn)             |
 /// | `D1` / `D2` / `D3` | [`Intent::QueueAction`] of `ship.mounts[N].weapon`, **only if** `N < mounts.len()`. `None` otherwise. |
 /// | `D5` / `D6` / `D7` | [`Intent::PlayCard`] of the Nth card id in the ship's [`crate::cards::FieldKit`], **only if** that slot exists in `content`. `None` otherwise. |
 /// | `R`, `Space`   | [`Intent::CommitTurn`]                       |
@@ -158,6 +168,7 @@ pub fn key_to_intent(key: Key, ship: &Ship, content: &dyn Content) -> Option<Int
         Key::Q => Some(Intent::RotateLeft),
         Key::E => Some(Intent::RotateRight),
         Key::V => Some(Intent::Vent),
+        Key::W => Some(Intent::Wait),
         Key::D1 => mount_action(ship, 0).map(Intent::QueueAction),
         Key::D2 => mount_action(ship, 1).map(Intent::QueueAction),
         Key::D3 => mount_action(ship, 2).map(Intent::QueueAction),
@@ -178,8 +189,8 @@ fn mount_action(ship: &Ship, idx: usize) -> Option<String> {
 /// real catalog entries.
 ///
 /// Returns `None` for control-flow intents ([`Intent::CommitTurn`],
-/// [`Intent::Restart`]) — those are not queued; the caller handles them
-/// directly. Also returns `None` for [`Intent::PlayCard`] because card
+/// [`Intent::Wait`], [`Intent::Restart`]) — those are not queued; the caller
+/// handles them directly. Also returns `None` for [`Intent::PlayCard`] because card
 /// plays need a separate validation + charge-decrement step the caller
 /// performs via [`Content::try_play_card`]; on success the caller then
 /// pushes [`synthetic_card_action_id`] manually.
@@ -196,7 +207,7 @@ pub fn intent_to_action_id(intent: &Intent) -> Option<&str> {
         Intent::Vent => Some(SYNTHETIC_VENT),
         // PlayCard: caller validates + decrements via Content::try_play_card
         // first, then pushes synthetic_card_action_id(card_id) manually.
-        Intent::PlayCard(_) | Intent::CommitTurn | Intent::Restart => None,
+        Intent::PlayCard(_) | Intent::CommitTurn | Intent::Wait | Intent::Restart => None,
     }
 }
 

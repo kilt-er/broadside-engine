@@ -65,8 +65,7 @@ use broadside_engine::meta::{salvage_for_capital_encounter, salvage_for_encounte
 use broadside_engine::perspective::{fractional_cell_to_screen, LaneGeometry, DEFAULT_LANE};
 use broadside_engine::projector::ProjectorConfig;
 use broadside_engine::resolve::{
-    apply_instant_action, find_player_id, fire_player_queue, live_enemy_ids, tick_enemy,
-    tick_world, Content,
+    apply_instant_action, find_player_id, fire_player_queue, run_world_phase, Content,
 };
 use broadside_engine::subsystems::{HEAT_SINK, POINT_BLANK_DOCTRINE};
 use broadside_engine::types::{
@@ -90,6 +89,7 @@ fn keycode_to_key(code: KeyCode) -> Option<Key> {
         KeyCode::KeyQ => Key::Q,
         KeyCode::KeyE => Key::E,
         KeyCode::KeyV => Key::V,
+        KeyCode::KeyW => Key::W, // (#126) WAIT — pass the turn (turn-based model)
         KeyCode::Digit1 => Key::D1,
         KeyCode::Digit2 => Key::D2,
         KeyCode::Digit3 => Key::D3,
@@ -173,10 +173,10 @@ pub fn apply_intent(
                 Effect::REORIENT { to: ReorientTo::RotateRight },
             ];
             apply_instant_action(&player_id, &action, board, content);
-            // (#124) Player input no longer drives the world phase — the world +
-            // enemies tick on their OWN real-time clocks (tick_world / tick_enemy in
-            // the main loop). A player move/reorient is INSTANT and does not advance
-            // the enemies' or world's time.
+            // (#126) TURN-BASED (chess): a player turn-action advances the world
+            // EXACTLY ONE turn. The 180° about-face is one such action, so the
+            // world phase runs once after it lands.
+            run_world_phase(board, content);
             true
         }
 
@@ -208,21 +208,26 @@ pub fn apply_intent(
                 return false;
             };
             apply_instant_action(&player_id, &action, board, content);
-            // (#124) Instant — does NOT advance the world/enemy clocks (those tick
-            // independently in real time in the main loop).
+            // (#126) TURN-BASED: a move / rotate / vent is one turn-action, so the
+            // world advances exactly one turn after the player's action lands.
+            run_world_phase(board, content);
             true
         }
 
-        // --- PlayCard: validate + decrement charges via try_play_card,
-        // then run the synthetic `__card_<id>` Action INSTANTLY. (#124) The world
-        // phase no longer runs here — enemies + world tick on their own clocks. ---
+        // --- PlayCard (#126): FIELD-KIT CARDS ARE FREE. Validate + decrement charges
+        // via try_play_card, then run the synthetic `__card_<id>` Action INSTANTLY —
+        // and do NOT advance the world. Playing a field-kit card (keys 5/6/7) is a
+        // free action in the turn-based model: it costs no turn, ticks no cooldowns,
+        // and gives the enemies no action. This is the one EXCEPTION to "every player
+        // action advances one turn"; all other inputs (move/queue/commit/wait) call
+        // run_world_phase exactly once. ---
         Intent::PlayCard(card_id) => {
             match content.try_play_card(&player_id, &card_id) {
                 PlayResult::Played => {
                     let synth_id = synthetic_card_action_id(&card_id);
                     let Some(action) = content.action(&synth_id).cloned() else {
                         // Charges decremented but the synthetic isn't registered —
-                        // nothing more to do (no world phase to advance now).
+                        // nothing more to do (cards are free: no world phase either way).
                         return true;
                     };
                     apply_instant_action(&player_id, &action, board, content);
@@ -234,24 +239,42 @@ pub fn apply_intent(
             }
         }
 
-        // --- QueueAction: push the action id to the player's queue ONLY. Queuing
-        // is PLANNING — it never advances the world (the world + enemies run on
-        // their own real-time clocks now, #124). ---
+        // --- QueueAction (#126): push the action id to the player's queue, then
+        // advance the world one turn. In the turn-based (chess) model, lining up a
+        // weapon (keys 1/2/3) IS a turn-action — it costs a turn (reverting #97's
+        // "queue is free"). The shot fires when the player COMMITS (Space) on a
+        // later turn; queuing just spends this turn to load it. A failed queue
+        // (no such mount) advances nothing. ---
         Intent::QueueAction(_) => {
             let Some(id) = intent_to_action_id(&intent) else {
                 return false;
             };
-            append_to_player_queue(board, id.to_string())
+            if append_to_player_queue(board, id.to_string()) {
+                run_world_phase(board, content);
+                true
+            } else {
+                false
+            }
         }
 
-        // --- CommitTurn (#124): fire ONLY the player's queue (empty queue = a no-op
-        // "hold"). The world phase NO LONGER runs here — enemies empty their queues
-        // on their OWN real-time clocks (tick_enemy) and the world (ordnance +
-        // cooldown/shield regen) ticks on its own interval (tick_world), both in the
-        // main loop, decoupled from the player. So spacebar = "fire what I lined up,"
-        // nothing else; enemies keep acting whether or not the player commits. ---
+        // --- Wait (#126): pass the turn. The player takes no action of their own;
+        // the world simply advances one turn (ordnance steps, every enemy takes its
+        // one action, cooldowns/shield-regen tick). "Hold position, let them move." ---
+        Intent::Wait => {
+            run_world_phase(board, content);
+            true
+        }
+
+        // --- CommitTurn (#126): fire the player's queued shots, THEN advance the
+        // world one turn. Space = "fire what I lined up + end my turn." An empty
+        // queue still spends the turn (a no-op "hold" that lets the world move) —
+        // identical to Wait when nothing is queued. The player's queue fires FIRST,
+        // then run_world_phase advances ordnance + every enemy's one action + the
+        // end-of-turn cooldown/shield-regen tick, matching resolve_round's order
+        // (fire_player_queue then run_world_phase). ---
         Intent::CommitTurn => {
             fire_player_queue(&player_id, board, content);
+            run_world_phase(board, content);
             true
         }
 
@@ -769,14 +792,6 @@ const HULL_FLASH_SECS: f32 = 0.45;
 /// (#119) Tint of the ship-death explosion particle burst — hot orange-white, so
 /// the spray reads as fire/debris against the dark starfield.
 const EXPLOSION_PARTICLE_COLOR: [f32; 4] = [1.0, 0.72, 0.32, 1.0];
-/// (#124) Real-time combat cadences (seconds). The player commit fires ONLY the
-/// player queue; enemies + the world tick on their OWN clocks, decoupled from the
-/// player (enemies act while the player plans). Tunable so Bruce can dial enemy
-/// speed: each enemy fires/decides every ENEMY_TICK_SECS (staggered per-ship so
-/// they don't act in lockstep); the world (ordnance advance + cooldown/shield
-/// regen, via tick_world) ticks every WORLD_TICK_SECS on one steady global clock.
-const ENEMY_TICK_SECS: f32 = 1.2;
-const WORLD_TICK_SECS: f32 = 0.5;
 
 /// (#79) Per-ship "where + which way was this ship before the move, and when did
 /// the slide/turn begin?" anchor. Recorded by `App::record_tween_anchors` after
@@ -881,17 +896,6 @@ struct App {
     /// emitted into the draw list; cleared on restart. Later phases (muzzle flash,
     /// impact debris) reuse the same pool.
     particles: broadside_engine::vfx::ParticlePool,
-    /// (#124) Real-time enemy clocks: ship id -> seconds accumulated toward its
-    /// next tick_enemy. Each frame adds dt; when an entry reaches ENEMY_TICK_SECS
-    /// the enemy fires/decides (tick_enemy) and the accumulator resets. New enemies
-    /// get an entry (with a STAGGERED initial phase so the fleet doesn't act in
-    /// lockstep) on first sight; ids that leave the board are pruned; cleared on
-    /// restart. Decoupled from the player's commit entirely.
-    enemy_clocks: std::collections::HashMap<String, f32>,
-    /// (#124) Global world clock: seconds toward the next tick_world (ordnance
-    /// advance + cooldown/shield regen). One steady cadence covering player + all
-    /// enemies uniformly. Reset on restart.
-    world_clock: f32,
     /// (#101/#106) Per-ship hull-DROP record: ship id -> (amount lost, when).
     /// Recorded on a combat resolve by diffing pre-vs-current hull (the 2-D analog
     /// of the player's `hit_flash`, but for EVERY ship). The redraw fades each entry
@@ -947,8 +951,6 @@ impl App {
             hit_flash: 0.0,
             kill_bursts: Vec::new(),
             particles: broadside_engine::vfx::ParticlePool::new(),
-            enemy_clocks: std::collections::HashMap::new(),
-            world_clock: 0.0,
             hull_flash: std::collections::HashMap::new(),
             #[cfg(feature = "audio")]
             audio: None,
@@ -1065,8 +1067,6 @@ impl App {
         self.tween_anchors.clear();
         self.kill_bursts.clear(); // (#90) no stale bursts into the fresh board
         self.particles.clear(); // (#119) no stale explosion particles into the fresh board
-        self.enemy_clocks.clear(); // (#124) fresh enemy clocks for the new board
-        self.world_clock = 0.0; // (#124) reset the world clock
         self.hull_flash.clear(); // (#101) no stale damage flashes into the fresh board
         self.reinstall_audio();
     }
@@ -1160,60 +1160,6 @@ impl App {
             out.insert(ship.id.clone(), (ship.pos, ship.facing));
         }
         out
-    }
-
-    /// (#124) Advance the real-time combat clocks by `dt` — the heart of the
-    /// player-decoupled loop. The WORLD clock (ordnance advance + cooldown/shield
-    /// regen, via `tick_world`) ticks on one steady global cadence; each enemy has
-    /// its OWN clock (via `tick_enemy`) so enemies act independently of the player
-    /// AND of each other (staggered). Called once per frame from RedrawRequested,
-    /// AFTER the frame is drawn (so `tick_world` clearing `fire_events` never wipes
-    /// an undrawn beam — content's ordering contract).
-    ///
-    /// Per content's TWO-TICKS-TO-FIRE contract (#67 telegraph-one-ahead): an
-    /// enemy's first tick decides+telegraphs (its queue fills, the cyan/red intent
-    /// shows), the next fires it + decides the following. So the visible cadence is
-    /// "telegraph, then fire" — the player sees the shot coming one beat ahead.
-    fn tick_realtime(&mut self, dt: f32) {
-        // --- per-enemy clocks ---
-        // Sync the clock map to the live enemies: seed a new enemy with a STAGGERED
-        // initial phase (a deterministic fraction of the cadence from its id) so the
-        // fleet doesn't tick in lockstep; drop clocks for enemies that left.
-        let live = live_enemy_ids(&self.board);
-        self.enemy_clocks.retain(|id, _| live.contains(id));
-        for id in &live {
-            if !self.enemy_clocks.contains_key(id) {
-                // Phase offset in [0, ENEMY_TICK_SECS): FNV fold of the id.
-                let mut h: u32 = 2166136261;
-                for b in id.bytes() {
-                    h = (h ^ b as u32).wrapping_mul(16777619);
-                }
-                let phase = (h % 1000) as f32 / 1000.0 * ENEMY_TICK_SECS;
-                self.enemy_clocks.insert(id.clone(), phase);
-            }
-        }
-        // Advance + fire any enemy whose clock elapsed. Collect first (don't mutate
-        // the map while ticking the board, which may change which ids are live).
-        let mut due: Vec<String> = Vec::new();
-        for (id, t) in self.enemy_clocks.iter_mut() {
-            *t += dt;
-            if *t >= ENEMY_TICK_SECS {
-                *t -= ENEMY_TICK_SECS;
-                due.push(id.clone());
-            }
-        }
-        for id in due {
-            // tick_enemy is id-keyed + bails if the enemy's already gone, so a
-            // mid-loop death (one enemy's shot killing another) is safe.
-            tick_enemy(&id, &mut self.board, &self.content);
-        }
-
-        // --- global world clock ---
-        self.world_clock += dt;
-        if self.world_clock >= WORLD_TICK_SECS {
-            self.world_clock -= WORLD_TICK_SECS;
-            tick_world(&mut self.board, &self.content);
-        }
     }
 
     /// Record fresh tween anchors after `apply_intent` ran: for every ship whose
@@ -1863,17 +1809,11 @@ impl ApplicationHandler for App {
                 // their state each frame; redraw cadence no longer depends on
                 // them (we always redraw), so they no longer gate anything.
                 let _ = (active_tween, vfx_active, ability_active, flash_active, particles_active);
-                // (#124) REAL-TIME combat clocks — run AFTER the frame is drawn
-                // above (gfx.render). ORDERING CONTRACT (content): tick_world clears
-                // board.fire_events at its end (the under-fire re-window), and the
-                // renderer draws beams FROM fire_events — so the world tick MUST come
-                // after the draw or it wipes beams that were never shown. tick_enemy
-                // does NOT clear fire_events, so enemy shot beams accumulate across
-                // enemy ticks and are drawn next frame. Only ticks while Playing —
-                // an overlay (win/defeat/between) freezes the world.
-                if demo_state == DemoState::Playing {
-                    self.tick_realtime(1.0 / 60.0);
-                }
+                // (#126) TURN-BASED: the world advances ONLY when the player takes a
+                // turn-action (inside apply_intent, on a keypress) — there is no
+                // per-frame world tick. RedrawRequested just keeps the swapchain live
+                // (the continuous-redraw fix above) and re-presents the latched VFX
+                // fade; the board state is unchanged between turns.
                 if let Some(w) = self.window.as_ref() {
                     w.request_redraw();
                 }
