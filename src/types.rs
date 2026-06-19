@@ -136,6 +136,7 @@ const fn default_range() -> Range {
 /// position — don't assume one orientation value yields "toward player" for all
 /// spawns. This helper is the faithful per-orientation map + the
 /// [`default_facing`] fallback; native 2-D spawn facing is C4's to author.
+#[must_use]
 pub const fn facing_from_orientation(o: Orientation) -> Facing {
     match o {
         Orientation::BowOn { bow: LaneEnd::Fore } => Facing::Bow(Dir4::S),
@@ -270,6 +271,7 @@ impl Board {
     /// producer populates real positions, ships carry the transitional default
     /// [`Pos`] and live at their legacy 1-D slot, so `ship_at` is only
     /// meaningful on a board whose ships have been placed 2-D-natively.
+    #[must_use]
     pub fn ship_at(&self, pos: Pos) -> Option<&Ship> {
         self.cells.get(pos.to_index()).and_then(|c| c.as_ref())
     }
@@ -277,6 +279,7 @@ impl Board {
     /// Mutably borrow the ship occupying `pos` (the `mut` companion to
     /// [`Board::ship_at`]; used by the resolver's `apply_damage` in R4). Same
     /// O(1) `get_mut` + slot==pos invariant.
+    #[must_use]
     pub fn ship_at_mut(&mut self, pos: Pos) -> Option<&mut Ship> {
         self.cells.get_mut(pos.to_index()).and_then(|c| c.as_mut())
     }
@@ -286,6 +289,7 @@ impl Board {
     /// 1-D `find_cell_by_id`). Scans [`Board::cells`] (`O(CELLS)`); returns the
     /// slot's [`Pos`] (which equals the ship's `pos` under the slot==pos
     /// invariant).
+    #[must_use]
     pub fn find_pos_by_id(&self, id: &str) -> Option<Pos> {
         self.cells.iter().enumerate().find_map(|(i, c)| {
             c.as_ref()
@@ -480,6 +484,7 @@ pub struct ShieldProfile {
 
 impl ShieldProfile {
     /// Borrow a face by zone. Mirrors TS `shieldProfile[zone]`.
+    #[must_use]
     pub const fn face(&self, zone: HullZone) -> &ShieldFace {
         match zone {
             HullZone::Bow => &self.bow,
@@ -1459,6 +1464,7 @@ impl Run {
     /// Callers build `player` from whichever `ClassDef` the player picked
     /// at the class-select screen; constructing the Ship is content's
     /// job, not types.rs's, so `new` takes a fully-formed Ship.
+    #[must_use]
     pub const fn new(player: Ship) -> Self {
         Self {
             current_sector_idx: 0,

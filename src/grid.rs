@@ -71,11 +71,13 @@ impl Pos {
     /// Construct a position. No bounds check — callers that take untrusted
     /// indices should use [`Pos::from_index`] (bounds-checked) or
     /// [`Pos::in_bounds`].
+    #[must_use]
     pub const fn new(col: usize, row: usize) -> Self {
         Self { col, row }
     }
 
     /// `true` iff this position lies inside the `COLS × ROWS` grid.
+    #[must_use]
     pub const fn in_bounds(self) -> bool {
         self.col < COLS && self.row < ROWS
     }
@@ -84,6 +86,7 @@ impl Pos {
     /// (`row * COLS + col`). Caller must ensure [`Pos::in_bounds`]; an
     /// out-of-range `Pos` yields an out-of-range index (a later `Vec` index
     /// would panic, matching the existing usize-cell behaviour).
+    #[must_use]
     pub const fn to_index(self) -> usize {
         self.row * COLS + self.col
     }
@@ -92,6 +95,7 @@ impl Pos {
     /// `None` if `index >= CELLS`. Use this when reading an index that came
     /// from outside (deserialized data, a loop bound) so an invalid index is a
     /// handled `None` rather than a wrong-cell silent bug.
+    #[must_use]
     pub const fn from_index(index: usize) -> Option<Self> {
         if index >= CELLS {
             return None;
@@ -106,6 +110,7 @@ impl Pos {
 /// Iterate every in-bounds [`Pos`] in flat row-major order (the same order as
 /// `(0..CELLS).map(|i| Pos::from_index(i).unwrap())`). Handy for board scans
 /// and tests; cheap (`Copy` items, no allocation beyond the returned `Vec`).
+#[must_use]
 pub fn all_positions() -> Vec<Pos> {
     (0..CELLS)
         .map(|i| Pos {
@@ -155,6 +160,7 @@ impl Dir8 {
     /// Clockwise index `0..8` (`N`=0, `NE`=1, … `NW`=7). The single source of
     /// truth for rotation/opposite arithmetic and the inverse of
     /// [`Dir8::from_step`].
+    #[must_use]
     pub const fn step(self) -> u8 {
         match self {
             Self::N => 0,
@@ -170,6 +176,7 @@ impl Dir8 {
 
     /// Inverse of [`Dir8::step`]: build a direction from a clockwise index,
     /// taken `mod 8` so rotation arithmetic never panics.
+    #[must_use]
     pub const fn from_step(step: u8) -> Self {
         match step % 8 {
             0 => Self::N,
@@ -185,6 +192,7 @@ impl Dir8 {
 
     /// The unit step this direction applies to a [`Pos`], as `(d_col, d_row)`.
     /// `+row` is toward the player (see module docs).
+    #[must_use]
     pub const fn delta(self) -> (i32, i32) {
         match self {
             Self::N => (0, -1),
@@ -199,23 +207,27 @@ impl Dir8 {
     }
 
     /// The 180°-opposite direction (`+4 mod 8`).
+    #[must_use]
     pub const fn opposite(self) -> Self {
         Self::from_step(self.step() + 4)
     }
 
     /// Rotate one eighth-turn clockwise (`N → NE → E → …`).
+    #[must_use]
     pub const fn rotate_cw(self) -> Self {
         Self::from_step(self.step() + 1)
     }
 
     /// Rotate one eighth-turn counter-clockwise (`N → NW → W → …`). `+7 mod 8`
     /// to keep the arithmetic in `u8` without an underflow.
+    #[must_use]
     pub const fn rotate_ccw(self) -> Self {
         Self::from_step(self.step() + 7)
     }
 
     /// `true` for the four cardinal directions (`N`/`E`/`S`/`W`); `false` for
     /// the diagonals. (Cardinals are the even clockwise indices.)
+    #[must_use]
     pub const fn is_cardinal(self) -> bool {
         self.step().is_multiple_of(2)
     }
@@ -230,6 +242,7 @@ impl Dir8 {
 /// to the nearest of 8" lives with the resolver's 2D geometry (R1
 /// `direction_to`); A2 only needs the grid-step octant, which the signs give
 /// directly.
+#[must_use]
 pub fn from_to(a: Pos, b: Pos) -> Option<Dir8> {
     let dc = (b.col as i32) - (a.col as i32);
     let dr = (b.row as i32) - (a.row as i32);
@@ -255,6 +268,7 @@ pub fn from_to(a: Pos, b: Pos) -> Option<Dir8> {
 /// leaves the grid (including underflow past `col`/`row` 0). `dist` is `i32`
 /// so callers can pass a negative to step backward without flipping the
 /// direction; the bounds check covers both ends.
+#[must_use]
 pub const fn offset(pos: Pos, dir: Dir8, dist: i32) -> Option<Pos> {
     let (dc, dr) = dir.delta();
     let col = (pos.col as i32) + dc * dist;
@@ -271,6 +285,7 @@ pub const fn offset(pos: Pos, dir: Dir8, dist: i32) -> Option<Pos> {
 /// The in-bounds 8-neighbours of `pos`, in clockwise [`Dir8::ALL`] order.
 /// Length 3 (corner), 5 (edge), or 8 (interior). Off-grid steps are dropped,
 /// so the result is always a valid set of board cells.
+#[must_use]
 pub fn neighbors(pos: Pos) -> Vec<Pos> {
     Dir8::ALL
         .iter()
@@ -304,6 +319,7 @@ impl Dir4 {
     pub const ALL: [Self; 4] = [Self::N, Self::E, Self::S, Self::W];
 
     /// Widen to the matching [`Dir8`] cardinal.
+    #[must_use]
     pub const fn to_dir8(self) -> Dir8 {
         match self {
             Self::N => Dir8::N,
@@ -314,6 +330,7 @@ impl Dir4 {
     }
 
     /// Narrow a [`Dir8`] to a [`Dir4`], or `None` if it is a diagonal.
+    #[must_use]
     pub const fn from_dir8(dir: Dir8) -> Option<Self> {
         match dir {
             Dir8::N => Some(Self::N),
@@ -325,6 +342,7 @@ impl Dir4 {
     }
 
     /// The 180°-opposite cardinal.
+    #[must_use]
     pub const fn opposite(self) -> Self {
         match self {
             Self::N => Self::S,
@@ -338,6 +356,7 @@ impl Dir4 {
     /// is ordered clockwise from `N`, so this is `+1 (mod 4)`. The renderer's
     /// rotate-RIGHT control turns the player's bow this way (toward higher `col`
     /// when starting from `N`).
+    #[must_use]
     pub const fn rotate_cw(self) -> Self {
         match self {
             Self::N => Self::E,
@@ -350,6 +369,7 @@ impl Dir4 {
     /// Rotate one quarter-turn **counter-clockwise** (`N → W → S → E → N`), i.e.
     /// `−1 (mod 4)`. The renderer's rotate-LEFT control turns the player's bow
     /// this way.
+    #[must_use]
     pub const fn rotate_ccw(self) -> Self {
         match self {
             Self::N => Self::W,
@@ -360,6 +380,7 @@ impl Dir4 {
     }
 
     /// The axis this cardinal lies on.
+    #[must_use]
     pub const fn axis(self) -> Axis {
         match self {
             Self::N | Self::S => Axis::NorthSouth,
@@ -386,6 +407,7 @@ impl Axis {
     /// The two cardinals lying on this axis, as `(positive, negative)` where
     /// "positive" is the increasing-coordinate direction (`S` for `NorthSouth`
     /// since `+row` is toward the player; `E` for `EastWest`).
+    #[must_use]
     pub const fn dirs(self) -> (Dir4, Dir4) {
         match self {
             Self::NorthSouth => (Dir4::S, Dir4::N),
@@ -417,6 +439,7 @@ impl Facing {
     /// "the renderer's bow-arrow MUST encode the SAME forward axis"). For a
     /// `Bow` stance it is the bow direction's axis; for a `Broadside` stance it
     /// is the hull's axis.
+    #[must_use]
     pub const fn forward_axis(self) -> Axis {
         match self {
             Self::Bow(dir) => dir.axis(),
@@ -449,6 +472,7 @@ pub enum Range {
 /// Chebyshev (chessboard) distance between two cells: `max(|d_col|, |d_row|)`.
 /// This is the metric a diagonal step costs 1, matching [`Dir8`] movement
 /// where a diagonal advances one cell on both axes at once.
+#[must_use]
 pub fn distance(a: Pos, b: Pos) -> usize {
     let dc = (a.col as i32 - b.col as i32).unsigned_abs() as usize;
     let dr = (a.row as i32 - b.row as i32).unsigned_abs() as usize;
@@ -457,6 +481,7 @@ pub fn distance(a: Pos, b: Pos) -> usize {
 
 /// Bucket the [`distance`] between two cells into a [`Range`] band: 0–1 →
 /// `Adjacent`, 2 → `Near`, 3+ → `Far`.
+#[must_use]
 pub fn range_band(a: Pos, b: Pos) -> Range {
     match distance(a, b) {
         0 | 1 => Range::Adjacent,
