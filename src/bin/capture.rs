@@ -400,6 +400,10 @@ fn main() {
             AbilityTile { slot: '5', icon: AbilityIcon::Defensive, damage: 0, range: 0, cooldown: 0, cooldown_max: 0, queued_index: None, can_fire: true, arc: None },
         ];
         broadside_engine::hud::push_ability_tiles_2d(&mut commands, &tiles);
+        // (#128) Player QUEUE panel (top-right) from the same demo tiles — slots 1+3
+        // are queued (index 1 + 0), so the panel shows them in fire order and the
+        // hand tiles 1+3 hollow out. Lets the capture show the hand->queue move.
+        broadside_engine::hud::push_player_queue_panel_2d(&mut commands, &tiles);
         // (#122) Player targeting telegraph demo: show the cyan preview of where a
         // queued weapon would strike. The live bin resolves the cells via
         // resolve_targeting_2d; here we hand-pick a target cell forward of the

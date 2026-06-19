@@ -1745,6 +1745,13 @@ impl ApplicationHandler for App {
                     // board alone doesn't carry. Damage # top-left, key # bottom-right,
                     // cooldown ticks along the bottom.
                     hud::push_ability_tiles_2d(&mut instances, &player_tiles);
+                    // (#128 Bruce) Player QUEUE panel, TOP-RIGHT: the weapons lined up
+                    // (1/2/3), in fire order. Built from the SAME player_tiles — a
+                    // queued tile (queued_index = Some) leaves the hand (hollows out in
+                    // push_ability_tiles_2d above) and its icon shows HERE. No-op when
+                    // nothing is queued. Cards (5/6/7) are free + never queue, so they
+                    // never appear in this panel.
+                    hud::push_player_queue_panel_2d(&mut instances, &player_tiles);
                 }
                 // Push the appropriate demo-state overlay on top.
                 // Compose no longer auto-pushes — the bin owns the

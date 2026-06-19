@@ -747,19 +747,35 @@ pub fn push_ability_tiles_2d(out: &mut Vec<DrawCommand>, tiles: &[AbilityTile]) 
         let icon_col = if disabled { TILE_DISABLED_INK } else { TILE_ICON };
         let dmg_col = if disabled { TILE_DISABLED_INK } else { TILE_DAMAGE };
         let range_col = if disabled { TILE_DISABLED_INK } else { TILE_RANGE };
-        // Icon, centred (nudged up a touch to leave room for the bottom tick row).
-        push_sprite(
-            out,
-            SpriteInstance::axis_aligned(
-                [tx + tile / 2.0, tile_y + tile / 2.0 - 1.0],
-                [7.0, 7.0],
-                icon_col,
-                atlas::cell_uvs(t.icon.atlas_cell()),
-            ),
-        );
-        // DAMAGE = LARGE number, TOP-LEFT (pixel=2; skip 0 = non-damage ability).
-        if t.damage > 0 {
-            push_text_left(out, &t.damage.to_string(), tx + 2.0, tile_y + 2.0, 2.0, dmg_col);
+        // (#128 Bruce) HAND->QUEUE MOVE: a QUEUED weapon LEAVES the hand — its icon
+        // now lives in the top-right QUEUE panel (push_player_queue_panel_2d), so the
+        // hand slot HOLLOWS OUT: skip the icon + damage figure here and draw an
+        // up-chevron "moved to the queue" marker instead. The dim frame + slot key
+        // (below) stay so the player still reads "slot N is lined up". A resting tile
+        // is unchanged (full icon + damage). The no-fire veil/slash (below) still
+        // applies to a queued-but-won't-bear slot — that warning belongs in the hand.
+        if queued {
+            // Up-chevron centred in the slot: two strokes meeting at the top = "this
+            // moved up into the queue". Amber so it matches the queue panel's chips.
+            let mx = tx + tile / 2.0;
+            let my = tile_y + tile / 2.0;
+            push_line(out, pt([mx - 5.0, my + 3.0]), pt([mx, my - 4.0]), 2.0, TILE_QUEUED);
+            push_line(out, pt([mx, my - 4.0]), pt([mx + 5.0, my + 3.0]), 2.0, TILE_QUEUED);
+        } else {
+            // Icon, centred (nudged up a touch to leave room for the bottom tick row).
+            push_sprite(
+                out,
+                SpriteInstance::axis_aligned(
+                    [tx + tile / 2.0, tile_y + tile / 2.0 - 1.0],
+                    [7.0, 7.0],
+                    icon_col,
+                    atlas::cell_uvs(t.icon.atlas_cell()),
+                ),
+            );
+            // DAMAGE = LARGE number, TOP-LEFT (pixel=2; skip 0 = non-damage ability).
+            if t.damage > 0 {
+                push_text_left(out, &t.damage.to_string(), tx + 2.0, tile_y + 2.0, 2.0, dmg_col);
+            }
         }
         // RANGE = smaller number, TOP-RIGHT (cells; skip 0 = non-targeted).
         // (#100) Suppressed while QUEUED — the top-right corner is taken by the
@@ -838,34 +854,10 @@ pub fn push_ability_tiles_2d(out: &mut Vec<DrawCommand>, tiles: &[AbilityTile]) 
                 TILE_NO_TARGET_MARK,
             );
         }
-        // (#100) QUEUE-ORDER BADGE: a small number in the TOP-RIGHT corner showing
-        // this ability's 1-based fire order, so a multi-weapon queue reads "1 then 2
-        // then 3". Drawn last so it sits above the veil. Bumped left of the range
-        // number's spot — range is blanked while queued is what matters here, but
-        // keep them from colliding by placing the badge hard in the corner on its
-        // own amber chip.
-        if let Some(qi) = t.queued_index {
-            let label = (qi + 1).to_string();
-            // Amber chip behind the order number (top-right), ~7px square.
-            let chip = 7.0;
-            let cx0 = tx + tile - chip;
-            let cy0 = tile_y;
-            push_polygon(
-                out,
-                PolygonInstance::flat(
-                    [
-                        [cx0, cy0],
-                        [cx0 + chip, cy0],
-                        [cx0 + chip, cy0 + chip],
-                        [cx0, cy0 + chip],
-                    ],
-                    TILE_QUEUED,
-                    atlas::cell_uvs(atlas::SOLID_WHITE),
-                ),
-            );
-            // Order number in dark ink on the amber chip (readable contrast).
-            push_text_left(out, &label, cx0 + 1.0, cy0 + 1.0, 1.0, TILE_BG);
-        }
+        // (#128) The on-tile QUEUE-ORDER BADGE (#100) is GONE — fire order now lives
+        // in the top-right QUEUE panel (push_player_queue_panel_2d), and the hand slot
+        // shows the up-chevron "moved to queue" marker instead. Keeping a badge here
+        // too would just duplicate the panel; the hand reads as "emptied / lined up".
     }
 }
 
@@ -3031,6 +3023,93 @@ pub fn push_salvage_hud(out: &mut Vec<DrawCommand>, salvage: u32) {
     for (i, ch) in banner.chars().enumerate() {
         let gx = x + i as f32 * advance;
         push_glyph_5x7(out, ch, gx, y, pixel, WHITE);
+    }
+}
+
+/// (#128 Bruce) The PLAYER'S queued-ability panel, TOP-RIGHT corner. The abilities
+/// the player has lined up (keys 1/2/3), shown in FIRE ORDER as a vertical stack —
+/// built up dynamically as the player queues and cleared when they commit (fire).
+/// This is the "moved OUT of the hand" half of Bruce's hand->queue move: a queued
+/// weapon's bottom-row tile hollows out (see `push_ability_tiles_2d`) and its icon
+/// appears HERE instead. 5/6/7 cards are FREE instant actions and never queue, so
+/// they never appear in this panel (the bin only sets `queued_index` on weapons it
+/// actually pushed to `ship.queue`).
+///
+/// Takes the player's `AbilityTile`s; filters to the queued ones, orders by
+/// `queued_index`, and draws each as a small amber-framed row (order number +
+/// weapon icon + slot key). No-op when nothing is queued, so the corner is empty
+/// until the player lines something up.
+pub fn push_player_queue_panel_2d(out: &mut Vec<DrawCommand>, tiles: &[AbilityTile]) {
+    // Collect queued tiles in fire order (queued_index ascending).
+    let mut queued: Vec<&AbilityTile> = tiles.iter().filter(|t| t.queued_index.is_some()).collect();
+    if queued.is_empty() {
+        return;
+    }
+    queued.sort_by_key(|t| t.queued_index.unwrap_or(usize::MAX));
+
+    let w = crate::gfx::scene_w() as f32;
+    let right_pad = 8.0;
+    let top = 8.0;
+    let row_h = 16.0; // per queued ability
+    let icon = 5.0; // icon half-size
+    let panel_w = 56.0;
+    let panel_x = w - panel_w - right_pad;
+
+    // Header "QUEUE" above the stack (small dim label, right-aligned to the panel).
+    push_text_left(out, "QUEUE", panel_x + 2.0, top, 1.0, HUD_LABEL);
+    let stack_top = top + 10.0;
+
+    // Panel backing so the stack reads as one grouped element against the starfield.
+    let panel_h = stack_top - top + queued.len() as f32 * row_h + 2.0;
+    push_polygon(
+        out,
+        PolygonInstance::flat(
+            [
+                [panel_x - 2.0, top - 2.0],
+                [panel_x + panel_w, top - 2.0],
+                [panel_x + panel_w, top - 2.0 + panel_h],
+                [panel_x - 2.0, top - 2.0 + panel_h],
+            ],
+            HUD_BAND_BG,
+            atlas::cell_uvs(atlas::SOLID_WHITE),
+        ),
+    );
+    // Re-draw the header on top of the backing.
+    push_text_left(out, "QUEUE", panel_x + 2.0, top, 1.0, HUD_LABEL);
+
+    for (row, t) in queued.iter().enumerate() {
+        let ry = stack_top + row as f32 * row_h;
+        let cy = ry + row_h * 0.5 - 2.0;
+        // Amber frame chip (QUEUED) behind the icon — same cue as the bottom tiles.
+        let fx = panel_x + 14.0;
+        let half = icon + 2.0;
+        push_polygon(
+            out,
+            PolygonInstance::flat(
+                [
+                    [fx - half, cy - half],
+                    [fx + half, cy - half],
+                    [fx + half, cy + half],
+                    [fx - half, cy + half],
+                ],
+                TILE_QUEUED,
+                atlas::cell_uvs(atlas::SOLID_WHITE),
+            ),
+        );
+        // Weapon icon centered on the chip.
+        push_sprite(
+            out,
+            SpriteInstance::axis_aligned(
+                [fx, cy],
+                [icon, icon],
+                TILE_BG,
+                atlas::cell_uvs(t.icon.atlas_cell()),
+            ),
+        );
+        // Fire-order number (1-based) to the LEFT of the icon.
+        push_text_left(out, &format!("{}", row + 1), panel_x + 2.0, cy - 3.0, 1.0, WHITE);
+        // Slot key to the RIGHT of the icon (which weapon this was in the hand).
+        push_text_left(out, &t.slot.to_string(), fx + half + 3.0, cy - 3.0, 1.0, HUD_LABEL);
     }
 }
 
