@@ -1831,9 +1831,7 @@ impl Gfx {
                             SpriteStance::BowOnAft.slug(),
                             view.slug()
                         );
-                        log::debug!(
-                            "sprite: deriving {slug} from horizontally-mirrored bowOnFore"
-                        );
+                        log::debug!("sprite: deriving {slug} from horizontally-mirrored bowOnFore");
                         self.upload_ship_sprite(&slug, &mirrored);
                         loaded += 1;
                     }
@@ -1990,7 +1988,9 @@ impl Gfx {
         }
         let side_entry = self.ship_sprites.get(side.as_str());
         let top_entry = self.ship_sprites.get(top.as_str());
-        let (side_view, top_view) = if let (Some(s), Some(t)) = (side_entry, top_entry) { (&s.texture_view, &t.texture_view) } else {
+        let (side_view, top_view) = if let (Some(s), Some(t)) = (side_entry, top_entry) {
+            (&s.texture_view, &t.texture_view)
+        } else {
             log::debug!(
                 "ship bg skipped: side={} top={} (one or both not loaded)",
                 side.as_str(),
@@ -2325,8 +2325,7 @@ impl Gfx {
                                 // Bind group missing — sprites for this slug pair
                                 // aren't loaded. Skip the draw; the procedural
                                 // polygons below stay visible.
-                                let Some(bg) = gfx.ship_bg_cache.get(&(slot_idx, side, top))
-                                else {
+                                let Some(bg) = gfx.ship_bg_cache.get(&(slot_idx, side, top)) else {
                                     continue;
                                 };
                                 pass.set_pipeline(&gfx.textured_ships.pipeline);
@@ -2394,12 +2393,36 @@ impl Gfx {
                     // the hull yawed ~20deg on a scene-res toggle. Build the cfg from
                     // the live scene size so the VP scales WITH aim_at and psi==0 at
                     // every preset (Bruce: ship rotated left on `;`/`'`).
-                    let cfg = crate::projector::ProjectorConfig::for_scene(
+                    //
+                    // (#155 Bruce) The cfg MUST ALSO apply the live grid pitch/stretch —
+                    // q.aim_at comes from the hud's `scene_projector()` which pitches the
+                    // cell via with_pitch/with_stretch (G/T). Computing the VP from the
+                    // UN-pitched projector while aim_at is pitched put the VP in the wrong
+                    // space → the lane-aim OVER-ROTATED as the grid tilted up (the
+                    // bisector drifted off the VP — Bruce). Mirror scene_projector()'s
+                    // mode switch here so the VP tracks aim_at at every pitch step.
+                    let base = crate::projector::ProjectorConfig::for_scene(
                         scene_w() as f32,
                         scene_h() as f32,
                     );
-                    let base_yaw =
-                        crate::loft_gpu::chase_cam_ground_yaw_deg(q.aim_at, q.facing_yaw_deg, &cfg);
+                    let t = grid_pitch_t();
+                    let cfg = match grid_mode() {
+                        1 => base.with_stretch(t),
+                        2 => base.with_stretch_straight(t),
+                        3 => base.with_stretch_continuous(t),
+                        _ => base.with_pitch(t),
+                    };
+                    // (#155) Pass the LIVE loft-camera pitch into the lane-aim mapping:
+                    // since #140 the hull camera pitches with the grid (loft_pitch_deg,
+                    // 20→82), so `psi` must use that live pitch, not the fixed 20° — else
+                    // the convergence is computed for the wrong angle and compounds the
+                    // over-rotation.
+                    let base_yaw = crate::loft_gpu::chase_cam_ground_yaw_deg(
+                        q.aim_at,
+                        q.facing_yaw_deg,
+                        &cfg,
+                        loft_pitch_deg(),
+                    );
 
                     // 1) Render the hull into the shared loft target at the ground-
                     // yawed pose. The fixed house key light (laz -50 / lel 60)
