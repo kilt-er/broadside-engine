@@ -964,17 +964,19 @@ pub fn push_damage_number_2d(
     let q = grid_cell_quad(ship.pos, cfg);
     let scale = q.depth_scale;
     let base = 22.0 * scale;
-    // Text size: scale with depth but floor it so a far hit is still readable.
-    let pixel = (1.5 * scale).max(1.0);
+    // (#121) Text size: scale with depth but floor HIGHER so a back-row ENEMY hit
+    // is unmistakable (Bruce: "my weapons do nothing" — enemy hits read as nothing
+    // at the horizon scale). pixel=2 min = a clearly legible number even far off.
+    let pixel = (1.6 * scale).max(2.0);
     let s = amount.to_string();
     // 5px glyph + 1px space per char at pixel=1 -> advance = (5+1)*pixel.
     let advance = 6.0 * pixel;
     let total_w = s.len() as f32 * advance - pixel;
     let cx = q.center[0];
-    // Start just above the hull bar (which floats at center.y − (base + 6*scale))
-    // and RISE with the fade (the more faded, the higher it has drifted).
-    let rise = (1.0 - a) * 10.0 * scale;
-    let y = q.center[1] - (base + 16.0 * scale) - rise;
+    // Float CLEARLY above the ship and RISE with the fade. Min-clamp the vertical
+    // offset so a far ship's number doesn't collapse onto the tiny hull.
+    let rise = (1.0 - a) * 10.0;
+    let y = q.center[1] - (base + 16.0 * scale).max(20.0) - rise;
     let left = cx - total_w * 0.5;
     // Hot damage colour, alpha = fade. A 1px dark shadow under it keeps the number
     // legible over a bright hull / beam.
@@ -1076,20 +1078,30 @@ fn push_fire_2d(out: &mut Vec<DrawCommand>, board: &Board, cfg: &ProjectorConfig
         };
         let beam = [tint[0], tint[1], tint[2], alpha];
         push_line(out, pt(from), pt(to), th, beam);
-        // Impact flash on the struck cell (hits only) — a bright warm-white core so
-        // the result POPS where the shot landed.
+        // (#120) Impact SPARK on the struck cell (hits only). Was a big cream
+        // square (r = near_edge*0.5, up to 26px) centred on the cell — on the
+        // player's NEAR cell that slabbed the whole hull (Bruce's "yellow square").
+        // Now a COMPACT spark: a small bright core + a few short radial dashes at
+        // the impact point, sized only loosely with depth and hard-capped small so
+        // it reads as a hit WITHOUT covering the ship at any range.
         if fe.hit {
             let q = grid_cell_quad(fe.to_pos, cfg);
-            let r = (q.near_edge_width() * 0.5).clamp(6.0, 26.0);
+            let c = q.center;
+            // Core: tiny, capped — never a slab.
+            let core = (q.near_edge_width() * 0.10).clamp(2.0, 5.0);
             push_sprite(
                 out,
-                SpriteInstance::axis_aligned(
-                    q.center,
-                    [r, r],
-                    IMPACT_FLASH,
-                    atlas::cell_uvs(atlas::SOLID_WHITE),
-                ),
+                SpriteInstance::axis_aligned(c, [core, core], IMPACT_FLASH, atlas::cell_uvs(atlas::SOLID_WHITE)),
             );
+            // A few short spark dashes radiating from the impact — reads as a burst
+            // without a filled square. Length scales gently with depth, capped.
+            let reach = (q.near_edge_width() * 0.22).clamp(4.0, 10.0);
+            let dirs = [(1.0_f32, 0.4_f32), (-0.8, 0.9), (0.3, -1.0), (-0.6, -0.5)];
+            for (dx, dy) in dirs {
+                let n = (dx * dx + dy * dy).sqrt().max(1e-3);
+                let end = [c[0] + dx / n * reach, c[1] + dy / n * reach];
+                push_line(out, pt(c), pt(end), 1.5, IMPACT_FLASH);
+            }
         }
     }
 }
