@@ -498,6 +498,142 @@ fn emit_telegraph(out: &mut Vec<DrawCommand>, lane: &LaneGeometry, ship: &Ship) 
     )));
 }
 
+/* =============================================================================
+ * Procedural particle pool (#119) — SCREEN-SPACE, for the live 2-D board.
+ *
+ * The legacy `CombatVfx` effects above are 1-D LaneGeometry-positioned and aren't
+ * on the live 2-D render path. The particle pool is the opposite: it works in
+ * SCREEN SPACE so the caller (the bin) spawns a burst at a PROJECTED cell
+ * position (via the projector it already holds for the 2-D compose) and the pool
+ * integrates + emits SpriteInstances straight into the frame's draw list. Pure
+ * math, no GPU types — headless-unit-testable like the rest of the module.
+ *
+ * Phase 1 use: a ship-death EXPLOSION burst, triggered at the bin's kill
+ * detection. Later phases (muzzle flash, impact debris) reuse the same pool.
+ * ========================================================================== */
+
+/// One live particle in [`ParticlePool`]. `pos`/`vel` are SCREEN-SPACE (virtual
+/// pixels and px/sec); `age`/`dur` drive the 0→1 lifetime; `size` is the birth
+/// half-extent (shrinks with age); `color` is RGBA at birth (alpha fades).
+#[derive(Clone, Copy, Debug)]
+pub struct Particle {
+    pub pos: [f32; 2],
+    pub vel: [f32; 2],
+    pub age: f32,
+    pub dur: f32,
+    pub size: f32,
+    pub color: [f32; 4],
+}
+
+impl Particle {
+    fn t(&self) -> f32 {
+        (self.age / self.dur).clamp(0.0, 1.0)
+    }
+    fn alive(&self) -> bool {
+        self.age < self.dur
+    }
+}
+
+/// A small screen-space particle pool. The bin holds one, `spawn_burst`s at a
+/// projected position on a combat event, `advance`s it each frame, and `emit`s
+/// the live particles into the draw list. Capacity-free (Vec) but particles
+/// self-expire, so it stays small in practice.
+#[derive(Clone, Debug, Default)]
+pub struct ParticlePool {
+    particles: Vec<Particle>,
+    /// Rolling seed for the deterministic spread (no RNG dep) — folded per spawn.
+    seed: u64,
+}
+
+impl ParticlePool {
+    pub fn new() -> Self {
+        Self { particles: Vec::new(), seed: 0x9E37_79B9_7F4A_7C15 }
+    }
+
+    /// Seed `n` particles at `center` (screen space) flying outward with a
+    /// DETERMINISTIC radial spread (FNV-style fold of a per-particle counter, the
+    /// same no-RNG approach as `fire_events_sig`), so the burst is reproducible
+    /// for headless capture/tests. `color` is the burst tint; `dur` its lifetime
+    /// (seconds). Speeds + sizes vary a little per particle for a lively spray.
+    pub fn spawn_burst(&mut self, center: [f32; 2], n: u32, color: [f32; 4], dur: f32) {
+        for i in 0..n {
+            // FNV-1a fold of (seed, i) → three independent-ish [0,1) values.
+            let mut h: u64 = 1469598103934665603;
+            let mut fold = |v: u64| {
+                h ^= v;
+                h = h.wrapping_mul(1099511628211);
+                ((h >> 11) & 0xFFFF) as f32 / 65535.0
+            };
+            let a01 = fold(self.seed ^ i as u64);
+            let spd01 = fold(0xA1 ^ i as u64);
+            let sz01 = fold(0xB2 ^ i as u64);
+            let angle = a01 * std::f32::consts::TAU;
+            let speed = 24.0 + spd01 * 70.0; // px/sec, radial
+            self.particles.push(Particle {
+                pos: center,
+                vel: [angle.cos() * speed, angle.sin() * speed],
+                age: 0.0,
+                dur: dur * (0.7 + sz01 * 0.6), // staggered lifetimes
+                size: 2.0 + sz01 * 3.0,
+                color,
+            });
+        }
+        // Advance the seed so successive bursts differ.
+        self.seed = self.seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+    }
+
+    /// Integrate `pos += vel*dt`, age every particle by `dt`, drop the expired.
+    /// Returns true while any particle is still alive (so the caller can keep
+    /// requesting redraws). A light drag bleeds the velocity so the spray settles.
+    pub fn advance(&mut self, dt: f32) -> bool {
+        for p in &mut self.particles {
+            p.pos[0] += p.vel[0] * dt;
+            p.pos[1] += p.vel[1] * dt;
+            let drag = (1.0 - 2.0 * dt).clamp(0.0, 1.0);
+            p.vel[0] *= drag;
+            p.vel[1] *= drag;
+            p.age += dt;
+        }
+        self.particles.retain(|p| p.alive());
+        !self.particles.is_empty()
+    }
+
+    /// Push one SOLID_WHITE-tinted [`SpriteInstance`] per live particle: alpha =
+    /// (1 − t) of the birth alpha, half-size shrinking with t (mirrors
+    /// `emit_flash`). No-op when the pool is empty.
+    pub fn emit(&self, out: &mut Vec<DrawCommand>) {
+        for p in &self.particles {
+            let t = p.t();
+            let alpha = (1.0 - t) * p.color[3];
+            if alpha <= 0.0 {
+                continue;
+            }
+            let hs = (p.size * (1.0 - 0.6 * t)).max(0.5);
+            out.push(DrawCommand::Sprite(SpriteInstance::axis_aligned(
+                p.pos,
+                [hs, hs],
+                [p.color[0], p.color[1], p.color[2], alpha],
+                atlas::cell_uvs(atlas::SOLID_WHITE),
+            )));
+        }
+    }
+
+    /// Drop all particles (e.g. on restart so a fresh board shows no stale spray).
+    pub fn clear(&mut self) {
+        self.particles.clear();
+    }
+
+    /// Live particle count — for tests / debug.
+    pub fn len(&self) -> usize {
+        self.particles.len()
+    }
+
+    /// True when no particles are live.
+    pub fn is_empty(&self) -> bool {
+        self.particles.is_empty()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -740,5 +876,65 @@ mod tests {
         let mut out = Vec::new();
         vfx.emit(&mut out, &board, &lane);
         assert_eq!(out.len(), 1, "one telegraph cue for the queued enemy");
+    }
+
+    // ---- (#119) particle pool ----
+
+    #[test]
+    fn particle_burst_spawns_n_and_emits_one_sprite_each() {
+        let mut pool = ParticlePool::new();
+        pool.spawn_burst([100.0, 50.0], 12, [1.0, 0.6, 0.2, 1.0], 0.5);
+        assert_eq!(pool.len(), 12, "spawn_burst seeds exactly N particles");
+        let mut out = Vec::new();
+        pool.emit(&mut out);
+        assert_eq!(out.len(), 12, "one live SpriteInstance per particle at birth");
+        // All born at the burst centre.
+        for c in &out {
+            if let DrawCommand::Sprite(s) = c {
+                assert_eq!(s.pos, [100.0, 50.0], "particles spawn at the burst centre");
+            }
+        }
+    }
+
+    #[test]
+    fn particle_advance_moves_ages_and_expires() {
+        let mut pool = ParticlePool::new();
+        pool.spawn_burst([0.0, 0.0], 8, [1.0, 1.0, 1.0, 1.0], 0.4);
+        // After a step, particles have moved off-centre (radial velocity).
+        assert!(pool.advance(0.05), "still alive mid-life");
+        let mut out = Vec::new();
+        pool.emit(&mut out);
+        let moved = out.iter().any(|c| matches!(c, DrawCommand::Sprite(s) if s.pos != [0.0, 0.0]));
+        assert!(moved, "advance integrates pos += vel*dt");
+        // Past the max lifetime, every particle expires.
+        let alive = pool.advance(10.0);
+        assert!(!alive && pool.is_empty(), "all particles expire past their dur");
+    }
+
+    #[test]
+    fn particle_burst_is_deterministic() {
+        // Same seed sequence → identical first burst (no RNG; reproducible for
+        // headless capture).
+        let mut a = ParticlePool::new();
+        let mut b = ParticlePool::new();
+        a.spawn_burst([10.0, 10.0], 6, [1.0, 0.5, 0.5, 1.0], 0.5);
+        b.spawn_burst([10.0, 10.0], 6, [1.0, 0.5, 0.5, 1.0], 0.5);
+        let (mut oa, mut ob) = (Vec::new(), Vec::new());
+        a.emit(&mut oa);
+        b.emit(&mut ob);
+        assert_eq!(oa.len(), ob.len());
+        for (ca, cb) in oa.iter().zip(ob.iter()) {
+            if let (DrawCommand::Sprite(sa), DrawCommand::Sprite(sb)) = (ca, cb) {
+                assert_eq!(sa.half_size, sb.half_size, "deterministic particle sizes");
+            }
+        }
+    }
+
+    #[test]
+    fn particle_clear_drops_all() {
+        let mut pool = ParticlePool::new();
+        pool.spawn_burst([0.0, 0.0], 5, [1.0; 4], 0.5);
+        pool.clear();
+        assert!(pool.is_empty(), "clear drops every particle");
     }
 }

@@ -347,6 +347,20 @@ fn main() {
     // headless demo shows the post-kill burst.
     if let Some(killed) = vfx_demo_kill {
         broadside_engine::hud::push_destruction_at(&mut commands, &[killed], &cfg);
+        // (#119) Procedural explosion particle burst at the killed cell — the bin
+        // seeds this on its kill detection; here we seed + advance it a few frames
+        // so the single static capture catches the spray MID-flight (spread out),
+        // not all stacked at the centre.
+        {
+            let c = broadside_engine::projector::grid_cell_quad(killed, &cfg).center;
+            let mut pool = broadside_engine::vfx::ParticlePool::new();
+            pool.spawn_burst(c, 22, [1.0, 0.72, 0.32, 1.0], 0.55);
+            for _ in 0..6 {
+                pool.advance(1.0 / 60.0);
+            }
+            pool.emit(&mut commands);
+            log::info!("capture: #119 explosion particle burst at killed cell {killed:?}");
+        }
         // (#101) Flash the hull bar of the SURVIVING enemy we knocked to half hull
         // (above, before compose, so its bar already renders PARTIAL) at full
         // intensity — the moment-of-hit pop — so the capture shows the new

@@ -764,6 +764,9 @@ const KILL_BURST_SECS: f32 = 0.35;
 /// (#101) Lifetime of a per-ship hull-drop flash on its lane bar. Short enough to
 /// read as a "pop" on the round it happened, long enough to catch the eye.
 const HULL_FLASH_SECS: f32 = 0.45;
+/// (#119) Tint of the ship-death explosion particle burst — hot orange-white, so
+/// the spray reads as fire/debris against the dark starfield.
+const EXPLOSION_PARTICLE_COLOR: [f32; 4] = [1.0, 0.72, 0.32, 1.0];
 
 /// (#79) Per-ship "where + which way was this ship before the move, and when did
 /// the slide/turn begin?" anchor. Recorded by `App::record_tween_anchors` after
@@ -862,6 +865,12 @@ struct App {
     /// frame — this prev-vs-current diff is the renderer-side death signal (the 2-D
     /// analog of `vfx::CombatVfx`'s vanish detection).
     kill_bursts: Vec<(Pos, Instant)>,
+    /// (#119) Procedural particle pool — screen-space sprays for combat juice.
+    /// Phase 1: a ship-death EXPLOSION burst spawned at the projected kill cell
+    /// when an id vanishes (same trigger as `kill_bursts`). Advanced each frame +
+    /// emitted into the draw list; cleared on restart. Later phases (muzzle flash,
+    /// impact debris) reuse the same pool.
+    particles: broadside_engine::vfx::ParticlePool,
     /// (#101/#106) Per-ship hull-DROP record: ship id -> (amount lost, when).
     /// Recorded on a combat resolve by diffing pre-vs-current hull (the 2-D analog
     /// of the player's `hit_flash`, but for EVERY ship). The redraw fades each entry
@@ -916,6 +925,7 @@ impl App {
             player_hull_prev: None,
             hit_flash: 0.0,
             kill_bursts: Vec::new(),
+            particles: broadside_engine::vfx::ParticlePool::new(),
             hull_flash: std::collections::HashMap::new(),
             #[cfg(feature = "audio")]
             audio: None,
@@ -1031,6 +1041,7 @@ impl App {
         self.demo_state = DemoState::Playing;
         self.tween_anchors.clear();
         self.kill_bursts.clear(); // (#90) no stale bursts into the fresh board
+        self.particles.clear(); // (#119) no stale explosion particles into the fresh board
         self.hull_flash.clear(); // (#101) no stale damage flashes into the fresh board
         self.reinstall_audio();
     }
@@ -1398,6 +1409,16 @@ impl ApplicationHandler for App {
                         if !self.board.cells.iter().flatten().any(|s| &s.id == id) {
                             if let Some(&(pos, _)) = prev_visual.get(id) {
                                 self.kill_bursts.push((pos, now));
+                                // (#119) Spawn an EXPLOSION particle burst at the
+                                // dead ship's PROJECTED screen position (same kill
+                                // signal). Once per death (we're in the resolve
+                                // branch, not per-frame), so it doesn't re-seed.
+                                let pcfg = ProjectorConfig::for_scene(
+                                    broadside_engine::gfx::scene_w() as f32,
+                                    broadside_engine::gfx::scene_h() as f32,
+                                );
+                                let c = broadside_engine::projector::grid_cell_quad(pos, &pcfg).center;
+                                self.particles.spawn_burst(c, 22, EXPLOSION_PARTICLE_COLOR, 0.55);
                             }
                         }
                     }
@@ -1460,6 +1481,9 @@ impl ApplicationHandler for App {
                 // safe — it only spawns on an actual state change.
                 self.vfx.observe(&self.board);
                 let vfx_active = self.vfx.advance(1.0 / 60.0);
+                // (#119) Advance the explosion particle pool at the same fixed dt;
+                // stays empty (cheap no-op) until a ship death seeds a burst.
+                let particles_active = self.particles.advance(1.0 / 60.0);
                 // Free-running animation clock kept advancing for the #67
                 // telegraph spinner / move-arrow / incoming pulse — consumed by
                 // the lane-keyed overlays that are dropped in the #43 pass-1 2-D
@@ -1635,6 +1659,11 @@ impl ApplicationHandler for App {
                     // live-scene projector. Gated to Playing so a board reset / overlay
                     // frame never bursts. Recorded only on a combat-turn resolve.
                     hud::push_destruction_at(&mut instances, &kill_cells, &scene_cfg);
+                    // (#119) Procedural explosion particles seeded at ship death —
+                    // one SOLID_WHITE sprite per live particle, fading + shrinking.
+                    // Already in screen space (spawned via the projector), so it
+                    // emits straight into the frame regardless of the live scene res.
+                    self.particles.emit(&mut instances);
                     // (#101) Damage-flash on the lane hull bar of every ship that
                     // took a hit this round (fades over ~0.45s), so even a 1-2 hull
                     // drop visibly pops — paired with the min-size bar clamp so a
@@ -1714,7 +1743,7 @@ impl ApplicationHandler for App {
                 // The animation-liveness flags are consumed here only to advance
                 // their state each frame; redraw cadence no longer depends on
                 // them (we always redraw), so they no longer gate anything.
-                let _ = (active_tween, vfx_active, ability_active, flash_active);
+                let _ = (active_tween, vfx_active, ability_active, flash_active, particles_active);
                 if let Some(w) = self.window.as_ref() {
                     w.request_redraw();
                 }
