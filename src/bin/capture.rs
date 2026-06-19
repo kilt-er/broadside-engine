@@ -157,19 +157,21 @@ fn main() {
     let loaded = gfx.try_load_ship_sprites(std::path::Path::new("assets"));
     log::info!("capture: loaded {loaded} ship sprite(s)");
 
-    // (#70) Install the player's faithful Aegis GLB exactly as the playable bin
-    // does (broadside.rs install_player_glb) so the capture faithfully shows the
-    // LIVE-3D player ship, not the flat-box placeholder.
-    const AEGIS_GLB: &[u8] = include_bytes!("../../assets/ships/Aegis.glb");
-    match gfx.install_player_glb(AEGIS_GLB) {
-        Ok(()) => log::info!("capture: player Aegis hull installed from Aegis.glb"),
+    // (#149) Install the player's GLB exactly as the playable bin does (broadside.rs
+    // install_player_glb) so the capture faithfully shows the LIVE-3D player ship. The
+    // player hull is now broadside-ship_01.glb (Bruce's 2nd-editor ship, contract-
+    // conformant), matching the live swap.
+    const PLAYER_GLB: &[u8] = include_bytes!("../../assets/ships/broadside-ship_01.glb");
+    match gfx.install_player_glb(PLAYER_GLB) {
+        Ok(()) => log::info!("capture: player hull installed from broadside-ship_01.glb"),
         Err(e) => log::warn!(
-            "capture: Aegis.glb import failed ({e}); player falls back to sprite/flat-box"
+            "capture: broadside-ship_01.glb import failed ({e}); player falls back to sprite/flat-box"
         ),
     }
-    // (#89/#93) ENEMIES = the same Aegis hull, STEEL-GREY-tinted (matches the live
-    // bin's ENEMY_TINT) so the capture shows the oncoming grey enemy ships (apart
-    // from the RED player), not flat boxes.
+    // (#89/#93) ENEMIES = the Aegis hull, tinted (matches the live bin's ENEMY_TINT) so
+    // the capture shows the oncoming enemy ships, not flat boxes. Enemies stay on Aegis
+    // (the #149 swap is player-only).
+    const AEGIS_GLB: &[u8] = include_bytes!("../../assets/ships/Aegis.glb");
     match gfx.install_enemy_glb(AEGIS_GLB) {
         Ok(()) => log::info!("capture: enemy Aegis hull (steel-grey) installed from Aegis.glb"),
         Err(e) => {

@@ -1371,29 +1371,30 @@ impl ApplicationHandler for App {
         if loaded > 0 {
             log::info!("loaded {} ship sprite PNG(s) from assets/sprites/", loaded);
         }
-        // (#70) PLAYER = the faithful Aegis, live-3D. Install the GLB the tool
-        // baked (Aegis.glb, per the v5 render contract) as the player loft mesh:
-        // mesh_import → upload_imported keeps the authored materials + the unlit
-        // cyan engine glow. push_ship_2d emits a LoftShip for the player when this
-        // is installed (the loft 3D pass renders it lit, chase-cam posed, then
-        // blits into the lane), else falls back to the sprite/flat-box. The HUD +
-        // telegraph overlays are unaffected.
-        const AEGIS_GLB: &[u8] = include_bytes!("../../assets/ships/Aegis.glb");
-        match gfx.install_player_glb(AEGIS_GLB) {
+        // (#149 Bruce) PLAYER = broadside-ship_01.glb, the ship from Bruce's 2nd
+        // editor, re-exported to our GLB contract (verified: hull length on +X = 12,
+        // bow +X, beam on Z, unlit engine glow + scene laz/lel). Replaces Aegis.glb as
+        // the player loft mesh: mesh_import → upload_imported keeps the authored
+        // materials + the unlit glow. push_ship_2d emits a LoftShip for the player when
+        // this is installed (the loft 3D pass renders it lit, chase-cam posed, then
+        // blits into the lane), else falls back to the sprite/flat-box.
+        const PLAYER_GLB: &[u8] = include_bytes!("../../assets/ships/broadside-ship_01.glb");
+        match gfx.install_player_glb(PLAYER_GLB) {
             Ok(()) => log::info!(
-                "loft: player Aegis hull installed from Aegis.glb ({} bytes)",
-                AEGIS_GLB.len()
+                "loft: player hull installed from broadside-ship_01.glb ({} bytes)",
+                PLAYER_GLB.len()
             ),
             Err(e) => log::warn!(
-                "loft: Aegis.glb import failed ({e}); player falls back to sprite/flat-box"
+                "loft: broadside-ship_01.glb import failed ({e}); player falls back to sprite/flat-box"
             ),
         }
-        // (#89) ENEMIES = the SAME Aegis hull, RED-tinted (Bruce): every enemy
-        // renders as the player's ship-class in a hostile colour instead of the
-        // flat CAD box. Enemies face the player (bow-on), so the hull renders
-        // oncoming. loft_kind prefers EnemyLoft once this is installed.
+        // (#89) ENEMIES = the Aegis hull, tinted (Bruce): every enemy renders as a
+        // ship-class hull in a hostile colour instead of the flat CAD box. Enemies
+        // stay on Aegis.glb for now (the player-ship swap #149 is player-only).
+        // loft_kind prefers EnemyLoft once this is installed.
+        const AEGIS_GLB: &[u8] = include_bytes!("../../assets/ships/Aegis.glb");
         match gfx.install_enemy_glb(AEGIS_GLB) {
-            Ok(()) => log::info!("loft: enemy Aegis hull (steel-grey) installed from Aegis.glb"),
+            Ok(()) => log::info!("loft: enemy Aegis hull installed from Aegis.glb"),
             Err(e) => {
                 log::warn!("loft: enemy Aegis.glb import failed ({e}); enemies fall back to CAD/2D")
             }
