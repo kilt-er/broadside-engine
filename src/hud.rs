@@ -531,11 +531,11 @@ pub fn compose_scene_2d_tweened(
     // PLAYER keeps its queue-tile cue and its bottom-HUD hull/shield. Threat cells
     // (push_threats_2d, the danger-cell outline) stay — that's the legible
     // "this cell is dangerous" read, drawn separately under the ships.
-    for ship in &ships {
-        if ship.faction == Faction::Player {
-            push_queue_tiles_2d(&mut out, ship, cfg);
-        }
-    }
+    // (#131) The PLAYER's queue now lives in the top-right QUEUE panel
+    // (push_player_queue_panel_2d) and enemies' in the top-left ENEMY INFO panel, so
+    // the old over-the-hull queue-tile row (push_queue_tiles_2d) was pure
+    // duplication — removed for declutter (lead-approved), consistent with the enemy
+    // in-space declutter.
     // (#131) Enemy IDENTITY number badges above-left of each enemy hull — the link
     // between a ship on the board and its column in the top-left ENEMY INFO panel.
     // After the hulls so the badge sits on top; tracks the tweened position.
@@ -868,42 +868,6 @@ pub fn push_ability_tiles_2d(out: &mut Vec<DrawCommand>, tiles: &[AbilityTile]) 
 // (#98) weapon_archetype removed with the old mount-tile row — the ability tiles
 // now carry their icon via AbilityTile::icon (the bin maps it from the catalog
 // action archetype, the real source, not an id substring).
-
-/// Queued-action tiles above a ship on the 2D board — the v1 "tiles" Bruce
-/// misses, showing what a ship has lined up. A horizontal row of small glyph
-/// icons (one per entry in `ship.queue`, in fire order, mapped to its weapon
-/// archetype glyph), centered over the ship's cell and floated above the hull
-/// bar. Shrinks with `depth_scale`; no-op when the queue is empty (most enemies
-/// most turns), so it only appears when a ship is actually readying something —
-/// a direct "this ship is about to act" cue complementing the threat telegraph.
-fn push_queue_tiles_2d(out: &mut Vec<DrawCommand>, ship: &Ship, cfg: &ProjectorConfig) {
-    if ship.queue.is_empty() {
-        return;
-    }
-    let q = grid_cell_quad(ship.pos, cfg);
-    let scale = q.depth_scale;
-    let base = 22.0 * scale;
-    let tile = (5.0 * scale).max(2.5); // glyph half-size
-    let gap = tile * 2.0 + 2.0 * scale;
-    let n = ship.queue.len() as f32;
-    let total_w = (n - 1.0).max(0.0) * gap;
-    let start_x = q.center[0] - total_w * 0.5;
-    // Above the hull bar (which sits at center.y − (base + 6*scale)).
-    let ty = q.center[1] - (base + 14.0 * scale);
-    for (i, action_id) in ship.queue.iter().enumerate() {
-        let archetype = archetype_of_mount(ship, action_id).unwrap_or(WeaponArchetype::Beam);
-        let cell_uv = archetype_to_glyph(archetype);
-        push_sprite(
-            out,
-            SpriteInstance::axis_aligned(
-                [start_x + i as f32 * gap, ty],
-                [tile, tile],
-                WHITE,
-                atlas::cell_uvs(cell_uv),
-            ),
-        );
-    }
-}
 
 /// (#101/#112) A brief DAMAGE FLASH on a ship when its hull drops, so even a 1-2
 /// hull loss visibly registers (Bruce: "I don't see damage landing"). `intensity`
