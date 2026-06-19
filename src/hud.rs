@@ -679,19 +679,30 @@ pub fn push_ability_tiles_2d(out: &mut Vec<DrawCommand>, tiles: &[AbilityTile]) 
         // reads instantly (Bruce's "no queue indicator" bug). Otherwise the usual
         // white-ready / dim-cooldown frame.
         let queued = t.queued_index.is_some();
+        // (#116) DISABLED = a RESTING (not-queued) weapon that can't bear from the
+        // ship's current pose/position (`!can_fire`). Bruce wants to see which
+        // weapons are useless from HERE without queuing them first, so a disabled
+        // tile is greyed/dimmed (dim bg + desaturated icon + damage/range). The
+        // stronger QUEUED+can't-fire warning (veil + red slash, below) is unchanged.
+        // Utility cards are can_fire=true so they never disable (correct).
+        let disabled = !queued && !t.can_fire;
         let border = if queued {
             TILE_QUEUED
+        } else if disabled {
+            TILE_DISABLED_BORDER
         } else if ready {
             TILE_BORDER_READY
         } else {
             TILE_COOLDOWN
         };
         // Tile bg + border (2px when ready/queued so the frame reads as a clear cue).
+        // Disabled tiles get a darker bg so the whole tile recedes.
+        let bg = if disabled { TILE_DISABLED_BG } else { TILE_BG };
         push_polygon(
             out,
             PolygonInstance::flat(
                 [[tx, tile_y], [tx + tile, tile_y], [tx + tile, tile_y + tile], [tx, tile_y + tile]],
-                TILE_BG,
+                bg,
                 atlas::cell_uvs(atlas::SOLID_WHITE),
             ),
         );
@@ -703,7 +714,7 @@ pub fn push_ability_tiles_2d(out: &mut Vec<DrawCommand>, tiles: &[AbilityTile]) 
         ];
         let bth = if queued {
             3.0
-        } else if ready {
+        } else if ready && !disabled {
             2.0
         } else {
             1.0
@@ -711,19 +722,23 @@ pub fn push_ability_tiles_2d(out: &mut Vec<DrawCommand>, tiles: &[AbilityTile]) 
         for k in 0..4 {
             push_line(out, pt(c[k]), pt(c[(k + 1) % 4]), bth, border);
         }
+        // Desaturated/dim palette for a disabled tile, normal otherwise.
+        let icon_col = if disabled { TILE_DISABLED_INK } else { TILE_ICON };
+        let dmg_col = if disabled { TILE_DISABLED_INK } else { TILE_DAMAGE };
+        let range_col = if disabled { TILE_DISABLED_INK } else { TILE_RANGE };
         // Icon, centred (nudged up a touch to leave room for the bottom tick row).
         push_sprite(
             out,
             SpriteInstance::axis_aligned(
                 [tx + tile / 2.0, tile_y + tile / 2.0 - 1.0],
                 [7.0, 7.0],
-                TILE_ICON,
+                icon_col,
                 atlas::cell_uvs(t.icon.atlas_cell()),
             ),
         );
         // DAMAGE = LARGE number, TOP-LEFT (pixel=2; skip 0 = non-damage ability).
         if t.damage > 0 {
-            push_text_left(out, &t.damage.to_string(), tx + 2.0, tile_y + 2.0, 2.0, TILE_DAMAGE);
+            push_text_left(out, &t.damage.to_string(), tx + 2.0, tile_y + 2.0, 2.0, dmg_col);
         }
         // RANGE = smaller number, TOP-RIGHT (cells; skip 0 = non-targeted).
         // (#100) Suppressed while QUEUED — the top-right corner is taken by the
@@ -732,7 +747,7 @@ pub fn push_ability_tiles_2d(out: &mut Vec<DrawCommand>, tiles: &[AbilityTile]) 
             let s = t.range.to_string();
             // Right-align: one glyph is 5px at pixel=1.
             let rx = tx + tile - 2.0 - (s.len() as f32 * 6.0 - 1.0);
-            push_text_left(out, &s, rx, tile_y + 2.0, 1.0, TILE_RANGE);
+            push_text_left(out, &s, rx, tile_y + 2.0, 1.0, range_col);
         }
         // KEY = number, BOTTOM-RIGHT.
         let key = t.slot.to_string();
@@ -3081,6 +3096,12 @@ const TILE_NO_TARGET_MARK: [f32; 4] = [0.95, 0.32, 0.28, 0.95]; // red "can't be
 const TILE_DAMAGE: [f32; 4] = [0.95, 0.62, 0.30, 1.0]; // orange damage pips
 const TILE_RANGE: [f32; 4] = [0.62, 0.82, 0.95, 1.0]; // cool blue = range cells
 const TILE_ICON: [f32; 4] = [0.92, 0.94, 0.98, 1.0];
+// (#116) A RESTING tile whose weapon can't bear from here = DISABLED: darker bg,
+// dim grey border, desaturated grey ink (icon + damage + range) so it reads
+// "useless from this pose" without the player having to queue it.
+const TILE_DISABLED_BG: [f32; 4] = [0.055, 0.062, 0.078, 0.92]; // darker than TILE_BG
+const TILE_DISABLED_BORDER: [f32; 4] = [0.30, 0.32, 0.36, 1.0]; // dim grey frame
+const TILE_DISABLED_INK: [f32; 4] = [0.42, 0.45, 0.50, 1.0]; // desaturated grey
 const TILE_ENEMY: [f32; 4] = [0.90, 0.34, 0.30, 1.0]; // enemy-intent red frame
 // (#98) Cooldown TICKS along a tile's bottom edge: white = elapsed/ready round,
 // grey = a round still remaining.
@@ -4038,6 +4059,41 @@ mod tests {
         let mut expired = Vec::new();
         push_damage_number_2d(&mut expired, &ship, 4, 0.0, &cfg);
         assert!(expired.is_empty(), "a fully-faded number (intensity 0) must be a no-op");
+    }
+
+    /// (#116) A RESTING tile whose weapon can't bear (`!can_fire`, not queued) is
+    /// drawn DISABLED — it emits the dim TILE_DISABLED_BG so it reads "useless from
+    /// here". A fireable resting tile uses the normal TILE_BG. Locks the grey-out.
+    #[test]
+    fn resting_no_target_tile_renders_disabled() {
+        let has_bg = |cmds: &[DrawCommand], color: [f32; 4]| {
+            cmds.iter().any(|c| matches!(c, DrawCommand::Polygon(p) if p.color == color))
+        };
+        let tile = |can_fire: bool| AbilityTile {
+            slot: '1',
+            icon: AbilityIcon::Beam,
+            damage: 4,
+            range: 2,
+            cooldown: 0,
+            cooldown_max: 0,
+            queued_index: None, // RESTING
+            can_fire,
+            arc: Some('F'),
+        };
+
+        let mut disabled = Vec::new();
+        push_ability_tiles_2d(&mut disabled, &[tile(false)]);
+        assert!(
+            has_bg(&disabled, TILE_DISABLED_BG),
+            "a resting tile that can't bear must draw the disabled (dim) background"
+        );
+
+        let mut fireable = Vec::new();
+        push_ability_tiles_2d(&mut fireable, &[tile(true)]);
+        assert!(
+            !has_bg(&fireable, TILE_DISABLED_BG) && has_bg(&fireable, TILE_BG),
+            "a resting tile that CAN bear keeps the normal background, not the disabled one"
+        );
     }
 
     /// Stub registry that reports the requested class+stance as having

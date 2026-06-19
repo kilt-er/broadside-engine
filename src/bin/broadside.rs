@@ -379,17 +379,43 @@ fn archetype_icon(a: WeaponArchetype) -> hud::AbilityIcon {
     }
 }
 
-/// First `DAMAGE` effect amount of an action (`0` = non-damage), for the tile's
-/// damage pips.
-fn action_damage(action: &broadside_engine::types::Action) -> i32 {
-    action
-        .effects
-        .iter()
-        .find_map(|e| match e {
-            Effect::DAMAGE { amount, .. } => Some(*amount),
-            _ => None,
-        })
-        .unwrap_or(0)
+/// The damage figure shown on an action's tile (`0` = non-damage).
+///
+/// Reads the action's own first `DAMAGE` effect; but an ORDNANCE action
+/// (`SPAWN_ORDNANCE`, e.g. torpedo / missile) carries NO direct DAMAGE — its
+/// damage lives on the spawned projectile's payload (#117 bug: tile 2 read 0
+/// because action_damage only looked at the action's own effects). So when the
+/// action has no direct DAMAGE but DOES spawn ordnance, ask `content` to build
+/// the projectile (`spawn_projectile`, the same call the resolver uses) and read
+/// the DAMAGE amount off its `payload`. `ship` is the owner the spawn keys off.
+fn action_damage(
+    action: &broadside_engine::types::Action,
+    content: &dyn Content,
+    ship: &Ship,
+) -> i32 {
+    // Direct DAMAGE on the action itself (beams, broadsides, …).
+    if let Some(amount) = action.effects.iter().find_map(|e| match e {
+        Effect::DAMAGE { amount, .. } => Some(*amount),
+        _ => None,
+    }) {
+        return amount;
+    }
+    // Otherwise, an ordnance action: its damage is on the spawned projectile.
+    if let Some(kind) = action.effects.iter().find_map(|e| match e {
+        Effect::SPAWN_ORDNANCE { projectile } => Some(projectile.as_str()),
+        _ => None,
+    }) {
+        let proj = content.spawn_projectile(kind, ship);
+        return proj
+            .payload
+            .iter()
+            .find_map(|e| match e {
+                Effect::DAMAGE { amount, .. } => Some(*amount),
+                _ => None,
+            })
+            .unwrap_or(0);
+    }
+    0
 }
 
 /// (#98) The action's RANGE in cells for the tile readout = the MAX band it can
@@ -459,7 +485,7 @@ fn build_ship_tiles(ship: &Ship, content: &dyn Content, board: &Board) -> Vec<hu
             tiles.push(hud::AbilityTile {
                 slot: (b'1' + i as u8) as char,
                 icon: archetype_icon(action.archetype),
-                damage: action_damage(action),
+                damage: action_damage(action, content, ship),
                 range: action_range(action),
                 cooldown: ship.cooldowns.get(&mount.weapon).copied().unwrap_or(0).max(0),
                 cooldown_max: action.cost.cooldown_max.max(0),
@@ -480,7 +506,7 @@ fn build_ship_tiles(ship: &Ship, content: &dyn Content, board: &Board) -> Vec<hu
                 tiles.push(hud::AbilityTile {
                     slot: *slot,
                     icon: archetype_icon(action.archetype),
-                    damage: action_damage(action),
+                    damage: action_damage(action, content, ship),
                     range: action_range(action),
                     cooldown: 0,
                     cooldown_max: 0,
@@ -2049,6 +2075,29 @@ mod tests {
         // The player's m3 (broadside_battery) mounts on the BroadsideArc -> 'B'.
         let m3 = tiles.iter().find(|t| t.slot == '3').expect("m3 tile present");
         assert_eq!(m3.arc, Some('B'), "the broadside mount tile must read 'B' (side weapon)");
+    }
+
+    /// (#117) An ORDNANCE action (SPAWN_ORDNANCE, e.g. torpedo) reports the spawned
+    /// PROJECTILE's damage on its tile, not 0. The damage lives on the projectile
+    /// payload, not the action's own effects — action_damage now resolves it via
+    /// content.spawn_projectile. Bruce's tile 2 (torpedo) read 0; must read its real
+    /// damage (4 in the demo loadout).
+    #[test]
+    fn ordnance_tile_shows_spawned_projectile_damage() {
+        let content = fresh_content();
+        let board = fresh_board();
+        let player = board.cells.iter().flatten().find(|s| s.faction == Faction::Player).cloned().unwrap();
+        // m2 is the torpedo (SPAWN_ORDNANCE). Its tile damage must be > 0.
+        let torp = content.action("torpedo").expect("torpedo action exists");
+        let dmg = action_damage(torp, &content, &player);
+        assert!(
+            dmg > 0,
+            "an ordnance (SPAWN_ORDNANCE) action must report its spawned projectile's damage, not 0; got {dmg}"
+        );
+        // And it flows through to the slot-2 tile.
+        let tiles = build_ship_tiles(&player, &content, &board);
+        let t2 = tiles.iter().find(|t| t.slot == '2').expect("m2 tile present");
+        assert!(t2.damage > 0, "the torpedo tile (slot 2) must show nonzero damage; got {}", t2.damage);
     }
 
     #[test]
