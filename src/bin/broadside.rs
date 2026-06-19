@@ -1752,6 +1752,10 @@ impl ApplicationHandler for App {
                     // nothing is queued. Cards (5/6/7) are free + never queue, so they
                     // never appear in this panel.
                     hud::push_player_queue_panel_2d(&mut instances, &player_tiles);
+                    // (#129 Bruce) Enemy INFO panel, TOP-LEFT: per live enemy, hull +
+                    // shield + its REVEALED queue (enemy hand hidden — only what it has
+                    // actually queued, read live from the board). No-op between encounters.
+                    hud::push_enemy_info_panel_2d(&mut instances, &self.board);
                 }
                 // Push the appropriate demo-state overlay on top.
                 // Compose no longer auto-pushes — the bin owns the

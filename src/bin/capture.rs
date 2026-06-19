@@ -222,6 +222,31 @@ fn main() {
             }
             log::info!("capture: QUEUE demo — player queued '{w}' x{}", p.queue.len());
         }
+        // (#129) Give the enemies a REVEALED queue so the top-left ENEMY INFO panel
+        // shows queue icons (the live path fills enemy.queue when the AI telegraphs;
+        // here we inject it so the static capture shows the learned-queue state). Knock
+        // one enemy's hull + shields down so the panel's hull/shield bars read PARTIAL.
+        for (n, e) in board
+            .cells
+            .iter_mut()
+            .flatten()
+            .filter(|s| s.faction == Faction::Enemy)
+            .enumerate()
+        {
+            let w = e.mounts.first().map(|m| m.weapon.clone()).unwrap_or_default();
+            if !w.is_empty() {
+                // First enemy telegraphs two shots; second telegraphs one — varied queue.
+                let count = if n == 0 { 2 } else { 1 };
+                for _ in 0..count {
+                    e.queue.push(w.clone());
+                }
+            }
+            if n == 0 {
+                e.hull = (e.max_hull / 2).max(1); // partial hull bar
+                e.shield_profile.bow.charge = 0; // partial shield bar
+            }
+        }
+        log::info!("capture: QUEUE demo — injected enemy revealed-queues for the info panel");
         // The LIVE queue runs the enemy world-phase (apply_intent → run_world_phase),
         // which paints board.threats (enemy intent). A capture's manual queue-push
         // does NOT, so simulate it: an enemy threat on the PLAYER's NEAR cell — the
@@ -404,6 +429,9 @@ fn main() {
         // are queued (index 1 + 0), so the panel shows them in fire order and the
         // hand tiles 1+3 hollow out. Lets the capture show the hand->queue move.
         broadside_engine::hud::push_player_queue_panel_2d(&mut commands, &tiles);
+        // (#129) Enemy INFO panel (top-left) from the board's enemies — shows each
+        // enemy's hull + shield + the revealed queue injected above.
+        broadside_engine::hud::push_enemy_info_panel_2d(&mut commands, &board);
         // (#122) Player targeting telegraph demo: show the cyan preview of where a
         // queued weapon would strike. The live bin resolves the cells via
         // resolve_targeting_2d; here we hand-pick a target cell forward of the

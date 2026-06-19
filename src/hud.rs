@@ -3113,6 +3113,161 @@ pub fn push_player_queue_panel_2d(out: &mut Vec<DrawCommand>, tiles: &[AbilityTi
     }
 }
 
+/// (#129 Bruce) The ENEMY INFO panel, TOP-LEFT corner. One stacked row per LIVE
+/// enemy showing its HEALTH (hull bar) + SHIELD (shield bar) + its REVEALED QUEUE.
+///
+/// CRITICAL (Bruce): the enemy's HAND is HIDDEN — we show ONLY what the enemy has
+/// actually QUEUED (read live from `enemy.queue`), so the queue is LEARNED in real
+/// time: it builds as the enemy queues over turns and empties as it fires. This is
+/// NOT a static highlight of a known loadout — an enemy with an empty queue shows
+/// just its bars (no queue icons), and icons appear only once it telegraphs.
+///
+/// Reads everything straight off the board: `enemy.hull` / `enemy.max_hull`, the
+/// Σcharge / Σarmour shield pool across the four faces, and `enemy.queue`. No-op
+/// when there are no enemies (between encounters). Rows stack down from the top so
+/// 1/2/3 enemies all fit; flagged to the lead if a full fleet crowds the panel.
+pub fn push_enemy_info_panel_2d(out: &mut Vec<DrawCommand>, board: &Board) {
+    let enemies: Vec<&Ship> = board
+        .cells
+        .iter()
+        .flatten()
+        .filter(|s| s.faction == Faction::Enemy)
+        .collect();
+    if enemies.is_empty() {
+        return;
+    }
+
+    let left = 6.0;
+    let top = 8.0;
+    let panel_w = 96.0;
+    let row_h = 22.0; // hull bar + shield bar + queue icon row per enemy
+    let bar_w = 56.0;
+    let bar_h = 4.0;
+
+    // Header.
+    push_text_left(out, "ENEMIES", left + 2.0, top, 1.0, HUD_LABEL);
+    let rows_top = top + 10.0;
+
+    // Panel backing so the stack reads as one grouped element against the starfield.
+    let panel_h = rows_top - top + enemies.len() as f32 * row_h + 2.0;
+    push_polygon(
+        out,
+        PolygonInstance::flat(
+            [
+                [left - 2.0, top - 2.0],
+                [left + panel_w, top - 2.0],
+                [left + panel_w, top - 2.0 + panel_h],
+                [left - 2.0, top - 2.0 + panel_h],
+            ],
+            HUD_BAND_BG,
+            atlas::cell_uvs(atlas::SOLID_WHITE),
+        ),
+    );
+    push_text_left(out, "ENEMIES", left + 2.0, top, 1.0, HUD_LABEL);
+
+    for (i, e) in enemies.iter().enumerate() {
+        let ry = rows_top + i as f32 * row_h;
+        // --- HULL bar ---
+        let hx = left + 2.0;
+        let hy = ry;
+        push_polygon(
+            out,
+            PolygonInstance::flat(
+                [[hx, hy], [hx + bar_w, hy], [hx + bar_w, hy + bar_h], [hx, hy + bar_h]],
+                HULL_BAR_BG,
+                atlas::cell_uvs(atlas::SOLID_WHITE),
+            ),
+        );
+        if e.max_hull > 0 {
+            let frac = (e.hull as f32 / e.max_hull as f32).clamp(0.0, 1.0);
+            if frac > 0.0 {
+                let fw = bar_w * frac;
+                let col = if frac > 0.6 {
+                    HULL_BAR_HIGH
+                } else if frac > 0.3 {
+                    HULL_BAR_MID
+                } else {
+                    HULL_BAR_LOW
+                };
+                push_polygon(
+                    out,
+                    PolygonInstance::flat(
+                        [[hx, hy], [hx + fw, hy], [hx + fw, hy + bar_h], [hx, hy + bar_h]],
+                        col,
+                        atlas::cell_uvs(atlas::SOLID_WHITE),
+                    ),
+                );
+            }
+        }
+        // Hull number to the right of the bar.
+        push_text_left(out, &format!("{}", e.hull.max(0)), hx + bar_w + 3.0, hy - 1.0, 1.0, HUD_LABEL);
+
+        // --- SHIELD bar (directly below the hull bar), only if the enemy has shield
+        // capacity (Σarmour > 0); a naked enemy shows just its hull bar. ---
+        let sp = &e.shield_profile;
+        let cap: i32 = sp.bow.armour + sp.stern.armour + sp.port.armour + sp.starboard.armour;
+        let sy = hy + bar_h + 1.0;
+        let sh = 3.0;
+        if cap > 0 {
+            let cur: i32 = sp.bow.charge + sp.stern.charge + sp.port.charge + sp.starboard.charge;
+            push_polygon(
+                out,
+                PolygonInstance::flat(
+                    [[hx, sy], [hx + bar_w, sy], [hx + bar_w, sy + sh], [hx, sy + sh]],
+                    HULL_BAR_BG,
+                    atlas::cell_uvs(atlas::SOLID_WHITE),
+                ),
+            );
+            let frac = (cur as f32 / cap as f32).clamp(0.0, 1.0);
+            if frac > 0.0 {
+                let fw = bar_w * frac;
+                push_polygon(
+                    out,
+                    PolygonInstance::flat(
+                        [[hx, sy], [hx + fw, sy], [hx + fw, sy + sh], [hx, sy + sh]],
+                        SHIELD_PIP_CHARGE,
+                        atlas::cell_uvs(atlas::SOLID_WHITE),
+                    ),
+                );
+            }
+        }
+
+        // --- REVEALED QUEUE: one small icon per entry in enemy.queue, in fire order.
+        // Empty queue => nothing here (the enemy hasn't telegraphed yet). The HAND is
+        // never shown — only what's been queued. ---
+        let qy = sy + sh + 1.0;
+        let qicon = 3.0; // half-size
+        let qgap = qicon * 2.0 + 2.0;
+        for (qi, action_id) in e.queue.iter().enumerate() {
+            let archetype = archetype_of_mount(e, action_id).unwrap_or(WeaponArchetype::Beam);
+            let cx = hx + qicon + qi as f32 * qgap;
+            // Amber chip behind each queued icon (enemy intent = warm warning).
+            push_polygon(
+                out,
+                PolygonInstance::flat(
+                    [
+                        [cx - qicon - 1.0, qy - 1.0],
+                        [cx + qicon + 1.0, qy - 1.0],
+                        [cx + qicon + 1.0, qy + qicon * 2.0 + 1.0],
+                        [cx - qicon - 1.0, qy + qicon * 2.0 + 1.0],
+                    ],
+                    TILE_QUEUED,
+                    atlas::cell_uvs(atlas::SOLID_WHITE),
+                ),
+            );
+            push_sprite(
+                out,
+                SpriteInstance::axis_aligned(
+                    [cx, qy + qicon],
+                    [qicon, qicon],
+                    TILE_BG,
+                    atlas::cell_uvs(archetype_to_glyph(archetype)),
+                ),
+            );
+        }
+    }
+}
+
 /// (#70) Live player POS + FACING readout, top-right just under SALVAGE — the
 /// ground-truth Bruce + the lead read instead of guessing from a capture. Shows
 /// the board cell `(col,row)` and the cardinal facing the strafe/reorient
