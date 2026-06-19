@@ -930,6 +930,12 @@ struct App {
     /// `None` when idle. While `Some`, gameplay input is locked and the redraw loop
     /// releases one queued beam per `BEAT_SECS` off the frame clock.
     beat_playback: Option<BeatPlayback>,
+    /// (#136) "Can't queue — recharging" cue: the weapon id the player just tried to
+    /// queue while it was ON COOLDOWN + when. Set in the keypress handler when a
+    /// QueueAction is blocked; the redraw flashes that ability tile for a short fade
+    /// so the block reads as "still cooling down", not a silent no-op. Pruned on
+    /// expiry; cleared on restart.
+    queue_blocked_flash: Option<(String, Instant)>,
     /// Shared audio state. `None` if the `audio` feature is off OR the
     /// audio backend failed to open on startup (headless CI, missing
     /// driver). When present, the bus is re-installed on every
@@ -979,6 +985,7 @@ impl App {
             particles: broadside_engine::vfx::ParticlePool::new(),
             hull_flash: std::collections::HashMap::new(),
             beat_playback: None,
+            queue_blocked_flash: None,
             #[cfg(feature = "audio")]
             audio: None,
         };
@@ -1096,6 +1103,7 @@ impl App {
         self.particles.clear(); // (#119) no stale explosion particles into the fresh board
         self.hull_flash.clear(); // (#101) no stale damage flashes into the fresh board
         self.beat_playback = None; // (#133) abort any in-flight volley playback on restart
+        self.queue_blocked_flash = None; // (#136) clear any recharging cue on restart
         self.reinstall_audio();
     }
 
@@ -1434,6 +1442,21 @@ impl ApplicationHandler for App {
                     .cloned();
                 let Some(player) = player_snapshot else { return };
                 let Some(intent) = key_to_intent(key, &player, &self.content) else { return };
+                // (#136 Bruce) COOLDOWN GATE on queuing. Per the core model, queuing a
+                // weapon requires it OFF cooldown (the cooldown starts when it FIRES).
+                // The player could previously re-queue an on-cooldown weapon (bug). Read
+                // the cooldown straight off the player snapshot (no content dep): block
+                // the QueueAction if cooldowns[weapon] > 0, and set a brief "recharging"
+                // cue so the block reads (the redraw flashes that tile) instead of a
+                // silent no-op. Blocking spends NO turn — it's an invalid input, not a
+                // wasted move.
+                if let Intent::QueueAction(ref weapon) = intent {
+                    if player.cooldowns.get(weapon).copied().unwrap_or(0) > 0 {
+                        self.queue_blocked_flash = Some((weapon.clone(), Instant::now()));
+                        if let Some(w) = self.window.as_ref() { w.request_redraw(); }
+                        return;
+                    }
+                }
                 // Restart resets both the board AND the content so card
                 // charges + subsystems come back as a fresh game.
                 let is_restart = matches!(intent, Intent::Restart);
@@ -1886,6 +1909,29 @@ impl ApplicationHandler for App {
                     // board alone doesn't carry. Damage # top-left, key # bottom-right,
                     // cooldown ticks along the bottom.
                     hud::push_ability_tiles_2d(&mut instances, &player_tiles);
+                    // (#136 Bruce) "Recharging" cue: if the player just tried to queue
+                    // an on-cooldown weapon, flash that tile for a short fade so the
+                    // block reads. Map the blocked weapon id -> its slot char via the
+                    // live player's mounts (slot '1'+mount_index, same as build_ship_tiles).
+                    if let Some((weapon, t)) = self.queue_blocked_flash.clone() {
+                        let age = now.duration_since(t).as_secs_f32();
+                        if age < HULL_FLASH_SECS {
+                            let slot = self
+                                .board
+                                .cells
+                                .iter()
+                                .flatten()
+                                .find(|s| s.faction == Faction::Player)
+                                .and_then(|p| p.mounts.iter().position(|m| m.weapon == weapon))
+                                .map(|i| (b'1' + i as u8) as char);
+                            if let Some(slot) = slot {
+                                let intensity = 1.0 - age / HULL_FLASH_SECS;
+                                hud::push_cooldown_block_cue_2d(&mut instances, &player_tiles, slot, intensity);
+                            }
+                        } else {
+                            self.queue_blocked_flash = None;
+                        }
+                    }
                     // (#128 Bruce) Player QUEUE panel, TOP-RIGHT: the weapons lined up
                     // (1/2/3), in fire order. Built from the SAME player_tiles — a
                     // queued tile (queued_index = Some) leaves the hand (hollows out in

@@ -870,6 +870,48 @@ pub fn push_ability_tiles_2d(out: &mut Vec<DrawCommand>, tiles: &[AbilityTile]) 
     }
 }
 
+/// (#136 Bruce) "Can't queue — recharging" cue. When the player tries to queue a
+/// weapon that's still on cooldown, the bin blocks it (no turn spent) and flashes
+/// the matching ability tile via this — so the block reads as "still cooling down"
+/// instead of a silent no-op. `slot` is the tile's slot char ('1'..'3'); `intensity`
+/// is the bin's fade (1.0 at the press → 0.0 on expiry). Uses the SAME row geometry
+/// as [`push_ability_tiles_2d`] so it lands exactly on the right tile: a pulsing
+/// amber frame + a small "CD" tag. No-op at `intensity <= 0` or unknown slot.
+pub fn push_cooldown_block_cue_2d(out: &mut Vec<DrawCommand>, tiles: &[AbilityTile], slot: char, intensity: f32) {
+    if intensity <= 0.0 || tiles.is_empty() {
+        return;
+    }
+    let Some(idx) = tiles.iter().position(|t| t.slot == slot) else {
+        return;
+    };
+    // Mirror push_ability_tiles_2d's layout EXACTLY.
+    let w = crate::gfx::scene_w() as f32;
+    let h = crate::gfx::scene_h() as f32;
+    let band_h = 40.0;
+    let band_top = h - band_h;
+    let tile = 30.0;
+    let gap = 8.0;
+    let n = tiles.len();
+    let row_w = n as f32 * tile + (n as f32 - 1.0) * gap;
+    let start_x = (w - row_w) / 2.0 + 60.0;
+    let tile_y = band_top + (band_h - tile) / 2.0;
+    let tx = start_x + idx as f32 * (tile + gap);
+    let a = intensity.clamp(0.0, 1.0);
+    // Pulsing amber frame (the "recharging" warning) over the tile.
+    let flash = [1.0, 0.84, 0.30, a];
+    let c = [
+        [tx, tile_y],
+        [tx + tile, tile_y],
+        [tx + tile, tile_y + tile],
+        [tx, tile_y + tile],
+    ];
+    for k in 0..4 {
+        push_line(out, pt(c[k]), pt(c[(k + 1) % 4]), 2.0, flash);
+    }
+    // Small "CD" tag top-left so the reason reads even at a glance.
+    push_text_left(out, "CD", tx + 2.0, tile_y + 2.0, 1.0, flash);
+}
+
 // (#98) weapon_archetype removed with the old mount-tile row — the ability tiles
 // now carry their icon via AbilityTile::icon (the bin maps it from the catalog
 // action archetype, the real source, not an id substring).
