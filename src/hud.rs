@@ -3035,12 +3035,13 @@ pub fn push_salvage_hud(out: &mut Vec<DrawCommand>, salvage: u32) {
 /// they never appear in this panel (the bin only sets `queued_index` on weapons it
 /// actually pushed to `ship.queue`).
 ///
-/// Takes the player's `AbilityTile`s; filters to the queued ones, orders by
-/// `queued_index`, and draws each as a small amber-framed row (order number +
-/// weapon icon + slot key). No-op when nothing is queued, so the corner is empty
-/// until the player lines something up.
+/// Takes the player's `AbilityTile`s; filters to the queued ones. The column is a
+/// FIFO stack drawn BOTTOM-UP (Bruce amendment): the head — `queued_index` 0, which
+/// fires FIRST — sits at the BOTTOM, and later entries stack UPWARD, so the most-
+/// recently-queued is on top and the column grows up as the player queues more. A
+/// "NEXT" marker tags the bottom (head) tile. No-op when nothing is queued.
 pub fn push_player_queue_panel_2d(out: &mut Vec<DrawCommand>, tiles: &[AbilityTile]) {
-    // Collect queued tiles in fire order (queued_index ascending).
+    // Queued tiles in fire order: queued[0] = head (fires first) = column BOTTOM.
     let mut queued: Vec<&AbilityTile> = tiles.iter().filter(|t| t.queued_index.is_some()).collect();
     if queued.is_empty() {
         return;
@@ -3049,40 +3050,39 @@ pub fn push_player_queue_panel_2d(out: &mut Vec<DrawCommand>, tiles: &[AbilityTi
 
     let w = crate::gfx::scene_w() as f32;
     let right_pad = 8.0;
-    let top = 8.0;
-    let row_h = 16.0; // per queued ability
+    let header_y = 8.0;
+    let cell = 16.0; // per queued ability (square cell, vertical pitch)
     let icon = 5.0; // icon half-size
-    let panel_w = 56.0;
+    let panel_w = 64.0;
     let panel_x = w - panel_w - right_pad;
+    // The column BOTTOM is fixed; it grows UP from here as entries are added.
+    let col_top = header_y + 10.0;
+    let bottom_y = col_top + queued.len() as f32 * cell;
 
-    // Header "QUEUE" above the stack (small dim label, right-aligned to the panel).
-    push_text_left(out, "QUEUE", panel_x + 2.0, top, 1.0, HUD_LABEL);
-    let stack_top = top + 10.0;
-
-    // Panel backing so the stack reads as one grouped element against the starfield.
-    let panel_h = stack_top - top + queued.len() as f32 * row_h + 2.0;
+    // Panel backing.
     push_polygon(
         out,
         PolygonInstance::flat(
             [
-                [panel_x - 2.0, top - 2.0],
-                [panel_x + panel_w, top - 2.0],
-                [panel_x + panel_w, top - 2.0 + panel_h],
-                [panel_x - 2.0, top - 2.0 + panel_h],
+                [panel_x - 2.0, header_y - 2.0],
+                [panel_x + panel_w, header_y - 2.0],
+                [panel_x + panel_w, bottom_y + 2.0],
+                [panel_x - 2.0, bottom_y + 2.0],
             ],
             HUD_BAND_BG,
             atlas::cell_uvs(atlas::SOLID_WHITE),
         ),
     );
-    // Re-draw the header on top of the backing.
-    push_text_left(out, "QUEUE", panel_x + 2.0, top, 1.0, HUD_LABEL);
+    push_text_left(out, "QUEUE", panel_x + 2.0, header_y, 1.0, HUD_LABEL);
 
-    for (row, t) in queued.iter().enumerate() {
-        let ry = stack_top + row as f32 * row_h;
-        let cy = ry + row_h * 0.5 - 2.0;
+    // Chip column on the RIGHT of the panel; the "NEXT" tag + slot key sit to its
+    // LEFT so nothing overlaps.
+    let half = icon + 2.0;
+    let fx = panel_x + panel_w - half - 4.0;
+    for (k, t) in queued.iter().enumerate() {
+        // k = 0 (head) -> BOTTOM cell; higher k stacks UP.
+        let cy = bottom_y - cell * 0.5 - k as f32 * cell;
         // Amber frame chip (QUEUED) behind the icon — same cue as the bottom tiles.
-        let fx = panel_x + 14.0;
-        let half = icon + 2.0;
         push_polygon(
             out,
             PolygonInstance::flat(
@@ -3106,26 +3106,34 @@ pub fn push_player_queue_panel_2d(out: &mut Vec<DrawCommand>, tiles: &[AbilityTi
                 atlas::cell_uvs(t.icon.atlas_cell()),
             ),
         );
-        // Fire-order number (1-based) to the LEFT of the icon.
-        push_text_left(out, &format!("{}", row + 1), panel_x + 2.0, cy - 3.0, 1.0, WHITE);
-        // Slot key to the RIGHT of the icon (which weapon this was in the hand).
-        push_text_left(out, &t.slot.to_string(), fx + half + 3.0, cy - 3.0, 1.0, HUD_LABEL);
+        // Slot key just LEFT of the chip (which weapon this was in the hand).
+        push_text_left(out, &t.slot.to_string(), fx - half - 7.0, cy - 3.0, 1.0, HUD_LABEL);
+        // The HEAD (bottom, k==0) gets a "NEXT" tag at the panel's left edge, same
+        // row, so "fires next" reads. Other rows leave that space blank.
+        if k == 0 {
+            push_text_left(out, "NEXT", panel_x + 2.0, cy - 3.0, 1.0, WHITE);
+        }
     }
 }
 
-/// (#129 Bruce) The ENEMY INFO panel, TOP-LEFT corner. One stacked row per LIVE
-/// enemy showing its HEALTH (hull bar) + SHIELD (shield bar) + its REVEALED QUEUE.
+/// (#129/#130 Bruce) The ENEMY INFO panel, TOP-LEFT corner. One vertical COLUMN
+/// per LIVE enemy, placed side by side. Each column is LABELED at the top with that
+/// enemy's HEALTH (hull bar + number) + SHIELD (shield bar), and below the label a
+/// REVEALED QUEUE drawn as a FIFO column.
+///
+/// QUEUE direction (#130 Bruce): the queue is a VERTICAL FIFO column that builds UP
+/// — the head (`queue[0]`, which fires FIRST) sits at the BOTTOM, later entries
+/// stack upward toward the label, so the column grows up from a fixed bottom as the
+/// enemy telegraphs more. (`fire_player_queue` consumes `queue` in index order, so
+/// index 0 IS the head.)
 ///
 /// CRITICAL (Bruce): the enemy's HAND is HIDDEN — we show ONLY what the enemy has
 /// actually QUEUED (read live from `enemy.queue`), so the queue is LEARNED in real
-/// time: it builds as the enemy queues over turns and empties as it fires. This is
-/// NOT a static highlight of a known loadout — an enemy with an empty queue shows
-/// just its bars (no queue icons), and icons appear only once it telegraphs.
-///
-/// Reads everything straight off the board: `enemy.hull` / `enemy.max_hull`, the
-/// Σcharge / Σarmour shield pool across the four faces, and `enemy.queue`. No-op
-/// when there are no enemies (between encounters). Rows stack down from the top so
-/// 1/2/3 enemies all fit; flagged to the lead if a full fleet crowds the panel.
+/// time: it builds as the enemy queues over turns and empties as it fires. An enemy
+/// with an empty queue shows just its label bars; chips appear only once it
+/// telegraphs. Reads everything off the board (`hull`/`max_hull`, Σcharge/Σarmour
+/// shield pool, `queue`). No-op with no enemies. Columns sit side by side so 1/2/3
+/// enemies fit; flagged to the lead if a full fleet crowds the panel.
 pub fn push_enemy_info_panel_2d(out: &mut Vec<DrawCommand>, board: &Board) {
     let enemies: Vec<&Ship> = board
         .cells
@@ -3139,41 +3147,49 @@ pub fn push_enemy_info_panel_2d(out: &mut Vec<DrawCommand>, board: &Board) {
 
     let left = 6.0;
     let top = 8.0;
-    let panel_w = 96.0;
-    let row_h = 22.0; // hull bar + shield bar + queue icon row per enemy
-    let bar_w = 56.0;
+    let col_w = 40.0; // per-enemy column width
+    let col_gap = 4.0;
     let bar_h = 4.0;
+    let sh = 3.0;
+    let cell = 12.0; // queue chip vertical pitch
+    let qicon = 4.0; // queue chip icon half-size
 
-    // Header.
-    push_text_left(out, "ENEMIES", left + 2.0, top, 1.0, HUD_LABEL);
-    let rows_top = top + 10.0;
+    // The deepest queue across enemies sets the panel height (columns share a bottom).
+    let max_q = enemies.iter().map(|e| e.queue.len()).max().unwrap_or(0);
+    let header_y = top;
+    // Leave a line under the header for each column's hull NUMBER (drawn at hy-7),
+    // then the hull bar, shield bar, and the queue column below.
+    let label_top = header_y + 18.0; // hull bar y
+    let queue_top = label_top + bar_h + 1.0 + sh + 2.0; // first queue cell baseline area
+    let bottom_y = queue_top + (max_q.max(1) as f32) * cell;
+    let panel_w = enemies.len() as f32 * col_w + (enemies.len() as f32 - 1.0) * col_gap + 4.0;
 
-    // Panel backing so the stack reads as one grouped element against the starfield.
-    let panel_h = rows_top - top + enemies.len() as f32 * row_h + 2.0;
+    // Panel backing.
     push_polygon(
         out,
         PolygonInstance::flat(
             [
-                [left - 2.0, top - 2.0],
-                [left + panel_w, top - 2.0],
-                [left + panel_w, top - 2.0 + panel_h],
-                [left - 2.0, top - 2.0 + panel_h],
+                [left - 2.0, header_y - 2.0],
+                [left + panel_w, header_y - 2.0],
+                [left + panel_w, bottom_y + 2.0],
+                [left - 2.0, bottom_y + 2.0],
             ],
             HUD_BAND_BG,
             atlas::cell_uvs(atlas::SOLID_WHITE),
         ),
     );
-    push_text_left(out, "ENEMIES", left + 2.0, top, 1.0, HUD_LABEL);
+    push_text_left(out, "ENEMIES", left + 2.0, header_y, 1.0, HUD_LABEL);
 
     for (i, e) in enemies.iter().enumerate() {
-        let ry = rows_top + i as f32 * row_h;
-        // --- HULL bar ---
-        let hx = left + 2.0;
-        let hy = ry;
+        let cx0 = left + 2.0 + i as f32 * (col_w + col_gap);
+        let bar_w = col_w - 2.0;
+
+        // --- LABEL: HULL bar (top of the column) ---
+        let hy = label_top;
         push_polygon(
             out,
             PolygonInstance::flat(
-                [[hx, hy], [hx + bar_w, hy], [hx + bar_w, hy + bar_h], [hx, hy + bar_h]],
+                [[cx0, hy], [cx0 + bar_w, hy], [cx0 + bar_w, hy + bar_h], [cx0, hy + bar_h]],
                 HULL_BAR_BG,
                 atlas::cell_uvs(atlas::SOLID_WHITE),
             ),
@@ -3192,28 +3208,30 @@ pub fn push_enemy_info_panel_2d(out: &mut Vec<DrawCommand>, board: &Board) {
                 push_polygon(
                     out,
                     PolygonInstance::flat(
-                        [[hx, hy], [hx + fw, hy], [hx + fw, hy + bar_h], [hx, hy + bar_h]],
+                        [[cx0, hy], [cx0 + fw, hy], [cx0 + fw, hy + bar_h], [cx0, hy + bar_h]],
                         col,
                         atlas::cell_uvs(atlas::SOLID_WHITE),
                     ),
                 );
             }
         }
-        // Hull number to the right of the bar.
-        push_text_left(out, &format!("{}", e.hull.max(0)), hx + bar_w + 3.0, hy - 1.0, 1.0, HUD_LABEL);
+        // Hull number to the RIGHT-ish, on the same line as the bar but the column
+        // is narrow — so draw it small ABOVE the bar, right-aligned in the column, to
+        // avoid the colour fill. (The colour-coded bar is the primary health read.)
+        let hn = format!("{}", e.hull.max(0));
+        let hn_x = cx0 + bar_w - (hn.len() as f32 * 6.0 - 1.0);
+        push_text_left(out, &hn, hn_x, hy - 7.0, 1.0, HUD_LABEL);
 
-        // --- SHIELD bar (directly below the hull bar), only if the enemy has shield
-        // capacity (Σarmour > 0); a naked enemy shows just its hull bar. ---
+        // --- LABEL: SHIELD bar (below hull), only if the enemy has shield capacity. ---
         let sp = &e.shield_profile;
         let cap: i32 = sp.bow.armour + sp.stern.armour + sp.port.armour + sp.starboard.armour;
         let sy = hy + bar_h + 1.0;
-        let sh = 3.0;
         if cap > 0 {
             let cur: i32 = sp.bow.charge + sp.stern.charge + sp.port.charge + sp.starboard.charge;
             push_polygon(
                 out,
                 PolygonInstance::flat(
-                    [[hx, sy], [hx + bar_w, sy], [hx + bar_w, sy + sh], [hx, sy + sh]],
+                    [[cx0, sy], [cx0 + bar_w, sy], [cx0 + bar_w, sy + sh], [cx0, sy + sh]],
                     HULL_BAR_BG,
                     atlas::cell_uvs(atlas::SOLID_WHITE),
                 ),
@@ -3224,7 +3242,7 @@ pub fn push_enemy_info_panel_2d(out: &mut Vec<DrawCommand>, board: &Board) {
                 push_polygon(
                     out,
                     PolygonInstance::flat(
-                        [[hx, sy], [hx + fw, sy], [hx + fw, sy + sh], [hx, sy + sh]],
+                        [[cx0, sy], [cx0 + fw, sy], [cx0 + fw, sy + sh], [cx0, sy + sh]],
                         SHIELD_PIP_CHARGE,
                         atlas::cell_uvs(atlas::SOLID_WHITE),
                     ),
@@ -3232,24 +3250,21 @@ pub fn push_enemy_info_panel_2d(out: &mut Vec<DrawCommand>, board: &Board) {
             }
         }
 
-        // --- REVEALED QUEUE: one small icon per entry in enemy.queue, in fire order.
-        // Empty queue => nothing here (the enemy hasn't telegraphed yet). The HAND is
-        // never shown — only what's been queued. ---
-        let qy = sy + sh + 1.0;
-        let qicon = 3.0; // half-size
-        let qgap = qicon * 2.0 + 2.0;
+        // --- REVEALED QUEUE: vertical FIFO column, head (queue[0]) at the BOTTOM,
+        // later entries stacking UP. Empty queue => nothing (not telegraphed yet). ---
+        let icx = cx0 + bar_w * 0.5; // centre the chips in the column
         for (qi, action_id) in e.queue.iter().enumerate() {
             let archetype = archetype_of_mount(e, action_id).unwrap_or(WeaponArchetype::Beam);
-            let cx = hx + qicon + qi as f32 * qgap;
-            // Amber chip behind each queued icon (enemy intent = warm warning).
+            // qi = 0 (head) -> BOTTOM; higher qi stacks UP.
+            let cy = bottom_y - cell * 0.5 - qi as f32 * cell;
             push_polygon(
                 out,
                 PolygonInstance::flat(
                     [
-                        [cx - qicon - 1.0, qy - 1.0],
-                        [cx + qicon + 1.0, qy - 1.0],
-                        [cx + qicon + 1.0, qy + qicon * 2.0 + 1.0],
-                        [cx - qicon - 1.0, qy + qicon * 2.0 + 1.0],
+                        [icx - qicon - 1.0, cy - qicon - 1.0],
+                        [icx + qicon + 1.0, cy - qicon - 1.0],
+                        [icx + qicon + 1.0, cy + qicon + 1.0],
+                        [icx - qicon - 1.0, cy + qicon + 1.0],
                     ],
                     TILE_QUEUED,
                     atlas::cell_uvs(atlas::SOLID_WHITE),
@@ -3258,7 +3273,7 @@ pub fn push_enemy_info_panel_2d(out: &mut Vec<DrawCommand>, board: &Board) {
             push_sprite(
                 out,
                 SpriteInstance::axis_aligned(
-                    [cx, qy + qicon],
+                    [icx, cy],
                     [qicon, qicon],
                     TILE_BG,
                     atlas::cell_uvs(archetype_to_glyph(archetype)),
