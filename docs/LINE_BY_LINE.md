@@ -3456,64 +3456,181 @@ correctly because they don't go through the bus.
 
 ---
 
-### Phase 0 — `fn resolve_round(board, content)` (resolve.rs:183)
+### Phase 0 — `fn resolve_round(board, content)` (resolve.rs:203)
 
 **Mirrors:** `resolve.ts:31` (`resolveRound`).
 **Design anchor:** HTML Part I — the four-phase round is the engine's heartbeat.
-**Intent:** One full round, now a thin composition of two reusable halves so the
-Shogun-Showdown turn dispatch in `input.rs` / `broadside.rs` can call them
-independently. Line 184-192: **clear `board.fire_events` ONCE here, at turn start,
-before anyone fires (#59)** — a turn's worth of exact-shot events accumulates across the
-WHOLE round (the player's fired queue AND every enemy's), so the renderer can draw one
-beam per shot. The clear lives here, NOT in `fire_player_queue`: that runs once per enemy
-inside `run_world_phase`, so clearing there would wipe all-but-the-last ship's beams (the
-"per-enemy-wipe trap"). The in-game SS path doesn't call `resolve_round` — the bin clears
+**Canonical spec:** [`docs/design/CORE_GAMEPLAY_LOOP.md`](design/CORE_GAMEPLAY_LOOP.md) —
+the turn-based (chess) model that governs how one turn advances. Read it first.
+
+**Intent:** One full *turn*, now a thin composition of two reusable halves so the
+turn-based dispatch in `input.rs` / `broadside.rs` can call them independently. This is
+the **headless / test entry point**; the live bin does not call it (see the bin Drift
+below). Line 204-212: **clear `board.fire_events` ONCE here, at turn start, before anyone
+fires (#59)** — a turn's worth of exact-shot events accumulates across the WHOLE turn (the
+player's fired queue AND every enemy's), so the renderer can draw one beam per shot. The
+clear lives here, NOT in `fire_player_queue`: that runs once per enemy inside
+`run_world_phase`, so clearing there would wipe all-but-the-last ship's beams (the
+"per-enemy-wipe trap"). The in-game path doesn't call `resolve_round` — the bin clears
 `fire_events` at the top of its `apply_intent`; this clear covers the
-`resolve_round`-driven headless/test path. Then find the player (`find_player_id`) and, if
-present, run `fire_player_queue` (phase 1); line 188 → `run_world_phase` (phases 2-4).
+`resolve_round`-driven headless/test path. Line 214-217: find the player
+(`find_player_id`) and, if present, run `fire_player_queue` (phase 1); line 218 →
+`run_world_phase` (phases 2-4).
 
 **Drift — the executeQueue split.** The TS `resolveRound` inlined player-queue + world
-phases in one body. The Rust port factors them into [`fire_player_queue`](#phase-1--3--fn-fire_player_queuesship_id-board-content-srcresolversr212)
-(phase 1, the former `executeQueue` body) and `run_world_phase` (phases 2-4) so the SS
-turn model can fire them separately: instant intents run `apply_instant_action` +
+phases in one body. The Rust port factors them into [`fire_player_queue`](#phase-1--3--fn-fire_player_queuesship_id-board-content-srcresolversr242)
+(phase 1, the former `executeQueue` body) and `run_world_phase` (phases 2-4) so the
+turn-based model can fire them separately: instant intents run `apply_instant_action` +
 `run_world_phase`; queueing intents push to the queue + `run_world_phase` (queue not
-fired); commit runs `fire_player_queue` + `run_world_phase`. See
-[`broadside.rs::apply_intent`](#srcbinbroadsidesrs).
+fired); commit runs `fire_player_queue` + `run_world_phase`; **Wait** runs
+`run_world_phase` alone. See [`broadside.rs::apply_intent`](#srcbinbroadsidesrs).
 
-### Phases 2-4 — `fn run_world_phase(board, content)` (resolve.rs:282)
+### Phases 2-4 — `fn run_world_phase(board, content)` (resolve.rs:312)
 
-**Intent:** The world half of a round, run after every player input under SS rules.
+**Canonical spec:** [`docs/design/CORE_GAMEPLAY_LOOP.md`](design/CORE_GAMEPLAY_LOOP.md).
+**Intent:** The world half of one turn. In the **turn-based (chess) model** this is what
+"a turn advances" *means*: each of the player's four turn-actions (move / queue / dequeue-
+fire / wait) calls `run_world_phase` exactly once, so every input that costs a turn runs
+ordnance, gives **every enemy one action**, and ticks **every** cooldown/heat/shield once.
+The field-kit cards (5/6/7) are the one exception — they are free and do NOT call this.
 
-1. **Ordnance phase** (line 294-298). `board.destroys_this_window = 0` (line 294) opens
-   a fresh chain-kill window for the ordnance phase — torpedo impacts that kill multiple
-   enemies count as a chain within the phase, separately from the player queue. Snapshot
-   projectile ids, then `advance_projectile` each by id (the snapshot is needed because
-   impact removes the projectile). The TS does *not* emit `onChainKill` from the ordnance
-   phase — only the queue path does — and this port matches that.
-2. **Enemy phase — FIRE-THEN-DECIDE (telegraph-one-turn-ahead, #67)** (line 300-345).
-   Snapshot enemy ids in `enemy_initiative` order up front (so movement/destroys during
-   one enemy's turn can't reshuffle the rest). For each surviving enemy, the order is the
-   **opposite** of the player's: (a) **fire** the action it telegraphed on the *previous*
-   world phase via `fire_player_queue` (which clears the queue; gated by `skips_turn` — a
-   stunned enemy skips the fire; no-op on the first phase when the queue is empty), then
+1. **Ordnance phase** (line 325, factored into [`advance_ordnance`](#fn-advance_ordnanceboard-content-srcresolversr347)).
+   `board.destroys_this_window = 0` opens a fresh chain-kill window for the ordnance phase
+   — torpedo impacts that kill multiple enemies count as a chain within the phase,
+   separately from the player queue. Snapshot projectile ids, then `advance_projectile_2d`
+   each by id (the snapshot is needed because impact removes the projectile). The TS does
+   *not* emit `onChainKill` from the ordnance phase — only the queue path does — and this
+   port matches that.
+2. **Enemy phase — FIRE-THEN-DECIDE (telegraph-one-turn-ahead, #67)** (line 330-336). For
+   each id in `live_enemy_ids` (snapshot in `enemy_initiative` order up front so movement/
+   destroys during one enemy's turn can't reshuffle the rest), call
+   [`tick_enemy`](#fn-tick_enemyenemy_id-board-content-srcresolversr388). Per enemy the
+   order is the **opposite** of the player's: (a) **fire** the action it telegraphed on the
+   *previous* turn via `fire_player_queue` (which clears the queue; gated by `skips_turn` —
+   a stunned enemy skips the fire; no-op on the first turn when the queue is empty), then
    re-locate (firing may have moved/destroyed it), then (b) `decide_enemy_action` to pick
    its NEXT action and leave it **queued un-fired** for the renderer's telegraph stack to
-   draw above the sprite. Between player inputs `enemy.queue` therefore persistently holds
-   the enemy's next intent — moves and reorients telegraph this phase and execute next,
-   the Shogun-Showdown readability the design doc calls for. (Pre-#67 this was
-   decide-then-fire in one phase, so the queue emptied the instant it filled and the
-   telegraph never rendered.) The per-ship fire body is still shared with the player —
-   "AI never bypasses the pipeline" holds; only the fire-vs-decide *ordering* differs.
-3. **End of turn** (line 348). `end_of_turn` ticks cooldowns/heat/statuses and emits
-   `OnTurnEnd`.
+   draw above the sprite. Between player turns `enemy.queue` therefore persistently holds
+   the enemy's next intent — moves and reorients telegraph this turn and execute next, the
+   readability the design doc calls for. This is the canonical "enemies queue before they
+   fire": an enemy cannot fire on the turn it first decides. After the loop,
+   `paint_threats` (line 336) repaints the telegraph for the zero-enemy case. (Pre-#67 this
+   was decide-then-fire in one phase, so the queue emptied the instant it filled and the
+   telegraph never rendered.) The per-ship fire body is still shared with the player — "AI
+   never bypasses the pipeline" holds; only the fire-vs-decide *ordering* differs.
+3. **End of turn** (line 339). `end_of_turn` ticks cooldowns/heat/statuses **and shield
+   regen** and emits `OnTurnEnd`.
 
 **Drift — snapshot iteration.** TS uses `[...board.ordnance]` / enemy-array copies; Rust
 collects ids into `Vec<String>` and re-looks-up by id each iteration. Same semantic:
 iteration is stable across mid-iteration removals.
 
+**Drift — stale source comments describe the reverted real-time path (#124 → #126).** The
+`//!`-level rustdoc on `run_world_phase`, `tick_enemy`, and `tick_world` (resolve.rs:312-
+427) still narrate a real-time bin where "the live bin instead calls `tick_enemy` per
+enemy on its own timer." That bin was built in **#124** and **reverted in #126**. The
+engine is now turn-based ([CORE_GAMEPLAY_LOOP.md](design/CORE_GAMEPLAY_LOOP.md)): the live
+bin calls `run_world_phase` once per turn-action and never drives `tick_enemy` /
+`tick_world` directly. The two decoupling seams **survive as composable helpers** —
+`run_world_phase` is still built out of `advance_ordnance` + the `tick_enemy` loop +
+`end_of_turn`, and `tick_world` (advance_ordnance + end_of_turn + fire_events clear) is
+retained — but nothing real-time drives them anymore. Treat the function bodies as
+authoritative and the "live bin / own timer / global clock" prose in those comments as
+historical. *(Flagged to lead: the source doc-comments themselves want a follow-up edit;
+the doc-writer does not modify source.)*
+
 ---
 
-### Phase 1 / 3 — `fn fire_player_queue(ship_id, board, content)` (resolve.rs:212)
+### `fn advance_ordnance(board, content)` (resolve.rs:347)
+
+**Intent:** Phase 2 in isolation — advance every live projectile by its speed and resolve
+impacts. Extracted from `run_world_phase` in #124 so the world bookkeeping could be
+composed; both `run_world_phase` and `tick_world` call it. Line 348 resets
+`destroys_this_window = 0` so an ordnance volley's chain kills are scored separately from
+the player's queue (matching the TS, which emits `onChainKill` only from `executeQueue`,
+never the ordnance phase). Snapshots the projectile ids first (an impact may remove its
+projectile mid-iteration), then `advance_projectile_2d` each across the 2-D grid
+(invariant A). **Cross-references:** calls
+[`advance_projectile_2d`](#srcresolvers); called by `run_world_phase` and `tick_world`.
+
+### `fn live_enemy_ids(board) -> Vec<String>` (resolve.rs:360)
+
+**Intent:** The live ids of every enemy ship, in `enemy_initiative` order. The enemy loop
+in `run_world_phase` iterates this so the snapshot is stable across mid-turn movement and
+destroys. Filters `enemy_initiative` cells to their occupants' ids. (A leftover seam from
+#124's real-time decouple — the reverted bin iterated this to drive `tick_enemy` per
+enemy; today only `run_world_phase` uses it.)
+
+### `fn tick_enemy(enemy_id, board, content)` (resolve.rs:388)
+
+**Canonical spec:** [CORE_GAMEPLAY_LOOP.md](design/CORE_GAMEPLAY_LOOP.md) — "enemies queue
+before they fire."
+**Intent:** One enemy's whole turn — the fire-then-decide step for a single enemy. Called
+once per enemy from `run_world_phase`'s loop.
+
+Line 389-391: re-locate the enemy by id; a since-destroyed enemy no-ops (the snapshot in
+`live_enemy_ids` may name a ship a prior enemy's shot just killed). Line 392-395: **(a)
+FIRE** the queue it telegraphed on its *previous* tick via `fire_player_queue`, which runs
+and clears it — gated by `skips_turn` (a stunned `SystemsOffline` enemy still decides/shows
+intent but does not fire). On the very first turn the queue is empty, so this is a no-op
+and the enemy only telegraphs. Line 396-400: **(b) RE-LOCATE** (firing may have moved or
+destroyed it) and `decide_enemy_action` to choose its NEXT action, left queued + un-fired
+so the renderer's telegraph shows it. Line 402: `paint_threats` keeps `board.threats`
+truthful after this enemy's decision.
+
+This is the rule that makes the player see a shot coming one turn before it lands (#67).
+**Cross-references:** calls [`fire_player_queue`](#phase-1--3--fn-fire_player_queuesship_id-board-content-srcresolversr242),
+[`ai::decide_enemy_action`](#srcairs-folded-into-resolve-and-ai), and `paint_threats`;
+called by `run_world_phase`.
+
+### `fn tick_world(board, content)` (resolve.rs:422) — retained #124 seam, not driven live
+
+**Intent:** Everything in a world phase EXCEPT the per-enemy loop — `advance_ordnance` +
+`end_of_turn`, then a `board.fire_events.clear()`. Built in #124 as the global real-time
+clock tick. **The #126 turn-based revert means nothing drives this live** — the bin calls
+`run_world_phase` per turn-action instead, and the headless path uses `resolve_round`. It
+survives only as a composable helper / for any future use. Note the difference from
+`run_world_phase`: `tick_world` **clears** `fire_events` (it owned the real-time render
+window boundary), whereas `run_world_phase` does NOT (the `resolve_round`-top clear owns
+that for the headless path; the bin clears at the top of `apply_intent`). Documented here
+so a reader who finds it in the source knows it is dormant, not part of the live loop.
+
+### `fn paint_threats(board, content)` (resolve.rs:452)
+
+**Mirrors:** the R8 ThreatMap painting (no direct TS analog — the telegraph is a v2 2-D
+addition).
+**Intent:** Rebuild `board.threats` from the enemies' currently-queued actions so the
+renderer can draw the "single best idea" telegraph: each `Threat` is one cell the player
+will be hit on next turn. The correctness invariant (V4-at-R8): the painted set is computed
+by the **same** `resolve_targeting_2d` spine the AI elected with and the firing will resolve
+with, so the painted set provably equals the fired set — correctness from reuse, never a
+second selection.
+
+Line 453: clear and fully rebuild. Line 457-463: snapshot `(enemy_pos, queued ids)` for
+every enemy with a non-empty queue (only enemies telegraph; the borrow is released before
+resolving). Line 465-490: for each queued id, resolve it to an `Action` exactly as
+`fire_player_queue` does — `content.action(id)` first, then the resolver-owned
+`resolver_ai_move` synthetic-move fallback (#68); an id neither serves is skipped. Run
+`resolve_targeting_2d` against the enemy's pos, classify with `threat_kind`, and push a
+`Threat { pos, kind, source: enemy_pos }` for every targeted cell — **skipping a
+self-targeting cell** (line 484) so a queued move/vent/reorient does not flag its own cell.
+`Threat.source` is the enemy's own `Pos` (invariant A) so the renderer draws the telegraph
+beam from the right ship and R7 knows whose shot whiffs if the player vacates. **Cross-
+references:** called by `tick_enemy` and `run_world_phase`; reads
+[`resolve_targeting_2d`](#srcresolvers).
+
+### `fn threat_kind(action) -> ThreatKind` (resolve.rs:501)
+
+**Intent:** Classify a queued `Action` into the renderer's [`ThreatKind`](#srctypesrs) by
+effect family (blueprint: "styled by ThreatKind + lethal flash"). Sums the action's raw
+DAMAGE amounts; if positive returns `Damage { amount }` carrying the **pre-mitigation**
+total (the telegraph shows the raw threat — the falloff/shield mitigation is exactly what
+the player repositions to change). Precedence **Damage > Displace > Status > Other**: a
+shot that also pushes reads as Damage (the dangerous part), matching how the AI scores it.
+
+---
+
+### Phase 1 / 3 — `fn fire_player_queue(ship_id, board, content)` (resolve.rs:242)
 
 **Mirrors:** `resolve.ts:53` (`executeQueue`).
 **Intent:** Fire one ship's queued actions in order through the arc + heat + cooldown
@@ -3525,33 +3642,44 @@ The ship is identified by `ship_id` (not `&Ship`) — applying an effect can mut
 cells vector underneath us (movement, destroys), so the function re-locates the ship by
 id (`find_cell_by_id`) each time it reads or mutates it.
 
-Line 217: `board.destroys_this_window = 0` — opens this ship's chain-kill window.
-`destroy()` (resolve.rs:1007) increments it; `detect_chain` (resolve.rs:1735) reads it
+Line 247: `board.destroys_this_window = 0` — opens this ship's chain-kill window.
+`destroy()` (resolve.rs:2077) increments it; `detect_chain` (resolve.rs:3003) reads it
 after the queue runs. Each `fire_player_queue` call is one window; the ordnance phase
 opens its own — same counter, different reset points.
 
-Line 223-226: snapshot the queue out front (stable across mid-iteration mutations to the
-ship's record; matches the TS `for (const actionId of ship.queue)`). Line 228-238: the
-loop — for each `action_id`, look it up via `content.action` (missing → skip silently,
-the TS `if (!a) continue`), clone the `Action`, and hand off to **`run_action`**
-(resolve.rs:346), which is where the per-action gate + effect application now lives (the
-refactor pulled the loop body out of the old monolithic `executeQueue`). Line 241-246:
+Line 249-256: snapshot the queue out front (stable across mid-iteration mutations to the
+ship's record; matches the TS `for (const actionId of ship.queue)`). Line 258-279: the
+loop — for each `action_id`, look it up via `content.action` (missing → fall back to the
+resolver-owned `resolver_ai_move` synthetic-move action for the AI's `__move_*` ids (#68),
+else skip silently, the TS `if (!a) continue`), clone the `Action`, and hand off to
+**`run_action`**
+(resolve.rs:563), which is where the per-action gate + effect application now lives (the
+refactor pulled the loop body out of the old monolithic `executeQueue`). Line 282-287:
 after the queue, `detect_chain` reads `destroys_this_window`; if a chain occurred, emit
-`OnChainKill` with the ship's final cell. Line 250-254: clear the queue (only if the ship
+`OnChainKill` with the ship's final cell. Line 291-295: clear the queue (only if the ship
 survived).
 
-### `fn run_action(ship_id, lookup_id, action, board, content) -> bool` (resolve.rs:346)
+### `fn run_action(ship_id, lookup_id, action, board, content) -> bool` (resolve.rs:563)
 
 **Intent:** Run one action for one ship — the per-action gate cascade and effect
 application, factored out of the queue loop. Returns whether it fired.
 
-- **Line 355-357**: re-resolve the ship's current cell (a prior effect — DISPLACE_SELF,
+- **Line 570-574**: re-resolve the ship's current cell (a prior effect — DISPLACE_SELF,
   push, swap — may have moved it). Gone → return false.
-- **Line 362-364**: lockout gate. Overheated ship can only fire free / zero-heat actions.
-- **Line 366-368**: cooldown gate. Action not yet charged.
-- **Line 371**: `resolve_targeting(action, board, ship_cell)` — the cells this action
-  resolves against, from the *current* cell.
-- **Line 375-377**: the "nothing bore" gate. If the action requires an arc and targeting
+- **Line 578-581**: lockout gate. Overheated ship can only fire free / zero-heat actions.
+- **Line 583-585**: cooldown gate. Action not yet charged.
+- **Line 598-599**: `resolve_targeting_2d(action, board, ship_pos)` — the cells this action
+  resolves against, from the *current* cell, over the real 2-D grid (R3), then shimmed to
+  flat `cells` indices via `Pos::to_index` (correct under invariant A).
+- **Line 601-637 — R7 DODGE WHIFF (`hit: false`), BEFORE the "nothing bore" gate.** If the
+  action is DAMAGE-bearing, scan `board.threats` for cells THIS ship telegraphed last turn
+  (`source == ship_pos`) that the player has since **vacated** (`board.ship_at` now empty),
+  and push a `hit: false` FireEvent (ship_pos → the now-empty cell) per whiffed cell. This
+  draws the beam firing into the space the target just left — the dodge reads on screen.
+  Runs regardless of the nothing-bore gate (the enemy visibly fires even when it connects
+  with nothing). Landed via R7 (#38) + review #46; see
+  [R7 dodge-whiff](#srcresolvers).
+- **Line 642-644**: the "nothing bore" gate. If the action requires an arc and targeting
   returned no cells, **skip with no heat cost and no cooldown reset** — the contract that
   lets a player queue optimistic actions without losing the turn's heat budget if the gun
   has no target.
@@ -3574,60 +3702,61 @@ application, factored out of the queue loop. Returns whether it fired.
 > writing `tests/run_loop.rs`. If a future change wants mounts to be a hard prerequisite,
 > the gate belongs right here at the top of `run_action`.
 
-- **Line 434-469 — FireEvent production (#59)**, *after* the "nothing bore" gate but
+- **Line 646-688 — FireEvent production (#59)**, *after* the "nothing bore" gate but
   **before** effects run. If the action carries any `Effect::DAMAGE` (fires-only — a
   move / vent / reorient is not a "shot"), push one `crate::types::FireEvent` per
   **connecting** target: a target cell that holds a ship and isn't the firer's own cell
   (SELF actions resolve to the firer — not an attacker→target line). A multi-target shot
   (spinal / blast / broadside) thus fans out as **N events from one origin**. Recorded
-  here — before effects mutate the board — so `from_cell` is the gun's **fire-time** cell
-  and `to_cell`s are pre-displacement. `attacker_faction` is read from the firer;
-  `archetype` from the action. **Purely additive** — appends to the runtime
-  `board.fire_events`, gates nothing, changes no mechanic. `hit` is always `true` (we only
-  emit for occupied target cells, and a shield-fully-absorbed hit still *connects* — the
-  exact case the old hull-drop VFX guess missed); the `hit: false` miss path is reserved
-  for the out-of-scope #81 dodge-whiff feature. **Worked example:**
+  here — before effects mutate the board — so `from_pos`/`from_cell` is the gun's
+  **fire-time** cell and the `to_pos`/`to_cell`s are pre-displacement. `attacker_faction`
+  is read from the firer; `archetype` from the action. **Purely additive** — appends to the
+  runtime `board.fire_events`, gates nothing, changes no mechanic. `hit` is always `true`
+  on this **connecting** path (we only emit for occupied target cells, and a
+  shield-fully-absorbed hit still *connects* — the exact case the old hull-drop VFX guess
+  missed). The `hit: false` **dodge-whiff** path is a *separate* block above (line 601-637,
+  R7/#38) that fires when the player has vacated a telegraphed cell. **Worked example:**
   `fire_events_accumulate_across_a_multi_ship_round` (resolve.rs:4265) — the player's fired
   pulse produces a `FireEvent` from cell 0, and across a full round the player's shot AND
   both enemies' shots accumulate (the across-the-whole-round semantics; see the
   `resolve_round` clear note). Consumed by [`vfx.rs`](#srcvfxrs)'s `ShotBeam`.
 
-- **Line 385-401**: apply the effect list via `apply_effect`, **possibly twice** — the
+- **Line 690-756**: apply the effect list via `apply_effect`, **possibly twice** — the
   `twin_linked` weapon-mod (#50) makes the effects run for `passes = 2`, **re-resolving
   targeting before the second pass** (content ruling: the second volley re-aims at the board
   the first left — a first-pass kill shortens a spinal line, a first-pass DISPLACE moves the
   firing ship). Cost/heat/cooldown are still paid **once** (below) — twin_linked doubles
   effect application, it's not a re-queued action. See the **weapon-mod dispatch** entry
   below for the full mod set.
-- **Line 396-401**: the `precision_core` pre-snapshot — when that mod is present, record
+- **Line 707-712**: the `precision_core` pre-snapshot — when that mod is present, record
   which targeted cells hold a ship *before* the effects run, so post-bookkeeping can tell if
   the action made a clean kill (cell occupied before, empty after; any-lethal, overkill
   counts).
-- **Line 426-453**: heat + cooldown bookkeeping, *after* effects, against the ship at its
+- **Line 757-771**: heat + cooldown bookkeeping, *after* effects, against the ship at its
   post-effect cell (if it survived). Heat *always* increments by `action.cost.heat`;
   lockout fires when heat ≥ heat_max; cooldown resets to `cost.cooldown_max` (hit or miss) —
-  **except `precision_core` on a clean kill overrides it to 0** (line 451), the recharge
+  **except `precision_core` on a clean kill overrides it to 0** (line 768), the recharge
   applied *here* (after the base insert) so it wins; doing it during effects would be
   clobbered by this very insert. That ordering is the precision_core subtlety.
-- **Line 464-466**: emit `OnDamageDealt` **unconditionally** — once per fired action, even
+- **Line 781-783**: emit `OnDamageDealt` **unconditionally** — once per fired action, even
   if the attacker self-destructed (reviewer divergence #1: the pre-fix code nested this in
   the survived-the-action guard, so a self-destructing attacker silently skipped the hook;
   `source_cell` is `None` when the attacker is gone, but subscribers still run).
 
-**Worked example (`execute_queue_overheats_and_records_cooldown`, resolve.rs:1897):**
+**Worked example (`execute_queue_overheats_and_records_cooldown`, resolve.rs:3303):**
 Attacker starts heat=5, heat_max=6, queue=[pulse_laser]. After the queue fires: heat=6
 (crossed threshold), `locked_out=true`, cooldowns["pulse_laser"]=0 (reset), queue
 cleared. The lockout means the *next* round's pulse_laser is gated by the lockout
-check (resolve.rs:362) until vented.
+check (resolve.rs:579) until vented.
 
-**Worked example (`execute_queue_no_target_no_cost`, resolve.rs:2168):** Attacker queues
-pulse_laser into an empty lane (forward arc, no target). `resolve_targeting` returns
+**Worked example (`execute_queue_no_target_no_cost`, resolve.rs:3581):** Attacker queues
+pulse_laser into an empty lane (forward arc, no target). `resolve_targeting_2d` returns
 `[]`, the arc gate skips the action, heat stays 0, cooldown stays absent (or
 unchanged). The contract is "no bore, no cost."
 
 ---
 
-### Weapon-mod dispatch — `enum WeaponMod` (resolve.rs:947), `fn apply_on_hit_mod` (resolve.rs:1020), `fn action_advances_turn` (resolve.rs:1004)
+### Weapon-mod dispatch — `enum WeaponMod` (resolve.rs:1759), `fn apply_on_hit_mod` (resolve.rs:1832), `fn action_advances_turn` (resolve.rs:1816)
 
 **Mirrors:** the analysis doc's weapon-mod list; no TS analog (the TS engine never wired
 mods). Landed at commit 1619bac (#50). **Intent:** a weapon mod attaches to ONE action via
@@ -3716,21 +3845,54 @@ payload's `amount` lands raw, no scaling.
 
 ---
 
-### Phase 4 — `fn end_of_turn(board, content)` (line 305)
+### Phase 4 — `fn end_of_turn(board, content)` (resolve.rs:942)
 
-**Mirrors:** `resolve.ts:254`.
-**Intent:** End-of-turn bookkeeping. Four things happen per ship:
+**Mirrors:** `resolve.ts:254` (the cooldown/heat/status core); the shield-regen step is a
+v2 addition with no TS analog.
+**Canonical spec:** the combat model — integer-only damage + per-face depleting/recharging
+shields ([CORE_GAMEPLAY_LOOP.md](design/CORE_GAMEPLAY_LOOP.md) §Implementation; [`SHIELD`
+section of geometry2d](#srcgeometry2drs)).
+**Intent:** End-of-turn bookkeeping, run once per turn from `run_world_phase`. In the
+turn-based model this is the "all cooldowns tick 1" step — so it fires on **every** player
+turn-action (move / queue / dequeue-fire / wait), never on a free field-kit card.
 
-1. Every positive cooldown decrements by 1 (lines 313–316).
-2. Heat dissipates by 1, floored at 0 (line 319).
-3. If heat dropped below heat_max, clear lockout (line 321).
-4. Tick all statuses via `tick_statuses` (line 324). HullBreach deals 1 damage per
-   active instance and may destroy the ship.
+**Up front (line 947-965) — build the UNDER-FIRE set.** Before mutating anything, scan
+`board.fire_events` (the shots accumulated this turn, cleared at turn start) and, for every
+`hit: true` event, map it to `(target cell, HullZone)` via the **same** single-source the
+damage path uses: `geometry2d::facing_zone(target.facing, direction_to(target, attacker))`.
+A face that took fire this turn is "under fire" and will **not** regen below. This is the
+shield-regen "under-fire pause" (#103 Model A, option B) — sustained fire on one face keeps
+it pinned (ships can die; the campaign terminates), while quiet faces recover.
 
-Final line 326: emit `OnTurnEnd`. Subsystems hooking this run *after* all per-ship
-bookkeeping completes, so a turn-end subsystem sees the post-tick state.
+**Per live ship (line 967-1002), in lane order:**
 
-**Drift note: status tick happens per-ship inside the loop.** TS does the same. The
+1. Every positive cooldown decrements by 1 (line 970-974). This is the per-turn cooldown
+   tick the canonical loop promises.
+2. Heat dissipates by 1, floored at 0 (line 976).
+3. If heat dropped below heat_max, clear lockout (line 977-979).
+4. **Shield regen (#103/#104, line 980-999).** For each of the four faces in
+   `[bow, stern, port, starboard]` order (must match `faces_mut()`): if that face is in the
+   under-fire set, **skip** (paused). Otherwise refill the pool `charge` by
+   `SHIELD_REGEN_PER_TURN` (a `const = 1` at resolve.rs:47), capped at `armour` — which is
+   repurposed as the pool **capacity** (see [`absorb_shield`](#srcgeometry2drs)). Integer
+   only (#104). A bow that didn't get shot recovers 1 toward its cap each turn; a flank
+   under continuous fire stays cracked.
+5. Tick all statuses via `tick_statuses` (line 1001). HullBreach deals 1 damage per active
+   instance and may destroy the ship.
+
+**Then (line 1003-1008):** `content.on_turn_end(board)` runs the subsystem `OnTurnEnd` pass
+**after** base dissipation (so HeatSink stacks additively on the canonical -1) and
+**before** the bus emit (so subscribers see the final post-subsystem state); then emit
+`OnTurnEnd`. Subsystems hooking the bus see the post-tick state.
+
+**Drift note — shield regen is the #103/#104 combat overhaul, not in TS.** The TS
+`end_of_turn` had no shields-as-pools concept (it used flat `armour` subtraction at hit
+time). The v2 model moves armor into a per-face depleting pool (`charge`) that regenerates
+here. The two halves are: [`absorb_shield`](#srcgeometry2drs) soaks the hit at damage time;
+this function refills the pool over turns. Tunable knobs: `SHIELD_REGEN_PER_TURN` (here) and
+the per-face capacities in `default_shield_profile` / the catalog.
+
+**Drift note — status tick happens per-ship inside the loop.** TS does the same. The
 hull-breach damage routes through `destroy` (and therefore the bus → `OnLethal`) if
 the ship dies, so subscribers fire mid-loop, not at the end. Order is lane-order.
 
