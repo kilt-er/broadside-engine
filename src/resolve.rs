@@ -253,10 +253,7 @@ pub fn fire_player_queue(ship_id: &str, board: &mut Board, content: &dyn Content
     // ship object — even if the ship moves, the action-id strings are still
     // consumed in order.
     let queue: Vec<String> = match find_cell_by_id(board, ship_id) {
-        Some(c) => board.cells[c]
-            .as_ref()
-            .map(|s| s.queue.clone())
-            .unwrap_or_default(),
+        Some((_, ship)) => ship.queue.clone(),
         None => return,
     };
 
@@ -285,7 +282,7 @@ pub fn fire_player_queue(ship_id: &str, board: &mut Board, content: &dyn Content
 
     // Chain-kill check uses the ship's final cell, if it survived.
     if detect_chain(board) {
-        let final_cell = find_cell_by_id(board, ship_id);
+        let final_cell = find_cell_by_id(board, ship_id).map(|(i, _)| i);
         emit(board, Hook::OnChainKill, |ctx| {
             ctx.source_cell = final_cell;
         });
@@ -293,10 +290,8 @@ pub fn fire_player_queue(ship_id: &str, board: &mut Board, content: &dyn Content
 
     // Clear the queue. The ship may have been destroyed during effect
     // application; only clear if it still exists.
-    if let Some(post_cell) = find_cell_by_id(board, ship_id) {
-        if let Some(ship) = board.cells[post_cell].as_mut() {
-            ship.queue.clear();
-        }
+    if let Some((_, ship)) = find_cell_by_id_mut(board, ship_id) {
+        ship.queue.clear();
     }
 }
 
@@ -392,7 +387,7 @@ pub fn live_enemy_ids(board: &Board) -> Vec<String> {
 /// state when run for every enemy in `run_world_phase`). Touches ONLY this enemy
 /// and the cells it shoots — never the player's or another enemy's queue.
 pub fn tick_enemy(enemy_id: &str, board: &mut Board, content: &dyn Content) {
-    let Some(enemy_cell) = find_cell_by_id(board, enemy_id) else {
+    let Some((enemy_cell, _)) = find_cell_by_id(board, enemy_id) else {
         return; // already destroyed
     };
     // a. Fire the previously-telegraphed queue (skipped while stunned).
@@ -401,7 +396,7 @@ pub fn tick_enemy(enemy_id: &str, board: &mut Board, content: &dyn Content) {
     }
     // b. Re-locate (firing may have moved/destroyed the enemy) and decide the
     //    NEXT telegraph, left un-fired for the renderer to show.
-    if let Some(enemy_cell) = find_cell_by_id(board, enemy_id) {
+    if let Some((enemy_cell, _)) = find_cell_by_id(board, enemy_id) {
         crate::ai::decide_enemy_action(enemy_cell, board, content);
     }
     // Keep the telegraph truthful after this enemy's decision.
@@ -563,7 +558,7 @@ pub fn apply_instant_action(
     board.destroys_this_window = 0;
     run_action(ship_id, &action.id, action, board, content);
     if detect_chain(board) {
-        let final_cell = find_cell_by_id(board, ship_id);
+        let final_cell = find_cell_by_id(board, ship_id).map(|(i, _)| i);
         emit(board, Hook::OnChainKill, |ctx| {
             ctx.source_cell = final_cell;
         });
@@ -587,13 +582,12 @@ fn run_action(
     content: &dyn Content,
 ) -> bool {
     // Re-resolve the ship's current cell. A prior effect (DISPLACE_SELF,
-    // push, swap) may have moved the ship before this action runs.
-    let Some(ship_cell) = find_cell_by_id(board, ship_id) else {
+    // push, swap) may have moved the ship before this action runs. The finder
+    // hands back the cell index AND the ship in one lookup, so the occupant is
+    // structurally guaranteed — no separate re-index + `.expect()`.
+    let Some((ship_cell, ship)) = find_cell_by_id(board, ship_id) else {
         return false;
     };
-    let ship = board.cells[ship_cell]
-        .as_ref()
-        .expect("find_cell_by_id located an occupant");
     // Overheated: only free / zero-heat actions can fire.
     if ship.locked_out && action.cost.heat > 0 {
         return false;
@@ -757,7 +751,7 @@ fn run_action(
             }
         };
         // The effect source is the ship's CURRENT cell for this pass.
-        let pass_source = find_cell_by_id(board, ship_id).unwrap_or(ship_cell);
+        let pass_source = find_cell_by_id(board, ship_id).map_or(ship_cell, |(i, _)| i);
         for fx in &action.effects {
             apply_effect(fx, action, pass_source, &pass_cells, board, content);
         }
@@ -777,25 +771,29 @@ fn run_action(
     let precision_kill =
         precision_core && precision_targets.iter().any(|&c| board.cells[c].is_none());
 
-    let post_cell = find_cell_by_id(board, ship_id);
-    if let Some(post_cell) = post_cell {
-        if let Some(ship) = board.cells[post_cell].as_mut() {
-            ship.heat += action.cost.heat;
-            if ship.heat >= ship.heat_max {
-                ship.locked_out = true;
-            }
-            // The cooldown bookkeeping insert. precision_core overrides it to 0
-            // on a clean kill — applied here (after the base insert) so the
-            // recharge wins; doing it during effects would be clobbered by this
-            // very insert. Keyed by `lookup_id`, the action's cooldown slot.
-            let cd = if precision_kill {
-                0
-            } else {
-                action.cost.cooldown_max
-            };
-            ship.cooldowns.insert(lookup_id.to_string(), cd);
+    // The ship's post-effect cell, or `None` if it self-destructed during the
+    // effect chain. Captured from the same `_mut` lookup that banks heat /
+    // cooldown, so the `onDamageDealt` emit below has the source index without
+    // a second search.
+    let post_cell = if let Some((cell, ship)) = find_cell_by_id_mut(board, ship_id) {
+        ship.heat += action.cost.heat;
+        if ship.heat >= ship.heat_max {
+            ship.locked_out = true;
         }
-    }
+        // The cooldown bookkeeping insert. precision_core overrides it to 0
+        // on a clean kill — applied here (after the base insert) so the
+        // recharge wins; doing it during effects would be clobbered by this
+        // very insert. Keyed by `lookup_id`, the action's cooldown slot.
+        let cd = if precision_kill {
+            0
+        } else {
+            action.cost.cooldown_max
+        };
+        ship.cooldowns.insert(lookup_id.to_string(), cd);
+        Some(cell)
+    } else {
+        None
+    };
     // `onDamageDealt` fires UNCONDITIONALLY — once per fired action — to match
     // the TS `executeQueue`, which emits `{ board, source: ship }` on every
     // loop iteration regardless of whether the firing ship survived (in TS
@@ -811,16 +809,36 @@ fn run_action(
     true
 }
 
-/// Locate the lane cell occupied by the ship whose `id` matches. `None` if
-/// no live ship on the board has that id (destroyed mid-queue, never
-/// existed). The TS engine identifies ships by object reference; this is
-/// the Rust analog — call it whenever a hand-off across a board-mutating
-/// call needs to re-locate a known ship.
-fn find_cell_by_id(board: &Board, ship_id: &str) -> Option<usize> {
-    board
-        .cells
-        .iter()
-        .position(|c| c.as_ref().is_some_and(|s| s.id == ship_id))
+/// Locate the lane cell occupied by the ship whose `id` matches, returning
+/// both the cell index AND a borrow of the ship in one pass. `None` if no
+/// live ship on the board has that id (destroyed mid-queue, never existed).
+/// The TS engine identifies ships by object reference; this is the Rust
+/// analog — call it whenever a hand-off across a board-mutating call needs
+/// to re-locate a known ship.
+///
+/// Returning `(usize, &Ship)` (rather than just the index) folds the
+/// follow-up `board.cells[idx].as_ref()` deref into the same lookup: the
+/// occupant is structurally guaranteed by the search predicate, so callers
+/// that previously re-indexed and `.expect()`-ed the slot can no longer
+/// panic. Callers that need only the index take `.map(|(i, _)| i)`.
+fn find_cell_by_id<'b>(board: &'b Board, ship_id: &str) -> Option<(usize, &'b Ship)> {
+    board.cells.iter().enumerate().find_map(|(i, c)| {
+        c.as_ref()
+            .filter(|s| s.id == ship_id)
+            .map(|s| (i, s))
+    })
+}
+
+/// `&mut` companion to [`find_cell_by_id`] — locates the ship by id and hands
+/// back the index plus a mutable borrow in one pass, for the call sites that
+/// then write the ship's fields (clearing the queue, banking heat / cooldown).
+/// Same structural guarantee: no separate re-index + `.expect()`.
+fn find_cell_by_id_mut<'b>(board: &'b mut Board, ship_id: &str) -> Option<(usize, &'b mut Ship)> {
+    board.cells.iter_mut().enumerate().find_map(|(i, c)| {
+        c.as_mut()
+            .filter(|s| s.id == ship_id)
+            .map(|s| (i, s))
+    })
 }
 
 /* =============================================================================
@@ -3747,9 +3765,8 @@ mod tests {
 
         apply_instant_action("frigate", &thrust, &mut board, &NoLookup);
 
-        let cell = find_cell_by_id(&board, "frigate").expect("frigate still on board");
+        let (cell, p) = find_cell_by_id(&board, "frigate").expect("frigate still on board");
         assert_eq!(cell, 1, "instant thrust should move the ship +1");
-        let p = board.cells[cell].as_ref().unwrap();
         assert!(
             p.queue.is_empty(),
             "instant action must NOT touch the queue"
