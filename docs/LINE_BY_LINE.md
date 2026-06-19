@@ -2214,6 +2214,61 @@ No open architectural items.
 
 ---
 
+### Render modes — grid pitch (`G`) + grid mode (`T`) + ship tilt (#139/#140/#142)
+
+**Intent:** Bruce can re-pitch the whole board from the chase-cam look up toward top-down
+at runtime, choosing between three projections of that arc. There are **two independent
+control axes**, both process-global atomics in `gfx.rs` so every reprojecting call site
+shares one value (the projector is the single spatial source — grid, cells, movement,
+threats, ordnance all reproject together):
+
+1. **`G` — grid PITCH step** (`cycle_grid_pitch`, gfx.rs:113). An integer step `0..=GRID_PITCH_STEPS`
+   (`GRID_PITCH_STEPS = 8`, ~5° each), exposed as `t = step / 8 ∈ [0, 1]` via `grid_pitch_t()`.
+   `0` = the chase-cam look; the last step ≈ near-top-down. This is the *amount* of pitch.
+2. **`T` — grid MODE** (`cycle_grid_mode`, gfx.rs:153). Which projection the pitch arc feeds,
+   `0..GRID_MODES` (`GRID_MODES = 3`):
+   - **0 = DRAWBRIDGE** — `ProjectorConfig::with_pitch(t)` (projector.rs:306): a constant
+     grid **footprint**; the projector compensates the horizon, so the grid "balloons" as it
+     raises (the #139 original, kept for comparison).
+   - **1 = STRETCH-CURVED** — `with_stretch(t)` (projector.rs:331): the grid **stretches
+     vertically** toward a uniform top-down square with ~constant ship size; column edges
+     *bow* through the mid-arc (#140).
+   - **2 = STRETCH-STRAIGHT** — `with_stretch_straight(t)` (projector.rs:343): the same
+     stretch, but the column edges **straighten** as the arc raises (#142 — Bruce: "I
+     expected straight lines").
+
+   `grid_mode_tag()` returns `""`/`"STRETCH"`/`"STRAIGHT"` for the debug readout;
+   `grid_stretch_on()` (mode ≠ 0) and `grid_stretch_straight()` (mode == 2) are back-compat
+   shims (the headless `capture` env reads them).
+
+**The no-regression invariant:** at pitch step 0 all three modes reduce to the perspective
+base (`with_pitch(0) == with_stretch(0) == with_stretch_straight(0) == base`), so the
+default frame is byte-identical regardless of mode. Both keys are handled in `window_event`
+*before* the key→intent lookup (like the res cycles), so they never become an `Intent`
+([`broadside.rs`](#srcbinbroadsidesrs), `KeyG`/`KeyT` arms). The bin's `scene_projector()`
+(src/bin/broadside.rs:114) is the one place that reads `grid_mode()` + `grid_pitch_t()` and
+picks the matching `with_*` projection for every board-space draw.
+
+**Ship-plane TILT (`loft_pitch_deg`, gfx.rs:187).** The player + enemy 3-D hulls must stay
+**parallel to the grid plane** as the arc raises, so the loft camera pitch is itself driven
+off `grid_pitch_t()`: it lerps from `loft_gpu::CAMERA_PITCH_DEG` (the fixed chase-cam look,
+`= 20.0`) at step 0 up to `LOFT_PITCH_TOPDOWN_DEG` (`= 82.0`, near-overhead — capped below
+90° because a true straight-down ortho view collapses a flat hull to a line) at full pitch.
+ONE global so player + every enemy + the grid pitch together. **Independent of the grid
+mode** — the hulls tilt in all three modes (the plane raises either way). This is what
+[`loft_gpu::render_ship_lit_framed`](#srcloft_gpurs) parameterizes: it takes the pitch
+degrees rather than hard-coding `CAMERA_PITCH_DEG`, so the same lit GLB mesh renders at the
+live tilt.
+
+**Drift — the players + enemies are the real Aegis GLB mesh, NOT sprites.** Per the
+[v5 render contract](BROADSIDE_RENDER_CONTRACT.md) there are two channels: the baked
+15-facing sprite **wheel** (#67, unlit fallback) and the **GLB mesh** rendered dynamically-lit
+by the loft pass (primary). The live game renders the player and every enemy as the faithful
+Aegis GLB via [`mesh_import`](#srcmesh_importrs) through `loft_gpu` (enemies tinted red); the
+15-facing wheel is the **inactive fallback**. Do not describe the live ships as sprites.
+
+---
+
 ## `src/loft_gpu.rs`
 
 *The GPU side of the render pivot — in-engine lift of the validated `loft_poc` spike.
@@ -5600,10 +5655,10 @@ Translate `winit::KeyCode` → engine `input::Key`. Lives in the bin so **the li
 imports winit**. One arm per advertised binding (including `KeyW → Key::W`, the #126 Wait);
 everything else `None`. Pinned by `keycode_translation_covers_every_binding` (in the bin's
 test module). **Renderer-only keys bypass this map** — `Esc`, `[`/`]` (ship-loft res), `;`/`'`
-(scene res), **`G`** (grid-pitch step, #139), and **`T`** (stretch-mode toggle, #140) are
+(scene res), **`G`** (grid-pitch step, #139), and **`T`** (grid-mode cycle, #140/#142) are
 handled directly in `window_event` *before* the key→intent lookup, so they stay
-renderer-owned and never become an `Intent`. See the render-mode entries under
-[`gfx.rs`](#srcgfxrs) and [`grid.rs`](#srcgridrs).
+renderer-owned and never become an `Intent`. See [Render modes](#render-modes-grid-pitch-g--grid-mode-t--ship-tilt-139140142)
+below.
 
 ### `fn apply_intent(intent, board, content, initial_board) -> bool` (src/bin/broadside.rs:145)
 

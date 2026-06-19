@@ -274,6 +274,35 @@ Four called-out structural deltas (quoted from the module rustdoc):
 
 ---
 
+## Render modes — grid pitch (`G`) / grid mode (`T`) / ship tilt (#139/#140/#142)
+
+`gfx.rs` owns three process-global atomics that re-pitch the board at runtime (so every
+projector call site shares one value). **Two control axes:**
+
+- **`G` — grid PITCH step** (`cycle_grid_pitch`, `grid_pitch_t() ∈ [0,1]`, `GRID_PITCH_STEPS = 8`):
+  the *amount* of pitch, chase-cam (`0`) → near-top-down.
+- **`T` — grid MODE** (`cycle_grid_mode`, `GRID_MODES = 3`): which projection the pitch arc
+  feeds — **0 DRAWBRIDGE** (`ProjectorConfig::with_pitch`, constant footprint, balloons),
+  **1 STRETCH-CURVED** (`with_stretch`, stretches to a uniform top-down square, curved
+  columns), **2 STRETCH-STRAIGHT** (`with_stretch_straight`, same stretch with straight
+  columns). `grid_mode_tag()` → `""`/`"STRETCH"`/`"STRAIGHT"`; `grid_stretch_on()` /
+  `grid_stretch_straight()` are back-compat shims for the headless `capture` env.
+
+At pitch step 0 all three modes reduce to the perspective base, so the default frame is
+byte-identical (the no-regression gate). The bin's `scene_projector()` reads both and picks
+the `with_*` projection for all board-space draws.
+
+**Ship-plane tilt** (`loft_pitch_deg`): the 3-D hulls must stay parallel to the raising grid
+plane, so the loft-camera pitch lerps from `loft_gpu::CAMERA_PITCH_DEG` (`20°`, chase-cam) to
+`LOFT_PITCH_TOPDOWN_DEG` (`82°`) off `grid_pitch_t()` — one global, independent of grid mode,
+parameterized into `loft_gpu::render_ship_lit_framed`. The live player + enemy ships are the
+real Aegis **GLB mesh** via [`mesh_import`](mesh_import.md) rendered by the loft pass (enemies
+tinted red), NOT sprites — the baked 15-facing wheel is the inactive fallback (see the
+[v5 render contract](../BROADSIDE_RENDER_CONTRACT.md)). Full walkthrough:
+[Render modes in LINE_BY_LINE](../LINE_BY_LINE.md#render-modes--grid-pitch-g--grid-mode-t--ship-tilt-139140142).
+
+---
+
 ## Tests
 
 `gfx.rs` itself has no `#[cfg(test)]` module — GPU pipelines are tested via
