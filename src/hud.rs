@@ -3368,33 +3368,35 @@ pub fn push_player_readout(out: &mut Vec<DrawCommand>, pos: crate::grid::Pos, fa
     let pixel = 1.0;
     let advance = 5.0 * pixel + pixel; // glyph + 1px space (matches push_text_left)
     let total_w = text.len() as f32 * advance - pixel;
-    let right_pad = 20.0;
-    // (#76 scene-res) Right-align to the LIVE canvas edge.
+    let right_pad = 4.0;
+    // (#134 Bruce) Moved to the BOTTOM-RIGHT corner — the top-right is the player
+    // QUEUE panel now. Right-aligned to the live canvas edge; this is the TOP line
+    // of the 3-line debug stack (SHIP/SCENE res go below it, push_res_readout).
     let start_x = crate::gfx::scene_w() as f32 - total_w - right_pad;
-    // Just below the SALVAGE banner (salvage sits at y=8 with pixel=2 → ~14px
-    // tall; place this at y=26).
-    push_text_left(out, &text, start_x, 26.0, pixel, DIM);
+    let h = crate::gfx::scene_h() as f32;
+    push_text_left(out, &text, start_x, h - 30.0, pixel, DIM);
 }
 
-/// (#76) Top-right resolution readout under the POS/FACE line: `SHIP <w>x<h>`
+/// (#76/#134) BOTTOM-RIGHT resolution readout under the POS/FACE line: `SHIP <w>x<h>`
 /// (the loft-render pixel size, cycled with `,`/`.`) and `SCENE <w>x<h>` (the
 /// whole-scene offscreen size, cycled with `;`/`'`). Right-aligned, dim, so Bruce
-/// sees the live res while tuning. Stacked at y=38 / y=48 (the POS/FACE line sits
-/// at y=26).
+/// sees the live res while tuning. The 3-line debug stack sits in the bottom-right
+/// corner (#134, top-right is the queue panel now): POS/FACE at h-30, then these two.
 pub fn push_res_readout(out: &mut Vec<DrawCommand>, ship: (u32, u32), scene: (u32, u32)) {
     const DIM: [f32; 4] = [0.62, 0.70, 0.80, 0.85];
     let pixel = 1.0;
     let advance = 5.0 * pixel + pixel;
-    let right_pad = 20.0;
+    let right_pad = 4.0;
     // (#76 scene-res) Right-align to the LIVE canvas edge.
     let canvas_w = crate::gfx::scene_w() as f32;
+    let h = crate::gfx::scene_h() as f32;
     let right_align = |out: &mut Vec<DrawCommand>, text: &str, y: f32| {
         let total_w = text.len() as f32 * advance - pixel;
         let start_x = canvas_w - total_w - right_pad;
         push_text_left(out, text, start_x, y, pixel, DIM);
     };
-    right_align(out, &format!("SHIP {}x{}", ship.0, ship.1), 38.0);
-    right_align(out, &format!("SCENE {}x{}", scene.0, scene.1), 48.0);
+    right_align(out, &format!("SHIP {}x{}", ship.0, ship.1), h - 20.0);
+    right_align(out, &format!("SCENE {}x{}", scene.0, scene.1), h - 10.0);
 }
 
 /// Minimalist controls legend, bottom-left corner. Dim single-column text,

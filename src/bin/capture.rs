@@ -371,6 +371,12 @@ fn main() {
     // inside compose_scene_2d), so append it here with a representative value so the
     // capture shows its NEW bottom-left position under the HULL/SHLD bars.
     broadside_engine::hud::push_salvage_hud(&mut commands, 137);
+    // (#134) Debug readouts — also bin-overlay-only; append so the capture shows
+    // their NEW bottom-right position (POS/FACE + SHIP/SCENE res).
+    if let Some(p) = board.cells.iter().flatten().find(|s| s.faction == Faction::Player) {
+        broadside_engine::hud::push_player_readout(&mut commands, p.pos, p.facing);
+    }
+    broadside_engine::hud::push_res_readout(&mut commands, gfx.loft_res(), gfx.scene_res());
     // (#90) VFX-demo kill burst at the destroyed enemy's cell — the bin emits this
     // off its prev-vs-current id diff each frame; here we append it directly so the
     // headless demo shows the post-kill burst.
