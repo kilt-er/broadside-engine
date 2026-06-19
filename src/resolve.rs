@@ -2928,12 +2928,6 @@ fn self_move_2d_commit(
 /// [`resolve_target_move_2d`]; this 1-D version is retained only for its own 1-D
 /// fixture tests until CONTRACT (Shape 2, like `resolve_self_move`).
 #[allow(dead_code)]
-// The nested `match mode { Push.. Pull.. _ => unreachable!() }` triggers
-// match_same_arms + match_wildcard_for_single_variants; the proper fix (match
-// the two modes in the outer arm) is review #148 finding M2, owned by the
-// resolver. Allowed here to keep the gate green without restructuring the
-// displacement logic in this cleanup pass.
-#[allow(clippy::match_same_arms, clippy::match_wildcard_for_single_variants)]
 fn resolve_target_move(
     target_cell: usize,
     source_cell: usize,
@@ -2951,7 +2945,12 @@ fn resolve_target_move(
     let start = target_cell as i32;
     let src = source_cell as i32;
 
-    match mode {
+    // `Push`/`Pull` share the entire walk + collision body and differ only in
+    // travel direction, so they bind a `directed` boolean here and fall through
+    // to the common arm; `Swap` is structurally distinct. (Matching the two
+    // movers separately would duplicate the ~30-line walk; this keeps it
+    // single-source without the dead `_` arm the old nested `match mode` needed.)
+    let directed = match mode {
         DisplaceMode::Swap => {
             // Trade cells. If source == target (degenerate), no-op.
             if source_cell == target_cell {
@@ -2967,72 +2966,65 @@ fn resolve_target_move(
                 t.cell = source_cell;
                 board.cells[source_cell] = Some(t);
             }
+            return;
         }
+        DisplaceMode::Push => true,
+        DisplaceMode::Pull => false,
+    };
 
-        DisplaceMode::Push | DisplaceMode::Pull => {
-            // Direction depends on mode:
-            //   Push: target moves AWAY from source -> step = sign(target - source)
-            //   Pull: target moves TOWARD source     -> step = sign(source - target)
-            // Tie-breaker: if source == target (degenerate), pick +1 for both.
-            let step: i32 = match mode {
-                DisplaceMode::Push => match start.cmp(&src) {
-                    std::cmp::Ordering::Greater => 1,
-                    std::cmp::Ordering::Less => -1,
-                    std::cmp::Ordering::Equal => 1,
-                },
-                DisplaceMode::Pull => match src.cmp(&start) {
-                    std::cmp::Ordering::Greater => 1,
-                    std::cmp::Ordering::Less => -1,
-                    std::cmp::Ordering::Equal => 1,
-                },
-                _ => unreachable!(),
-            };
+    // Direction depends on mode:
+    //   Push (directed): target moves AWAY from source -> sign(target - source)
+    //   Pull           : target moves TOWARD source     -> sign(source - target)
+    // Tie-breaker: if source == target (degenerate), pick +1 for both.
+    // Pull is the reverse comparison of Push, so we pick the comparands by
+    // `directed` and read the sign once — no wildcard / unreachable arm.
+    let ordering = if directed {
+        start.cmp(&src)
+    } else {
+        src.cmp(&start)
+    };
+    // Equal is the degenerate source==target tie-break: step toward the higher
+    // index (+1), same as Greater. Less steps toward the lower index (-1).
+    let step: i32 = match ordering {
+        std::cmp::Ordering::Greater | std::cmp::Ordering::Equal => 1,
+        std::cmp::Ordering::Less => -1,
+    };
 
-            // Walk step-by-step. Stop at first occupant OR at the source
-            // cell (you cannot pull a target onto the source — they would
-            // share a cell). Pull therefore stops one cell short of source.
-            let mut c = start;
-            let mut steps_taken = 0;
-            for _ in 0..distance {
-                let next = c + step;
-                if next < 0 || next >= size {
-                    break;
-                }
-                if board.cells[next as usize].is_some() {
-                    // The source ship counts as an occupant too — pull
-                    // crashes the target into the operator, which is the
-                    // canonical collision behaviour. So we don't special-
-                    // case source here.
-                    break;
-                }
-                c = next;
-                steps_taken += 1;
-            }
-            let remaining = distance - steps_taken;
-            let landing = c as usize;
-
-            // Move the target if it actually moved.
-            if landing != target_cell {
-                let mut t = board.cells[target_cell]
-                    .take()
-                    .expect("target still occupied at start of move");
-                t.cell = landing;
-                board.cells[landing] = Some(t);
-            }
-
-            // Collision damage if we were blocked.
-            if remaining > 0 {
-                let phantom_atk = (c + step).clamp(0, size - 1) as usize;
-                apply_damage(
-                    landing,
-                    remaining,
-                    phantom_atk,
-                    &dummy_weapon(),
-                    board,
-                    content,
-                );
-            }
+    // Walk step-by-step. Stop at first occupant OR at the source cell (you
+    // cannot pull a target onto the source — they would share a cell). Pull
+    // therefore stops one cell short of source.
+    let mut c = start;
+    let mut steps_taken = 0;
+    for _ in 0..distance {
+        let next = c + step;
+        if next < 0 || next >= size {
+            break;
         }
+        if board.cells[next as usize].is_some() {
+            // The source ship counts as an occupant too — pull crashes the
+            // target into the operator, which is the canonical collision
+            // behaviour. So we don't special-case source here.
+            break;
+        }
+        c = next;
+        steps_taken += 1;
+    }
+    let remaining = distance - steps_taken;
+    let landing = c as usize;
+
+    // Move the target if it actually moved.
+    if landing != target_cell {
+        let mut t = board.cells[target_cell]
+            .take()
+            .expect("target still occupied at start of move");
+        t.cell = landing;
+        board.cells[landing] = Some(t);
+    }
+
+    // Collision damage if we were blocked.
+    if remaining > 0 {
+        let phantom_atk = (c + step).clamp(0, size - 1) as usize;
+        apply_damage(landing, remaining, phantom_atk, &dummy_weapon(), board, content);
     }
 }
 
@@ -3052,10 +3044,6 @@ fn resolve_target_move(
 /// boards). Collision routes through [`apply_damage`] for now (provisional
 /// shield-zone, like R6's self-move was) — R4 switches it to `apply_damage_2d`
 /// for the true 2-D collision face.
-// Same nested displace-mode match as the 1-D version; the structural fix is
-// review #148 M2 (resolver-owned). Allowed here so this cleanup pass keeps the
-// gate green without touching the displacement step logic.
-#[allow(clippy::match_same_arms, clippy::match_wildcard_for_single_variants)]
 fn resolve_target_move_2d(
     target_pos: Pos,
     source_pos: Pos,
@@ -3069,7 +3057,12 @@ fn resolve_target_move_2d(
         return;
     }
 
-    match mode {
+    // `Swap` is structurally distinct and returns here; `Push`/`Pull` share the
+    // walk + collision body below and differ only in travel direction, so they
+    // bind a `directed` boolean. (Matching the two movers separately would
+    // duplicate the walk; this is single-source without the dead `_` arm the old
+    // nested `match mode` carried.)
+    let directed = match mode {
         DisplaceMode::Swap => {
             // Trade cells. Degenerate (source == target) = no-op.
             if source_pos == target_pos {
@@ -3091,60 +3084,63 @@ fn resolve_target_move_2d(
             }
             board.cells[j] = t;
             board.cells[i] = s;
+            return;
         }
+        DisplaceMode::Push => true,
+        DisplaceMode::Pull => false,
+    };
 
-        DisplaceMode::Push | DisplaceMode::Pull => {
-            // Push: away from source. Pull: toward source (opposite). Same-cell
-            // source/target is degenerate -> no meaningful direction; bail.
-            let dir = match mode {
-                DisplaceMode::Push => crate::geometry2d::direction_to(source_pos, target_pos),
-                DisplaceMode::Pull => crate::geometry2d::direction_to(target_pos, source_pos),
-                _ => unreachable!(),
-            };
-            let Some(dir) = dir else {
-                return; // source == target, no direction
-            };
+    // Push: away from source (`direction_to(source, target)`). Pull: toward
+    // source (the opposite argument order). Same-cell source/target is
+    // degenerate -> `direction_to` is None -> bail. Picking the argument order
+    // by `directed` drops the wildcard / unreachable the nested match needed.
+    let dir = if directed {
+        crate::geometry2d::direction_to(source_pos, target_pos)
+    } else {
+        crate::geometry2d::direction_to(target_pos, source_pos)
+    };
+    let Some(dir) = dir else {
+        return; // source == target, no direction
+    };
 
-            // Walk step-by-step from the target; stop at first occupant or wall.
-            // (For Pull, the source ship is an occupant -> the target crashes
-            // into the operator, the canonical collision.)
-            let mut cur = target_pos;
-            let mut steps_taken = 0;
-            for _ in 0..distance {
-                let Some(next) = crate::grid::offset(cur, dir, 1) else {
-                    break;
-                };
-                if board.ship_at(next).is_some() {
-                    break;
-                }
-                cur = next;
-                steps_taken += 1;
-            }
-            let remaining = distance - steps_taken;
-
-            // Move the target if it actually moved (slot + pos together).
-            if cur != target_pos {
-                let (from_i, to_i) = (target_pos.to_index(), cur.to_index());
-                if to_i < board.cells.len() && from_i < board.cells.len() {
-                    let mut t = board.cells[from_i]
-                        .take()
-                        .expect("target still occupied at move start");
-                    t.cell = to_i;
-                    t.pos = cur;
-                    board.cells[to_i] = Some(t);
-                }
-            }
-
-            // Collision damage if blocked. The collision arrives from beyond the
-            // landing cell along the travel direction; phantom attacker one step
-            // further (clamped to `cur` if off-grid). R4: routes through the 2-D
-            // apply_damage_2d, so the directional-shield ZONE is the true 2-D
-            // collision face (direction_to(cur, phantom) yields the travel axis).
-            if remaining > 0 {
-                let phantom = crate::grid::offset(cur, dir, 1).unwrap_or(cur);
-                apply_damage_2d(cur, remaining, phantom, &dummy_weapon(), board, content);
-            }
+    // Walk step-by-step from the target; stop at first occupant or wall. (For
+    // Pull, the source ship is an occupant -> the target crashes into the
+    // operator, the canonical collision.)
+    let mut cur = target_pos;
+    let mut steps_taken = 0;
+    for _ in 0..distance {
+        let Some(next) = crate::grid::offset(cur, dir, 1) else {
+            break;
+        };
+        if board.ship_at(next).is_some() {
+            break;
         }
+        cur = next;
+        steps_taken += 1;
+    }
+    let remaining = distance - steps_taken;
+
+    // Move the target if it actually moved (slot + pos together).
+    if cur != target_pos {
+        let (from_i, to_i) = (target_pos.to_index(), cur.to_index());
+        if to_i < board.cells.len() && from_i < board.cells.len() {
+            let mut t = board.cells[from_i]
+                .take()
+                .expect("target still occupied at move start");
+            t.cell = to_i;
+            t.pos = cur;
+            board.cells[to_i] = Some(t);
+        }
+    }
+
+    // Collision damage if blocked. The collision arrives from beyond the landing
+    // cell along the travel direction; phantom attacker one step further (clamped
+    // to `cur` if off-grid). R4: routes through the 2-D apply_damage_2d, so the
+    // directional-shield ZONE is the true 2-D collision face (direction_to(cur,
+    // phantom) yields the travel axis).
+    if remaining > 0 {
+        let phantom = crate::grid::offset(cur, dir, 1).unwrap_or(cur);
+        apply_damage_2d(cur, remaining, phantom, &dummy_weapon(), board, content);
     }
 }
 
