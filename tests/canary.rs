@@ -683,3 +683,55 @@ fn live_enemy_ids_lists_enemies_only() {
     ids.sort();
     assert_eq!(ids, vec!["e1".to_string(), "e2".to_string()], "live_enemy_ids lists enemies only, not the player");
 }
+
+/* =========================================================================
+ * TURN-BASED enemy rhythm (#126, Bruce's chess-like model): one run_world_phase
+ * = ONE turn (the bin calls it once per player action). Locks the per-turn enemy
+ * rhythm against the REAL catalog with a STATIONARY player (only enemy behavior
+ * shows): an enemy that starts OUT of pulse range MOVES to close (reposition),
+ * THEN telegraphs, THEN fires — and CANNOT fire on turn 1 (#67 telegraph-one-
+ * ahead + out of range). Observed rhythm (verified): T1 telegraph `__move_down`
+ * (no fire); T2 moved to dist-2, telegraph `pulse_laser` (no fire); T3 fires
+ * (player hull drops); T4+ re-fires (cd-free pulse).
+ * ====================================================================== */
+#[test]
+fn turn_based_enemy_moves_then_telegraphs_then_fires() {
+    use broadside_engine::input::DemoContent;
+    let bytes = std::fs::read("assets/broadside.catalog.json").expect("catalog asset");
+    let catalog = broadside_engine::catalog::load_from_bytes(&bytes).expect("catalog parses");
+    let mut content = DemoContent::default();
+    content.register_synthetics(); // the AI's close maneuver resolves the synthetic moves
+    content.install_catalog_actions(&catalog);
+
+    // Stationary player at (2,3) Bow(N), naked, NO queue (never fires) so the ONLY
+    // actor is the enemy. Enemy at (2,0) Bow(S) + pulse_laser — same column, dist
+    // 3 = Far = OUT of pulse's [Adjacent,Near] band. It must CLOSE to dist <= 2,
+    // then telegraph, then fire.
+    let mut player = ship_2d("p", Faction::Player, Pos::new(2, 3), 60, Facing::Bow(Dir4::N), Arc::Forward, "pulse_laser");
+    player.shield_profile = naked_shields();
+    let mut enemy = ship_2d("e", Faction::Enemy, Pos::new(2, 0), 9, Facing::Bow(Dir4::S), Arc::Forward, "pulse_laser");
+    enemy.shield_profile = naked_shields();
+    let mut board = board_2d(vec![player, enemy]);
+
+    let epos = |b: &broadside_engine::types::Board| b.cells.iter().flatten().find(|s| s.id == "e").map(|s| s.pos);
+    let phull = |b: &broadside_engine::types::Board| b.cells.iter().flatten().find(|s| s.id == "p").map(|s| s.hull).unwrap_or(-1);
+
+    let spawn_row = epos(&board).unwrap().row;
+    let mut moved = false;
+    let mut first_hit_turn: Option<usize> = None;
+    for turn in 1..=8 {
+        resolve_round(&mut board, &content); // ONE turn
+        if epos(&board).map(|p| p.row != spawn_row).unwrap_or(false) {
+            moved = true; // repositioned off its spawn row
+        }
+        if phull(&board) < 60 && first_hit_turn.is_none() {
+            first_hit_turn = Some(turn);
+        }
+    }
+
+    // #2: the enemy REPOSITIONED (closed toward range), not sat at spawn.
+    assert!(moved, "#126: enemy must MOVE/close across turns (Bruce wants repositioning)");
+    // #1 + #67: it connects only AFTER closing + telegraphing — never on turn 1.
+    let hit = first_hit_turn.expect("#126: after closing, the enemy fires + connects");
+    assert!(hit > 1, "#67: enemy cannot fire on turn 1 (must close + telegraph first); fired turn {hit}");
+}
