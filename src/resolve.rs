@@ -310,18 +310,18 @@ pub fn fire_player_queue(ship_id: &str, board: &mut Board, content: &dyn Content
 /// and *displays* its next action without firing it. This is what makes the
 /// enemy's intent visible to the player before it lands.
 pub fn run_world_phase(board: &mut Board, content: &dyn Content) {
-    // #124 decoupling: run_world_phase is now COMPOSED of the same additive
-    // seams the real-time bin clock drives independently — the ordnance/world
-    // bookkeeping ([`advance_ordnance`] + [`end_of_turn`], together [`tick_world`])
-    // and the per-enemy fire-then-decide ([`tick_enemy`]). The ORDER here is
-    // preserved EXACTLY as the historical phase 2->3->4 (ordnance, then every
-    // enemy fires+decides, then end-of-turn bookkeeping) so the headless / test /
-    // sim path is byte-identical and the canaries + run_loop stay green. The live
-    // bin instead calls `tick_enemy` per enemy on its own timer and `tick_world`
-    // on the global clock — see those fns. NOTE: run_world_phase does NOT clear
-    // `board.fire_events` (the resolve_round-top clear owns that window for the
-    // headless path); only the real-time `tick_world` clears it, so the current
-    // renderer's beam draw is unaffected until render rewires.
+    // TURN-BASED (chess) model, per docs/design/CORE_GAMEPLAY_LOOP.md: one call =
+    // ONE world turn, driven by each of the player's four turn-actions (move /
+    // queue / dequeue-fire / wait). It is COMPOSED of three reusable seams in the
+    // historical phase 2->3->4 ORDER: ordnance ([`advance_ordnance`]), then every
+    // enemy takes one action ([`tick_enemy`], fire-then-decide), then end-of-turn
+    // bookkeeping ([`end_of_turn`]: cooldown / heat / shield-regen / statuses).
+    // (#124 built a real-time bin that drove tick_enemy/tick_world on independent
+    // timers; #126 REVERTED it. tick_enemy + tick_world survive as composable
+    // helpers but nothing real-time drives them - the live bin calls THIS once per
+    // turn-action.) NOTE: run_world_phase does NOT clear `board.fire_events` (the
+    // resolve_round-top clear owns that window for the headless path; the bin
+    // clears at the top of `apply_intent`).
     advance_ordnance(board, content);
 
     // Enemy phase, in telegraphed initiative order. Snapshot ids up front so
@@ -364,11 +364,12 @@ pub fn live_enemy_ids(board: &Board) -> Vec<String> {
         .collect()
 }
 
-/// Tick ONE enemy (#124, the heart of the real-time decouple): the fire-then-
-/// decide step for a single enemy, fully independent of the player and every
-/// other enemy. The bin calls this on each enemy's OWN timer so enemies act in
-/// real time while the player plans/idles; `run_world_phase` calls it for each
-/// enemy in turn so the headless path is unchanged.
+/// Tick ONE enemy: the fire-then-decide step for a single enemy. Called once
+/// per enemy by [`run_world_phase`] (in `enemy_initiative` order) so that each
+/// world turn every enemy takes exactly one action - the turn-based model
+/// (docs/design/CORE_GAMEPLAY_LOOP.md), "enemies queue before they fire."
+/// (Extracted in #124 for a real-time bin that was reverted in #126; it remains
+/// the per-enemy seam `run_world_phase` composes.)
 ///
 /// TELEGRAPH-ONE-TURN-AHEAD (#67), per enemy:
 ///   a. FIRE the queue it telegraphed on its PREVIOUS tick — [`fire_player_queue`]
@@ -402,13 +403,14 @@ pub fn tick_enemy(enemy_id: &str, board: &mut Board, content: &dyn Content) {
     paint_threats(board, content);
 }
 
-/// The GLOBAL world clock tick (#124): everything in a world phase EXCEPT the
-/// per-enemy loop — ordnance advance + end-of-turn bookkeeping (cooldown
-/// decrement, heat dissipation, shield regen, statuses). The bin runs this on a
-/// fixed real-time interval, so cooldowns / heat / shields advance on ONE uniform
-/// cadence for player and enemies alike, independent of both the player's commit
-/// and per-enemy fire timing. The lead's ruling: this world tick IS the "turn"
-/// unit for those per-turn systems.
+/// Everything in a world phase EXCEPT the per-enemy loop - ordnance advance +
+/// end-of-turn bookkeeping (cooldown decrement, heat dissipation, shield regen,
+/// statuses) - plus a `fire_events` clear. Built in #124 as a real-time global
+/// clock tick; that bin was REVERTED in #126, so NOTHING drives this live today
+/// (the live turn-based path uses [`run_world_phase`]; the headless path uses
+/// `resolve_round`). RETAINED as a composable seam. NOTE the difference from
+/// `run_world_phase`: this CLEARS `board.fire_events` (it owned the real-time
+/// render window), whereas run_world_phase does not.
 ///
 /// FIRE-EVENTS WINDOW (the lead's re-windowing requirement): the under-fire-pause
 /// shield regen in [`end_of_turn`] reads `board.fire_events` to know which faces
@@ -653,8 +655,9 @@ fn run_action(
     // `board.fire_events` and changes no mechanic. `hit` is always `true`
     // here: we only emit for occupied target cells (a resolved target is a
     // ship), and shield-fully-absorbed hits still CONNECT (the exact case the
-    // old hull-drop VFX guess missed). The `hit: false` "miss" path is the
-    // out-of-scope #81 dodge-whiff feature.
+    // old hull-drop VFX guess missed). The `hit: false` miss path is the R7
+    // dodge-whiff (#38), emitted in the separate block ABOVE for cells this ship
+    // telegraphed last turn that the player has since vacated.
     let fires_damage = action
         .effects
         .iter()
