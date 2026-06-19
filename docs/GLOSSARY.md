@@ -35,23 +35,36 @@ A weapon's high-level family, used for filtering and UI grouping, not resolution
 The resolver never branches on archetype. (HTML Part V; `types.ts:126`.)
 
 **Armour**
-A `ShieldFace`'s permanent directional reduction. Subtracted from damage that has
-already cleared band falloff, modifiers, and target-lock. Bow has the most (default 2),
-stern the least (default 0), flanks medium (default 1). Cannot be consumed; **charge**
-is the consumable counterpart. (HTML Part IV; `types.ts:72`, `geometry.ts:101`.)
+A `ShieldFace`'s directional defence value. **In the live v2 combat model (#103/#104),
+`armour` is repurposed as the per-face shield-pool CAPACITY** — the maximum the depleting
+`charge` pool can regenerate to (default bow 4, stern 1, flanks 3 via
+`geometry2d::default_shield_profile`). It is **no longer a flat per-hit subtraction**. (The
+*legacy 1-D* `geometry::absorb_shield` still subtracts `armour` permanently with a different
+default profile — bow 2 / stern 0 / flanks 1 — but that path is not live combat.) See
+**Shield pool**, **Charge**, **Under-fire pause**. (`geometry2d.rs:368/390`.)
 
 ## B
 
 **Band**
 See **Range band**.
 
+**Beat**
+The ~0.5-second pause between consecutive hits when the player commits a multi-ability volley
+(#133), so each landing reads as a distinct thump rather than a single instantaneous splat.
+Bin-side playback (`BeatPlayback`, `BEAT_SECS = 0.5`): the first beam draws immediately and
+the rest drain into a queue released one per beat off the frame clock; gameplay input is
+locked during playback. Does not change the turn model — it is an in-turn animation of one
+committed volley. (`src/bin/broadside.rs`.)
+
 **Band falloff**
-The damage penalty for firing outside a weapon's `optimalBand`. Indexed by the absolute
-distance between actual and optimal band positions (mapped via `geometry::band_index`,
-an exhaustive `match` over `RangeBand`). Factor table currently
-`[1, 0.66, 0.5, 0.33, 0.2]`, floored at 0. Skipped when an `Effect::DAMAGE` on the
-action carries `band_falloff: Some(false)` — `None` and `Some(true)` both apply
-falloff. (HTML Part III; `src/geometry.rs:69`, `src/types.rs:409`.)
+The per-band damage penalty (pipeline step 1). **Live v2 model (#104):** an INTEGER,
+ABSOLUTE penalty keyed on the band the shot *actually* crosses — `Adjacent -0, Near -1,
+Far -2` (`geometry2d::band_falloff`), floored at **≥1** (a legal in-band shot never falls
+to 0 from falloff) and capped at raw. Closer = more damage; `optimal_band` is **ignored**
+(#44/#95). No float anywhere (#104). Skipped when an `Effect::DAMAGE` on the action carries
+`band_falloff: Some(false)` (`None`/`Some(true)` both apply). (The *legacy 1-D*
+`geometry::band_falloff` was the old float distance-from-optimal curve
+`[1, 0.66, 0.5, 0.33, 0.2]` — not the live path.) (`src/geometry2d.rs:150`.)
 
 **Bay**
 A subsystem's purchasing/grouping category. Six bays: `gunnery`, `helm`, `engineering`,
@@ -153,9 +166,21 @@ Tactical subsystems can hook in. The Shogun Showdown combo analog. (HTML Part I;
 `resolve.ts:72`, `:346`.)
 
 **Charge**
-A held shield "ping" on a `ShieldFace`. Negates the next hit entirely and is consumed
-on use. Granted by Brace and similar defensive actions. Distinct from **armour**,
-which is permanent and subtractive. (HTML Part IV; `types.ts:72`, `geometry.ts:103`.)
+The live **depleting shield POOL** on a `ShieldFace` (#103). A hit soaks the pool down to 0
+and only the **overflow** reaches hull (`geometry2d::absorb_shield`); the pool then
+regenerates by `SHIELD_REGEN_PER_TURN` (= 1) per turn toward its capacity (**armour**),
+**unless that face took fire this turn** (the **Under-fire pause**). Starts full =
+capacity. (In the *legacy 1-D* model `charge` was instead a one-shot "ping" that negated a
+single hit — not the live behaviour.) See **Shield pool**, **Armour**. (`geometry2d.rs:368`;
+regen in `resolve.rs::end_of_turn`.)
+
+**Shield pool**
+The v2 per-face directional shield (#103 Model A): each `ShieldFace` holds a live `charge`
+pool that depletes as it soaks hits and regenerates over turns (paused on a face under
+fire), capped at its `armour` capacity. Replaces the old flat-armour-subtraction model — the
+root fix for "combat feels dead" (a bow armour of 2 used to exactly cancel a Near chip).
+Strong bow pool (4) tanks chip fire; soft stern (1) cracks fast. See **Armour**, **Charge**,
+**Under-fire pause**, **Damage pipeline**.
 
 **Class**
 A starting configuration: two base weapon loadouts plus a `signature` system delivered
@@ -188,8 +213,12 @@ mechanic. The boss equivalent of the Elite layer. (HTML Part VIII, Part XI.)
 
 **Damage pipeline**
 The five fixed steps every hit runs through: band falloff → subsystem modifiers →
-target-lock ×2 → directional shield → hull. New balance levers slot into this list;
-the order is invariant. (HTML Part XIII implementation order #3; `resolve.ts:139`.)
+target-lock ×2 → directional shield → hull. New balance levers slot into this list; the
+order is invariant (reviewer V5). The **live** path is `apply_damage_2d` (`resolve.rs:1431`)
+— **all-integer** math (#104), with band falloff an integer per-band penalty (see **Band
+falloff**) and the directional shield a depleting **Shield pool** (see). The *legacy 1-D*
+`apply_damage` (`resolve.rs:1332`) keeps the same order with the old float falloff +
+flat-armour shield. (HTML Part XIII implementation order #3.)
 
 **DAMAGE effect**
 The `kind: "DAMAGE"` effect. Each targeted cell with a ship runs through `applyDamage`.
@@ -326,6 +355,17 @@ the baked **15-facing sprite sheet** kept as preview/fallback. Format: TRIANGLES
 + scaled to X-length 12. The same format the CAD editor's GLB exporter emits, so the engine
 ingests both tools' GLBs identically. The live player ship is the real Aegis GLB.
 (`docs/BROADSIDE_RENDER_CONTRACT.md` §5; `src/mesh_import.rs`, `src/loft_gpu.rs`.)
+
+**Grid pitch / grid mode (`G` / `T`)**
+The runtime board re-pitch (#139/#140/#142), two independent axes. **Grid PITCH** (`G`,
+`cycle_grid_pitch`, step `0..=8`) is the *amount* — chase-cam (0) → near-top-down. **Grid
+MODE** (`T`, `cycle_grid_mode`, `0..3`) is *which projection* the pitch arc feeds: **0
+DRAWBRIDGE** (`with_pitch`, constant footprint, balloons), **1 STRETCH-CURVED**
+(`with_stretch`, stretches to a uniform top-down square, curved columns), **2
+STRETCH-STRAIGHT** (`with_stretch_straight`, straight columns). At pitch 0 all three equal
+the perspective base (no-regression). Renderer-owned (never an `Intent`). See **Ship-plane
+tilt**. (`src/gfx.rs`, `src/projector.rs`; the
+[Render modes section of LINE_BY_LINE](LINE_BY_LINE.md#render-modes--grid-pitch-g--grid-mode-t--ship-tilt-139140142).)
 
 **Ground-plane yaw**
 The single rotation applied to the chase-cam player hull: a heading angle *about the vertical
@@ -592,8 +632,10 @@ introduces specific enemies to the global spawn pool and ends in a capital fight
 (HTML Part III.)
 
 **Shield face**
-A hull zone's defense record: `{ armour, charge }`. Armour is permanent and
-subtractive; charge is a consumable held shield ping. (HTML Part IV; `types.ts:71`.)
+A hull zone's defence record: `{ armour, charge }`. **In the live v2 model (#103),** `charge`
+is the depleting **Shield pool** and `armour` is its capacity (see both). (In the legacy 1-D
+model `armour` was permanent + subtractive and `charge` a one-shot ping.) (HTML Part IV;
+`types.ts:71`.)
 
 **Shield profile**
 A ship's `Record<HullZone, ShieldFace>` — the full per-zone defense table. Fixed to
@@ -607,6 +649,14 @@ A status meaning "a held shield charge is active on `face`." Tick down with dura
 A unit on the board: cell, faction, orientation, hull, heat, shield profile, mounts,
 queue, cooldowns, statuses, traits, optional class. Same shape for player and enemy.
 (HTML Part VIII; `types.ts:50`.)
+
+**Ship-plane tilt**
+The render rule that keeps the player + enemy 3-D GLB hulls **parallel to the grid plane**
+as the **Grid pitch** arc raises (#140): the loft camera pitch lerps from
+`loft_gpu::CAMERA_PITCH_DEG` (20°, chase-cam) to `LOFT_PITCH_TOPDOWN_DEG` (82°) off
+`grid_pitch_t()` — one global, independent of grid mode, parameterized into
+`render_ship_lit_framed`. So at a steep grid pitch the hulls read top-down too, not stuck at
+the chase angle. (`gfx::loft_pitch_deg`; `src/loft_gpu.rs`.)
 
 **Signature**
 A class-specific free-fire action dispatched by the ship's `klass` field. The hero
@@ -687,8 +737,9 @@ kit conflicts with the elite set. (HTML Part VII.)
 A `MovementMode`. Exactly one cell; blocked by occupancy. (`types.ts:147`.)
 
 **Tick**
-The end-of-turn step that decrements cooldowns, heat, and status durations. (Not a
-named function — see `endOfTurn` and `tickStatuses`.) (`resolve.ts:254`, `:319`.)
+The end-of-turn step that decrements cooldowns, heat, and status durations, **and
+regenerates per-face shield pools** (paused on faces under fire — see **Under-fire pause**).
+Runs once per **Turn** from `run_world_phase`. (`resolve.rs::end_of_turn` + `tick_statuses`.)
 
 **Trait**
 A base enemy modifier: `Pursuit`, `Agile`, `ReactorBreach`, `BurnHard`, `Anchored`.
@@ -701,9 +752,31 @@ A `MovementMode`. Trades cells with a target. (`types.ts:147`.)
 **TTL**
 Time-to-live on a hazard. Optional turns-until-removal counter. (`types.ts:45`.)
 
+**Turn (turn-based / chess model)**
+The atomic unit of play. Broadside is **turn-based like chess — there is NO real-time
+clock.** A turn happens when the player takes exactly one of four turn-actions — **move /
+queue / dequeue-all-fire (CommitTurn, Space) / wait (W)** — each of which costs a turn. The
+instant the player acts, **every enemy takes one action** (its own move/queue/fire/wait) and
+**every cooldown ticks 1**. Enemies **queue before they fire** (telegraph one turn ahead,
+#67). The **field-kit cards (5/6/7) are the one FREE action** — they cost no turn. Each
+turn-action calls `resolve::run_world_phase` once (cards do not). A real-time loop was built
+(#124) and **reverted** (#126); some `resolve.rs` comments still describe it — historical.
+Canonical: [`docs/design/CORE_GAMEPLAY_LOOP.md`](design/CORE_GAMEPLAY_LOOP.md).
+
 **Turret**
-A mount arc. Always bears — fires regardless of orientation. (`types.ts:25`,
-`geometry.ts:76`.)
+A mount arc. Always bears — fires regardless of orientation. In 2-D `geometry2d::arc_bears`
+returns `true` for `Turret` against any direction. (`types.ts:25`; `geometry2d.rs:319`.)
+
+## U
+
+**Under-fire pause**
+The shield-regen rule (#103 Model A): a hull face that took fire **this turn** does NOT
+regenerate its **Shield pool** in `end_of_turn` — only quiet faces recover (by
+`SHIELD_REGEN_PER_TURN` toward capacity). Sustained fire on one face keeps it pinned (so
+ships die and the campaign terminates), while a face left alone heals. Computed by mapping
+each `hit: true` FireEvent to its `(cell, HullZone)` via the same `facing_zone` the damage
+path uses, before the regen loop. See **Shield pool**, **Charge**, **Tick**.
+(`resolve.rs::end_of_turn`.)
 
 ## V
 
