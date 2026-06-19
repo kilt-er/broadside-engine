@@ -342,6 +342,10 @@ fn main() {
         broadside_engine::gfx::scene_h() as f32,
     );
     let mut commands = compose_scene_2d_with(&board, &cfg, &gfx);
+    // (#127) SALVAGE readout — the live bin draws this in its Playing overlay (not
+    // inside compose_scene_2d), so append it here with a representative value so the
+    // capture shows its NEW bottom-left position under the HULL/SHLD bars.
+    broadside_engine::hud::push_salvage_hud(&mut commands, 137);
     // (#90) VFX-demo kill burst at the destroyed enemy's cell — the bin emits this
     // off its prev-vs-current id diff each frame; here we append it directly so the
     // headless demo shows the post-kill burst.

@@ -3013,18 +3013,24 @@ pub fn push_run_defeated_overlay_with_cause(
 /// 5×7 glyphs ~16px from the top-right canvas edge.
 pub fn push_salvage_hud(out: &mut Vec<DrawCommand>, salvage: u32) {
     let banner = format!("SALVAGE: {}", salvage);
-    let pixel = 2.0;
+    // (#127 Bruce) Moved from top-right to the BOTTOM-LEFT, tucked UNDER the
+    // HULL/SHLD bars in the bottom HUD band. Left-aligned to the same x as the
+    // bars (hp_x = 10 in push_bottom_hud_2d) and sat just below the shield bar
+    // (band_top + 8 [hull] + 9 [hull_h] + 2 + 4 [shield] = band_top + 23; a small
+    // gap below that). pixel=1 keeps the readout compact enough to fit inside the
+    // 40px band without crowding the bars above it.
+    let pixel = 1.0;
     let glyph_w_px = 5.0 * pixel;
     let space_px = pixel;
     let advance = glyph_w_px + space_px;
-    let total_w: f32 = banner.len() as f32 * advance - space_px;
-    let right_pad = 20.0;
-    // (#76 scene-res) Right-align to the LIVE canvas edge.
-    let start_x = crate::gfx::scene_w() as f32 - total_w - right_pad;
-    let y = 8.0;
+    let h = crate::gfx::scene_h() as f32;
+    let band_h = 40.0;
+    let band_top = h - band_h;
+    let x = 10.0; // == hp_x (bars' left edge)
+    let y = band_top + 28.0; // under the shield bar (which ends ~band_top+23)
     for (i, ch) in banner.chars().enumerate() {
-        let x = start_x + i as f32 * advance;
-        push_glyph_5x7(out, ch, x, y, pixel, WHITE);
+        let gx = x + i as f32 * advance;
+        push_glyph_5x7(out, ch, gx, y, pixel, WHITE);
     }
 }
 
