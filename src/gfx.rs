@@ -116,6 +116,45 @@ pub fn cycle_grid_pitch() -> u32 {
     next
 }
 
+/// (#140 Bruce) STRETCH mode flag. `false` (default) = the constant-footprint
+/// drawbridge (with_pitch, the ballooning one — kept for comparison); `true` = the
+/// grid STRETCHES vertically toward a uniform top-down square with ~constant ship
+/// size (with_stretch). The `G` pitch step drives the arc within whichever mode is
+/// active; this picks which projection the step feeds. Toggled by the `T` key.
+static GRID_STRETCH: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Whether STRETCH mode is ON (see [`GRID_STRETCH`]).
+pub fn grid_stretch_on() -> bool {
+    GRID_STRETCH.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// (#140) Flip STRETCH mode; returns the new state. Bound to `T`.
+pub fn toggle_grid_stretch() -> bool {
+    let next = !grid_stretch_on();
+    GRID_STRETCH.store(next, std::sync::atomic::Ordering::Relaxed);
+    next
+}
+
+/// (#140 Bruce ship-tilt) The LIVE loft-camera pitch (degrees) the player + enemy
+/// 3-D hulls render at, so the hulls TILT to stay PARALLEL to the grid plane as the
+/// `G` pitch arc raises. At grid-pitch step 0 this is exactly
+/// [`crate::loft_gpu::CAMERA_PITCH_DEG`] (the chase-cam look — so the default frame
+/// is byte-identical); as the arc steps toward top-down it lerps up toward
+/// [`LOFT_PITCH_TOPDOWN_DEG`] (near-overhead), where the loft camera looks down the
+/// deck and the hull reads as a top-down silhouette. ONE global off `grid_pitch_t()`
+/// so the player + every enemy + the grid all pitch together. Independent of the
+/// STRETCH toggle — the hulls tilt in BOTH modes (the grid plane raises either way).
+pub fn loft_pitch_deg() -> f32 {
+    let base = crate::loft_gpu::CAMERA_PITCH_DEG;
+    base + (LOFT_PITCH_TOPDOWN_DEG - base) * grid_pitch_t()
+}
+
+/// (#140) The loft-camera pitch at full grid-pitch (`t = 1`): near-overhead so the
+/// hull reads top-down. Capped below 90° — a true straight-down ortho view is a
+/// degenerate edge-on read of a flat hull (the deck collapses to a line); ~82°
+/// gives a clear top-down silhouette while keeping a sliver of hull thickness.
+pub const LOFT_PITCH_TOPDOWN_DEG: f32 = 82.0;
+
 /// (#76 scene-res) The scene-resolution presets `;` / `'` step through, all 16:9.
 /// 480×270 is the MINIMUM + the pixel-identity baseline (Bruce: 480 is the floor —
 /// the old 320×180 was dropped as too chunky); 640×360 is the BOOT default (#135);
@@ -2326,13 +2365,20 @@ impl Gfx {
                             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                                 label: Some("loft ship render"),
                             });
-                    self.loft.render_ship(
+                    // (#140 ship-tilt) Render at the LIVE loft-camera pitch so the
+                    // hull TILTS to stay parallel to the raising grid plane (Bruce:
+                    // ships must tilt WITH the grid). At grid-pitch step 0 this is
+                    // CAMERA_PITCH_DEG, so the default frame is byte-identical; as the
+                    // `G` arc steps toward top-down the camera looks down the deck and
+                    // the hull reads top-down. Same pitch for player + enemy lofts.
+                    self.loft.render_ship_pitched(
                         &self.queue,
                         &mut enc,
                         &mesh.vbuf,
                         mesh.vcount,
                         base_yaw,
                         mesh.center_y,
+                        loft_pitch_deg(),
                     );
                     self.queue.submit(std::iter::once(enc.finish()));
 

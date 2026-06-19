@@ -191,6 +191,19 @@ pub struct ProjectorConfig {
     pub cols: usize,
     /// Number of grid rows (mirrors [`crate::grid::ROWS`]).
     pub rows: usize,
+
+    /// (#140 Bruce) STRETCH-mode blend `t ∈ [0, 1]`. `0` = the pure-perspective
+    /// chase-cam (every existing path + the pixel-identity gate depend on this being
+    /// the default, so `for_scene` sets it `0.0` and `grid_cell_quad` is byte-
+    /// identical at `0`). `> 0` LERPS each cell's corners + center + depth_scale
+    /// toward a UNIFORM TOP-DOWN grid (rows equal-height stacked up from the near
+    /// edge, columns equal-width = the near-row width, depth_scale → 1.0). So cell
+    /// (=> ship) size stays ~constant as the grid STRETCHES vertically toward a
+    /// square top-down board — Bruce's "stretch mode" that kills the constant-
+    /// footprint ballooning. Set via [`Self::with_stretch`]. Independent of
+    /// `with_pitch` (the OFF/constant-footprint mode); the bin picks one per its
+    /// STRETCH toggle.
+    pub stretch_t: f32,
 }
 
 impl Default for ProjectorConfig {
@@ -251,6 +264,7 @@ impl ProjectorConfig {
             fan_half_width: 290.0 * sx,
             cols: COLS,
             rows: ROWS,
+            stretch_t: 0.0, // (#140) pure perspective by default — byte-identical to today
         }
     }
 }
@@ -295,6 +309,41 @@ impl ProjectorConfig {
             horizon_y,
             ..self
         }
+    }
+
+    /// (#140 Bruce) STRETCH mode: set the [`Self::stretch_t`] blend toward a uniform
+    /// top-down grid. `t = 0` = pure perspective (unchanged); `t = 1` = a uniform
+    /// square top-down board with ~constant cell (=> ship) size. The bin steps `t`
+    /// with the pitch arc when STRETCH is ON. `with_stretch(0.0)` == self, so step 0
+    /// is byte-identical (the no-regression invariant).
+    pub fn with_stretch(self, t: f32) -> Self {
+        Self {
+            stretch_t: t.clamp(0.0, 1.0),
+            ..self
+        }
+    }
+
+    /// (#140) The UNIFORM top-down screen-y of row boundary `b` (`0..=rows`, far→near)
+    /// and the uniform half-span (constant near-row width). At full stretch the grid
+    /// is rows of EQUAL height stacked UP from the near edge (`near_row_y`, fixed),
+    /// each cell ~the near cell's height — so cell size holds + the board stretches
+    /// vertically toward a square. Columns are parallel at the near-row width.
+    fn uniform_boundary_y(&self, b: usize) -> f32 {
+        let rows = self.rows.max(1) as f32;
+        // Near cell HEIGHT in the perspective view (the size we hold constant): the
+        // near row's near-edge y minus its far-edge y.
+        let near_cell_h = self.screen_y(1.0 / self.z_near)
+            - self.screen_y(1.0 / self.z_at(self.boundary_d(self.rows - 1)));
+        let total_h = rows * near_cell_h;
+        // Fraction from the near edge: b = rows (near) -> 0, b = 0 (far) -> 1.
+        let f = (rows - b as f32) / rows;
+        self.near_row_y - f * total_h
+    }
+
+    /// (#140) Uniform (parallel) column half-span = the near-row perspective half-
+    /// span, so cell WIDTH holds across rows (no fan convergence) in stretch mode.
+    fn uniform_half_span(&self) -> f32 {
+        self.half_span(1.0 / self.z_near)
     }
 
     /// The frame-center x the board's column fan is symmetric about.
@@ -382,7 +431,7 @@ pub fn grid_cell_quad(pos: Pos, cfg: &ProjectorConfig) -> CellQuad {
 
     // Corner order: top-left, top-right, bottom-right, bottom-left (gfx order).
     // "Top" = the far edge (higher on screen, smaller y), "bottom" = near edge.
-    let corners = [
+    let mut corners = [
         [x_far_l, y_far],   // top-left (far-left)
         [x_far_r, y_far],   // top-right (far-right)
         [x_near_r, y_near], // bottom-right (near-right)
@@ -393,14 +442,45 @@ pub fn grid_cell_quad(pos: Pos, cfg: &ProjectorConfig) -> CellQuad {
     // pivot (the trapezoid's centroid in x is the mean of the four corners' x).
     let d_mid = 0.5 * (d_far + d_near);
     let inv_z_mid = 1.0 / cfg.z_at(d_mid);
-    let cx = 0.25 * (x_far_l + x_far_r + x_near_l + x_near_r);
-    let cy = cfg.screen_y(inv_z_mid);
+    let mut cx = 0.25 * (x_far_l + x_far_r + x_near_l + x_near_r);
+    let mut cy = cfg.screen_y(inv_z_mid);
 
     // depth_scale: on-screen size scales with 1/z, normalized to 1.0 at the near
     // plane (the largest cells), so the nearest row is `1.0` and farther rows are
     // proportionally smaller — the factor the renderer multiplies sprite sizes /
     // loft dest-quads by (D4).
-    let depth_scale = inv_z_mid * cfg.z_near;
+    let mut depth_scale = inv_z_mid * cfg.z_near;
+
+    // (#140) STRETCH blend toward the uniform top-down grid. At stretch_t == 0 this
+    // whole block is skipped, so the perspective output is byte-identical (the
+    // no-regression gate). At t > 0 each corner/center/scale LERPS to its uniform
+    // value: rows equal-height stacked up from the near edge, columns parallel at
+    // the near width, depth_scale -> 1.0 (constant cell/ship size, grid stretches up).
+    if cfg.stretch_t > 0.0 {
+        let t = cfg.stretch_t;
+        let uy_far = cfg.uniform_boundary_y(pos.row);
+        let uy_near = cfg.uniform_boundary_y(pos.row + 1);
+        let uspan = cfg.uniform_half_span();
+        let ucenter_x = cfg.center_x();
+        let cols = cfg.cols.max(1) as f32;
+        let ucol = |c: usize| ucenter_x - uspan + (uspan * 2.0) * (c as f32) / cols;
+        let ux_l = ucol(pos.col);
+        let ux_r = ucol(pos.col + 1);
+        let uniform = [
+            [ux_l, uy_far],
+            [ux_r, uy_far],
+            [ux_r, uy_near],
+            [ux_l, uy_near],
+        ];
+        let lerp = |a: f32, b: f32| a + (b - a) * t;
+        for k in 0..4 {
+            corners[k][0] = lerp(corners[k][0], uniform[k][0]);
+            corners[k][1] = lerp(corners[k][1], uniform[k][1]);
+        }
+        cx = lerp(cx, 0.25 * (ux_l + ux_r + ux_l + ux_r));
+        cy = lerp(cy, 0.5 * (uy_far + uy_near));
+        depth_scale = lerp(depth_scale, 1.0); // uniform = near-size everywhere
+    }
 
     CellQuad {
         corners,
@@ -1000,6 +1080,41 @@ mod tests {
             if step > 0 {
                 assert!(p.z_near / p.z_far > base.z_near / base.z_far, "pitch flattens recession at t={t}");
             }
+        }
+    }
+
+    /// (#140) STRETCH mode: with_stretch(0) is byte-identical (the step-0 / no-
+    /// regression invariant), and at t=1 the grid is UNIFORM — every row's cell is
+    /// the SAME height (constant ship size, no balloon) and columns are PARALLEL (a
+    /// true top-down square), with depth_scale == 1 everywhere.
+    #[test]
+    fn with_stretch_step0_identity_and_uniform_at_full() {
+        let base = cfg();
+        // Step-0 identity: with_stretch(0) projects byte-identical to base.
+        let z = base.with_stretch(0.0);
+        for r in 0..ROWS {
+            for c in 0..COLS {
+                let a = grid_cell_quad(Pos::new(c, r), &base);
+                let b = grid_cell_quad(Pos::new(c, r), &z);
+                assert_eq!(a.corners, b.corners, "stretch(0) corners identical at ({c},{r})");
+                assert_eq!(a.center, b.center, "stretch(0) center identical at ({c},{r})");
+                assert_eq!(a.depth_scale, b.depth_scale, "stretch(0) depth_scale identical");
+            }
+        }
+        // Full stretch: uniform grid. Cell heights equal across rows; columns parallel
+        // (far width == near width); depth_scale == 1.
+        let full = base.with_stretch(1.0);
+        let col = COLS / 2;
+        let h0 = {
+            let q = grid_cell_quad(Pos::new(col, 0), &full);
+            q.bottom_left().y - q.top_left().y
+        };
+        for r in 0..ROWS {
+            let q = grid_cell_quad(Pos::new(col, r), &full);
+            let h = q.bottom_left().y - q.top_left().y;
+            assert!(approx(h, h0, 0.5), "uniform cell height at row {r}: {h} vs {h0}");
+            assert!(approx(q.near_edge_width(), q.far_edge_width(), 0.5), "parallel columns at row {r}");
+            assert!(approx(q.depth_scale, 1.0, 1e-3), "uniform depth_scale==1 at row {r}");
         }
     }
 }

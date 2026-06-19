@@ -103,16 +103,25 @@ fn keycode_to_key(code: KeyCode) -> Option<Key> {
     })
 }
 
-/// (#139) The live scene projector: `for_scene` at the current scene size, re-
-/// pitched by the live grid-pitch step (`G` key). ONE place builds it so every
-/// projected element — grid, ship cells, movement, threats, in-flight ordnance —
-/// shares the identical pitch + scale (the projector is the single spatial source).
+/// (#139/#140) The live scene projector: `for_scene` at the current scene size,
+/// re-pitched by the live grid-pitch step (`G`). The STRETCH toggle (`T`) picks the
+/// projection the pitch feeds: OFF = with_pitch (constant-footprint drawbridge);
+/// ON = with_stretch (grid stretches vertically toward a uniform top-down square,
+/// constant ship size). At pitch step 0 BOTH are byte-identical to the chase-cam
+/// (with_pitch(0) == with_stretch(0) == base) — the no-regression invariant. ONE
+/// place builds it so every projected element (grid, cells, movement, threats,
+/// ordnance) shares the identical projection (single spatial source).
 fn scene_projector() -> ProjectorConfig {
-    ProjectorConfig::for_scene(
+    let base = ProjectorConfig::for_scene(
         broadside_engine::gfx::scene_w() as f32,
         broadside_engine::gfx::scene_h() as f32,
-    )
-    .with_pitch(broadside_engine::gfx::grid_pitch_t())
+    );
+    let t = broadside_engine::gfx::grid_pitch_t();
+    if broadside_engine::gfx::grid_stretch_on() {
+        base.with_stretch(t)
+    } else {
+        base.with_pitch(t)
+    }
 }
 
 /* =============================================================================
@@ -1395,6 +1404,15 @@ impl ApplicationHandler for App {
                     if code == KeyCode::KeyG {
                         let step = broadside_engine::gfx::cycle_grid_pitch();
                         log::info!("grid pitch step: {step}/{}", broadside_engine::gfx::GRID_PITCH_STEPS);
+                        if let Some(win) = self.window.as_ref() { win.request_redraw(); }
+                        return;
+                    }
+                    // (#140) `T` toggles STRETCH mode (constant-footprint drawbridge
+                    // <-> grid stretches to a uniform top-down square w/ constant ship
+                    // size). The G pitch step drives the arc within the active mode.
+                    if code == KeyCode::KeyT {
+                        let on = broadside_engine::gfx::toggle_grid_stretch();
+                        log::info!("grid stretch mode: {}", if on { "ON" } else { "OFF" });
                         if let Some(win) = self.window.as_ref() { win.request_redraw(); }
                         return;
                     }

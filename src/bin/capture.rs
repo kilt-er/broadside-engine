@@ -188,6 +188,13 @@ fn main() {
             }
         }
     }
+    // (#140) Optional BROADSIDE_GRID_STRETCH=1 turns STRETCH mode ON for the capture
+    // (mirrors the `T` key), so the pitch arc shots show the vertical-stretch /
+    // constant-ship-size top-down instead of the constant-footprint drawbridge.
+    if std::env::var("BROADSIDE_GRID_STRETCH").is_ok_and(|v| v != "0") {
+        let on = broadside_engine::gfx::toggle_grid_stretch();
+        log::info!("capture: grid stretch -> {}", if on { "ON" } else { "OFF" });
+    }
 
     // Optional 2nd arg = player column (0..COLS-1) so the capture can place the
     // player OFF-CENTER to expose lane-dependent pose bugs (a centred shot at the
@@ -394,11 +401,20 @@ fn main() {
 
     // (#76) Project to the LIVE scene size (default 480x270 == ProjectorConfig
     // ::default(); a BROADSIDE_SCENE_RES cycle above reprojects to the new canvas).
-    let cfg = ProjectorConfig::for_scene(
+    // (#139/#140) Apply the live pitch step in the ACTIVE mode — mirrors the bin's
+    // scene_projector(): STRETCH ON uses with_stretch (vertical stretch, constant
+    // ship size), OFF uses with_pitch (constant-footprint drawbridge). The capture's
+    // pitch global was toggled above by BROADSIDE_GRID_PITCH / BROADSIDE_GRID_STRETCH.
+    let base = ProjectorConfig::for_scene(
         broadside_engine::gfx::scene_w() as f32,
         broadside_engine::gfx::scene_h() as f32,
-    )
-    .with_pitch(broadside_engine::gfx::grid_pitch_t()); // (#139) live pitch step
+    );
+    let pitch_t = broadside_engine::gfx::grid_pitch_t();
+    let cfg = if broadside_engine::gfx::grid_stretch_on() {
+        base.with_stretch(pitch_t)
+    } else {
+        base.with_pitch(pitch_t)
+    };
     let mut commands = compose_scene_2d_with(&board, &cfg, &gfx);
     // (#127) SALVAGE readout — the live bin draws this in its Playing overlay (not
     // inside compose_scene_2d), so append it here with a representative value so the

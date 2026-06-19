@@ -916,6 +916,31 @@ impl LoftGpu {
         );
     }
 
+    /// (#140 ship-tilt) Like [`Self::render_ship`] (house lights + gameplay zoom)
+    /// but with the CAMERA PITCH as a parameter, so the live grid-pitch arc
+    /// ([`crate::gfx::loft_pitch_deg`]) can tilt the hull to stay PARALLEL to the
+    /// raising grid plane. `pitch_deg == CAMERA_PITCH_DEG` reproduces
+    /// [`Self::render_ship`] exactly (the byte-identical step-0 default); a higher
+    /// pitch looks down the deck so the hull reads top-down. The house key light +
+    /// fill + ambient + the gameplay [`HALF_EXTENT`] zoom are unchanged — only the
+    /// look-down angle moves, so the hull re-lights in world space automatically.
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_ship_pitched(
+        &self,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        vbuf: &wgpu::Buffer,
+        vcount: u32,
+        yaw_deg: f32,
+        center_y: f32,
+        pitch_deg: f32,
+    ) {
+        self.render_ship_lit_framed(
+            queue, encoder, vbuf, vcount, yaw_deg, center_y, -50.0, 60.0, 1.6, pitch_deg,
+            HALF_EXTENT,
+        );
+    }
+
     /// Like [`Self::render_ship`] but with the KEY-LIGHT azimuth / elevation
     /// (degrees) + intensity as parameters, so a caller can SWEEP the light to
     /// show dynamic lighting (the dynamic-lighting test) — the gameplay path

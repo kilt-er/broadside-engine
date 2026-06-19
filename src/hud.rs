@@ -1430,7 +1430,6 @@ fn push_ship_2d(
     // frame clock. Tiny amplitude — it "breathes", it doesn't drift.
     let phase = time_s * IDLE_BOB_HZ * std::f32::consts::TAU + ship_phase_offset(&ship.id);
     center[1] += phase.sin() * IDLE_BOB_PX * q.depth_scale;
-    let depth_scale = vis.map(|v| v.depth_scale).unwrap_or(q.depth_scale);
     let facing_yaw_deg = vis
         .map(|v| v.facing_yaw_deg)
         .unwrap_or_else(|| loft_facing_ground_yaw(ship.facing));
@@ -1609,25 +1608,53 @@ fn push_ship_2d(
         }
     }
 
-    // Inset hull box, scaled by depth so far ships are smaller. Bow stance is
-    // longer along the bow axis; broadside is wider across the hull axis — a
-    // coarse stance read under the (always-present) arrow.
-    let base = 22.0 * depth_scale;
-    let (hx, hy) = match ship.facing {
+    // (#140 ship-tilt) Hull box laid INTO the projected CELL QUAD so it TILTS with
+    // the grid plane (Bruce: ships must tilt to stay parallel to the plane as the
+    // pitch arc raises). This fallback only runs when a ship has NO loft mesh (the
+    // live player + enemies both install a GLB, so the default frame never reaches
+    // here — no default-view regression); the lofted ships tilt via the loft camera
+    // pitch above. Build the hull in the cell's LOCAL frame (u = left→right across
+    // the cell, v = far→near down the cell) as a fraction of the cell, then map each
+    // local corner through the quad's BILINEAR interpolation, so the hull's vertices
+    // ride the (possibly tilted/stretched) plane: at full top-down the cell is a flat
+    // square and the box reads as a top-down silhouette.
+    //
+    // Stance picks the box's local half-extents: a bow-on hull is longer along its
+    // bow axis, a broadside hull wider across — the same coarse stance read as before,
+    // now expressed as a fraction of the cell (`fu`/`fv` in [0,1]) instead of a pixel
+    // box, so depth-scaling is automatic (the cell already shrinks with distance).
+    let (fu, fv) = match ship.facing {
         Facing::Bow(d) => match d.axis() {
-            Axis::NorthSouth => (base * 0.62, base),
-            Axis::EastWest => (base, base * 0.62),
+            Axis::NorthSouth => (0.40, 0.66), // long down-lane (toward/away)
+            Axis::EastWest => (0.66, 0.40),   // long across-lane
         },
         Facing::Broadside(axis) => match axis {
-            Axis::EastWest => (base, base * 0.5),
-            Axis::NorthSouth => (base * 0.5, base),
+            Axis::EastWest => (0.66, 0.34),
+            Axis::NorthSouth => (0.34, 0.66),
         },
     };
+    // Bilinear sample of the cell quad at local (u, v) ∈ [0,1]² — corners are
+    // [top-left, top-right, bottom-right, bottom-left] = (u,v) (0,0)(1,0)(1,1)(0,1).
+    let c = &q.corners;
+    let bilerp = |u: f32, v: f32| {
+        let top = [
+            c[0][0] + (c[1][0] - c[0][0]) * u,
+            c[0][1] + (c[1][1] - c[0][1]) * u,
+        ];
+        let bot = [
+            c[3][0] + (c[2][0] - c[3][0]) * u,
+            c[3][1] + (c[2][1] - c[3][1]) * u,
+        ];
+        [top[0] + (bot[0] - top[0]) * v, top[1] + (bot[1] - top[1]) * v]
+    };
+    // Centre the box on the cell centre (u=v=0.5) with the stance half-fractions.
+    let (u0, u1) = (0.5 - fu * 0.5, 0.5 + fu * 0.5);
+    let (v0, v1) = (0.5 - fv * 0.5, 0.5 + fv * 0.5);
     let hull = [
-        [center[0] - hx, center[1] - hy],
-        [center[0] + hx, center[1] - hy],
-        [center[0] + hx, center[1] + hy],
-        [center[0] - hx, center[1] + hy],
+        bilerp(u0, v0), // far-left
+        bilerp(u1, v0), // far-right
+        bilerp(u1, v1), // near-right
+        bilerp(u0, v1), // near-left
     ];
     push_polygon(
         out,
@@ -3396,9 +3423,14 @@ pub fn push_res_readout(out: &mut Vec<DrawCommand>, ship: (u32, u32), scene: (u3
     // the gfx global. Placed at h-40, ABOVE the POS/FACE line (h-30, push_player_readout)
     // so the bottom-right debug stack doesn't overlap. Only shown when pitched off the
     // default, so normal play stays uncluttered.
+    // (#140) STRETCH mode tag folded into the PITCH line so it stays one line at
+    // h-40 (no extra collision): "PITCH n/8 STRETCH" when stretch is ON. The line
+    // shows whenever pitched OR stretch is toggled, so Bruce sees both states.
     let pitch = crate::gfx::grid_pitch_step();
-    if pitch > 0 {
-        right_align(out, &format!("PITCH {}/{}", pitch, crate::gfx::GRID_PITCH_STEPS), h - 40.0);
+    let stretch = crate::gfx::grid_stretch_on();
+    if pitch > 0 || stretch {
+        let tag = if stretch { " STRETCH" } else { "" };
+        right_align(out, &format!("PITCH {}/{}{}", pitch, crate::gfx::GRID_PITCH_STEPS, tag), h - 40.0);
     }
 }
 
