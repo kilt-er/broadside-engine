@@ -1519,9 +1519,8 @@ fn push_ship_2d(
                 // Mid-turn this is the interpolated yaw so the hull rotates smoothly.
                 facing_yaw_deg,
             }));
-            // Pips/buffer cues on top (the lit hull + its baked engine glow own
-            // the hull + stern read, so the player chevron stays dropped).
-            push_ship_arrow_and_pips_2d(out, ship, center, 22.0 * depth_scale, cfg);
+            // (#138) Shield pips removed — the per-face cyan squares read as mystery
+            // clutter (Bruce); the total shield is in the bottom SHLD bar.
             return;
         }
         // aim lane = the ship's OWN board column; fan = its own-forward board dir
@@ -1560,9 +1559,8 @@ fn push_ship_2d(
             // baked) at the player's stern (the sprite's lower edge).
             let glow_y = (b - h * 0.10).min(band_top - 4.0);
             push_engine_glow_2d(out, [center[0], glow_y], w);
-            // Pips/buffer cues on top; the baked frame owns the hull + bow read, so
-            // the player chevron stays dropped (enemy chevrons still telegraph).
-            push_ship_arrow_and_pips_2d(out, ship, center, 22.0 * depth_scale, cfg);
+            // (#138) Shield pips removed (Bruce: mystery clutter); total shield reads
+            // from the bottom SHLD bar.
             return;
         }
         // else: no facing frame loaded yet (the correct bake hasn't dropped) → fall
@@ -1639,55 +1637,9 @@ fn push_ship_2d(
         push_line(out, pt(hull[i]), pt(hull[(i + 1) % 4]), 1.0, stroke);
     }
 
-    push_ship_arrow_and_pips_2d(out, ship, center, base, cfg);
-}
-
-/// Bow-direction arrow + per-zone shield pips for a ship, shared by both the
-/// flat-box and the loft (#51) body paths so orientation + the shield buffer
-/// read identically regardless of how the hull itself is drawn. `base` is the
-/// hull half-extent (22 × depth_scale) the arrow reach + pip placement key off.
-fn push_ship_arrow_and_pips_2d(
-    out: &mut Vec<DrawCommand>,
-    ship: &Ship,
-    center: [f32; 2],
-    base: f32,
-    cfg: &ProjectorConfig,
-) {
-    // (#112 declutter) ENEMIES get NO arrow/pips — the move-arrow + shield pips were
-    // part of the illegible back-row pile. An enemy now reads as just its posed +
-    // scaled hull (+ the separate threat-cell outline). Only the PLAYER keeps its
-    // orientation/shield-pip cue (foreground hero, not cluttered).
-    if ship.faction != Faction::Player {
-        return;
-    }
-    // Direction the player's shield-pip layout keys off — the projected ground-plane
-    // step in its facing, screen-axis fallback at the grid edge.
-    let (dx, dy) = ground_facing_dir(ship, center, cfg).unwrap_or_else(|| bow_screen_dir(ship.facing));
-    push_shield_pips_2d(out, ship, center, base, (dx, dy));
-}
-
-/// (#99) The ship's facing direction as a SCREEN unit vector that lies FLAT in the
-/// perspective grid — the projected step from the ship's cell to the adjacent cell
-/// in its `Dir4` facing. Returns `None` at the grid edge (the neighbour is
-/// off-board), where the caller falls back to the pure screen-axis direction.
-fn ground_facing_dir(ship: &Ship, center: [f32; 2], cfg: &ProjectorConfig) -> Option<(f32, f32)> {
-    use crate::grid::Dir4;
-    let dir4 = match ship.facing {
-        Facing::Bow(d) => d,
-        // A broadside hull's "forward" for the marker = its axis's canonical dir.
-        Facing::Broadside(axis) => match axis {
-            Axis::NorthSouth => Dir4::S,
-            Axis::EastWest => Dir4::E,
-        },
-    };
-    let next = crate::grid::offset(ship.pos, dir4.to_dir8(), 1)?; // None at the board edge
-    let nc = grid_cell_quad(next, cfg).center;
-    let (vx, vy) = (nc[0] - center[0], nc[1] - center[1]);
-    let len = (vx * vx + vy * vy).sqrt();
-    if len < 1e-3 {
-        return None;
-    }
-    Some((vx / len, vy / len))
+    // (#138) Shield pips removed (Bruce: per-face cyan squares read as mystery
+    // clutter); total shield is in the bottom SHLD bar. The flat-box hull stands
+    // alone now — no arrow/pip overlay.
 }
 
 /// (#62) The player's stern ENGINE-GLOW cluster — the reference ship's signature
@@ -1742,73 +1694,10 @@ fn push_engine_glow_2d(out: &mut Vec<DrawCommand>, center: [f32; 2], hull_w: f32
     }
 }
 
-/// The screen-space forward unit vector `(dx, dy)` the bow arrow points along,
-/// from `Facing::forward_axis()` — the SAME forward axis the resolver's
-/// `facing_zone` table uses (blueprint: "the renderer's bow-arrow MUST encode
-/// the SAME forward axis"). `Bow(dir)` points its cardinal; `Broadside(axis)`
-/// points along the axis's positive cardinal (a render choice — both flanks are
-/// symmetric). y is screen-down: `N` (toward row 0 / up-board) is `-y`.
-fn bow_screen_dir(facing: Facing) -> (f32, f32) {
-    let dir4 = match facing {
-        Facing::Bow(d) => d,
-        Facing::Broadside(axis) => match axis {
-            Axis::NorthSouth => Dir4::S,
-            Axis::EastWest => Dir4::E,
-        },
-    };
-    match dir4 {
-        Dir4::N => (0.0, -1.0),
-        Dir4::S => (0.0, 1.0),
-        Dir4::E => (1.0, 0.0),
-        Dir4::W => (-1.0, 0.0),
-    }
-}
-
-/// Gold shield pips per zone (one per held charge): bow/stern along the forward
-/// axis, port/starboard perpendicular to it, stacked ALONG each face so multiple
-/// charges read as a row. Reads `ship.shield_profile.face(zone).charge`. `fwd`
-/// is the screen forward unit vector from [`bow_screen_dir`].
-fn push_shield_pips_2d(
-    out: &mut Vec<DrawCommand>,
-    ship: &Ship,
-    center: [f32; 2],
-    base: f32,
-    fwd: (f32, f32),
-) {
-    let (fx, fy) = fwd;
-    let (px, py) = (-fy, fx); // perpendicular
-    let pip = 1.8;
-    let edge = base + 3.0;
-    let step = pip * 2.0 + 1.0;
-    let faces = [
-        (HullZone::Bow, (fx, fy)),
-        (HullZone::Stern, (-fx, -fy)),
-        (HullZone::Starboard, (px, py)),
-        (HullZone::Port, (-px, -py)),
-    ];
-    for (zone, (ox, oy)) in faces {
-        let n = ship.shield_profile.face(zone).charge;
-        if n <= 0 {
-            continue;
-        }
-        let (sx, sy) = (-oy, ox); // stack along the face
-        let bx = center[0] + ox * edge;
-        let by = center[1] + oy * edge;
-        let start = -(n as f32 - 1.0) * 0.5;
-        for i in 0..n {
-            let k = start + i as f32;
-            push_sprite(
-                out,
-                SpriteInstance::axis_aligned(
-                    [bx + sx * step * k, by + sy * step * k],
-                    [pip, pip],
-                    SHIELD_PIP_CHARGE,
-                    atlas::cell_uvs(atlas::SOLID_WHITE),
-                ),
-            );
-        }
-    }
-}
+// (#138) bow_screen_dir + push_shield_pips_2d removed with the player shield-pip
+// cue (Bruce: the per-face cyan squares read as mystery clutter; the total shield
+// is in the bottom SHLD bar). The bow-arrow they also keyed off was already dropped
+// in the #112 declutter, so nothing else needs them.
 
 /// On-screen silhouette bounding box for a ship at the current view angle.
 /// Returns `(width, total_h)` so overlay helpers (heat bar, shield pips,
@@ -5554,28 +5443,9 @@ mod tests {
         );
     }
 
-    /// Shield pips: a ship with bow+port charges emits exactly that many pip
-    /// sprites in the 2-D path (one per held charge, by zone).
-    #[test]
-    fn shield_pips_2d_one_per_charge() {
-        let cfg = ProjectorConfig::default();
-        let mut ship = frigate_at(0, Faction::Player, Orientation::Broadside);
-        ship.pos = Pos::new(1, 1);
-        ship.facing = Facing::Bow(Dir4::N);
-        ship.shield_profile = ShieldProfile {
-            bow: ShieldFace { armour: 2, charge: 2 },
-            stern: ShieldFace { armour: 0, charge: 0 },
-            port: ShieldFace { armour: 1, charge: 1 },
-            starboard: ShieldFace { armour: 1, charge: 0 },
-        };
-        let center = grid_cell_quad(ship.pos, &cfg).center;
-        let base = 22.0 * grid_cell_quad(ship.pos, &cfg).depth_scale;
-        let fwd = bow_screen_dir(ship.facing);
-        let mut out = Vec::new();
-        push_shield_pips_2d(&mut out, &ship, center, base, fwd);
-        // 2 bow + 1 port = 3 pip sprites (SOLID_WHITE in the pip color).
-        assert_eq!(out.len(), 3, "expected 3 pips (2 bow + 1 port)");
-    }
+    // (#138) shield_pips_2d_one_per_charge test removed with push_shield_pips_2d
+    // (Bruce dropped the player shield-pip cue as mystery clutter). The shield
+    // POOL is covered by the bottom SHLD bar (push_bottom_hud_2d) + its own tests.
 
     /// `ROWS` aliased locally so the tests read clearly without colliding with
     /// the module-wide `use` set.
