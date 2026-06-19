@@ -188,11 +188,14 @@ fn main() {
             }
         }
     }
-    // (#140/#142) Optional grid-mode env (mirrors the `T` cycle), so the pitch-arc
-    // shots show each mode. BROADSIDE_GRID_STRETCH=1 -> stretch-curved (mode 1);
-    // BROADSIDE_GRID_STRAIGHT=1 -> stretch-straight (mode 2); neither -> drawbridge
-    // (mode 0). STRAIGHT wins if both set. Cycle the live GRID_MODE to the target.
-    let target_mode: u32 = if std::env::var("BROADSIDE_GRID_STRAIGHT").is_ok_and(|v| v != "0") {
+    // (#140/#142/#151) Optional grid-mode env (mirrors the `T` cycle), so the pitch-arc
+    // shots show each mode. BROADSIDE_GRID_CONTINUOUS=1 -> continuous-straight (mode 3);
+    // BROADSIDE_GRID_STRAIGHT=1 -> stretch-straight stepped (mode 2);
+    // BROADSIDE_GRID_STRETCH=1 -> stretch-curved (mode 1); none -> drawbridge (mode 0).
+    // Most-specific wins. Cycle the live GRID_MODE to the target.
+    let target_mode: u32 = if std::env::var("BROADSIDE_GRID_CONTINUOUS").is_ok_and(|v| v != "0") {
+        3
+    } else if std::env::var("BROADSIDE_GRID_STRAIGHT").is_ok_and(|v| v != "0") {
         2
     } else if std::env::var("BROADSIDE_GRID_STRETCH").is_ok_and(|v| v != "0") {
         1
@@ -413,8 +416,9 @@ fn main() {
     // ::default(); a BROADSIDE_SCENE_RES cycle above reprojects to the new canvas).
     // (#139/#140/#142) Apply the live pitch step in the ACTIVE grid mode — mirrors the
     // bin's scene_projector(): 0 drawbridge (with_pitch), 1 stretch-curved (with_stretch),
-    // 2 stretch-straight (with_stretch_straight). The mode + pitch globals were set above
-    // by BROADSIDE_GRID_PITCH / BROADSIDE_GRID_STRETCH / BROADSIDE_GRID_STRAIGHT.
+    // 2 stretch-straight stepped (with_stretch_straight), 3 stretch-continuous
+    // (with_stretch_continuous). The mode + pitch globals were set above by
+    // BROADSIDE_GRID_PITCH / _STRETCH / _STRAIGHT / _CONTINUOUS.
     let base = ProjectorConfig::for_scene(
         broadside_engine::gfx::scene_w() as f32,
         broadside_engine::gfx::scene_h() as f32,
@@ -423,6 +427,7 @@ fn main() {
     let cfg = match broadside_engine::gfx::grid_mode() {
         1 => base.with_stretch(pitch_t),
         2 => base.with_stretch_straight(pitch_t),
+        3 => base.with_stretch_continuous(pitch_t),
         _ => base.with_pitch(pitch_t),
     };
     let mut commands = compose_scene_2d_with(&board, &cfg, &gfx);

@@ -215,6 +215,15 @@ pub struct ProjectorConfig {
     /// so the step-0 no-regression gate holds in this mode too. Set via
     /// [`Self::with_stretch_straight`]. Only meaningful when `stretch_t > 0`.
     pub stretch_straight: bool,
+
+    /// (#151 Bruce) CONTINUOUS-STRAIGHT depth lines. When `true`, each depth line
+    /// (front-to-back column boundary) is ONE straight line from the grid's near
+    /// (front) edge to its far (back) edge — every cell corner on that boundary lies
+    /// on the line, so there are NO per-cell kinks at row boundaries (the "stepped
+    /// per quadrant" look of [`Self::stretch_straight`]). Implies the stretch; set via
+    /// [`Self::with_stretch_continuous`]. Byte-identical at `stretch_t == 0` (block
+    /// skipped). Takes precedence over `stretch_straight` when both are set.
+    pub stretch_lines_continuous: bool,
 }
 
 impl Default for ProjectorConfig {
@@ -277,6 +286,7 @@ impl ProjectorConfig {
             rows: ROWS,
             stretch_t: 0.0, // (#140) pure perspective by default — byte-identical to today
             stretch_straight: false, // (#142) curved stretch by default
+            stretch_lines_continuous: false, // (#151) stepped (per-cell) by default
         }
     }
 }
@@ -344,6 +354,18 @@ impl ProjectorConfig {
         Self {
             stretch_t: t.clamp(0.0, 1.0),
             stretch_straight: true,
+            ..self
+        }
+    }
+
+    /// (#151 Bruce) STRETCH with CONTINUOUS straight depth lines: same vertical stretch,
+    /// but each front-to-back column boundary is ONE straight line (no per-cell kinks =
+    /// the "stepped per quadrant" look of [`Self::with_stretch_straight`]). `t = 0` ==
+    /// self (byte-identical step 0). Sets `stretch_t` + `stretch_lines_continuous`.
+    pub fn with_stretch_continuous(self, t: f32) -> Self {
+        Self {
+            stretch_t: t.clamp(0.0, 1.0),
+            stretch_lines_continuous: true,
             ..self
         }
     }
@@ -509,7 +531,49 @@ pub fn grid_cell_quad(pos: Pos, cfg: &ProjectorConfig) -> CellQuad {
         //     row-independent uniform x. Because the SAME column boundary uses the same
         //     row-independent straightened target in every cell, the column verticalizes
         //     as the arc raises and is perfectly straight (+ rows straight) at t=1.
-        let (xfl, xfr, xnl, xnr) = if cfg.stretch_straight {
+        let (xfl, xfr, xnl, xnr) = if cfg.stretch_lines_continuous {
+            // (#151 Bruce) CONTINUOUS-STRAIGHT: each depth line (column boundary) is ONE
+            // straight line on SCREEN from the grid's NEAR (front) edge to its FAR (back)
+            // edge — no per-cell kinks ("stepped per quadrant"). Build the boundary's
+            // straight endpoint x at the grid's near + far edges, then place every corner's
+            // x by interpolating against its SCREEN-Y position along the grid's near->far Y
+            // span (NOT the depth fraction — at a mid arc step screen-y isn't linear in
+            // depth, so a depth-fraction lerp would still kink on screen). Interpolating by
+            // screen-y puts every corner exactly on the straight screen line by construction.
+            let inv_z_near_edge = 1.0 / cfg.z_at(cfg.boundary_d(cfg.rows));
+            let inv_z_far_edge = 1.0 / cfg.z_at(cfg.boundary_d(0));
+            let endpoint = |c: usize, ux: f32| {
+                let near_x = lerp(cfg.boundary_x(c, inv_z_near_edge), ux); // grid near edge x
+                let far_x = lerp(cfg.boundary_x(c, inv_z_far_edge), ux); // grid far edge x
+                (near_x, far_x)
+            };
+            let (near_l, far_l) = endpoint(pos.col, ux_l);
+            let (near_r, far_r) = endpoint(pos.col + 1, ux_r);
+            // The grid's near + far SCREEN-Y at THIS t — the front row's near edge and the
+            // back row's far edge, each LERPED perspective->uniform exactly as the per-cell
+            // y's above (`lerp(perspective_y, uniform_y)`), so the line endpoints match the
+            // grid's actual drawn extent at this arc step (not the full-uniform y, which
+            // would only match at t=1 and reintroduce a screen kink mid-arc).
+            let grid_near_y = lerp(
+                cfg.screen_y(1.0 / cfg.z_at(cfg.boundary_d(cfg.rows))),
+                cfg.uniform_boundary_y(cfg.rows),
+            ); // front edge (largest y)
+            let grid_far_y = lerp(
+                cfg.screen_y(1.0 / cfg.z_at(cfg.boundary_d(0))),
+                cfg.uniform_boundary_y(0),
+            ); // back edge (smallest y)
+            let span = grid_near_y - grid_far_y;
+            // Screen-y fraction from the near edge: near -> 0, far -> 1.
+            let yfrac = |y: f32| if span.abs() < 1e-4 { 0.0 } else { (grid_near_y - y) / span };
+            let fy = yfrac(y_far);
+            let ny = yfrac(y_near);
+            (
+                mix(near_l, far_l, fy), // far-left  on the left depth line
+                mix(near_r, far_r, fy), // far-right on the right depth line
+                mix(near_l, far_l, ny), // near-left
+                mix(near_r, far_r, ny), // near-right
+            )
+        } else if cfg.stretch_straight {
             // Row-independent perspective reference = the NEAR row's column-boundary x
             // (the widest, the visual anchor), so all rows share one straightening target.
             let inv_z_near_row = 1.0 / cfg.z_at(cfg.boundary_d(cfg.rows));
@@ -1238,5 +1302,64 @@ mod tests {
             straight_spread <= curved_spread + 1e-3,
             "straight mid-arc columns should be straighter (spread {straight_spread} <= curved {curved_spread})"
         );
+    }
+
+    /// (#151) STRETCH-CONTINUOUS: byte-identical at t=0, and at ANY t>0 each depth line
+    /// (column boundary) is ONE straight line front-to-back — every cell corner on that
+    /// boundary lies on the line from the grid's near-edge point to its far-edge point
+    /// (no per-cell kink = no "stepped per quadrant"). Verified at a MID arc step (the
+    /// stepped variant kinks there) AND at full stretch.
+    #[test]
+    fn with_stretch_continuous_step0_identity_and_one_line_front_to_back() {
+        let base = cfg();
+        // Step-0 identity.
+        let z = base.with_stretch_continuous(0.0);
+        for r in 0..ROWS {
+            for c in 0..COLS {
+                let a = grid_cell_quad(Pos::new(c, r), &base);
+                let b = grid_cell_quad(Pos::new(c, r), &z);
+                assert_eq!(a.corners, b.corners, "continuous(0) corners identical at ({c},{r})");
+            }
+        }
+        // For a column boundary, gather every corner that lies on it across all rows
+        // (each row contributes its far-left + near-left for the LEFT boundary of column
+        // `col`), and assert they are colinear with the overall near->far line. Test the
+        // left edge of an off-centre column (the one that bows/steps the most).
+        for &t in &[0.5_f32, 1.0] {
+            let p = base.with_stretch_continuous(t);
+            let col = 0usize; // left boundary of column 0 = the leftmost depth line
+            // Endpoints: the near edge (front row's near-left) and far edge (far row's
+            // far-left) of this depth line.
+            let near_pt = {
+                let q = grid_cell_quad(Pos::new(col, ROWS - 1), &p);
+                q.bottom_left()
+            };
+            let far_pt = {
+                let q = grid_cell_quad(Pos::new(col, 0), &p);
+                q.top_left()
+            };
+            // Every row's far-left + near-left corner must lie on the near->far line.
+            let on_line = |x: f32, y: f32| {
+                // Solve the line param by y, compare x.
+                let dy = far_pt.y - near_pt.y;
+                if dy.abs() < 1e-4 {
+                    return true; // degenerate (flat) — skip
+                }
+                let s = (y - near_pt.y) / dy;
+                let lx = near_pt.x + (far_pt.x - near_pt.x) * s;
+                (lx - x).abs() <= 0.5
+            };
+            for r in 0..ROWS {
+                let q = grid_cell_quad(Pos::new(col, r), &p);
+                assert!(
+                    on_line(q.top_left().x, q.top_left().y),
+                    "continuous t={t}: row {r} far-left off the depth line"
+                );
+                assert!(
+                    on_line(q.bottom_left().x, q.bottom_left().y),
+                    "continuous t={t}: row {r} near-left off the depth line"
+                );
+            }
+        }
     }
 }

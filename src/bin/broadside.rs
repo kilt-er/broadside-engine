@@ -120,6 +120,7 @@ fn scene_projector() -> ProjectorConfig {
     match broadside_engine::gfx::grid_mode() {
         1 => base.with_stretch(t),
         2 => base.with_stretch_straight(t),
+        3 => base.with_stretch_continuous(t),
         _ => base.with_pitch(t),
     }
 }
