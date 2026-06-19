@@ -510,3 +510,76 @@ fn shield_pool_recharges_when_a_face_stops_taking_fire() {
     resolve_round(&mut board, &content);
     assert_eq!(bow_charge(&board), 3, "recharge clamps at capacity, never overfills");
 }
+
+/* =========================================================================
+ * "WEAPONS DO NOTHING" GUARD: the REAL catalog pulse_laser, fired through the
+ * LIVE content path (DemoContent::install_catalog_actions — the exact wiring
+ * the bin's build_content uses) + the resolver, MUST damage and kill an
+ * in-range enemy. Plus the spawn-range fact that explains the player's
+ * perception: pulse is a CLOSE weapon (bands Adjacent/Near, max reach dist 2),
+ * so at the spawn distance (front row -> back row = 3 = Far) it does NOT reach
+ * and the player must close first. This is the regression guard for Bruce's
+ * "my weapons do nothing to enemies" report — if catalog damage ever stops
+ * landing through the live path, this fails loudly.
+ * ====================================================================== */
+#[test]
+fn real_pulse_laser_kills_an_in_range_enemy_via_the_live_catalog_path() {
+    use broadside_engine::input::DemoContent;
+    // Build the LIVE content: load the real catalog asset + merge its actions,
+    // exactly like the bin's build_content does (#49a wiring).
+    let bytes = std::fs::read("assets/broadside.catalog.json").expect("catalog asset present");
+    let catalog = broadside_engine::catalog::load_from_bytes(&bytes).expect("catalog parses");
+    let mut content = DemoContent::default();
+    content.install_catalog_actions(&catalog);
+
+    // The real pulse_laser: beam, raw 4 (inflate_effect: heat 2 -> heat+2), 2-D
+    // bands [Adjacent, Near], Forward arc.
+    let pulse = content.action("pulse_laser").expect("pulse_laser is a real catalog action").clone();
+    let raw: i32 = pulse.effects.iter().filter_map(|e| match e {
+        Effect::DAMAGE { amount, .. } => Some(*amount), _ => None,
+    }).sum();
+    assert_eq!(raw, 4, "real catalog pulse_laser deals raw 4 (beam: heat 2 + 2)");
+    assert!(
+        pulse.targeting.range_band.contains(&grid::Range::Adjacent)
+            && pulse.targeting.range_band.contains(&grid::Range::Near),
+        "pulse_laser is a CLOSE weapon: bands Adjacent + Near; got {:?}",
+        pulse.targeting.range_band,
+    );
+
+    // Player at (2,2) Bow(N) with pulse_laser; light enemy at (2,1) Bow(S) one
+    // cell N = ADJACENT (dist 1), bearing in the Forward arc. Enemy bow pool 2,
+    // hull 3 (the light-enemy matchup). Anchored so the geometry is stable.
+    let mut player = ship_2d("p", Faction::Player, Pos::new(2, 2), 40, Facing::Bow(Dir4::N), Arc::Forward, "pulse_laser");
+    player.shield_profile = naked_shields();
+    let mut enemy = ship_2d("e", Faction::Enemy, Pos::new(2, 1), 3, Facing::Bow(Dir4::S), Arc::Forward, "noop");
+    enemy.shield_profile = bow_pool(2);
+    enemy.mounts.clear();
+    enemy.traits = vec![Trait::Anchored];
+    let mut board = board_2d(vec![player, enemy]);
+
+    let estate = |b: &broadside_engine::types::Board| -> Option<(i32, i32)> {
+        b.cells.iter().flatten().find(|s| s.id == "e").map(|s| (s.hull, s.shield_profile.bow.charge))
+    };
+
+    // Commit 1 (Adjacent, -0 falloff): 4 raw -> bow pool 2 soaks 2 -> 2 overflow
+    // -> enemy hull 3 -> 1, pool 0.
+    board.cells.iter_mut().flatten().find(|s| s.id == "p").unwrap().queue = vec!["pulse_laser".into()];
+    resolve_round(&mut board, &content);
+    assert_eq!(estate(&board), Some((1, 0)), "commit 1: pool 2 soaks 2 of the 4, 2 overflows to hull (3 -> 1)");
+
+    // Commit 2: pool 0 -> full 4 to hull -> enemy dies.
+    board.cells.iter_mut().flatten().find(|s| s.id == "p").unwrap().queue = vec!["pulse_laser".into()];
+    resolve_round(&mut board, &content);
+    assert!(estate(&board).is_none(), "commit 2: the empty-pool hull takes the full 4 -> enemy destroyed (live path damage is REAL)");
+
+    // The spawn-range fact: front-row player -> back-row enemy is Chebyshev 3 =
+    // Far, which is OUTSIDE pulse's [Adjacent, Near] band set, so the player must
+    // CLOSE before pulse_laser connects (it is NOT a damage bug). Both the player
+    // and the first-encounter enemies (skiff/lancer) mount Pulse Laser, so the
+    // SAME must-close gate applies to the enemy AI — it closes via its ladder.
+    assert_eq!(grid::distance(Pos::new(2, 3), Pos::new(2, 0)), 3, "spawn front->back row is dist 3");
+    assert!(
+        !pulse.targeting.range_band.contains(&grid::Range::Far),
+        "pulse does NOT reach Far: at spawn distance the player must close first (the perceived 'weapons do nothing')",
+    );
+}
