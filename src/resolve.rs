@@ -310,84 +310,120 @@ pub fn fire_player_queue(ship_id: &str, board: &mut Board, content: &dyn Content
 /// and *displays* its next action without firing it. This is what makes the
 /// enemy's intent visible to the player before it lands.
 pub fn run_world_phase(board: &mut Board, content: &dyn Content) {
-    // 2 - advance every live projectile by its speed, resolve impacts. This
-    // is its own chain-kill window — reset the counter so kills caused by
-    // ordnance impacts (e.g. multi-projectile torpedoes piercing low-hull
-    // enemies) are scored separately from the player's queue. The TS does
-    // not emit `onChainKill` from the ordnance phase itself (only
-    // executeQueue does); we match that and leave the emit gate to
-    // [`fire_player_queue`].
-    //
-    // TS iterates a SHALLOW COPY of `board.ordnance` because each
-    // `advanceProjectile` may remove its projectile from the live list. We
-    // do the same: snapshot the ids, then advance each by id-lookup.
+    // #124 decoupling: run_world_phase is now COMPOSED of the same additive
+    // seams the real-time bin clock drives independently — the ordnance/world
+    // bookkeeping ([`advance_ordnance`] + [`end_of_turn`], together [`tick_world`])
+    // and the per-enemy fire-then-decide ([`tick_enemy`]). The ORDER here is
+    // preserved EXACTLY as the historical phase 2->3->4 (ordnance, then every
+    // enemy fires+decides, then end-of-turn bookkeeping) so the headless / test /
+    // sim path is byte-identical and the canaries + run_loop stay green. The live
+    // bin instead calls `tick_enemy` per enemy on its own timer and `tick_world`
+    // on the global clock — see those fns. NOTE: run_world_phase does NOT clear
+    // `board.fire_events` (the resolve_round-top clear owns that window for the
+    // headless path); only the real-time `tick_world` clears it, so the current
+    // renderer's beam draw is unaffected until render rewires.
+    advance_ordnance(board, content);
+
+    // Enemy phase, in telegraphed initiative order. Snapshot ids up front so
+    // movement / destroys during one enemy's turn can't reshuffle the remaining
+    // enemies' identification; a since-destroyed enemy no-ops inside tick_enemy.
+    for enemy_id in live_enemy_ids(board) {
+        tick_enemy(&enemy_id, board, content);
+    }
+    // Final telegraph paint — identical to the historical end-of-loop paint.
+    // tick_enemy already repaints per enemy, but this also covers the zero-enemy
+    // case (no tick_enemy ran) so a stale threat set is always cleared.
+    paint_threats(board, content);
+
+    // 4 - end of turn (cooldowns / heat / shield-regen / statuses).
+    end_of_turn(board, content);
+}
+
+/// Phase 2 (extracted, #124): advance every live projectile by its speed and
+/// resolve impacts. Its own chain-kill window — resets `destroys_this_window` so
+/// ordnance-impact kills are scored separately from the player's queue (the TS
+/// emits `onChainKill` only from executeQueue, not the ordnance phase). Snapshots
+/// the projectile ids first because an impact may remove its projectile.
+pub fn advance_ordnance(board: &mut Board, content: &dyn Content) {
     board.destroys_this_window = 0;
     let projectile_ids: Vec<String> = board.ordnance.iter().map(|p| p.id.clone()).collect();
     for id in projectile_ids {
         // R5: live ordnance phase steps across the 2-D grid (invariant A).
         advance_projectile_2d(&id, board, content);
     }
+}
 
-    // 3 - enemy phase, in telegraphed initiative order. Snapshot ids up
-    // front so movement / destroys during one enemy's queue can't reshuffle
-    // the remaining enemies' identification. An enemy that gets destroyed
-    // before its turn just no-ops via the lookup below.
-    //
-    // TELEGRAPH-ONE-TURN-AHEAD (#67). The order is FIRE-THEN-DECIDE, NOT
-    // decide-then-fire. Per enemy:
-    //   a. FIRE the queue it telegraphed on the PREVIOUS world phase —
-    //      `fire_player_queue` runs and CLEARS it. (On the very first world
-    //      phase the queue is empty, so this is a no-op.)
-    //   b. DECIDE its next action and leave it queued, UN-fired, so it is
-    //      visible in `enemy.queue` until the next world phase resolves it.
-    //
-    // Net: between player inputs, `enemy.queue` persistently holds the
-    // enemy's NEXT intended action, which the renderer's per-enemy telegraph
-    // stack draws above the sprite ("here's what's coming"). Moves and
-    // reorients (the #41 maneuvers) are queued actions too, so a pending
-    // MOVE telegraphs as intent and executes next phase rather than
-    // instantly — exactly the Shogun-Showdown readability the design doc
-    // calls for. Pre-#67 this was decide-then-fire in the same phase, so the
-    // queue was emptied the instant it was filled and the telegraph never
-    // rendered.
-    //
-    // `skips_turn` (SystemsOffline) gates the FIRE step but NOT the decide:
-    // a stunned enemy still shows what it WOULD do, it just doesn't fire this
-    // phase. (Its telegraphed action waits; next phase, if no longer
-    // stunned, it fires.)
-    let enemy_ids: Vec<String> = enemy_initiative(board)
+/// Live ids of every enemy ship, in initiative order (#124). The bin's real-time
+/// loop iterates these to drive [`tick_enemy`] per enemy without reaching into
+/// `board.cells` itself; `run_world_phase` uses the same list so the composed
+/// (headless) path and the decoupled (live) path enumerate enemies identically.
+pub fn live_enemy_ids(board: &Board) -> Vec<String> {
+    enemy_initiative(board)
         .into_iter()
         .filter_map(|c| board.cells[c].as_ref().map(|s| s.id.clone()))
-        .collect();
-    for enemy_id in &enemy_ids {
-        let Some(enemy_cell) = find_cell_by_id(board, enemy_id) else {
-            continue; // destroyed earlier in the phase
-        };
-        // a. Fire the previously-telegraphed queue (skipped while stunned).
-        if !skips_turn(board, enemy_cell) {
-            fire_player_queue(enemy_id, board, content);
-        }
-        // b. Re-locate (firing may have moved/destroyed the enemy) and decide
-        //    the NEXT telegraph, left un-fired for the renderer to show.
-        let Some(enemy_cell) = find_cell_by_id(board, enemy_id) else {
-            continue; // destroyed by its own action (e.g. ReactorBreach splash)
-        };
+        .collect()
+}
+
+/// Tick ONE enemy (#124, the heart of the real-time decouple): the fire-then-
+/// decide step for a single enemy, fully independent of the player and every
+/// other enemy. The bin calls this on each enemy's OWN timer so enemies act in
+/// real time while the player plans/idles; `run_world_phase` calls it for each
+/// enemy in turn so the headless path is unchanged.
+///
+/// TELEGRAPH-ONE-TURN-AHEAD (#67), per enemy:
+///   a. FIRE the queue it telegraphed on its PREVIOUS tick — [`fire_player_queue`]
+///      runs and CLEARS it (a no-op on the first tick, queue empty). Gated by
+///      `skips_turn` (SystemsOffline) — a stunned enemy still DECIDES (shows
+///      intent) but does not fire this tick.
+///   b. RE-LOCATE (firing may have moved/destroyed it) and DECIDE its next
+///      action, left queued + un-fired so the renderer's telegraph shows it.
+///
+/// Then REPAINT `board.threats` so the telegraph can't desync from where shots
+/// land, regardless of tick cadence (the same `resolve_targeting_2d` single
+/// source the AI elected with and the firing will resolve with — V4-at-R8). With
+/// independent ticks this updates the threat set incrementally as each enemy
+/// decides (a superset of the old all-at-once end-of-loop paint; identical final
+/// state when run for every enemy in `run_world_phase`). Touches ONLY this enemy
+/// and the cells it shoots — never the player's or another enemy's queue.
+pub fn tick_enemy(enemy_id: &str, board: &mut Board, content: &dyn Content) {
+    let Some(enemy_cell) = find_cell_by_id(board, enemy_id) else {
+        return; // already destroyed
+    };
+    // a. Fire the previously-telegraphed queue (skipped while stunned).
+    if !skips_turn(board, enemy_cell) {
+        fire_player_queue(enemy_id, board, content);
+    }
+    // b. Re-locate (firing may have moved/destroyed the enemy) and decide the
+    //    NEXT telegraph, left un-fired for the renderer to show.
+    if let Some(enemy_cell) = find_cell_by_id(board, enemy_id) {
         crate::ai::decide_enemy_action(enemy_cell, board, content);
     }
-
-    // R8 — TELEGRAPH PAINT. Now that every enemy has decided + queued its next
-    // action, rebuild `board.threats` from those queues so the renderer (D4)
-    // and the dodge-whiff (R7) read a threat set that CANNOT desync from where
-    // the shots will actually land — it is computed by the SAME
-    // `resolve_targeting_2d` spine the AI elected with and the firing phase will
-    // resolve with (single-source, V4-at-R8). Runs after the whole decide loop
-    // (not per-enemy) so cross-enemy threats reflect the fully-telegraphed
-    // board. Cleared-and-rebuilt each phase (the old telegraph is stale once
-    // queues change).
+    // Keep the telegraph truthful after this enemy's decision.
     paint_threats(board, content);
+}
 
-    // 4 - end of turn.
+/// The GLOBAL world clock tick (#124): everything in a world phase EXCEPT the
+/// per-enemy loop — ordnance advance + end-of-turn bookkeeping (cooldown
+/// decrement, heat dissipation, shield regen, statuses). The bin runs this on a
+/// fixed real-time interval, so cooldowns / heat / shields advance on ONE uniform
+/// cadence for player and enemies alike, independent of both the player's commit
+/// and per-enemy fire timing. The lead's ruling: this world tick IS the "turn"
+/// unit for those per-turn systems.
+///
+/// FIRE-EVENTS WINDOW (the lead's re-windowing requirement): the under-fire-pause
+/// shield regen in [`end_of_turn`] reads `board.fire_events` to know which faces
+/// took fire "this window". To keep the pause correct under the global tick, the
+/// window is "since the last `tick_world`": end_of_turn reads the accumulated
+/// fire_events, then this fn CLEARS them so the next window starts fresh. (The
+/// renderer draws beams from `fire_events` on its faster frame cadence, so it
+/// must draw BEFORE each `tick_world` — flagged to render. The headless
+/// `run_world_phase` does NOT call `tick_world`; its window boundary is the
+/// `resolve_round`-top clear, unchanged.)
+pub fn tick_world(board: &mut Board, content: &dyn Content) {
+    advance_ordnance(board, content);
     end_of_turn(board, content);
+    // Window boundary for the next under-fire-pause read + the renderer's beams.
+    board.fire_events.clear();
 }
 
 /// R8 — paint [`Board::threats`] from the enemies' currently-queued actions.

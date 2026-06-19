@@ -34,7 +34,9 @@
 //! `run_loop.rs`, the tester's) to avoid a shared-file edit race.
 
 use broadside_engine::grid::{self, Dir4, Facing, Pos};
-use broadside_engine::resolve::{resolve_round, resolve_targeting_2d, Content};
+use broadside_engine::resolve::{
+    live_enemy_ids, resolve_round, resolve_targeting_2d, tick_enemy, tick_world, Content,
+};
 use broadside_engine::runs::{encounter_outcome, EncounterOutcome};
 use broadside_engine::types::{
     Action, ActionCost, Arc, Effect, Faction, Projectile, RangeBand, Ship, Targeting,
@@ -582,4 +584,102 @@ fn real_pulse_laser_kills_an_in_range_enemy_via_the_live_catalog_path() {
         !pulse.targeting.range_band.contains(&grid::Range::Far),
         "pulse does NOT reach Far: at spawn distance the player must close first (the perceived 'weapons do nothing')",
     );
+}
+
+/* =========================================================================
+ * #124/#125 REAL-TIME DECOUPLE seam: tick_enemy fires ONE enemy independent of
+ * the player + other enemies; tick_world runs the global bookkeeping. These lock
+ * the decoupling contract render's bin clock wires to.
+ * ====================================================================== */
+
+#[test]
+fn tick_enemy_fires_only_that_enemy_and_leaves_the_player_alone() {
+    use broadside_engine::input::DemoContent;
+    let bytes = std::fs::read("assets/broadside.catalog.json").expect("catalog asset");
+    let catalog = broadside_engine::catalog::load_from_bytes(&bytes).expect("catalog parses");
+    let mut content = DemoContent::default();
+    content.install_catalog_actions(&catalog);
+
+    // Player at (2,2) Bow(N), naked, with a QUEUED pulse_laser it has NOT fired.
+    // Two enemies down-column both mounting pulse_laser, bearing on the player at
+    // Adjacent/Near (so they CAN fire). e1 at (2,1) dist 1, e2 at (2,0) dist 2.
+    let mut player = ship_2d("p", Faction::Player, Pos::new(2, 2), 40, Facing::Bow(Dir4::N), Arc::Forward, "pulse_laser");
+    player.shield_profile = naked_shields();
+    player.queue = vec!["pulse_laser".into()]; // queued, must NOT be fired by tick_enemy
+    let mut e1 = ship_2d("e1", Faction::Enemy, Pos::new(2, 1), 9, Facing::Bow(Dir4::S), Arc::Forward, "pulse_laser");
+    let mut e2 = ship_2d("e2", Faction::Enemy, Pos::new(2, 0), 9, Facing::Bow(Dir4::S), Arc::Forward, "pulse_laser");
+    e1.shield_profile = naked_shields();
+    e2.shield_profile = naked_shields();
+    let mut board = board_2d(vec![player, e1, e2]);
+
+    let hull = |b: &broadside_engine::types::Board, id: &str| -> i32 {
+        b.cells.iter().flatten().find(|s| s.id == id).map(|s| s.hull).unwrap_or(-1)
+    };
+    let queue_len = |b: &broadside_engine::types::Board, id: &str| -> usize {
+        b.cells.iter().flatten().find(|s| s.id == id).map(|s| s.queue.len()).unwrap_or(0)
+    };
+
+    // First tick e1: telegraph-one-turn-ahead means tick 1 only DECIDES (its
+    // queue was empty), no fire yet. Tick e1 AGAIN: now it fires its telegraph.
+    tick_enemy("e1", &mut board, &content);
+    assert_eq!(hull(&board, "p"), 40, "tick 1 only telegraphs (empty queue) -> player untouched yet");
+    assert!(queue_len(&board, "e1") >= 1, "e1 telegraphed its next action");
+    // e2 has NOT been ticked: it must be completely untouched (no decide, no fire).
+    assert_eq!(queue_len(&board, "e2"), 0, "ticking e1 did NOT decide for e2 (per-enemy isolation)");
+
+    let p_before = hull(&board, "p");
+    tick_enemy("e1", &mut board, &content);
+    assert!(hull(&board, "p") < p_before, "second e1 tick FIRES its telegraph -> player hull drops (enemy acts independent of player commit)");
+
+    // Through all of this the PLAYER's queued pulse_laser was never fired by
+    // tick_enemy -> both enemies still alive at full hull.
+    assert_eq!(hull(&board, "e1"), 9, "player's queued shot was NOT fired by tick_enemy (e1 full)");
+    assert_eq!(hull(&board, "e2"), 9, "player's queued shot was NOT fired by tick_enemy (e2 full)");
+    assert!(queue_len(&board, "p") >= 1, "the player's queued action is still pending (only the player's commit fires it)");
+}
+
+#[test]
+fn tick_world_runs_global_bookkeeping_without_firing_queues() {
+    use broadside_engine::input::DemoContent;
+    let bytes = std::fs::read("assets/broadside.catalog.json").expect("catalog asset");
+    let catalog = broadside_engine::catalog::load_from_bytes(&bytes).expect("catalog parses");
+    let mut content = DemoContent::default();
+    content.install_catalog_actions(&catalog);
+
+    // A player with heat to dissipate + a queued shot; an enemy with a queued
+    // shot. tick_world must NOT fire either queue (it's the global clock, not the
+    // fire step) but MUST tick the per-turn bookkeeping (heat dissipates).
+    let mut player = ship_2d("p", Faction::Player, Pos::new(2, 2), 40, Facing::Bow(Dir4::N), Arc::Forward, "pulse_laser");
+    player.shield_profile = naked_shields();
+    player.heat = 3;
+    player.queue = vec!["pulse_laser".into()];
+    let mut enemy = ship_2d("e", Faction::Enemy, Pos::new(2, 1), 9, Facing::Bow(Dir4::S), Arc::Forward, "pulse_laser");
+    enemy.shield_profile = naked_shields();
+    enemy.queue = vec!["pulse_laser".into()];
+    let mut board = board_2d(vec![player, enemy]);
+
+    let find = |b: &broadside_engine::types::Board, id: &str| {
+        b.cells.iter().flatten().find(|s| s.id == id).cloned().unwrap()
+    };
+
+    tick_world(&mut board, &content);
+
+    // Bookkeeping ran: player heat dissipated by 1 (3 -> 2).
+    assert_eq!(find(&board, "p").heat, 2, "tick_world dissipates heat (the global per-turn bookkeeping)");
+    // Neither queue was fired: both ships full hull, queues intact.
+    assert_eq!(find(&board, "p").hull, 40, "tick_world did not fire the enemy's queue at the player");
+    assert_eq!(find(&board, "e").hull, 9, "tick_world did not fire the player's queue at the enemy");
+    assert_eq!(find(&board, "p").queue.len(), 1, "player's queue untouched by tick_world");
+    assert_eq!(find(&board, "e").queue.len(), 1, "enemy's queue untouched by tick_world");
+}
+
+#[test]
+fn live_enemy_ids_lists_enemies_only() {
+    let player = ship_2d("p", Faction::Player, Pos::new(2, 3), 10, Facing::Bow(Dir4::N), Arc::Forward, "noop");
+    let e1 = ship_2d("e1", Faction::Enemy, Pos::new(2, 1), 5, Facing::Bow(Dir4::S), Arc::Forward, "noop");
+    let e2 = ship_2d("e2", Faction::Enemy, Pos::new(1, 0), 5, Facing::Bow(Dir4::S), Arc::Forward, "noop");
+    let board = board_2d(vec![player, e1, e2]);
+    let mut ids = live_enemy_ids(&board);
+    ids.sort();
+    assert_eq!(ids, vec!["e1".to_string(), "e2".to_string()], "live_enemy_ids lists enemies only, not the player");
 }
