@@ -877,6 +877,18 @@ bus-borrowing architectural question.
 
 ## `src/geometry.rs`
 
+> **LEGACY 1-D module — NOT the live combat geometry.** This is the original 1-D
+> (`LaneEnd`/`usize`-cell) spatial core. Live v2 combat runs on **`geometry2d.rs`** (2-D
+> `Pos`/`Dir8`/`Facing`) — see [`MODULES/geometry2d.md`](MODULES/geometry2d.md). The two
+> coexist until the A3 `cell → Pos` migration contracts (then `geometry.rs` is deleted and
+> `geometry2d.rs` is `git mv`d onto it). In particular the falloff curve and shield model
+> below are the **old** ones: `geometry.rs::band_falloff` is the float distance-from-optimal
+> table `[1.0, 0.66, 0.5, 0.33, 0.2]` and `geometry.rs::absorb_shield` does flat-armour
+> subtraction with a charge ping — **both replaced** in v2 by the integer absolute penalty +
+> the depleting shield pool (#103/#104). Read this section for the legacy 1-D contract and
+> for the helpers (`opposite`/`distance`/`range_band`) `geometry2d` re-exposes; read the
+> geometry2d companion for live combat math.
+
 *Pure functions over the lane. No randomness, no content lookups, no I/O. Everything
 that makes orientation, arcs, and range bands a real decision lives here. The Rust port
 is a near-verbatim translation of the TS source — when in doubt, the TS is the canonical
