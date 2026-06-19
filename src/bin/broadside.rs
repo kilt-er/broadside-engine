@@ -1417,6 +1417,15 @@ impl ApplicationHandler for App {
                     .flatten()
                     .map(|s| (s.id.clone(), s.hull))
                     .collect();
+                // (#132) Ordnance ids present BEFORE this turn, so we can spawn a LAUNCH
+                // cue for any NEW player-owned projectile that appears (a torpedo just
+                // left the tube). Diffed against the post-resolve ordnance below.
+                let prev_ordnance: std::collections::HashSet<String> = self
+                    .board
+                    .ordnance
+                    .iter()
+                    .map(|p| p.id.clone())
+                    .collect();
                 let changed = apply_intent(intent, &mut self.board, &mut self.content, &render_example_board);
                 if is_restart {
                     self.restart_run();
@@ -1458,6 +1467,21 @@ impl ApplicationHandler for App {
                                 // Record the amount lost (#106) + timestamp (#101).
                                 self.hull_flash.insert(ship.id.clone(), (prev_hull - ship.hull, now));
                             }
+                        }
+                    }
+                    // (#132) LAUNCH CUE: any NEW player-owned projectile this turn (a
+                    // torpedo just left the tube) gets a small burst at its current cell
+                    // — so the player SEES the ordnance launch on the commit turn, not
+                    // just a mystery hit when it lands a turn later. push_ordnance_2d
+                    // then draws it travelling each subsequent turn.
+                    let pcfg = ProjectorConfig::for_scene(
+                        broadside_engine::gfx::scene_w() as f32,
+                        broadside_engine::gfx::scene_h() as f32,
+                    );
+                    for proj in &self.board.ordnance {
+                        if proj.owner_faction == Faction::Player && !prev_ordnance.contains(&proj.id) {
+                            let c = broadside_engine::projector::grid_cell_quad(proj.pos, &pcfg).center;
+                            self.particles.spawn_burst(c, 12, EXPLOSION_PARTICLE_COLOR, 0.30);
                         }
                     }
                     // Post-mutation: did this turn end an encounter?

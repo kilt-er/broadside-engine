@@ -548,6 +548,11 @@ pub fn compose_scene_2d_tweened(
     // see it; the bin diffs prev-vs-current ship ids on a combat resolve + calls
     // `push_destruction_at` with the vanished cells (see broadside.rs kill_bursts).
     push_fire_2d(&mut out, board, cfg);
+    // (#132) Live in-flight ordnance over the hulls — torpedoes/missiles drawn at
+    // their current cell so they're VISIBLY travelling (the 2D path drew none
+    // before, so ordnance was invisible mid-flight). Same board state the resolver
+    // steps each turn; render-only.
+    push_ordnance_2d(&mut out, board, cfg);
     // Bottom HUD band LAST of all — a screen-space fixed (NOT projected) health
     // bar + large weapon-tile row, drawn on top of everything (Bruce: a fixed
     // centered Shogun-Showdown-style bottom bar so health + abilities always read).
@@ -1126,6 +1131,62 @@ fn push_fire_2d(out: &mut Vec<DrawCommand>, board: &Board, cfg: &ProjectorConfig
                 push_line(out, pt(c), pt(end), 1.5, IMPACT_FLASH);
             }
         }
+    }
+}
+
+/// (#132 Bruce) Draw LIVE in-flight ordnance on the 2D board. The 2D compose path
+/// previously drew NO projectiles (only the old 1D `compose_scene` did), so a
+/// torpedo/missile travelled INVISIBLY across turns and its damage landed as a
+/// "delayed mystery hit". This makes the correctly-timed flight VISIBLE: each
+/// `board.ordnance` projectile is drawn at its projected cell centre, faction-
+/// tinted (so the player reads whose torpedo it is), oriented by `heading8`, and
+/// scaled by the cell's depth so a far-lane projectile reads smaller in
+/// perspective. Does NOT change travel timing — the resolver's `advance_projectile_2d`
+/// still steps `pos` one cell per turn; this only renders where it already is.
+/// Drawn over the hulls (after the ship pass) so the projectile reads on top.
+fn push_ordnance_2d(out: &mut Vec<DrawCommand>, board: &Board, cfg: &ProjectorConfig) {
+    use crate::grid::Dir8;
+    for proj in &board.ordnance {
+        let q = grid_cell_quad(proj.pos, cfg);
+        let scale = q.depth_scale;
+        let cell_uv = if proj.kind.contains("missile") {
+            atlas::MISSILE
+        } else {
+            atlas::TORPEDO
+        };
+        // The sprite art points RIGHT (E). Rotate to the projectile's screen heading
+        // (the lane is horizontal, grid recedes up-screen: N = up = -90°).
+        let rot = match proj.heading8 {
+            Dir8::E => 0.0,
+            Dir8::SE => std::f32::consts::FRAC_PI_4,
+            Dir8::S => std::f32::consts::FRAC_PI_2,
+            Dir8::SW => 3.0 * std::f32::consts::FRAC_PI_4,
+            Dir8::W => std::f32::consts::PI,
+            Dir8::NW => -3.0 * std::f32::consts::FRAC_PI_4,
+            Dir8::N => -std::f32::consts::FRAC_PI_2,
+            Dir8::NE => -std::f32::consts::FRAC_PI_4,
+        };
+        // Faction tint so a player torpedo reads cyan-ish and an enemy one red-ish
+        // (same palette as the fire beams). Size scales with depth, hard-capped so a
+        // near-row projectile doesn't slab the lane.
+        let t = crate::vfx::faction_beam_tint(proj.owner_faction);
+        let tint = [t[0], t[1], t[2], 1.0];
+        let half_w = (8.0 * scale).clamp(4.0, 10.0);
+        let half_h = (4.0 * scale).clamp(2.0, 6.0);
+        // Float just above the cell centre so it reads as flying OVER the grid.
+        let c = [q.center[0], q.center[1] - 6.0 * scale];
+        push_sprite(
+            out,
+            SpriteInstance {
+                pos: c,
+                half_size: [half_w, half_h],
+                color: tint,
+                uv_min: atlas::cell_uvs(cell_uv).0,
+                uv_max: atlas::cell_uvs(cell_uv).1,
+                rotation_rad: rot,
+                _pad: [0.0; 3],
+            },
+        );
     }
 }
 

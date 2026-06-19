@@ -266,6 +266,25 @@ fn main() {
             source: Pos::new(COLS / 2, 0),
         });
         log::info!("capture: QUEUE demo — injected a LETHAL threat on the player cell {ppos:?}");
+        // (#132) Inject an in-flight PLAYER torpedo mid-lane so the capture shows
+        // push_ordnance_2d drawing it travelling (the live bin spawns it on a torpedo
+        // commit; here we place one mid-flight between the player and the enemies).
+        use broadside_engine::grid::Dir8;
+        use broadside_engine::types::{Effect, Projectile};
+        let tpos = Pos::new(ppos.col, ppos.row.saturating_sub(1));
+        board.ordnance.push(Projectile {
+            id: "demo-torpedo".into(),
+            kind: "torpedo".into(),
+            cell: tpos.to_index(),
+            pos: tpos,
+            heading: broadside_engine::types::LaneEnd::Fore,
+            heading8: Dir8::N,
+            speed: 1,
+            hull: 1,
+            payload: vec![Effect::DAMAGE { amount: 6, band_falloff: Some(false) }],
+            owner_faction: Faction::Player,
+        });
+        log::info!("capture: #132 injected in-flight player torpedo at {tpos:?}");
     }
 
     // (#90) Optional BROADSIDE_VFX_DEMO=1 injects sample combat RESULTS so the
