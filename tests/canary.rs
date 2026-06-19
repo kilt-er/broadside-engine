@@ -735,3 +735,62 @@ fn turn_based_enemy_moves_then_telegraphs_then_fires() {
     let hit = first_hit_turn.expect("#126: after closing, the enemy fires + connects");
     assert!(hit > 1, "#67: enemy cannot fire on turn 1 (must close + telegraph first); fired turn {hit}");
 }
+
+/// CORE COOLDOWN RULE (Bruce's loop): an enemy must NOT queue/telegraph a weapon
+/// that is ON cooldown — the cooldown starts on FIRE, so it can re-fire only once
+/// per (cd_max + 1) turns. (Bruce hit a re-queue-on-cooldown bug on the PLAYER
+/// side; this confirms the ENEMY AI is correctly gated.) Traced + verified: a
+/// beam_cannon (cd 3) enemy in range fires at turns 2, 7, 12 — gap 5 (>= cd+1),
+/// and during recharge it maneuvers instead of re-queuing the on-cd weapon.
+#[test]
+fn enemy_does_not_queue_an_on_cooldown_weapon() {
+    use broadside_engine::input::DemoContent;
+    let bytes = std::fs::read("assets/broadside.catalog.json").expect("catalog asset");
+    let catalog = broadside_engine::catalog::load_from_bytes(&bytes).expect("catalog parses");
+    let mut content = DemoContent::default();
+    content.register_synthetics();
+    content.install_catalog_actions(&catalog);
+
+    // Stationary player (never queues). Enemy mounts beam_cannon (catalog cd 3,
+    // band "mid" -> 2-D Near/Far) in range + bearing: enemy (2,1) Bow(S), player
+    // (2,3), dist 2 = Near. The ONLY pacing should be the cd-3 recharge. If the AI
+    // re-queued an on-cd beam_cannon the player's hull would drop every turn.
+    let cd_max = content.action("beam_cannon").expect("beam_cannon catalog action").cost.cooldown_max;
+    assert!(cd_max > 0, "beam_cannon must have a real cooldown to exercise the gate (got {cd_max})");
+    let mut player = ship_2d("p", Faction::Player, Pos::new(2, 3), 200, Facing::Bow(Dir4::N), Arc::Forward, "pulse_laser");
+    player.shield_profile = naked_shields();
+    let mut enemy = ship_2d("e", Faction::Enemy, Pos::new(2, 1), 9, Facing::Bow(Dir4::S), Arc::Forward, "beam_cannon");
+    enemy.shield_profile = naked_shields();
+    enemy.heat_max = 99; // isolate the cd gate (remove heat/lockout as a confound)
+    let mut board = board_2d(vec![player, enemy]);
+
+    let phull = |b: &broadside_engine::types::Board| b.cells.iter().flatten().find(|s| s.id == "p").map(|s| s.hull).unwrap_or(-1);
+    let ecd = |b: &broadside_engine::types::Board| b.cells.iter().flatten().find(|s| s.id == "e")
+        .and_then(|s| s.cooldowns.get("beam_cannon").copied()).unwrap_or(0);
+    let equeued_beam = |b: &broadside_engine::types::Board| b.cells.iter().flatten().find(|s| s.id == "e")
+        .map(|s| s.queue.iter().any(|a| a == "beam_cannon")).unwrap_or(false);
+
+    let mut prev = 200;
+    let mut hit_turns = Vec::new();
+    for turn in 1..=12 {
+        // INVARIANT: the AI must never have beam_cannon QUEUED while it is on cd
+        // (cd > 0). (Checked at the start of each turn, before this turn resolves.)
+        assert!(
+            !(equeued_beam(&board) && ecd(&board) > 0),
+            "turn {turn}: enemy has beam_cannon queued while it is on cooldown ({}) — re-queue-on-cd bug",
+            ecd(&board),
+        );
+        resolve_round(&mut board, &content);
+        let h = phull(&board);
+        if h < prev { hit_turns.push(turn); }
+        prev = h;
+    }
+    // Gaps between consecutive fires must be >= cd_max + 1 (the firing turn + the
+    // cd_max recharge turns). A gap of 1 would mean the cd is ignored on queue.
+    for w in hit_turns.windows(2) {
+        let gap = w[1] - w[0];
+        assert!(gap > cd_max as usize,
+            "enemy re-fired beam_cannon after only {gap} turns (cd_max {cd_max}); cooldown not respected");
+    }
+    assert!(!hit_turns.is_empty(), "sanity: the enemy should fire beam_cannon at least once");
+}
