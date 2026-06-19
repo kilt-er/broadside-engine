@@ -52,18 +52,24 @@ pub const VIRTUAL_H: u32 = 270;
 /// back to the largest integer scale that still fits (see `update_blit_uniform`).
 pub const FIXED_UPSCALE: u32 = 4;
 
+/// (#135 Bruce) The scene/background BOOT-default resolution: 640×360 (the middle
+/// [`SCENE_RES_PRESETS`] step). Bruce wants the whole-scene canvas to boot crisper
+/// than the 480×270 floor — this is the value a fresh [`Gfx`] starts at (the way
+/// 480×300 is the ship-loft boot default, #91). `;`/`'` still cycle from here.
+pub const BOOT_SCENE_W: u32 = 640;
+pub const BOOT_SCENE_H: u32 = 360;
+
 /// (#76 scene-res) The LIVE scene (offscreen) resolution, cycled by `;` / `'`.
-/// Initialized to [`VIRTUAL_W`]×[`VIRTUAL_H`] (so the default is byte-identical to
-/// the old fixed 480×270 path); [`Gfx::cycle_scene_res`] recreates the offscreen
-/// texture, view, and blit at the new size and updates these. Stored as
-/// process-global atomics rather than threaded through every signature because the
-/// renderer's free helper functions ([`crate::hud`], [`crate::background`]) need
-/// the runtime canvas size WITHOUT a `&Gfx` param — the lead's "gfx getter, no
-/// public-hud signature sweep" call. Read via [`scene_w`] / [`scene_h`]; written
-/// ONLY through [`Gfx::set_scene_size`] (constructor + cycle), which keeps them in
-/// lock-step with the actual offscreen texture.
-static SCENE_W: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(VIRTUAL_W);
-static SCENE_H: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(VIRTUAL_H);
+/// Initialized to the [`BOOT_SCENE_W`]×[`BOOT_SCENE_H`] boot default (#135);
+/// [`Gfx::cycle_scene_res`] recreates the offscreen texture, view, and blit at the
+/// new size and updates these. Stored as process-global atomics rather than threaded
+/// through every signature because the renderer's free helper functions
+/// ([`crate::hud`], [`crate::background`]) need the runtime canvas size WITHOUT a
+/// `&Gfx` param — the lead's "gfx getter, no public-hud signature sweep" call. Read
+/// via [`scene_w`] / [`scene_h`]; written ONLY through [`Gfx::set_scene_size`]
+/// (constructor + cycle), which keeps them in lock-step with the offscreen texture.
+static SCENE_W: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(BOOT_SCENE_W);
+static SCENE_H: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(BOOT_SCENE_H);
 
 /// The current LIVE scene (offscreen) WIDTH in virtual pixels. Equals
 /// [`VIRTUAL_W`] until a `;`/`'` scene-res cycle changes it. The renderer's
@@ -81,16 +87,15 @@ pub fn scene_h() -> u32 {
 }
 
 /// (#76 scene-res) The scene-resolution presets `;` / `'` step through, all 16:9.
-/// 480×270 is the MINIMUM + the boot default + the pixel-identity baseline (Bruce:
-/// 480 is the floor — the old 320×180 was dropped as too chunky); the others step
-/// UP to crisper whole-scene pixels (everything, not just ships). `'` (next) from
-/// 480 goes to 640→960→wraps; `;` (prev) from 480 wraps to 960 (the max).
-/// [`next_scene_res`] / [`prev_scene_res`] step this list, snapping an off-list
-/// current size to the 480×270 default first.
+/// 480×270 is the MINIMUM + the pixel-identity baseline (Bruce: 480 is the floor —
+/// the old 320×180 was dropped as too chunky); 640×360 is the BOOT default (#135);
+/// 960×540 is the crispest. `'` (next) from 480 goes to 640→960→wraps; `;` (prev)
+/// from 480 wraps to 960 (the max). [`next_scene_res`] / [`prev_scene_res`] step
+/// this list, snapping an off-list current size to the 480×270 floor first.
 pub const SCENE_RES_PRESETS: [(u32, u32); 3] = [(480, 270), (640, 360), (960, 540)];
 
 /// The next scene-res preset after `(w, h)` (wraps). An off-list `(w, h)` returns
-/// the 480×270 default ([`SCENE_RES_PRESETS`] middle). See [`SCENE_RES_PRESETS`].
+/// the 480×270 floor preset ([`SCENE_RES_PRESETS`][0]). See [`SCENE_RES_PRESETS`].
 pub fn next_scene_res(w: u32, h: u32) -> (u32, u32) {
     match SCENE_RES_PRESETS.iter().position(|&p| p == (w, h)) {
         Some(i) => SCENE_RES_PRESETS[(i + 1) % SCENE_RES_PRESETS.len()],
@@ -964,10 +969,10 @@ impl Gfx {
         format: wgpu::TextureFormat,
         config: wgpu::SurfaceConfiguration,
     ) -> Self {
-        // (#76 scene-res) Each fresh Gfx starts at the 480×270 default — reset the
+        // (#135 Bruce) Each fresh Gfx starts at the 640×360 boot default — reset the
         // process-global scene size so a tool/test that built a prior Gfx and
         // cycled its res doesn't leak that into this one (the statics are global).
-        Self::set_scene_size(VIRTUAL_W, VIRTUAL_H);
+        Self::set_scene_size(BOOT_SCENE_W, BOOT_SCENE_H);
         // Create the offscreen at the LIVE scene size (now the default). One helper
         // so the constructor and the live `cycle_scene_res` build an identical
         // texture.
