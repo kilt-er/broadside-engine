@@ -3850,8 +3850,8 @@ payload's `amount` lands raw, no scaling.
 **Mirrors:** `resolve.ts:254` (the cooldown/heat/status core); the shield-regen step is a
 v2 addition with no TS analog.
 **Canonical spec:** the combat model — integer-only damage + per-face depleting/recharging
-shields ([CORE_GAMEPLAY_LOOP.md](design/CORE_GAMEPLAY_LOOP.md) §Implementation; [`SHIELD`
-section of geometry2d](#srcgeometry2drs)).
+shields ([CORE_GAMEPLAY_LOOP.md](design/CORE_GAMEPLAY_LOOP.md) §Implementation; the SHIELD
+section of [`MODULES/geometry2d.md`](MODULES/geometry2d.md)).
 **Intent:** End-of-turn bookkeeping, run once per turn from `run_world_phase`. In the
 turn-based model this is the "all cooldowns tick 1" step — so it fires on **every** player
 turn-action (move / queue / dequeue-fire / wait), never on a free field-kit card.
@@ -3874,7 +3874,7 @@ it pinned (ships can die; the campaign terminates), while quiet faces recover.
    `[bow, stern, port, starboard]` order (must match `faces_mut()`): if that face is in the
    under-fire set, **skip** (paused). Otherwise refill the pool `charge` by
    `SHIELD_REGEN_PER_TURN` (a `const = 1` at resolve.rs:47), capped at `armour` — which is
-   repurposed as the pool **capacity** (see [`absorb_shield`](#srcgeometry2drs)). Integer
+   repurposed as the pool **capacity** (see [`absorb_shield`](MODULES/geometry2d.md)). Integer
    only (#104). A bow that didn't get shot recovers 1 toward its cap each turn; a flank
    under continuous fire stays cracked.
 5. Tick all statuses via `tick_statuses` (line 1001). HullBreach deals 1 damage per active
@@ -3888,7 +3888,7 @@ it pinned (ships can die; the campaign terminates), while quiet faces recover.
 **Drift note — shield regen is the #103/#104 combat overhaul, not in TS.** The TS
 `end_of_turn` had no shields-as-pools concept (it used flat `armour` subtraction at hit
 time). The v2 model moves armor into a per-face depleting pool (`charge`) that regenerates
-here. The two halves are: [`absorb_shield`](#srcgeometry2drs) soaks the hit at damage time;
+here. The two halves are: [`absorb_shield`](MODULES/geometry2d.md) soaks the hit at damage time;
 this function refills the pool over turns. Tunable knobs: `SHIELD_REGEN_PER_TURN` (here) and
 the per-face capacities in `default_shield_profile` / the catalog.
 

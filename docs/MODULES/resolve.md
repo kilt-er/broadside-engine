@@ -37,17 +37,27 @@ Three things to know up front:
 
 ---
 
-## The four-phase round
+## The turn (chess model) and its four phases
 
-`resolve_round(board, content)` runs one full round, composed as
-`fire_player_queue` (phase 1) + `run_world_phase` (phases 2-4):
+> **Canonical spec:** [`docs/design/CORE_GAMEPLAY_LOOP.md`](../design/CORE_GAMEPLAY_LOOP.md).
+> Broadside is **turn-based like chess — no real-time clock.** A turn happens when the
+> player takes one of four turn-actions (**move / queue / dequeue-fire / wait**); the
+> instant they do, every enemy takes one action and every cooldown ticks 1. Field-kit
+> cards (5/6/7) are the one **free** action (no turn). A real-time loop was built in #124
+> and **reverted in #126** — and some `run_world_phase`/`tick_enemy`/`tick_world` source
+> comments still describe that reverted bin; treat them as historical.
+
+`resolve_round(board, content)` runs one full turn (the **headless / test** entry point),
+composed as `fire_player_queue` (phase 1) + `run_world_phase` (phases 2-4). The **live bin**
+calls `run_world_phase` once per turn-action directly (and `fire_player_queue` only on
+Space) — same phases, split per input:
 
 | Phase | What                                                                          |
 |-------|-------------------------------------------------------------------------------|
-| 1     | Player phase — find the player by faction scan, `fire_player_queue` on their cell. |
-| 2     | Ordnance phase — snapshot projectile ids; advance each by id-lookup. **Opens its own chain-kill window** (`destroys_this_window = 0`). |
-| 3     | Enemy phase — for each enemy in initiative order: **fire-then-decide** (see below). |
-| 4     | End of turn — tick cooldowns, dissipate heat, clear lockout, tick statuses, emit `OnTurnEnd`. |
+| 1     | Player phase — find the player by faction scan, `fire_player_queue` on their cell (live: only on `CommitTurn`/Space). |
+| 2     | Ordnance phase (`advance_ordnance`) — snapshot projectile ids; advance each by id-lookup. **Opens its own chain-kill window** (`destroys_this_window = 0`). |
+| 3     | Enemy phase (`tick_enemy` per enemy) — for each enemy in initiative order: **fire-then-decide** (see below). This is the canonical "enemies queue before they fire." |
+| 4     | End of turn (`end_of_turn`) — tick cooldowns, dissipate heat, clear lockout, **regen per-face shields (under-fire-pause)**, tick statuses, emit `OnTurnEnd`. |
 
 > **Phase 3 is FIRE-THEN-DECIDE (telegraph-one-turn-ahead, #67) — NOT
 > decide-then-fire.** Per enemy in telegraphed initiative order: (a) **FIRE** the
@@ -74,31 +84,35 @@ the hook, that's a future-work item; today it's intentionally omitted.
 
 ## The damage pipeline (the load-bearing sequence)
 
-`apply_damage(target_cell, raw, atk_cell, weapon, board, content)`:
+The live 2-D path is **`apply_damage_2d(target_cell, raw, atk_pos, weapon, board, content)`**
+(`resolve.rs:1431`). **All math is INTEGER** (#104 — no float in the damage path):
 
 ```
    raw damage
      │
      ▼
-1. band falloff
-     │   if ANY DAMAGE effect on the weapon has band_falloff: Some(false),
-     │   step is skipped (action-level predicate, not per-effect)
+1. band falloff  (geometry2d::band_falloff(raw, band))  — INTEGER, ABSOLUTE
+     │   flat penalty per band: Adjacent -0, Near -1, Far -2;
+     │   floored at >=1 (a legal in-band shot never falls to 0 from falloff)
+     │   and capped at raw. optimal_band IGNORED (#44/#95).
+     │   Skipped if ANY DAMAGE effect on the weapon has band_falloff: Some(false)
+     │   (action-level predicate, not per-effect).
      ▼
 2. subsystem modifiers
-     │   apply_modifiers(dmg, target, band, board, content)
-     │   delegates to content.damage_modifier; default impl returns 0
-     │   result is clamped to max(0, dmg + bonus)
+     │   apply_modifiers(dmg, atk_pos, band, board, content)
+     │   delegates to content.damage_modifier (the ATTACKER's subsystems);
+     │   default impl returns 0; result clamped to max(0, dmg + bonus)
      ▼
 3. target-lock 2x
      │   if target carries TargetLock status: dmg *= 2 and the status is consumed
-     │   (swap_remove the matching entry)
      ▼
-4. directional shield
-     │   incoming_from = direction_to(target.cell, atk_cell)
-     │   zone = facing_zone(target.orientation, incoming_from)
-     │   absorb_shield(face_mut(zone), dmg)
-     │     - charge > 0: decrement, return 0
-     │     - else:       (dmg - armour).max(0)
+4. directional shield  (per-face DEPLETING POOL, #103)
+     │   incoming_from = direction_to(target.pos, atk_pos)   // back toward the gun
+     │   zone = geometry2d::facing_zone(target.facing, incoming_from)  // 8-way
+     │   absorb_shield(face_mut(zone), dmg):
+     │     soak = dmg.min(charge.max(0)); charge -= soak;     // pool depletes
+     │     overflow = (dmg - soak).max(0)  -> reaches hull    // NO flat armour
+     │   (armour is repurposed as the pool CAPACITY; pool regens in end_of_turn)
      ▼
 5. hull subtraction + emit + destroy check
      │   target.hull -= final_dmg
@@ -108,10 +122,15 @@ the hook, that's a future-work item; today it's intentionally omitted.
    resolved
 ```
 
-**This order is invariant.** Every numeric modifier in the game plugs into one of
-these slots; reordering would change observable behaviour. If you add a new balance
-lever, decide which slot it belongs to and document it in the slot, not as a new
-slot.
+**This order is invariant** (reviewer V5, `a61db55`). Every numeric modifier in the game
+plugs into one of these slots; reordering would change observable behaviour. If you add a
+new balance lever, decide which slot it belongs to.
+
+> **Drift — legacy 1-D `apply_damage`.** The original `apply_damage` (`resolve.rs:1332`)
+> still exists, using the 1-D `geometry::band_falloff` (a distance-from-optimal **float**
+> curve) and `facing_zone(orientation, …)` over the lane, with the OLD flat-armour
+> `(dmg - armour).max(0)` shield. It is the **pre-2-D** path; live combat runs
+> `apply_damage_2d`. Both share the same five-slot order.
 
 ---
 
@@ -119,9 +138,9 @@ slot.
 
 > **Naming note (post-refactor).** What this section calls `execute_queue` is now
 > split in the source: the queue-firing seam is `fire_player_queue(ship_id, board,
-> content)` (src/resolve.rs:212, the former `executeQueue` body — used for player
+> content)` (src/resolve.rs:242, the former `executeQueue` body — used for player
 > *and* enemy), and the per-action gate + effect application is factored into
-> `run_action(...)` (src/resolve.rs:346). `resolve_round` (src/resolve.rs:183) now
+> `run_action(...)` (src/resolve.rs:563). `resolve_round` (src/resolve.rs:203) now
 > just composes `fire_player_queue` (phase 1) + `run_world_phase` (phases 2-4). The
 > pseudocode below still describes the combined behavior faithfully; see the
 > [`fire_player_queue` / `run_action` walkthrough](../LINE_BY_LINE.md#srcresolvers)
