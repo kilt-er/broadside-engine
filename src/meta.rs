@@ -161,7 +161,10 @@ impl MetaProgression {
     /// future between-encounter purchase UI's "show available
     /// subsystems" query.
     pub fn available_subsystems(&self) -> HashSet<String> {
-        let mut out: HashSet<String> = STARTER_SUBSYSTEMS.iter().map(std::string::ToString::to_string).collect();
+        let mut out: HashSet<String> = STARTER_SUBSYSTEMS
+            .iter()
+            .map(std::string::ToString::to_string)
+            .collect();
         out.extend(self.unlocked_subsystems.iter().cloned());
         out
     }

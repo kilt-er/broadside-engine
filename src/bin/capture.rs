@@ -229,7 +229,9 @@ fn main() {
         3
     } else if std::env::var("BROADSIDE_GRID_STRAIGHT").is_ok_and(|v| v != "0") {
         2
-    } else { u32::from(std::env::var("BROADSIDE_GRID_STRETCH").is_ok_and(|v| v != "0")) };
+    } else {
+        u32::from(std::env::var("BROADSIDE_GRID_STRETCH").is_ok_and(|v| v != "0"))
+    };
     while broadside_engine::gfx::grid_mode() != target_mode {
         broadside_engine::gfx::cycle_grid_mode();
     }
@@ -333,7 +335,8 @@ fn main() {
             .cells
             .iter()
             .flatten()
-            .find(|s| s.faction == Faction::Player).map_or_else(|| Pos::new(2, 3), |s| s.pos);
+            .find(|s| s.faction == Faction::Player)
+            .map_or_else(|| Pos::new(2, 3), |s| s.pos);
         board.threats.push(Threat {
             pos: ppos,
             kind: ThreatKind::Damage { amount: 9 }, // ≥ hull ⇒ LETHAL fill (brightest)
@@ -376,7 +379,8 @@ fn main() {
             .cells
             .iter()
             .flatten()
-            .find(|s| s.faction == Faction::Player).map_or_else(|| Pos::new(2, 3), |s| s.pos);
+            .find(|s| s.faction == Faction::Player)
+            .map_or_else(|| Pos::new(2, 3), |s| s.pos);
         let mid = COLS / 2;
         let tgt = Pos::new(mid, 0); // centre back-row enemy
         board.fire_events.push(FireEvent {

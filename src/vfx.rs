@@ -581,7 +581,10 @@ impl ParticlePool {
             });
         }
         // Advance the seed so successive bursts differ.
-        self.seed = self.seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+        self.seed = self
+            .seed
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1);
     }
 
     /// Integrate `pos += vel*dt`, age every particle by `dt`, drop the expired.

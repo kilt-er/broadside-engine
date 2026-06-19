@@ -971,10 +971,9 @@ pub fn generate_sector(
 ) -> Sector {
     // Seed from the node string + patrol tier so each sector's layout is
     // stable per run-state but varies across sectors / difficulties.
-    let node_seed = sector_def
-        .node
-        .bytes()
-        .fold(0u32, |acc, b| acc.wrapping_mul(31).wrapping_add(u32::from(b)));
+    let node_seed = sector_def.node.bytes().fold(0u32, |acc, b| {
+        acc.wrapping_mul(31).wrapping_add(u32::from(b))
+    });
     let base_seed = node_seed
         .wrapping_mul(0x9E37_79B9)
         .wrapping_add(u32::from(patrol_tier));

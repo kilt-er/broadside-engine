@@ -386,7 +386,9 @@ fn normalize_action_ref(
     {
         return v;
     }
-    if let Some(id) = action_name_to_id.get(&name.to_lowercase()) { Value::String(id.clone()) } else {
+    if let Some(id) = action_name_to_id.get(&name.to_lowercase()) {
+        Value::String(id.clone())
+    } else {
         eprintln!(
             "[catalog_canonical] class `{class_id}` {field}: action \
              display-name `{name}` has no matching id in the catalog; \

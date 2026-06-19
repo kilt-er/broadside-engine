@@ -734,9 +734,7 @@ fn run_action(
         Vec::new()
     };
 
-    let passes = if WeaponMod::of(action)
-        .is_some_and(WeaponMod::applies_effects_twice)
-    {
+    let passes = if WeaponMod::of(action).is_some_and(WeaponMod::applies_effects_twice) {
         2
     } else {
         1
@@ -1974,7 +1972,11 @@ fn apply_on_hit_mod(
 
 /// All live ships on the board, cloned for snapshot iteration.
 pub fn ships_of(board: &Board) -> Vec<Ship> {
-    board.cells.iter().filter_map(std::clone::Clone::clone).collect()
+    board
+        .cells
+        .iter()
+        .filter_map(std::clone::Clone::clone)
+        .collect()
 }
 
 /// Cells of every enemy ship, in lane order. The TS `enemyInitiative` says
@@ -2139,13 +2141,11 @@ fn tick_statuses(cell: usize, board: &mut Board, content: &dyn Content) {
 /// Does the ship at `cell` skip its turn this round? Mirrors `skipsTurn` in
 /// `resolve.ts`. Today that's just `SystemsOffline`.
 pub fn skips_turn(board: &Board, cell: usize) -> bool {
-    board.cells[cell]
-        .as_ref()
-        .is_some_and(|s| {
-            s.statuses
-                .iter()
-                .any(|s| s.kind == StatusKind::SystemsOffline)
-        })
+    board.cells[cell].as_ref().is_some_and(|s| {
+        s.statuses
+            .iter()
+            .any(|s| s.kind == StatusKind::SystemsOffline)
+    })
 }
 
 /// Destroy the ship at `cell`. Mirrors `destroy` in `resolve.ts`. Reactor-

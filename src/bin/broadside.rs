@@ -1397,7 +1397,9 @@ impl ApplicationHandler for App {
         match gfx.install_enemy_glb(AEGIS_GLB) {
             Ok(()) => log::info!("loft: enemy Aegis hull installed from Aegis.glb"),
             Err(e) => {
-                log::warn!("loft: enemy Aegis.glb import failed ({e}); enemies fall back to CAD/2D");
+                log::warn!(
+                    "loft: enemy Aegis.glb import failed ({e}); enemies fall back to CAD/2D"
+                );
             }
         }
         self.window = Some(window);

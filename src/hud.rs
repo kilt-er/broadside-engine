@@ -1551,7 +1551,8 @@ fn push_ship_2d(
     // frame clock. Tiny amplitude — it "breathes", it doesn't drift.
     let phase = time_s * IDLE_BOB_HZ * std::f32::consts::TAU + ship_phase_offset(&ship.id);
     center[1] += phase.sin() * IDLE_BOB_PX * q.depth_scale;
-    let facing_yaw_deg = vis.map_or_else(|| loft_facing_ground_yaw(ship.facing), |v| v.facing_yaw_deg);
+    let facing_yaw_deg =
+        vis.map_or_else(|| loft_facing_ground_yaw(ship.facing), |v| v.facing_yaw_deg);
     // (#80) The cell's NEAR (bottom) edge screen-y — the loft hero hull seats its
     // base here so it FOLLOWS the cell up-lane on a move (was pinned to the HUD
     // band, which made the hull "drop off the grid" on any forward step).
@@ -3284,10 +3285,7 @@ pub fn push_enemy_id_badges_2d(
         }
         let q = grid_cell_quad(ship.pos, cfg);
         // Track the sliding hull: use the tweened visual centre when present.
-        let center = tween
-            .visual
-            .get(&ship.id)
-            .map_or(q.center, |v| v.center);
+        let center = tween.visual.get(&ship.id).map_or(q.center, |v| v.center);
         let depth = tween
             .visual
             .get(&ship.id)
@@ -4428,12 +4426,7 @@ pub fn push_between_encounter_overlay(out: &mut Vec<DrawCommand>, choice: Betwee
             let banner = format!("ENCOUNTER COMPLETE - SECTOR {sector_num}");
             push_centered_banner(out, &banner, center_y - 60.0, pixel);
             // Salvage row: "SALVAGE: N" between banner and choices.
-            push_centered_banner(
-                out,
-                &format!("SALVAGE: {salvage}"),
-                center_y - 15.0,
-                pixel,
-            );
+            push_centered_banner(out, &format!("SALVAGE: {salvage}"), center_y - 15.0, pixel);
             // Choice row: "1 REPAIR    2 UPGRADE    3 CONTINUE" at y_center + 35.
             push_centered_banner(
                 out,

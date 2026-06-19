@@ -143,17 +143,15 @@ fn queue_player_action(board: &mut broadside_engine::types::Board, content: &dyn
     };
 
     // FIRE-GATE (single source): does the weapon already bear on a hostile?
-    let bears_on_hostile = content
-        .action(&weapon_id)
-        .is_some_and(|w| {
-            resolve_targeting_2d(w, board, ppos).iter().any(|&p| {
-                board
-                    .cells
-                    .get(p.to_index())
-                    .and_then(|c| c.as_ref())
-                    .is_some_and(|s| s.faction != Faction::Player)
-            })
-        });
+    let bears_on_hostile = content.action(&weapon_id).is_some_and(|w| {
+        resolve_targeting_2d(w, board, ppos).iter().any(|&p| {
+            board
+                .cells
+                .get(p.to_index())
+                .and_then(|c| c.as_ref())
+                .is_some_and(|s| s.faction != Faction::Player)
+        })
+    });
 
     let action = if bears_on_hostile {
         weapon_id

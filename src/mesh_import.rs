@@ -149,7 +149,8 @@ impl ImportedShip {
         for g in &self.group_ranges {
             let color = self
                 .materials
-                .get(g.material).map_or_else(|| MeshMaterial::default().color, |m| m.color);
+                .get(g.material)
+                .map_or_else(|| MeshMaterial::default().color, |m| m.color);
             let end = (g.start + g.len).min(vcount);
             for c in &mut colors[g.start.min(vcount)..end] {
                 *c = color;

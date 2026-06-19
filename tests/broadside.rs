@@ -259,10 +259,7 @@ fn misfacing_broadside_enemy_rotates_flank_to_bear_then_fires() {
         .expect("enemy alive")
         .facing;
     assert!(
-        matches!(
-            ef,
-            Facing::Bow(Dir4::E | Dir4::W) | Facing::Broadside(_)
-        ),
+        matches!(ef, Facing::Bow(Dir4::E | Dir4::W) | Facing::Broadside(_)),
         "the enemy rotated to a flank-bearing stance; ended at {ef:?}",
     );
 }
