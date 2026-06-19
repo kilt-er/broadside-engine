@@ -1689,19 +1689,19 @@ mod tests {
     /// (#155 regression) The player lane-aim must TRACK the vanishing point as the
     /// grid TILTS up via G/T — Bruce: it over-rotated, the bisector drifting off the
     /// VP the more the grid pitched. The bug was the aim cfg (VP) NOT being pitched
-    /// while aim_at WAS, plus psi using the fixed 20deg loft pitch instead of the
-    /// live one. With BOTH applied (cfg.with_pitch(t) feeding the VP + the live loft
+    /// while `aim_at` WAS, plus psi using the fixed 20deg loft pitch instead of the
+    /// live one. With BOTH applied (`with_pitch(t)` feeding the VP + the live loft
     /// pitch into psi, exactly as gfx does), the off-centre bow must (1) stay banked
     /// toward the VP at every pitch step, never flip away, and (2) NOT grow more
     /// extreme as the grid flattens — the lane-aim convergence must DECREASE toward
     /// top-down (columns parallelise → VP recedes → psi → ~0), not over-rotate.
     #[test]
     fn lane_aim_tracks_vp_as_grid_tilts_up() {
-        use crate::grid::{Dir4, Facing, Pos, COLS, ROWS};
+        use crate::grid::{Pos, COLS, ROWS};
         use crate::projector::{grid_cell_quad, vanishing_point, ProjectorConfig};
 
         let row = ROWS - 1; // the player's front row
-        let facing = Facing::Bow(Dir4::N); // up-lane: lane-aim is the whole story
+                            // Facing N (up-lane): the lane-aim convergence is the whole story; yaw 0.
         let facing_yaw = 0.0_f32;
         // Live loft pitch across the arc (mirrors gfx::loft_pitch_deg: 20 -> 82).
         let loft_pitch =
