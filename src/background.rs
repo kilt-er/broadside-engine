@@ -47,6 +47,16 @@ use serde::Deserialize;
 /// the same render target.
 const LAYER_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 
+/// (#137 Bruce, TEMPORARY) Blank the N NEAREST parallax layers (the biggest,
+/// fastest-sliding bands closest to the camera — the ones that make the
+/// placeholder background read "too busy"). A clean, easily-revertible toggle: the
+/// layer SYSTEM is untouched (textures still load, the queue is intact) — `draw`
+/// just SKIPS the nearest `N` visible layers (the last `N` of the far→near
+/// `visible_layers` list). Set to `0` to restore the full background once real
+/// level art exists. Bruce can confirm via capture whether the NEAR pair is the
+/// right two (vs the far end — flip the skip to `&draws[..N]` if he meant far).
+const BLANK_NEAR_LAYERS: usize = 2;
+
 // ---------------------------------------------------------------------------
 // Parallax parameters (spec §2). Defaults match the spec table, but the loader
 // overwrites every field from the manifest — never trust these at runtime once
@@ -525,8 +535,13 @@ impl Background {
         // reuse a single UBO across draws within one pass (the writes would all
         // land before the pass executes), so allocate a small uniform + bind
         // group per visible layer for this frame. At ≤5 layers this is trivial.
+        // (#137 Bruce TEMP) De-clutter: the nearest N layers are the LAST N of the
+        // far→near `draws`. Draw only the rest. Layer system intact (textures load,
+        // queue full); this just skips the front pair. `BLANK_NEAR_LAYERS = 0` draws
+        // all; flip to `&draws[BLANK_NEAR_LAYERS..]` if Bruce meant the FAR pair.
+        let keep_to = draws.len().saturating_sub(BLANK_NEAR_LAYERS);
         let mut per_layer: Vec<(wgpu::Buffer, wgpu::BindGroup)> = Vec::with_capacity(draws.len());
-        for d in &draws {
+        for d in &draws[..keep_to] {
             // Half-extent of the scaled 960×270 canvas about the frame center.
             let half_w = self.canvas_w * d.scale * 0.5;
             let half_h = self.canvas_h * d.scale * 0.5;
