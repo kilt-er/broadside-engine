@@ -1419,7 +1419,8 @@ fn push_ship_2d(
             // (Bruce: "what is that blob?"). B: width = a bigger fraction of the
             // near-edge with a higher min floor, so even a back-row enemy is a
             // legible silhouette. Height from the loft aspect (#74 no squash).
-            let w = (near_edge_width * 1.35).max(18.0);
+            // (#115 RULING) Bruce chose 1.5x — bumped from the 1.35x first pass.
+            let w = (near_edge_width * 1.5).max(18.0);
             let h = w / LOFT_TEXTURE_ASPECT;
             let (l, r) = (center[0] - w * 0.5, center[0] + w * 0.5);
             let (t, b) = (center[1] - h * 0.5, center[1] + h * 0.5);
