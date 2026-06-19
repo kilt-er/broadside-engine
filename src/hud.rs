@@ -133,6 +133,21 @@ const BOW_MARK_PLAYER: [f32; 4] = [1.0, 0.91, 0.62, 1.0]; // warm gold-white (vs
 // presents a readable 3/4 silhouette instead of an edge-on wedge that reads as a
 // blob — still clearly oncoming toward the player.
 const ENEMY_THREE_QUARTER_YAW_DEG: f32 = 28.0;
+// (#118) Idle BOB: a gentle vertical sine on a resting ship so the scene feels
+// alive. Low amplitude + slow Hz — it breathes, it doesn't drift. Per-ship phase
+// offset (ship_phase_offset) keeps the fleet from bobbing in lockstep.
+const IDLE_BOB_PX: f32 = 3.5;
+const IDLE_BOB_HZ: f32 = 0.16;
+
+/// (#118) A deterministic per-ship bob phase offset (radians) from the ship id, so
+/// ships idle out of sync. A tiny FNV-ish fold of the id bytes mapped into [0,TAU).
+fn ship_phase_offset(id: &str) -> f32 {
+    let mut h: u32 = 2166136261;
+    for b in id.bytes() {
+        h = (h ^ b as u32).wrapping_mul(16777619);
+    }
+    (h % 1000) as f32 / 1000.0 * std::f32::consts::TAU
+}
 
 // (#62) Player engine glow — the reference ship's signature read: a cluster of
 // bright cyan thruster lights at the stern (toward the camera). Bright core +
@@ -456,7 +471,9 @@ pub fn compose_scene_2d_with(
     cfg: &ProjectorConfig,
     sprites: &dyn SpriteRegistry,
 ) -> Vec<DrawCommand> {
-    compose_scene_2d_tweened(board, cfg, sprites, &Tween2d::default())
+    // time_s = 0 → idle bob at rest phase (the static/capture/test path is
+    // deterministic; the live bin drives the animated bob via its frame clock).
+    compose_scene_2d_tweened(board, cfg, sprites, &Tween2d::default(), 0.0)
 }
 
 /// Like [`compose_scene_2d_with`] but applies per-ship visual tween overrides
@@ -471,6 +488,7 @@ pub fn compose_scene_2d_tweened(
     cfg: &ProjectorConfig,
     sprites: &dyn SpriteRegistry,
     tween: &Tween2d,
+    time_s: f32,
 ) -> Vec<DrawCommand> {
     let mut out = Vec::with_capacity(256);
     push_grid_2d(&mut out, cfg);
@@ -493,7 +511,7 @@ pub fn compose_scene_2d_tweened(
     let mut ships: Vec<&Ship> = board.cells.iter().flatten().collect();
     ships.sort_by_key(|s| s.pos.row);
     for ship in &ships {
-        push_ship_2d(&mut out, ship, cfg, sprites, tween.visual.get(&ship.id));
+        push_ship_2d(&mut out, ship, cfg, sprites, tween.visual.get(&ship.id), time_s);
     }
     // Per-ship overlays LAST, so health bars + queue tiles sit on top of every
     // hull (incl. a nearer ship that overlaps a farther one). Same far→near order.
@@ -1254,6 +1272,7 @@ fn push_ship_2d(
     cfg: &ProjectorConfig,
     sprites: &dyn SpriteRegistry,
     vis: Option<&VisualShip2d>,
+    time_s: f32,
 ) {
     let q = grid_cell_quad(ship.pos, cfg);
     let (fill, stroke) = if ship.faction == Faction::Player {
@@ -1263,8 +1282,16 @@ fn push_ship_2d(
     };
     // (#79) Mid-move/turn: use the bin's interpolated render position/facing so
     // the ship SLIDES + ROTATES; absent ⇒ snap to the logical cell.
-    let center = vis.map(|v| v.center).unwrap_or(q.center);
+    let mut center = vis.map(|v| v.center).unwrap_or(q.center);
     let near_edge_width = vis.map(|v| v.near_edge_width).unwrap_or_else(|| q.near_edge_width());
+    // (#118) Gentle IDLE BOB so a resting ship reads as alive (Bruce). A small
+    // vertical sine on a per-ship phase offset (so the fleet doesn't bob in
+    // lockstep), scaled by the cell's depth so a far ship bobs less — keeps it
+    // proportional in perspective. `time_s` is 0 on the static/capture/test path,
+    // so this is a no-op there (deterministic); the live bin drives it off its
+    // frame clock. Tiny amplitude — it "breathes", it doesn't drift.
+    let phase = time_s * IDLE_BOB_HZ * std::f32::consts::TAU + ship_phase_offset(&ship.id);
+    center[1] += phase.sin() * IDLE_BOB_PX * q.depth_scale;
     let depth_scale = vis.map(|v| v.depth_scale).unwrap_or(q.depth_scale);
     let facing_yaw_deg = vis
         .map(|v| v.facing_yaw_deg)
@@ -4334,7 +4361,7 @@ mod tests {
             s
         });
         let plain = compose_scene_2d_with(&board, &cfg, &EmptySpriteRegistry);
-        let tweened = compose_scene_2d_tweened(&board, &cfg, &EmptySpriteRegistry, &Tween2d::default());
+        let tweened = compose_scene_2d_tweened(&board, &cfg, &EmptySpriteRegistry, &Tween2d::default(), 0.0);
         assert_eq!(plain.len(), tweened.len(), "empty Tween2d must not change the draw list");
     }
 

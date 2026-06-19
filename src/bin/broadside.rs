@@ -1601,6 +1601,7 @@ impl ApplicationHandler for App {
                     &scene_cfg,
                     &*gfx,
                     &scene_tween,
+                    self.frame_clock,
                 );
                 // In-game salvage counter (top-right) + controls legend
                 // (bottom-left) — both screen-space, independent of the board
