@@ -35,7 +35,11 @@ fn broadside_gun(id: &str, raw: i32) -> Action {
         id: id.into(),
         name: id.into(),
         archetype: WeaponArchetype::Broadside,
-        cost: ActionCost { heat: 1, cooldown_max: 0, advances_turn: true },
+        cost: ActionCost {
+            heat: 1,
+            cooldown_max: 0,
+            advances_turn: true,
+        },
         targeting: Targeting {
             range_band: vec![Range::Adjacent, Range::Near, Range::Far],
             optimal_range: Range::Adjacent,
@@ -46,7 +50,10 @@ fn broadside_gun(id: &str, raw: i32) -> Action {
             facing_relative: true,
             hits_all: false,
         },
-        effects: vec![Effect::DAMAGE { amount: raw, band_falloff: Some(false) }],
+        effects: vec![Effect::DAMAGE {
+            amount: raw,
+            band_falloff: Some(false),
+        }],
         r#mod: None,
         icon: None,
     }
@@ -58,7 +65,9 @@ struct BroadsideContent {
 }
 impl BroadsideContent {
     fn new(actions: Vec<Action>) -> Self {
-        BroadsideContent { actions: actions.into_iter().map(|a| (a.id.clone(), a)).collect() }
+        BroadsideContent {
+            actions: actions.into_iter().map(|a| (a.id.clone(), a)).collect(),
+        }
     }
 }
 impl Content for BroadsideContent {
@@ -85,9 +94,25 @@ fn player_broadside_bears_up_the_column_and_hits() {
     // N flank ray (distance 2 = Near, in band) -> the player's broadside hits it.
     let player_pos = Pos::new(2, 3);
     let enemy_pos = Pos::new(2, 1);
-    let mut player = ship_2d("p", Faction::Player, player_pos, 30, Facing::Bow(Dir4::E), Arc::BroadsideArc, "broadside");
+    let mut player = ship_2d(
+        "p",
+        Faction::Player,
+        player_pos,
+        30,
+        Facing::Bow(Dir4::E),
+        Arc::BroadsideArc,
+        "broadside",
+    );
     player.queue = vec!["broadside".into()];
-    let mut enemy = ship_2d("e", Faction::Enemy, enemy_pos, 6, Facing::Bow(Dir4::N), Arc::Forward, "noop");
+    let mut enemy = ship_2d(
+        "e",
+        Faction::Enemy,
+        enemy_pos,
+        6,
+        Facing::Bow(Dir4::N),
+        Arc::Forward,
+        "noop",
+    );
     enemy.shield_profile = naked_shields();
     let mut board = board_2d(vec![player, enemy]);
     let content = BroadsideContent::new(vec![broadside_gun("broadside", 4)]);
@@ -114,19 +139,40 @@ fn two_broadside_ships_on_a_column_trade_flank_shots() {
     // PRIOR decide — so to see the enemy's return shot land we run a second round.
     let player_pos = Pos::new(2, 3);
     let enemy_pos = Pos::new(2, 1);
-    let mut player = ship_2d("p", Faction::Player, player_pos, 30, Facing::Bow(Dir4::E), Arc::BroadsideArc, "pbroad");
+    let mut player = ship_2d(
+        "p",
+        Faction::Player,
+        player_pos,
+        30,
+        Facing::Bow(Dir4::E),
+        Arc::BroadsideArc,
+        "pbroad",
+    );
     player.shield_profile = naked_shields();
-    let mut enemy = ship_2d("e", Faction::Enemy, enemy_pos, 30, Facing::Bow(Dir4::E), Arc::BroadsideArc, "ebroad");
+    let mut enemy = ship_2d(
+        "e",
+        Faction::Enemy,
+        enemy_pos,
+        30,
+        Facing::Bow(Dir4::E),
+        Arc::BroadsideArc,
+        "ebroad",
+    );
     enemy.shield_profile = naked_shields();
     let mut board = board_2d(vec![player, enemy]);
-    let content = BroadsideContent::new(vec![broadside_gun("pbroad", 4), broadside_gun("ebroad", 3)]);
+    let content =
+        BroadsideContent::new(vec![broadside_gun("pbroad", 4), broadside_gun("ebroad", 3)]);
 
     // Round 1: player fires (enemy 30 -> 26); enemy only telegraphs this phase.
     if let Some(s) = board.cells[player_pos.to_index()].as_mut() {
         s.queue = vec!["pbroad".into()];
     }
     resolve_round(&mut board, &content);
-    assert_eq!(hull_at(&board, enemy_pos), 26, "round 1: player broadside lands on the enemy (30 -> 26)");
+    assert_eq!(
+        hull_at(&board, enemy_pos),
+        26,
+        "round 1: player broadside lands on the enemy (30 -> 26)"
+    );
 
     // Round 2: the enemy fires the broadside it telegraphed in round 1 -> the
     // player (on the enemy's S flank) takes its return shot.
@@ -154,9 +200,25 @@ fn misfacing_broadside_enemy_rotates_flank_to_bear_then_fires() {
     // bears, THEN it fires. Player at (2,3), naked so the hit is observable.
     let player_pos = Pos::new(2, 3);
     let enemy_pos = Pos::new(2, 1);
-    let mut player = ship_2d("p", Faction::Player, player_pos, 99, Facing::Bow(Dir4::N), Arc::Forward, "noop");
+    let mut player = ship_2d(
+        "p",
+        Faction::Player,
+        player_pos,
+        99,
+        Facing::Bow(Dir4::N),
+        Arc::Forward,
+        "noop",
+    );
     player.shield_profile = naked_shields();
-    let enemy = ship_2d("e", Faction::Enemy, enemy_pos, 30, Facing::Bow(Dir4::S), Arc::BroadsideArc, "ebroad");
+    let enemy = ship_2d(
+        "e",
+        Faction::Enemy,
+        enemy_pos,
+        30,
+        Facing::Bow(Dir4::S),
+        Arc::BroadsideArc,
+        "ebroad",
+    );
     let mut board = board_2d(vec![player, enemy]);
     let content = BroadsideContent::new(vec![broadside_gun("ebroad", 3)]);
 
@@ -192,9 +254,15 @@ fn misfacing_broadside_enemy_rotates_flank_to_bear_then_fires() {
 
     // And the enemy ended on a facing whose flank actually bears (Bow(E) or
     // Bow(W)) — it rotated to broadside, it didn't just sit Bow(S).
-    let ef = board.cells[enemy_pos.to_index()].as_ref().expect("enemy alive").facing;
+    let ef = board.cells[enemy_pos.to_index()]
+        .as_ref()
+        .expect("enemy alive")
+        .facing;
     assert!(
-        matches!(ef, Facing::Bow(Dir4::E) | Facing::Bow(Dir4::W) | Facing::Broadside(_)),
+        matches!(
+            ef,
+            Facing::Bow(Dir4::E) | Facing::Bow(Dir4::W) | Facing::Broadside(_)
+        ),
         "the enemy rotated to a flank-bearing stance; ended at {ef:?}",
     );
 }

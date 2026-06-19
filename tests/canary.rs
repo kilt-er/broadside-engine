@@ -57,7 +57,11 @@ fn beam(id: &str, raw: i32) -> Action {
         id: id.into(),
         name: id.into(),
         archetype: WeaponArchetype::Beam,
-        cost: ActionCost { heat: 1, cooldown_max: 0, advances_turn: true },
+        cost: ActionCost {
+            heat: 1,
+            cooldown_max: 0,
+            advances_turn: true,
+        },
         targeting: Targeting {
             range_band: vec![grid::Range::Adjacent, grid::Range::Near, grid::Range::Far],
             optimal_range: grid::Range::Adjacent,
@@ -68,7 +72,10 @@ fn beam(id: &str, raw: i32) -> Action {
             facing_relative: true,
             hits_all: false,
         },
-        effects: vec![Effect::DAMAGE { amount: raw, band_falloff: Some(false) }],
+        effects: vec![Effect::DAMAGE {
+            amount: raw,
+            band_falloff: Some(false),
+        }],
         r#mod: None,
         icon: None,
     }
@@ -84,7 +91,10 @@ struct CanaryContent {
 }
 impl CanaryContent {
     fn new(pc_raw: i32, ai_raw: i32) -> Self {
-        CanaryContent { pc_beam: beam("pc_beam", pc_raw), ai_beam: beam("ai_beam", ai_raw) }
+        CanaryContent {
+            pc_beam: beam("pc_beam", pc_raw),
+            ai_beam: beam("ai_beam", ai_raw),
+        }
     }
 }
 impl Content for CanaryContent {
@@ -151,7 +161,12 @@ fn queue_player_action(board: &mut broadside_engine::types::Board, content: &dyn
         weapon_id
     } else if epos.col != ppos.col {
         // Wrong column → strafe to line up the enemy's column.
-        if epos.col < ppos.col { SYNTHETIC_MOVE_LEFT } else { SYNTHETIC_MOVE_RIGHT }.to_string()
+        if epos.col < ppos.col {
+            SYNTHETIC_MOVE_LEFT
+        } else {
+            SYNTHETIC_MOVE_RIGHT
+        }
+        .to_string()
     } else {
         // Same column but can't fire (out of band / facing away) → close N
         // toward the back-row enemies.
@@ -164,11 +179,18 @@ fn queue_player_action(board: &mut broadside_engine::types::Board, content: &dyn
 }
 
 fn enemies_left(b: &broadside_engine::types::Board) -> usize {
-    b.cells.iter().flatten().filter(|s| s.faction == Faction::Enemy).count()
+    b.cells
+        .iter()
+        .flatten()
+        .filter(|s| s.faction == Faction::Enemy)
+        .count()
 }
 
 fn player_alive(b: &broadside_engine::types::Board) -> bool {
-    b.cells.iter().flatten().any(|s| s.faction == Faction::Player)
+    b.cells
+        .iter()
+        .flatten()
+        .any(|s| s.faction == Faction::Player)
 }
 
 /* =========================================================================
@@ -184,7 +206,15 @@ fn player_clears_armed_ai_enemies_in_2d_and_survives() {
     // the back rows), tanky + naked so every landed shot is observable and it
     // out-lasts return fire. Heavy beam: 6 raw, one shot kills a naked hull-3
     // enemy at any band (falloff off).
-    let mut player = ship_2d("p", Faction::Player, Pos::new(2, 3), 40, Facing::Bow(Dir4::N), Arc::Forward, "pc_beam");
+    let mut player = ship_2d(
+        "p",
+        Faction::Player,
+        Pos::new(2, 3),
+        40,
+        Facing::Bow(Dir4::N),
+        Arc::Forward,
+        "pc_beam",
+    );
     player.shield_profile = naked_shields();
 
     // Two armed enemies in the back rows, bow S (facing the player → their
@@ -193,8 +223,24 @@ fn player_clears_armed_ai_enemies_in_2d_and_survives() {
     // sits in the player's column (2,0) — an immediate fire target; the other
     // off-column (4,1) so the driver must strafe to line it up (exercising the
     // lateral-aim path, not just a stationary duel).
-    let mut e1 = ship_2d("e1", Faction::Enemy, Pos::new(2, 0), 3, Facing::Bow(Dir4::S), Arc::Forward, "ai_beam");
-    let mut e2 = ship_2d("e2", Faction::Enemy, Pos::new(4, 1), 3, Facing::Bow(Dir4::S), Arc::Forward, "ai_beam");
+    let mut e1 = ship_2d(
+        "e1",
+        Faction::Enemy,
+        Pos::new(2, 0),
+        3,
+        Facing::Bow(Dir4::S),
+        Arc::Forward,
+        "ai_beam",
+    );
+    let mut e2 = ship_2d(
+        "e2",
+        Faction::Enemy,
+        Pos::new(4, 1),
+        3,
+        Facing::Bow(Dir4::S),
+        Arc::Forward,
+        "ai_beam",
+    );
     e1.shield_profile = naked_shields();
     e2.shield_profile = naked_shields();
 
@@ -212,7 +258,10 @@ fn player_clears_armed_ai_enemies_in_2d_and_survives() {
         rounds += 1;
     }
 
-    assert!(rounds < cap, "#41: the armed 2-D fight must terminate, not run to the cap");
+    assert!(
+        rounds < cap,
+        "#41: the armed 2-D fight must terminate, not run to the cap"
+    );
     assert_eq!(
         enemies_left(&board),
         0,
@@ -235,9 +284,25 @@ fn player_clears_armed_ai_enemies_in_2d_and_survives() {
 /// tuning change — this one has no lateral-aim dependency.
 #[test]
 fn player_out_trades_a_single_armed_enemy_in_column() {
-    let mut player = ship_2d("p", Faction::Player, Pos::new(1, 3), 30, Facing::Bow(Dir4::N), Arc::Forward, "pc_beam");
+    let mut player = ship_2d(
+        "p",
+        Faction::Player,
+        Pos::new(1, 3),
+        30,
+        Facing::Bow(Dir4::N),
+        Arc::Forward,
+        "pc_beam",
+    );
     player.shield_profile = naked_shields();
-    let mut e = ship_2d("e", Faction::Enemy, Pos::new(1, 0), 4, Facing::Bow(Dir4::S), Arc::Forward, "ai_beam");
+    let mut e = ship_2d(
+        "e",
+        Faction::Enemy,
+        Pos::new(1, 0),
+        4,
+        Facing::Bow(Dir4::S),
+        Arc::Forward,
+        "ai_beam",
+    );
     e.shield_profile = naked_shields();
     let mut board = board_2d(vec![player, e]);
     let content = CanaryContent::new(6, 1);
@@ -251,8 +316,15 @@ fn player_out_trades_a_single_armed_enemy_in_column() {
     }
 
     assert!(rounds < cap, "the in-column duel terminates");
-    assert_eq!(enemies_left(&board), 0, "player kills the in-column shooter");
-    assert!(player_alive(&board), "player survives a one-on-one against a weaker shooter");
+    assert_eq!(
+        enemies_left(&board),
+        0,
+        "player kills the in-column shooter"
+    );
+    assert!(
+        player_alive(&board),
+        "player survives a one-on-one against a weaker shooter"
+    );
 }
 
 /// Q3 PAYOFF (#86): a Forward-arc enemy whose bow points the WRONG WAY (away from
@@ -268,11 +340,27 @@ fn q3_misfacing_enemy_rotates_to_bear_then_fires() {
     // engage, the enemy must rotate its bow to S (two quarter-turns) — strafing
     // can't help (already the player's column). Once Bow(S), the gun bears down
     // the column and fires.
-    let mut enemy = ship_2d("e", Faction::Enemy, Pos::new(2, 1), 9, Facing::Bow(Dir4::N), Arc::Forward, "ai_beam");
+    let mut enemy = ship_2d(
+        "e",
+        Faction::Enemy,
+        Pos::new(2, 1),
+        9,
+        Facing::Bow(Dir4::N),
+        Arc::Forward,
+        "ai_beam",
+    );
     enemy.shield_profile = naked_shields();
     // Player: tanky, naked (so a landed shot shows in hull), and it NEVER fires
     // (we don't queue it) — isolates "did the enemy turn + shoot?".
-    let mut player = ship_2d("p", Faction::Player, Pos::new(2, 3), 40, Facing::Bow(Dir4::N), Arc::Forward, "pc_beam");
+    let mut player = ship_2d(
+        "p",
+        Faction::Player,
+        Pos::new(2, 3),
+        40,
+        Facing::Bow(Dir4::N),
+        Arc::Forward,
+        "pc_beam",
+    );
     player.shield_profile = naked_shields();
     let mut board = board_2d(vec![enemy, player]);
     let content = CanaryContent::new(6, 2);
@@ -292,20 +380,38 @@ fn q3_misfacing_enemy_rotates_to_bear_then_fires() {
             }
         }
         // Stop once the enemy has connected.
-        let p_hull = board.cells.iter().flatten().find(|s| s.id == "p").map(|s| s.hull).unwrap_or(0);
+        let p_hull = board
+            .cells
+            .iter()
+            .flatten()
+            .find(|s| s.id == "p")
+            .map(|s| s.hull)
+            .unwrap_or(0);
         if p_hull < player_hull_0 {
             break;
         }
     }
 
-    assert!(rotated_seen, "#86: the enemy must ROTATE its bow toward the player (saw Bow(S))");
-    let p_hull = board.cells.iter().flatten().find(|s| s.id == "p").map(|s| s.hull).unwrap_or(0);
+    assert!(
+        rotated_seen,
+        "#86: the enemy must ROTATE its bow toward the player (saw Bow(S))"
+    );
+    let p_hull = board
+        .cells
+        .iter()
+        .flatten()
+        .find(|s| s.id == "p")
+        .map(|s| s.hull)
+        .unwrap_or(0);
     assert!(
         p_hull < player_hull_0,
         "#86: after rotating to bear, the enemy must FIRE + connect (player hull {p_hull} < {player_hull_0}); it must not spin/mash forever",
     );
     // And it didn't waste the whole window: connected within the bound.
-    assert!(rounds < cap, "#86: enemy rotates + fires within {cap} rounds, not stuck");
+    assert!(
+        rounds < cap,
+        "#86: enemy rotates + fires within {cap} rounds, not stuck"
+    );
 }
 
 /* =========================================================================
@@ -322,7 +428,11 @@ fn broadside_beam(id: &str, raw: i32) -> Action {
         id: id.into(),
         name: id.into(),
         archetype: WeaponArchetype::Broadside,
-        cost: ActionCost { heat: 1, cooldown_max: 0, advances_turn: true },
+        cost: ActionCost {
+            heat: 1,
+            cooldown_max: 0,
+            advances_turn: true,
+        },
         targeting: Targeting {
             range_band: vec![grid::Range::Adjacent, grid::Range::Near, grid::Range::Far],
             optimal_range: grid::Range::Adjacent,
@@ -333,7 +443,10 @@ fn broadside_beam(id: &str, raw: i32) -> Action {
             facing_relative: false,
             hits_all: false,
         },
-        effects: vec![Effect::DAMAGE { amount: raw, band_falloff: Some(false) }],
+        effects: vec![Effect::DAMAGE {
+            amount: raw,
+            band_falloff: Some(false),
+        }],
         r#mod: None,
         icon: None,
     }
@@ -359,9 +472,25 @@ fn q92_broadside_enemy_orients_flank_to_player_then_fires() {
     // FLANK faces east — i.e. orient SIDE-on, not bow-on. Then the broadside
     // bears down the row and fires. Stationary player (never queues) isolates
     // "enemy turned side-on + shot".
-    let mut enemy = ship_2d("e", Faction::Enemy, Pos::new(2, 1), 9, Facing::Bow(Dir4::E), Arc::BroadsideArc, "bcannon");
+    let mut enemy = ship_2d(
+        "e",
+        Faction::Enemy,
+        Pos::new(2, 1),
+        9,
+        Facing::Bow(Dir4::E),
+        Arc::BroadsideArc,
+        "bcannon",
+    );
     enemy.shield_profile = naked_shields();
-    let mut player = ship_2d("p", Faction::Player, Pos::new(4, 1), 40, Facing::Bow(Dir4::N), Arc::Forward, "noop");
+    let mut player = ship_2d(
+        "p",
+        Faction::Player,
+        Pos::new(4, 1),
+        40,
+        Facing::Bow(Dir4::N),
+        Arc::Forward,
+        "noop",
+    );
     player.shield_profile = naked_shields();
     player.mounts.clear(); // can't fire back; pure target
     let mut board = board_2d(vec![enemy, player]);
@@ -380,18 +509,38 @@ fn q92_broadside_enemy_orients_flank_to_player_then_fires() {
                 side_on_seen = true;
             }
         }
-        if board.cells.iter().flatten().find(|s| s.id == "p").map(|s| s.hull).unwrap_or(0) < player_hull_0 {
+        if board
+            .cells
+            .iter()
+            .flatten()
+            .find(|s| s.id == "p")
+            .map(|s| s.hull)
+            .unwrap_or(0)
+            < player_hull_0
+        {
             break;
         }
     }
 
-    assert!(side_on_seen, "#92: the broadside enemy must orient SIDE-on (bow N/S) so a flank faces the east player");
-    let p_hull = board.cells.iter().flatten().find(|s| s.id == "p").map(|s| s.hull).unwrap_or(0);
+    assert!(
+        side_on_seen,
+        "#92: the broadside enemy must orient SIDE-on (bow N/S) so a flank faces the east player"
+    );
+    let p_hull = board
+        .cells
+        .iter()
+        .flatten()
+        .find(|s| s.id == "p")
+        .map(|s| s.hull)
+        .unwrap_or(0);
     assert!(
         p_hull < player_hull_0,
         "#92: after going side-on, the broadside enemy FIRES + connects (player hull {p_hull} < {player_hull_0}); not spin/bow-rush",
     );
-    assert!(rounds < cap, "#92: broadside enemy orients + fires within {cap} rounds");
+    assert!(
+        rounds < cap,
+        "#92: broadside enemy orients + fires within {cap} rounds"
+    );
 }
 
 #[test]
@@ -402,8 +551,24 @@ fn q92_player_bow_ew_fires_broadside_up_lane() {
     // resolves on the target. Proves the player gets the broadside hook from a bow
     // cardinal (no separate stance needed).
     use broadside_engine::resolve::resolve_targeting_2d;
-    let player = ship_2d("p", Faction::Player, Pos::new(2, 3), 30, Facing::Bow(Dir4::E), Arc::BroadsideArc, "bcannon");
-    let target = ship_2d("t", Faction::Enemy, Pos::new(2, 1), 5, Facing::Bow(Dir4::S), Arc::Forward, "noop");
+    let player = ship_2d(
+        "p",
+        Faction::Player,
+        Pos::new(2, 3),
+        30,
+        Facing::Bow(Dir4::E),
+        Arc::BroadsideArc,
+        "bcannon",
+    );
+    let target = ship_2d(
+        "t",
+        Faction::Enemy,
+        Pos::new(2, 1),
+        5,
+        Facing::Bow(Dir4::S),
+        Arc::Forward,
+        "noop",
+    );
     let board = board_2d(vec![player, target]);
     let content = BroadsideContent(broadside_beam("bcannon", 5));
 
@@ -429,10 +594,22 @@ fn q92_player_bow_ew_fires_broadside_up_lane() {
 fn bow_pool(cap: i32) -> broadside_engine::types::ShieldProfile {
     use broadside_engine::types::{ShieldFace, ShieldProfile};
     ShieldProfile {
-        bow: ShieldFace { armour: cap, charge: cap },
-        stern: ShieldFace { armour: 0, charge: 0 },
-        port: ShieldFace { armour: 0, charge: 0 },
-        starboard: ShieldFace { armour: 0, charge: 0 },
+        bow: ShieldFace {
+            armour: cap,
+            charge: cap,
+        },
+        stern: ShieldFace {
+            armour: 0,
+            charge: 0,
+        },
+        port: ShieldFace {
+            armour: 0,
+            charge: 0,
+        },
+        starboard: ShieldFace {
+            armour: 0,
+            charge: 0,
+        },
     }
 }
 
@@ -443,9 +620,25 @@ fn shield_pool_depletes_then_overflows_to_hull_under_sustained_fire() {
     // The enemy carries a bow POOL of 3 (other faces empty) and hull 10. The
     // player NEVER takes fire (enemy is mountless), so only the enemy's shields
     // matter.
-    let mut player = ship_2d("p", Faction::Player, Pos::new(2, 3), 40, Facing::Bow(Dir4::N), Arc::Forward, "pc_beam");
+    let mut player = ship_2d(
+        "p",
+        Faction::Player,
+        Pos::new(2, 3),
+        40,
+        Facing::Bow(Dir4::N),
+        Arc::Forward,
+        "pc_beam",
+    );
     player.shield_profile = naked_shields();
-    let mut enemy = ship_2d("e", Faction::Enemy, Pos::new(2, 1), 10, Facing::Bow(Dir4::S), Arc::Forward, "noop");
+    let mut enemy = ship_2d(
+        "e",
+        Faction::Enemy,
+        Pos::new(2, 1),
+        10,
+        Facing::Bow(Dir4::S),
+        Arc::Forward,
+        "noop",
+    );
     enemy.shield_profile = bow_pool(3);
     enemy.mounts.clear(); // pure target; never fires back
     enemy.traits = vec![Trait::Anchored]; // hold position so the shot keeps hitting the bow (stable geometry)
@@ -453,7 +646,14 @@ fn shield_pool_depletes_then_overflows_to_hull_under_sustained_fire() {
     let content = CanaryContent::new(4, 1);
 
     let bow_charge = |b: &broadside_engine::types::Board| -> i32 {
-        b.cells.iter().flatten().find(|s| s.id == "e").unwrap().shield_profile.bow.charge
+        b.cells
+            .iter()
+            .flatten()
+            .find(|s| s.id == "e")
+            .unwrap()
+            .shield_profile
+            .bow
+            .charge
     };
     let hull = |b: &broadside_engine::types::Board| -> i32 {
         b.cells.iter().flatten().find(|s| s.id == "e").unwrap().hull
@@ -464,16 +664,32 @@ fn shield_pool_depletes_then_overflows_to_hull_under_sustained_fire() {
     // at 0 (no end-of-turn regen).
     queue_player_action(&mut board, &content);
     resolve_round(&mut board, &content);
-    assert_eq!(bow_charge(&board), 0, "bow pool drained by the hit; under-fire pause = no regen");
-    assert_eq!(hull(&board), 9, "1 overflow past the emptied pool reaches hull");
+    assert_eq!(
+        bow_charge(&board),
+        0,
+        "bow pool drained by the hit; under-fire pause = no regen"
+    );
+    assert_eq!(
+        hull(&board),
+        9,
+        "1 overflow past the emptied pool reaches hull"
+    );
 
     // Round 2: pool 0, the full 4 overflows -> hull 5. Bow still under fire, still
     // pinned at 0 (this is the regression the pause must hold — a hit on an empty
     // pool still counts as "under fire").
     queue_player_action(&mut board, &content);
     resolve_round(&mut board, &content);
-    assert_eq!(bow_charge(&board), 0, "empty pool stays empty under continued fire (pause holds even with 0 to absorb)");
-    assert_eq!(hull(&board), 5, "full hit reaches hull once the pool is gone (4 -> hull 5)");
+    assert_eq!(
+        bow_charge(&board),
+        0,
+        "empty pool stays empty under continued fire (pause holds even with 0 to absorb)"
+    );
+    assert_eq!(
+        hull(&board),
+        5,
+        "full hit reaches hull once the pool is gone (4 -> hull 5)"
+    );
 }
 
 #[test]
@@ -482,9 +698,25 @@ fn shield_pool_recharges_when_a_face_stops_taking_fire() {
     // bow face goes quiet and recharges +1/turn back toward its capacity. Proves
     // the "recharge" half of the model (the under-fire pause lifts on a quiet
     // turn). Enemy is mountless so the player is never hit.
-    let mut player = ship_2d("p", Faction::Player, Pos::new(2, 3), 40, Facing::Bow(Dir4::N), Arc::Forward, "pc_beam");
+    let mut player = ship_2d(
+        "p",
+        Faction::Player,
+        Pos::new(2, 3),
+        40,
+        Facing::Bow(Dir4::N),
+        Arc::Forward,
+        "pc_beam",
+    );
     player.shield_profile = naked_shields();
-    let mut enemy = ship_2d("e", Faction::Enemy, Pos::new(2, 1), 10, Facing::Bow(Dir4::S), Arc::Forward, "noop");
+    let mut enemy = ship_2d(
+        "e",
+        Faction::Enemy,
+        Pos::new(2, 1),
+        10,
+        Facing::Bow(Dir4::S),
+        Arc::Forward,
+        "noop",
+    );
     enemy.shield_profile = bow_pool(3);
     enemy.mounts.clear();
     enemy.traits = vec![Trait::Anchored]; // hold position (stable geometry across the quiet turns)
@@ -492,25 +724,48 @@ fn shield_pool_recharges_when_a_face_stops_taking_fire() {
     let content = CanaryContent::new(2, 1); // raw 2: drains the pool but leaves hull
 
     let bow_charge = |b: &broadside_engine::types::Board| -> i32 {
-        b.cells.iter().flatten().find(|s| s.id == "e").unwrap().shield_profile.bow.charge
+        b.cells
+            .iter()
+            .flatten()
+            .find(|s| s.id == "e")
+            .unwrap()
+            .shield_profile
+            .bow
+            .charge
     };
 
     // Round 1: fire raw 2 onto the bow pool (3) -> soak 2 -> pool 1, 0 overflow.
     // Bow took fire -> no regen this round. Pool ends at 1.
     queue_player_action(&mut board, &content);
     resolve_round(&mut board, &content);
-    assert_eq!(bow_charge(&board), 1, "raw-2 hit drains the 3-pool to 1 (no regen the turn it's hit)");
+    assert_eq!(
+        bow_charge(&board),
+        1,
+        "raw-2 hit drains the 3-pool to 1 (no regen the turn it's hit)"
+    );
 
     // Rounds 2-3: the player does NOT fire (we don't queue it), so the bow face
     // is quiet and recharges +1/turn toward its capacity (3): 1 -> 2 -> 3.
     resolve_round(&mut board, &content);
-    assert_eq!(bow_charge(&board), 2, "quiet bow face recharges +1 (1 -> 2)");
+    assert_eq!(
+        bow_charge(&board),
+        2,
+        "quiet bow face recharges +1 (1 -> 2)"
+    );
     resolve_round(&mut board, &content);
-    assert_eq!(bow_charge(&board), 3, "recharge continues up to capacity (2 -> 3)");
+    assert_eq!(
+        bow_charge(&board),
+        3,
+        "recharge continues up to capacity (2 -> 3)"
+    );
 
     // Round 4: at capacity, regen clamps (does not overfill past 3).
     resolve_round(&mut board, &content);
-    assert_eq!(bow_charge(&board), 3, "recharge clamps at capacity, never overfills");
+    assert_eq!(
+        bow_charge(&board),
+        3,
+        "recharge clamps at capacity, never overfills"
+    );
 }
 
 /* =========================================================================
@@ -536,11 +791,22 @@ fn real_pulse_laser_kills_an_in_range_enemy_via_the_live_catalog_path() {
 
     // The real pulse_laser: beam, raw 4 (inflate_effect: heat 2 -> heat+2), 2-D
     // bands [Adjacent, Near], Forward arc.
-    let pulse = content.action("pulse_laser").expect("pulse_laser is a real catalog action").clone();
-    let raw: i32 = pulse.effects.iter().filter_map(|e| match e {
-        Effect::DAMAGE { amount, .. } => Some(*amount), _ => None,
-    }).sum();
-    assert_eq!(raw, 4, "real catalog pulse_laser deals raw 4 (beam: heat 2 + 2)");
+    let pulse = content
+        .action("pulse_laser")
+        .expect("pulse_laser is a real catalog action")
+        .clone();
+    let raw: i32 = pulse
+        .effects
+        .iter()
+        .filter_map(|e| match e {
+            Effect::DAMAGE { amount, .. } => Some(*amount),
+            _ => None,
+        })
+        .sum();
+    assert_eq!(
+        raw, 4,
+        "real catalog pulse_laser deals raw 4 (beam: heat 2 + 2)"
+    );
     assert!(
         pulse.targeting.range_band.contains(&grid::Range::Adjacent)
             && pulse.targeting.range_band.contains(&grid::Range::Near),
@@ -551,26 +817,62 @@ fn real_pulse_laser_kills_an_in_range_enemy_via_the_live_catalog_path() {
     // Player at (2,2) Bow(N) with pulse_laser; light enemy at (2,1) Bow(S) one
     // cell N = ADJACENT (dist 1), bearing in the Forward arc. Enemy bow pool 2,
     // hull 3 (the light-enemy matchup). Anchored so the geometry is stable.
-    let mut player = ship_2d("p", Faction::Player, Pos::new(2, 2), 40, Facing::Bow(Dir4::N), Arc::Forward, "pulse_laser");
+    let mut player = ship_2d(
+        "p",
+        Faction::Player,
+        Pos::new(2, 2),
+        40,
+        Facing::Bow(Dir4::N),
+        Arc::Forward,
+        "pulse_laser",
+    );
     player.shield_profile = naked_shields();
-    let mut enemy = ship_2d("e", Faction::Enemy, Pos::new(2, 1), 3, Facing::Bow(Dir4::S), Arc::Forward, "noop");
+    let mut enemy = ship_2d(
+        "e",
+        Faction::Enemy,
+        Pos::new(2, 1),
+        3,
+        Facing::Bow(Dir4::S),
+        Arc::Forward,
+        "noop",
+    );
     enemy.shield_profile = bow_pool(2);
     enemy.mounts.clear();
     enemy.traits = vec![Trait::Anchored];
     let mut board = board_2d(vec![player, enemy]);
 
     let estate = |b: &broadside_engine::types::Board| -> Option<(i32, i32)> {
-        b.cells.iter().flatten().find(|s| s.id == "e").map(|s| (s.hull, s.shield_profile.bow.charge))
+        b.cells
+            .iter()
+            .flatten()
+            .find(|s| s.id == "e")
+            .map(|s| (s.hull, s.shield_profile.bow.charge))
     };
 
     // Commit 1 (Adjacent, -0 falloff): 4 raw -> bow pool 2 soaks 2 -> 2 overflow
     // -> enemy hull 3 -> 1, pool 0.
-    board.cells.iter_mut().flatten().find(|s| s.id == "p").unwrap().queue = vec!["pulse_laser".into()];
+    board
+        .cells
+        .iter_mut()
+        .flatten()
+        .find(|s| s.id == "p")
+        .unwrap()
+        .queue = vec!["pulse_laser".into()];
     resolve_round(&mut board, &content);
-    assert_eq!(estate(&board), Some((1, 0)), "commit 1: pool 2 soaks 2 of the 4, 2 overflows to hull (3 -> 1)");
+    assert_eq!(
+        estate(&board),
+        Some((1, 0)),
+        "commit 1: pool 2 soaks 2 of the 4, 2 overflows to hull (3 -> 1)"
+    );
 
     // Commit 2: pool 0 -> full 4 to hull -> enemy dies.
-    board.cells.iter_mut().flatten().find(|s| s.id == "p").unwrap().queue = vec!["pulse_laser".into()];
+    board
+        .cells
+        .iter_mut()
+        .flatten()
+        .find(|s| s.id == "p")
+        .unwrap()
+        .queue = vec!["pulse_laser".into()];
     resolve_round(&mut board, &content);
     assert!(estate(&board).is_none(), "commit 2: the empty-pool hull takes the full 4 -> enemy destroyed (live path damage is REAL)");
 
@@ -579,7 +881,11 @@ fn real_pulse_laser_kills_an_in_range_enemy_via_the_live_catalog_path() {
     // CLOSE before pulse_laser connects (it is NOT a damage bug). Both the player
     // and the first-encounter enemies (skiff/lancer) mount Pulse Laser, so the
     // SAME must-close gate applies to the enemy AI — it closes via its ladder.
-    assert_eq!(grid::distance(Pos::new(2, 3), Pos::new(2, 0)), 3, "spawn front->back row is dist 3");
+    assert_eq!(
+        grid::distance(Pos::new(2, 3), Pos::new(2, 0)),
+        3,
+        "spawn front->back row is dist 3"
+    );
     assert!(
         !pulse.targeting.range_band.contains(&grid::Range::Far),
         "pulse does NOT reach Far: at spawn distance the player must close first (the perceived 'weapons do nothing')",
@@ -603,29 +909,74 @@ fn tick_enemy_fires_only_that_enemy_and_leaves_the_player_alone() {
     // Player at (2,2) Bow(N), naked, with a QUEUED pulse_laser it has NOT fired.
     // Two enemies down-column both mounting pulse_laser, bearing on the player at
     // Adjacent/Near (so they CAN fire). e1 at (2,1) dist 1, e2 at (2,0) dist 2.
-    let mut player = ship_2d("p", Faction::Player, Pos::new(2, 2), 40, Facing::Bow(Dir4::N), Arc::Forward, "pulse_laser");
+    let mut player = ship_2d(
+        "p",
+        Faction::Player,
+        Pos::new(2, 2),
+        40,
+        Facing::Bow(Dir4::N),
+        Arc::Forward,
+        "pulse_laser",
+    );
     player.shield_profile = naked_shields();
     player.queue = vec!["pulse_laser".into()]; // queued, must NOT be fired by tick_enemy
-    let mut e1 = ship_2d("e1", Faction::Enemy, Pos::new(2, 1), 9, Facing::Bow(Dir4::S), Arc::Forward, "pulse_laser");
-    let mut e2 = ship_2d("e2", Faction::Enemy, Pos::new(2, 0), 9, Facing::Bow(Dir4::S), Arc::Forward, "pulse_laser");
+    let mut e1 = ship_2d(
+        "e1",
+        Faction::Enemy,
+        Pos::new(2, 1),
+        9,
+        Facing::Bow(Dir4::S),
+        Arc::Forward,
+        "pulse_laser",
+    );
+    let mut e2 = ship_2d(
+        "e2",
+        Faction::Enemy,
+        Pos::new(2, 0),
+        9,
+        Facing::Bow(Dir4::S),
+        Arc::Forward,
+        "pulse_laser",
+    );
     e1.shield_profile = naked_shields();
     e2.shield_profile = naked_shields();
     let mut board = board_2d(vec![player, e1, e2]);
 
     let hull = |b: &broadside_engine::types::Board, id: &str| -> i32 {
-        b.cells.iter().flatten().find(|s| s.id == id).map(|s| s.hull).unwrap_or(-1)
+        b.cells
+            .iter()
+            .flatten()
+            .find(|s| s.id == id)
+            .map(|s| s.hull)
+            .unwrap_or(-1)
     };
     let queue_len = |b: &broadside_engine::types::Board, id: &str| -> usize {
-        b.cells.iter().flatten().find(|s| s.id == id).map(|s| s.queue.len()).unwrap_or(0)
+        b.cells
+            .iter()
+            .flatten()
+            .find(|s| s.id == id)
+            .map(|s| s.queue.len())
+            .unwrap_or(0)
     };
 
     // First tick e1: telegraph-one-turn-ahead means tick 1 only DECIDES (its
     // queue was empty), no fire yet. Tick e1 AGAIN: now it fires its telegraph.
     tick_enemy("e1", &mut board, &content);
-    assert_eq!(hull(&board, "p"), 40, "tick 1 only telegraphs (empty queue) -> player untouched yet");
-    assert!(queue_len(&board, "e1") >= 1, "e1 telegraphed its next action");
+    assert_eq!(
+        hull(&board, "p"),
+        40,
+        "tick 1 only telegraphs (empty queue) -> player untouched yet"
+    );
+    assert!(
+        queue_len(&board, "e1") >= 1,
+        "e1 telegraphed its next action"
+    );
     // e2 has NOT been ticked: it must be completely untouched (no decide, no fire).
-    assert_eq!(queue_len(&board, "e2"), 0, "ticking e1 did NOT decide for e2 (per-enemy isolation)");
+    assert_eq!(
+        queue_len(&board, "e2"),
+        0,
+        "ticking e1 did NOT decide for e2 (per-enemy isolation)"
+    );
 
     let p_before = hull(&board, "p");
     tick_enemy("e1", &mut board, &content);
@@ -633,9 +984,20 @@ fn tick_enemy_fires_only_that_enemy_and_leaves_the_player_alone() {
 
     // Through all of this the PLAYER's queued pulse_laser was never fired by
     // tick_enemy -> both enemies still alive at full hull.
-    assert_eq!(hull(&board, "e1"), 9, "player's queued shot was NOT fired by tick_enemy (e1 full)");
-    assert_eq!(hull(&board, "e2"), 9, "player's queued shot was NOT fired by tick_enemy (e2 full)");
-    assert!(queue_len(&board, "p") >= 1, "the player's queued action is still pending (only the player's commit fires it)");
+    assert_eq!(
+        hull(&board, "e1"),
+        9,
+        "player's queued shot was NOT fired by tick_enemy (e1 full)"
+    );
+    assert_eq!(
+        hull(&board, "e2"),
+        9,
+        "player's queued shot was NOT fired by tick_enemy (e2 full)"
+    );
+    assert!(
+        queue_len(&board, "p") >= 1,
+        "the player's queued action is still pending (only the player's commit fires it)"
+    );
 }
 
 #[test]
@@ -649,39 +1011,108 @@ fn tick_world_runs_global_bookkeeping_without_firing_queues() {
     // A player with heat to dissipate + a queued shot; an enemy with a queued
     // shot. tick_world must NOT fire either queue (it's the global clock, not the
     // fire step) but MUST tick the per-turn bookkeeping (heat dissipates).
-    let mut player = ship_2d("p", Faction::Player, Pos::new(2, 2), 40, Facing::Bow(Dir4::N), Arc::Forward, "pulse_laser");
+    let mut player = ship_2d(
+        "p",
+        Faction::Player,
+        Pos::new(2, 2),
+        40,
+        Facing::Bow(Dir4::N),
+        Arc::Forward,
+        "pulse_laser",
+    );
     player.shield_profile = naked_shields();
     player.heat = 3;
     player.queue = vec!["pulse_laser".into()];
-    let mut enemy = ship_2d("e", Faction::Enemy, Pos::new(2, 1), 9, Facing::Bow(Dir4::S), Arc::Forward, "pulse_laser");
+    let mut enemy = ship_2d(
+        "e",
+        Faction::Enemy,
+        Pos::new(2, 1),
+        9,
+        Facing::Bow(Dir4::S),
+        Arc::Forward,
+        "pulse_laser",
+    );
     enemy.shield_profile = naked_shields();
     enemy.queue = vec!["pulse_laser".into()];
     let mut board = board_2d(vec![player, enemy]);
 
     let find = |b: &broadside_engine::types::Board, id: &str| {
-        b.cells.iter().flatten().find(|s| s.id == id).cloned().unwrap()
+        b.cells
+            .iter()
+            .flatten()
+            .find(|s| s.id == id)
+            .cloned()
+            .unwrap()
     };
 
     tick_world(&mut board, &content);
 
     // Bookkeeping ran: player heat dissipated by 1 (3 -> 2).
-    assert_eq!(find(&board, "p").heat, 2, "tick_world dissipates heat (the global per-turn bookkeeping)");
+    assert_eq!(
+        find(&board, "p").heat,
+        2,
+        "tick_world dissipates heat (the global per-turn bookkeeping)"
+    );
     // Neither queue was fired: both ships full hull, queues intact.
-    assert_eq!(find(&board, "p").hull, 40, "tick_world did not fire the enemy's queue at the player");
-    assert_eq!(find(&board, "e").hull, 9, "tick_world did not fire the player's queue at the enemy");
-    assert_eq!(find(&board, "p").queue.len(), 1, "player's queue untouched by tick_world");
-    assert_eq!(find(&board, "e").queue.len(), 1, "enemy's queue untouched by tick_world");
+    assert_eq!(
+        find(&board, "p").hull,
+        40,
+        "tick_world did not fire the enemy's queue at the player"
+    );
+    assert_eq!(
+        find(&board, "e").hull,
+        9,
+        "tick_world did not fire the player's queue at the enemy"
+    );
+    assert_eq!(
+        find(&board, "p").queue.len(),
+        1,
+        "player's queue untouched by tick_world"
+    );
+    assert_eq!(
+        find(&board, "e").queue.len(),
+        1,
+        "enemy's queue untouched by tick_world"
+    );
 }
 
 #[test]
 fn live_enemy_ids_lists_enemies_only() {
-    let player = ship_2d("p", Faction::Player, Pos::new(2, 3), 10, Facing::Bow(Dir4::N), Arc::Forward, "noop");
-    let e1 = ship_2d("e1", Faction::Enemy, Pos::new(2, 1), 5, Facing::Bow(Dir4::S), Arc::Forward, "noop");
-    let e2 = ship_2d("e2", Faction::Enemy, Pos::new(1, 0), 5, Facing::Bow(Dir4::S), Arc::Forward, "noop");
+    let player = ship_2d(
+        "p",
+        Faction::Player,
+        Pos::new(2, 3),
+        10,
+        Facing::Bow(Dir4::N),
+        Arc::Forward,
+        "noop",
+    );
+    let e1 = ship_2d(
+        "e1",
+        Faction::Enemy,
+        Pos::new(2, 1),
+        5,
+        Facing::Bow(Dir4::S),
+        Arc::Forward,
+        "noop",
+    );
+    let e2 = ship_2d(
+        "e2",
+        Faction::Enemy,
+        Pos::new(1, 0),
+        5,
+        Facing::Bow(Dir4::S),
+        Arc::Forward,
+        "noop",
+    );
     let board = board_2d(vec![player, e1, e2]);
     let mut ids = live_enemy_ids(&board);
     ids.sort();
-    assert_eq!(ids, vec!["e1".to_string(), "e2".to_string()], "live_enemy_ids lists enemies only, not the player");
+    assert_eq!(
+        ids,
+        vec!["e1".to_string(), "e2".to_string()],
+        "live_enemy_ids lists enemies only, not the player"
+    );
 }
 
 /* =========================================================================
@@ -707,14 +1138,43 @@ fn turn_based_enemy_moves_then_telegraphs_then_fires() {
     // actor is the enemy. Enemy at (2,0) Bow(S) + pulse_laser — same column, dist
     // 3 = Far = OUT of pulse's [Adjacent,Near] band. It must CLOSE to dist <= 2,
     // then telegraph, then fire.
-    let mut player = ship_2d("p", Faction::Player, Pos::new(2, 3), 60, Facing::Bow(Dir4::N), Arc::Forward, "pulse_laser");
+    let mut player = ship_2d(
+        "p",
+        Faction::Player,
+        Pos::new(2, 3),
+        60,
+        Facing::Bow(Dir4::N),
+        Arc::Forward,
+        "pulse_laser",
+    );
     player.shield_profile = naked_shields();
-    let mut enemy = ship_2d("e", Faction::Enemy, Pos::new(2, 0), 9, Facing::Bow(Dir4::S), Arc::Forward, "pulse_laser");
+    let mut enemy = ship_2d(
+        "e",
+        Faction::Enemy,
+        Pos::new(2, 0),
+        9,
+        Facing::Bow(Dir4::S),
+        Arc::Forward,
+        "pulse_laser",
+    );
     enemy.shield_profile = naked_shields();
     let mut board = board_2d(vec![player, enemy]);
 
-    let epos = |b: &broadside_engine::types::Board| b.cells.iter().flatten().find(|s| s.id == "e").map(|s| s.pos);
-    let phull = |b: &broadside_engine::types::Board| b.cells.iter().flatten().find(|s| s.id == "p").map(|s| s.hull).unwrap_or(-1);
+    let epos = |b: &broadside_engine::types::Board| {
+        b.cells
+            .iter()
+            .flatten()
+            .find(|s| s.id == "e")
+            .map(|s| s.pos)
+    };
+    let phull = |b: &broadside_engine::types::Board| {
+        b.cells
+            .iter()
+            .flatten()
+            .find(|s| s.id == "p")
+            .map(|s| s.hull)
+            .unwrap_or(-1)
+    };
 
     let spawn_row = epos(&board).unwrap().row;
     let mut moved = false;
@@ -730,10 +1190,16 @@ fn turn_based_enemy_moves_then_telegraphs_then_fires() {
     }
 
     // #2: the enemy REPOSITIONED (closed toward range), not sat at spawn.
-    assert!(moved, "#126: enemy must MOVE/close across turns (Bruce wants repositioning)");
+    assert!(
+        moved,
+        "#126: enemy must MOVE/close across turns (Bruce wants repositioning)"
+    );
     // #1 + #67: it connects only AFTER closing + telegraphing — never on turn 1.
     let hit = first_hit_turn.expect("#126: after closing, the enemy fires + connects");
-    assert!(hit > 1, "#67: enemy cannot fire on turn 1 (must close + telegraph first); fired turn {hit}");
+    assert!(
+        hit > 1,
+        "#67: enemy cannot fire on turn 1 (must close + telegraph first); fired turn {hit}"
+    );
 }
 
 /// CORE COOLDOWN RULE (Bruce's loop): an enemy must NOT queue/telegraph a weapon
@@ -755,20 +1221,62 @@ fn enemy_does_not_queue_an_on_cooldown_weapon() {
     // band "mid" -> 2-D Near/Far) in range + bearing: enemy (2,1) Bow(S), player
     // (2,3), dist 2 = Near. The ONLY pacing should be the cd-3 recharge. If the AI
     // re-queued an on-cd beam_cannon the player's hull would drop every turn.
-    let cd_max = content.action("beam_cannon").expect("beam_cannon catalog action").cost.cooldown_max;
-    assert!(cd_max > 0, "beam_cannon must have a real cooldown to exercise the gate (got {cd_max})");
-    let mut player = ship_2d("p", Faction::Player, Pos::new(2, 3), 200, Facing::Bow(Dir4::N), Arc::Forward, "pulse_laser");
+    let cd_max = content
+        .action("beam_cannon")
+        .expect("beam_cannon catalog action")
+        .cost
+        .cooldown_max;
+    assert!(
+        cd_max > 0,
+        "beam_cannon must have a real cooldown to exercise the gate (got {cd_max})"
+    );
+    let mut player = ship_2d(
+        "p",
+        Faction::Player,
+        Pos::new(2, 3),
+        200,
+        Facing::Bow(Dir4::N),
+        Arc::Forward,
+        "pulse_laser",
+    );
     player.shield_profile = naked_shields();
-    let mut enemy = ship_2d("e", Faction::Enemy, Pos::new(2, 1), 9, Facing::Bow(Dir4::S), Arc::Forward, "beam_cannon");
+    let mut enemy = ship_2d(
+        "e",
+        Faction::Enemy,
+        Pos::new(2, 1),
+        9,
+        Facing::Bow(Dir4::S),
+        Arc::Forward,
+        "beam_cannon",
+    );
     enemy.shield_profile = naked_shields();
     enemy.heat_max = 99; // isolate the cd gate (remove heat/lockout as a confound)
     let mut board = board_2d(vec![player, enemy]);
 
-    let phull = |b: &broadside_engine::types::Board| b.cells.iter().flatten().find(|s| s.id == "p").map(|s| s.hull).unwrap_or(-1);
-    let ecd = |b: &broadside_engine::types::Board| b.cells.iter().flatten().find(|s| s.id == "e")
-        .and_then(|s| s.cooldowns.get("beam_cannon").copied()).unwrap_or(0);
-    let equeued_beam = |b: &broadside_engine::types::Board| b.cells.iter().flatten().find(|s| s.id == "e")
-        .map(|s| s.queue.iter().any(|a| a == "beam_cannon")).unwrap_or(false);
+    let phull = |b: &broadside_engine::types::Board| {
+        b.cells
+            .iter()
+            .flatten()
+            .find(|s| s.id == "p")
+            .map(|s| s.hull)
+            .unwrap_or(-1)
+    };
+    let ecd = |b: &broadside_engine::types::Board| {
+        b.cells
+            .iter()
+            .flatten()
+            .find(|s| s.id == "e")
+            .and_then(|s| s.cooldowns.get("beam_cannon").copied())
+            .unwrap_or(0)
+    };
+    let equeued_beam = |b: &broadside_engine::types::Board| {
+        b.cells
+            .iter()
+            .flatten()
+            .find(|s| s.id == "e")
+            .map(|s| s.queue.iter().any(|a| a == "beam_cannon"))
+            .unwrap_or(false)
+    };
 
     let mut prev = 200;
     let mut hit_turns = Vec::new();
@@ -782,7 +1290,9 @@ fn enemy_does_not_queue_an_on_cooldown_weapon() {
         );
         resolve_round(&mut board, &content);
         let h = phull(&board);
-        if h < prev { hit_turns.push(turn); }
+        if h < prev {
+            hit_turns.push(turn);
+        }
         prev = h;
     }
     // Gaps between consecutive fires must be >= cd_max + 1 (the firing turn + the
@@ -792,5 +1302,8 @@ fn enemy_does_not_queue_an_on_cooldown_weapon() {
         assert!(gap > cd_max as usize,
             "enemy re-fired beam_cannon after only {gap} turns (cd_max {cd_max}); cooldown not respected");
     }
-    assert!(!hit_turns.is_empty(), "sanity: the enemy should fire beam_cannon at least once");
+    assert!(
+        !hit_turns.is_empty(),
+        "sanity: the enemy should fire beam_cannon at least once"
+    );
 }

@@ -116,8 +116,9 @@ fn back_row_columns() -> Vec<usize> {
 /// so it stays faithful if those change.
 fn build_demo_board(enemy_count: usize) -> Board {
     let mut cells: Vec<Option<Ship>> = (0..broadside_engine::grid::CELLS).map(|_| None).collect();
-    let hazards: Vec<Vec<broadside_engine::types::Hazard>> =
-        (0..broadside_engine::grid::CELLS).map(|_| Vec::new()).collect();
+    let hazards: Vec<Vec<broadside_engine::types::Hazard>> = (0..broadside_engine::grid::CELLS)
+        .map(|_| Vec::new())
+        .collect();
 
     // Player: front-centre, bow into the board. Give it a couple of bow shield
     // charges so the gold pips read on the strong (forward) face.

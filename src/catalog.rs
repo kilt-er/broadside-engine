@@ -56,10 +56,14 @@ impl std::error::Error for LoadError {
 }
 
 impl From<io::Error> for LoadError {
-    fn from(e: io::Error) -> Self { LoadError::Io(e) }
+    fn from(e: io::Error) -> Self {
+        LoadError::Io(e)
+    }
 }
 impl From<serde_json::Error> for LoadError {
-    fn from(e: serde_json::Error) -> Self { LoadError::Parse(e) }
+    fn from(e: serde_json::Error) -> Self {
+        LoadError::Parse(e)
+    }
 }
 
 /// Read the catalog JSON file at `path` and decode it into a [`Catalog`].
@@ -246,7 +250,12 @@ pub fn enemy_ship_from_catalog_at_tier(
     patrol_tier: u8,
 ) -> Option<Ship> {
     let def = catalog.enemies.iter().find(|e| e.id == spawn.class_id)?;
-    Some(ship_from_enemy_def_at_tier(catalog, def, spawn, patrol_tier))
+    Some(ship_from_enemy_def_at_tier(
+        catalog,
+        def,
+        spawn,
+        patrol_tier,
+    ))
 }
 
 /// Materialize a [`Ship`] from a specific [`EnemyDef`] + spawn at Patrol
@@ -302,7 +311,9 @@ pub fn ship_from_enemy_def_at_tier(
         .filter_map(|t| trait_from_str(t))
         .collect();
 
-    let hull = spawn.hp_override.unwrap_or_else(|| select_hull(def, patrol_tier));
+    let hull = spawn
+        .hp_override
+        .unwrap_or_else(|| select_hull(def, patrol_tier));
 
     Ship {
         id: format!("{}@{}", def.id, spawn.cell),
@@ -354,7 +365,10 @@ fn enemy_shield_default() -> ShieldProfile {
     // pool (start FULL). Light enemy default: cap 2 bow + flanks, soft stern 0
     // (the flank-me-from-behind invariant — a stern hit goes straight to hull).
     // Bruce-tunable.
-    let face = |cap: i32| ShieldFace { armour: cap, charge: cap };
+    let face = |cap: i32| ShieldFace {
+        armour: cap,
+        charge: cap,
+    };
     ShieldProfile {
         bow: face(2),
         stern: face(0),
@@ -518,9 +532,15 @@ mod tests {
         let mut m = HashMap::new();
         m.insert("pulse laser".to_string(), "pulse_laser".to_string());
         // Display name -> id.
-        assert_eq!(resolve_weapon_id("Pulse Laser", &m), Some("pulse_laser".into()));
+        assert_eq!(
+            resolve_weapon_id("Pulse Laser", &m),
+            Some("pulse_laser".into())
+        );
         // Already an id -> passes through.
-        assert_eq!(resolve_weapon_id("pulse_laser", &m), Some("pulse_laser".into()));
+        assert_eq!(
+            resolve_weapon_id("pulse_laser", &m),
+            Some("pulse_laser".into())
+        );
         // Unknown display name -> None.
         assert_eq!(resolve_weapon_id("Ghost Gun", &m), None);
     }
@@ -564,15 +584,23 @@ mod tests {
         assert_eq!(ship.max_hull, 5);
         // Trait mapped from "Agile" -> Trait::Agile (the AI nudge that was
         // dead under the fallback synthesizer).
-        assert!(ship.traits.contains(&Trait::Agile),
-            "synthesized voidrunner must carry its Agile trait, got {:?}", ship.traits);
+        assert!(
+            ship.traits.contains(&Trait::Agile),
+            "synthesized voidrunner must carry its Agile trait, got {:?}",
+            ship.traits
+        );
         // Mounts: both weapons resolved display-name -> id, Forward arc from
         // the action's requiresArc.
         let weapons: Vec<&str> = ship.mounts.iter().map(|m| m.weapon.as_str()).collect();
-        assert_eq!(weapons, vec!["beam_cannon", "pulse_laser"],
-            "weapons normalized to action ids in listed order");
-        assert!(ship.mounts.iter().all(|m| m.arc == TArc::Forward),
-            "both weapons are forward-arc per their action defs");
+        assert_eq!(
+            weapons,
+            vec!["beam_cannon", "pulse_laser"],
+            "weapons normalized to action ids in listed order"
+        );
+        assert!(
+            ship.mounts.iter().all(|m| m.arc == TArc::Forward),
+            "both weapons are forward-arc per their action defs"
+        );
     }
 
     #[test]
@@ -634,7 +662,11 @@ mod tests {
         }
         // select_hull is the single switch point for the future change.
         assert_eq!(select_hull(&def, 1), 3);
-        assert_eq!(select_hull(&def, 5), 3, "dormant: will become hull5 (6) when wired");
+        assert_eq!(
+            select_hull(&def, 5),
+            3,
+            "dormant: will become hull5 (6) when wired"
+        );
     }
 
     #[test]
@@ -650,28 +682,41 @@ mod tests {
         let cat = load_from_path(path).expect("real catalog loads");
 
         // monitor: hull 5, Pursuit, Pulse Laser.
-        let monitor = enemy_ship_from_catalog(&cat, &spawn_at("monitor", 4))
-            .expect("monitor in catalog");
+        let monitor =
+            enemy_ship_from_catalog(&cat, &spawn_at("monitor", 4)).expect("monitor in catalog");
         assert_eq!(monitor.hull, 5);
-        assert!(monitor.traits.contains(&Trait::Pursuit),
-            "monitor should carry Pursuit, got {:?}", monitor.traits);
-        assert!(monitor.mounts.iter().any(|m| m.weapon == "pulse_laser"),
+        assert!(
+            monitor.traits.contains(&Trait::Pursuit),
+            "monitor should carry Pursuit, got {:?}",
+            monitor.traits
+        );
+        assert!(
+            monitor.mounts.iter().any(|m| m.weapon == "pulse_laser"),
             "monitor should mount pulse_laser, got {:?}",
-            monitor.mounts.iter().map(|m| &m.weapon).collect::<Vec<_>>());
+            monitor.mounts.iter().map(|m| &m.weapon).collect::<Vec<_>>()
+        );
 
         // voidrunner: Agile + beam_cannon + afterburner.
         let voidrunner = enemy_ship_from_catalog(&cat, &spawn_at("voidrunner", 6))
             .expect("voidrunner in catalog");
-        assert!(voidrunner.traits.contains(&Trait::Agile),
-            "voidrunner should carry Agile, got {:?}", voidrunner.traits);
-        assert!(voidrunner.mounts.iter().any(|m| m.weapon == "beam_cannon"),
-            "voidrunner should mount beam_cannon");
+        assert!(
+            voidrunner.traits.contains(&Trait::Agile),
+            "voidrunner should carry Agile, got {:?}",
+            voidrunner.traits
+        );
+        assert!(
+            voidrunner.mounts.iter().any(|m| m.weapon == "beam_cannon"),
+            "voidrunner should mount beam_cannon"
+        );
 
         // lancer: Burn-Hard.
-        let lancer = enemy_ship_from_catalog(&cat, &spawn_at("lancer", 3))
-            .expect("lancer in catalog");
-        assert!(lancer.traits.contains(&Trait::BurnHard),
-            "lancer should carry BurnHard, got {:?}", lancer.traits);
+        let lancer =
+            enemy_ship_from_catalog(&cat, &spawn_at("lancer", 3)).expect("lancer in catalog");
+        assert!(
+            lancer.traits.contains(&Trait::BurnHard),
+            "lancer should carry BurnHard, got {:?}",
+            lancer.traits
+        );
     }
 
     /// #28/#81 GUARANTEE: every TARGETING (firing) weapon in the REAL exported
@@ -717,23 +762,39 @@ mod tests {
                 checked += 1;
             }
         }
-        assert!(checked >= 5, "expected several firing weapons in the catalog, checked {checked}");
+        assert!(
+            checked >= 5,
+            "expected several firing weapons in the catalog, checked {checked}"
+        );
 
         // Spot-check the #81 widened sets on representative weapons.
         use crate::grid::Range;
         let band_of = |id: &str| {
-            cat.actions.iter().find(|a| a.id == id)
+            cat.actions
+                .iter()
+                .find(|a| a.id == id)
                 .unwrap_or_else(|| panic!("`{id}` in catalog"))
-                .targeting.range_band.clone()
+                .targeting
+                .range_band
+                .clone()
         };
         // close beam fires touching AND near (was: near-only).
-        assert_eq!(band_of("pulse_laser"), vec![Range::Adjacent, Range::Near],
-            "#81: a `close` weapon fires Adjacent+Near");
+        assert_eq!(
+            band_of("pulse_laser"),
+            vec![Range::Adjacent, Range::Near],
+            "#81: a `close` weapon fires Adjacent+Near"
+        );
         // mid beam reaches Near AND Far, never point-blank.
-        assert_eq!(band_of("beam_cannon"), vec![Range::Near, Range::Far],
-            "#81: a `mid` weapon fires Near+Far");
+        assert_eq!(
+            band_of("beam_cannon"),
+            vec![Range::Near, Range::Far],
+            "#81: a `mid` weapon fires Near+Far"
+        );
         // long broadside stays Far-only (the over-extension deadzone, #7).
-        assert_eq!(band_of("railgun_broadside"), vec![Range::Far],
-            "#81: a `long` weapon is Far-only (deadzone preserved)");
+        assert_eq!(
+            band_of("railgun_broadside"),
+            vec![Range::Far],
+            "#81: a `long` weapon is Far-only (deadzone preserved)"
+        );
     }
 }

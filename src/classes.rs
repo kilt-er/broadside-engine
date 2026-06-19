@@ -128,14 +128,7 @@ pub fn placeholder_classes() -> Vec<ClassDef> {
 
 /// The canonical roster: corvette, prowship, runner, tug, carrier, aegis.
 pub fn canonical_classes() -> Vec<ClassDef> {
-    vec![
-        corvette(),
-        prowship(),
-        runner(),
-        tug(),
-        carrier(),
-        aegis(),
-    ]
+    vec![corvette(), prowship(), runner(), tug(), carrier(), aegis()]
 }
 
 /// Corvette "Slipstream" (`corvette`) — Flexible, Slip. The default-unlocked
@@ -300,7 +293,11 @@ fn self_move_signature(
         id: id.into(),
         name: name.into(),
         archetype: WeaponArchetype::Movement,
-        cost: ActionCost { heat, cooldown_max, advances_turn: false },
+        cost: ActionCost {
+            heat,
+            cooldown_max,
+            advances_turn: false,
+        },
         targeting: Targeting {
             pattern: TargetingPattern::SELF,
             band: vec![RangeBand::PointBlank],
@@ -326,7 +323,12 @@ pub fn synthetic_slip() -> Action {
         "Slip",
         1,
         5,
-        Effect::DISPLACE_SELF { mode: MovementMode::TRACTOR_SWAP, distance: 1, direction: None, direction_2d: None },
+        Effect::DISPLACE_SELF {
+            mode: MovementMode::TRACTOR_SWAP,
+            distance: 1,
+            direction: None,
+            direction_2d: None,
+        },
     )
 }
 
@@ -339,7 +341,12 @@ pub fn synthetic_ram() -> Action {
         "Ram",
         2,
         6,
-        Effect::DISPLACE_SELF { mode: MovementMode::BURN, distance: 2, direction: None, direction_2d: None },
+        Effect::DISPLACE_SELF {
+            mode: MovementMode::BURN,
+            distance: 2,
+            direction: None,
+            direction_2d: None,
+        },
     )
 }
 
@@ -352,7 +359,12 @@ pub fn synthetic_phase() -> Action {
         "Phase",
         1,
         5,
-        Effect::DISPLACE_SELF { mode: MovementMode::SLIP, distance: 2, direction: None, direction_2d: None },
+        Effect::DISPLACE_SELF {
+            mode: MovementMode::SLIP,
+            distance: 2,
+            direction: None,
+            direction_2d: None,
+        },
     )
 }
 
@@ -384,7 +396,12 @@ pub fn synthetic_swap_toss() -> Action {
         "Swap Toss",
         2,
         7,
-        Effect::DISPLACE_SELF { mode: MovementMode::TRACTOR_SWAP, distance: 1, direction: None, direction_2d: None },
+        Effect::DISPLACE_SELF {
+            mode: MovementMode::TRACTOR_SWAP,
+            distance: 1,
+            direction: None,
+            direction_2d: None,
+        },
     )
 }
 
@@ -408,7 +425,11 @@ pub fn synthetic_broadside_sweep() -> Action {
         id: SIG_BROADSIDE_SWEEP.into(),
         name: "Broadside Sweep".into(),
         archetype: WeaponArchetype::Broadside,
-        cost: ActionCost { heat: 4, cooldown_max: 5, advances_turn: true },
+        cost: ActionCost {
+            heat: 4,
+            cooldown_max: 5,
+            advances_turn: true,
+        },
         targeting: Targeting {
             pattern: TargetingPattern::BROADSIDE,
             band: vec![RangeBand::Close, RangeBand::Mid],
@@ -421,8 +442,13 @@ pub fn synthetic_broadside_sweep() -> Action {
             hits_all: false,
         },
         effects: vec![
-            Effect::DAMAGE { amount: 3, band_falloff: None },
-            Effect::REORIENT { to: ReorientTo::Flip },
+            Effect::DAMAGE {
+                amount: 3,
+                band_falloff: None,
+            },
+            Effect::REORIENT {
+                to: ReorientTo::Flip,
+            },
         ],
         r#mod: None,
         icon: None,
@@ -444,8 +470,12 @@ mod tests {
         assert_eq!(cs.len(), 6);
         let ids: HashSet<&str> = cs.iter().map(|c| c.id.as_str()).collect();
         for id in [
-            CLASS_CORVETTE, CLASS_PROWSHIP, CLASS_RUNNER, CLASS_TUG,
-            CLASS_CARRIER, CLASS_AEGIS,
+            CLASS_CORVETTE,
+            CLASS_PROWSHIP,
+            CLASS_RUNNER,
+            CLASS_TUG,
+            CLASS_CARRIER,
+            CLASS_AEGIS,
         ] {
             assert!(ids.contains(id), "roster missing `{id}`");
         }
@@ -468,7 +498,8 @@ mod tests {
             assert!(
                 synthesized.contains(c.signature.as_str()),
                 "class `{}` signature `{}` is not in SIGNATURE_IDS",
-                c.id, c.signature,
+                c.id,
+                c.signature,
             );
         }
     }
@@ -484,7 +515,9 @@ mod tests {
             (SIG_THROW, synthetic_throw()),
             (SIG_SWAP_TOSS, synthetic_swap_toss()),
             (SIG_BROADSIDE_SWEEP, synthetic_broadside_sweep()),
-        ].into_iter().collect();
+        ]
+        .into_iter()
+        .collect();
         for (id, action) in &builders {
             assert_eq!(&action.id, id, "builder id mismatch for `{id}`");
         }
@@ -492,8 +525,7 @@ mod tests {
 
     #[test]
     fn affinities_cover_all_three_variants() {
-        let affs: HashSet<ClassAffinity> =
-            canonical_classes().iter().map(|c| c.affinity).collect();
+        let affs: HashSet<ClassAffinity> = canonical_classes().iter().map(|c| c.affinity).collect();
         assert!(affs.contains(&ClassAffinity::Flexible));
         assert!(affs.contains(&ClassAffinity::BowOn));
         assert!(affs.contains(&ClassAffinity::Broadside));
@@ -504,10 +536,17 @@ mod tests {
     #[test]
     fn slip_and_swap_toss_are_tractor_swaps() {
         for a in [synthetic_slip(), synthetic_swap_toss()] {
-            assert!(matches!(
-                a.effects[0],
-                Effect::DISPLACE_SELF { mode: MovementMode::TRACTOR_SWAP, .. }
-            ), "{} should be DISPLACE_SELF TRACTOR_SWAP", a.id);
+            assert!(
+                matches!(
+                    a.effects[0],
+                    Effect::DISPLACE_SELF {
+                        mode: MovementMode::TRACTOR_SWAP,
+                        ..
+                    }
+                ),
+                "{} should be DISPLACE_SELF TRACTOR_SWAP",
+                a.id
+            );
             assert!(!a.cost.advances_turn, "{} is free-fire", a.id);
         }
     }
@@ -516,11 +555,19 @@ mod tests {
     fn ram_burns_forward_throw_burns_aft() {
         assert!(matches!(
             synthetic_ram().effects[0],
-            Effect::DISPLACE_SELF { mode: MovementMode::BURN, direction: None, .. }
+            Effect::DISPLACE_SELF {
+                mode: MovementMode::BURN,
+                direction: None,
+                ..
+            }
         ));
         assert!(matches!(
             synthetic_throw().effects[0],
-            Effect::DISPLACE_SELF { mode: MovementMode::BURN, direction: Some(LaneEnd::Aft), .. }
+            Effect::DISPLACE_SELF {
+                mode: MovementMode::BURN,
+                direction: Some(LaneEnd::Aft),
+                ..
+            }
         ));
     }
 
@@ -528,7 +575,10 @@ mod tests {
     fn phase_is_slip_movement() {
         assert!(matches!(
             synthetic_phase().effects[0],
-            Effect::DISPLACE_SELF { mode: MovementMode::SLIP, .. }
+            Effect::DISPLACE_SELF {
+                mode: MovementMode::SLIP,
+                ..
+            }
         ));
     }
 
@@ -554,7 +604,9 @@ mod tests {
         assert!(matches!(a.effects[0], Effect::DAMAGE { .. }));
         assert!(matches!(
             a.effects[1],
-            Effect::REORIENT { to: ReorientTo::Flip }
+            Effect::REORIENT {
+                to: ReorientTo::Flip
+            }
         ));
         assert_eq!(a.effects.len(), 2, "Sweep is exactly DAMAGE then flip");
         assert!(a.cost.heat >= 4 && a.cost.cooldown_max >= 4);

@@ -41,7 +41,10 @@ fn catalog_asset_loads_and_ids_are_unique() {
 
     // Schema sanity: the design doc's exporter sets a known schema string.
     // Don't pin the version (it will evolve) — just check the field exists.
-    assert!(!cat.meta.schema.is_empty(), "catalog meta.schema must not be empty");
+    assert!(
+        !cat.meta.schema.is_empty(),
+        "catalog meta.schema must not be empty"
+    );
 
     // Unique action ids.
     let mut ids = HashSet::new();
@@ -101,7 +104,11 @@ fn catalog_asset_loads_and_ids_are_unique() {
     // brittle (the design has shifted tiers before) so we just assert
     // the data shape.
     for p in &cat.patrols {
-        assert!(!p.r#mod.is_empty(), "patrol tier {} has empty mod field", p.n);
+        assert!(
+            !p.r#mod.is_empty(),
+            "patrol tier {} has empty mod field",
+            p.n
+        );
     }
 }
 

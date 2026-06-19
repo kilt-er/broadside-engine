@@ -112,10 +112,14 @@ impl std::error::Error for MetaError {
 }
 
 impl From<io::Error> for MetaError {
-    fn from(e: io::Error) -> Self { MetaError::Io(e) }
+    fn from(e: io::Error) -> Self {
+        MetaError::Io(e)
+    }
 }
 impl From<serde_json::Error> for MetaError {
-    fn from(e: serde_json::Error) -> Self { MetaError::Parse(e) }
+    fn from(e: serde_json::Error) -> Self {
+        MetaError::Parse(e)
+    }
 }
 
 impl MetaProgression {
@@ -248,11 +252,8 @@ where
 /// Award salvage for a won encounter to the running [`Run`]. Idempotent
 /// per-encounter only at the caller's level — the bin should call this
 /// once per encounter-complete event, not on every frame.
-pub fn award_run_salvage<F>(
-    run: &mut Run,
-    encounter: &crate::types::EncounterDef,
-    class_to_ship: F,
-) where
+pub fn award_run_salvage<F>(run: &mut Run, encounter: &crate::types::EncounterDef, class_to_ship: F)
+where
     F: FnMut(&crate::types::ShipSpawn) -> Option<Ship>,
 {
     let earned = salvage_for_encounter_win(encounter, class_to_ship);
@@ -475,21 +476,24 @@ mod tests {
             id: "e".into(),
             enemy_ships: vec![
                 ShipSpawn {
-                    class_id: "skiff".into(), cell: 2,
+                    class_id: "skiff".into(),
+                    cell: 2,
                     pos: crate::grid::Pos::new(0, 0),
                     orientation: Orientation::BowOn { bow: LaneEnd::Aft },
                     facing: crate::grid::Facing::Bow(crate::grid::Dir4::S),
                     hp_override: None,
                 },
                 ShipSpawn {
-                    class_id: "skiff".into(), cell: 4,
+                    class_id: "skiff".into(),
+                    cell: 4,
                     pos: crate::grid::Pos::new(0, 0),
                     orientation: Orientation::BowOn { bow: LaneEnd::Aft },
                     facing: crate::grid::Facing::Bow(crate::grid::Dir4::S),
                     hp_override: None,
                 },
                 ShipSpawn {
-                    class_id: "warlord".into(), cell: 6,
+                    class_id: "warlord".into(),
+                    cell: 6,
                     pos: crate::grid::Pos::new(0, 0),
                     orientation: Orientation::BowOn { bow: LaneEnd::Aft },
                     facing: crate::grid::Facing::Bow(crate::grid::Dir4::S),
@@ -523,7 +527,10 @@ mod tests {
             is_boss: true,
         };
         let earned = salvage_for_encounter_win(&enc, |spawn| {
-            Some(ship_with_hull(&spawn.class_id, spawn.hp_override.unwrap_or(3)))
+            Some(ship_with_hull(
+                &spawn.class_id,
+                spawn.hp_override.unwrap_or(3),
+            ))
         });
         // hull 10 -> 3 salvage, boss multiplier 2x -> 6.
         assert_eq!(earned, 6);
@@ -546,7 +553,9 @@ mod tests {
             hazards: vec![],
             is_boss: false,
         };
-        award_run_salvage(&mut run, &enc, |spawn| Some(ship_with_hull(&spawn.class_id, 3)));
+        award_run_salvage(&mut run, &enc, |spawn| {
+            Some(ship_with_hull(&spawn.class_id, 3))
+        });
         // 5 + 1 = 6 (hull-3 skiff gives 1 salvage).
         assert_eq!(run.salvage, 6);
     }
@@ -568,7 +577,9 @@ mod tests {
             hazards: vec![],
             is_boss: true, // 1 salvage * 2 = 2; saturates at u32::MAX
         };
-        award_run_salvage(&mut run, &enc, |spawn| Some(ship_with_hull(&spawn.class_id, 3)));
+        award_run_salvage(&mut run, &enc, |spawn| {
+            Some(ship_with_hull(&spawn.class_id, 3))
+        });
         assert_eq!(run.salvage, u32::MAX);
     }
 
@@ -640,7 +651,11 @@ mod tests {
         assert!(newly.is_empty());
         // Salvage still rolled forward, but the unlock list didn't dup.
         assert_eq!(meta.total_salvage_earned, 15);
-        assert_eq!(meta.unlocked_subsystems.len(), 1, "no duplicate unlock entries");
+        assert_eq!(
+            meta.unlocked_subsystems.len(),
+            1,
+            "no duplicate unlock entries"
+        );
     }
 
     #[test]
@@ -690,7 +705,10 @@ mod tests {
         let path = dir.join("meta.json");
         let _ = std::fs::remove_dir_all(&dir);
 
-        let meta = MetaProgression { total_salvage_earned: 1, ..Default::default() };
+        let meta = MetaProgression {
+            total_salvage_earned: 1,
+            ..Default::default()
+        };
         meta.save_to_disk(&path).expect("save should create parent");
         assert!(path.exists());
 
@@ -702,7 +720,10 @@ mod tests {
         // Invariant: ladder thresholds. A player crossing 25 should
         // also have crossed 10. accumulate_into_meta's correctness
         // depends on this.
-        let xs: Vec<u32> = SUBSYSTEM_UNLOCK_THRESHOLDS.iter().map(|&(_, t)| t).collect();
+        let xs: Vec<u32> = SUBSYSTEM_UNLOCK_THRESHOLDS
+            .iter()
+            .map(|&(_, t)| t)
+            .collect();
         for w in xs.windows(2) {
             assert!(w[0] < w[1], "unlock thresholds must be strictly increasing");
         }
@@ -715,14 +736,22 @@ mod tests {
         // ids; if the catalog renames a subsystem, this test fails
         // and the threshold table needs updating.
         let known: HashSet<&'static str> = [
-            "rear_gunner", "chain_bounty", "overcharge", "crossfire",
+            "rear_gunner",
+            "chain_bounty",
+            "overcharge",
+            "crossfire",
             // canonical-catalog known ids; extend if a future unlock
             // pulls from a different one.
-        ].iter().copied().collect();
+        ]
+        .iter()
+        .copied()
+        .collect();
         for &(id, _) in SUBSYSTEM_UNLOCK_THRESHOLDS {
-            assert!(known.contains(id),
+            assert!(
+                known.contains(id),
                 "unlock id `{id}` not in the known canonical-catalog id set; \
-                 update the test or the threshold table");
+                 update the test or the threshold table"
+            );
         }
     }
 
@@ -750,7 +779,10 @@ mod tests {
         // Monotonic non-decreasing across the tier range.
         let seq: Vec<u32> = (1..=7).map(|t| capital_salvage_for_tier(&c, t)).collect();
         for w in seq.windows(2) {
-            assert!(w[0] <= w[1], "salvage should not decrease with tier: {seq:?}");
+            assert!(
+                w[0] <= w[1],
+                "salvage should not decrease with tier: {seq:?}"
+            );
         }
         // Clamp: tier 0 → P1, tier 9 → P7.
         assert_eq!(capital_salvage_for_tier(&c, 0), 2);
@@ -762,8 +794,15 @@ mod tests {
         // Void Sovereign: P1=None (Patrol-7-only), P7=11.
         let c = capital("Void Sovereign", None, 11);
         assert_eq!(capital_salvage_for_tier(&c, 1), 0, "None P1 → 0 at tier 1");
-        assert_eq!(capital_salvage_for_tier(&c, 7), 11, "still pays P7 at tier 7");
-        assert!(capital_salvage_for_tier(&c, 4) > 0, "interpolates up from 0");
+        assert_eq!(
+            capital_salvage_for_tier(&c, 7),
+            11,
+            "still pays P7 at tier 7"
+        );
+        assert!(
+            capital_salvage_for_tier(&c, 4) > 0,
+            "interpolates up from 0"
+        );
     }
 
     /// Build a catalog with one capital so salvage_for_capital_encounter can
@@ -836,7 +875,8 @@ mod tests {
         let enc = EncounterDef {
             id: "e".into(),
             enemy_ships: vec![ShipSpawn {
-                class_id: "skiff".into(), cell: 2,
+                class_id: "skiff".into(),
+                cell: 2,
                 pos: crate::grid::Pos::new(0, 0),
                 orientation: Orientation::BowOn { bow: LaneEnd::Aft },
                 facing: crate::grid::Facing::Bow(crate::grid::Dir4::S),
@@ -848,6 +888,9 @@ mod tests {
         award_run_salvage_with_catalog(&mut run, &enc, &cat, 5, |spawn| {
             Some(ship_with_hull(&spawn.class_id, 3))
         });
-        assert_eq!(run.salvage, 1, "non-capital → per-enemy fallback (hull-3 = 1)");
+        assert_eq!(
+            run.salvage, 1,
+            "non-capital → per-enemy fallback (hull-3 = 1)"
+        );
     }
 }

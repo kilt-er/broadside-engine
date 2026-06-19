@@ -547,7 +547,10 @@ pub struct ParticlePool {
 
 impl ParticlePool {
     pub fn new() -> Self {
-        Self { particles: Vec::new(), seed: 0x9E37_79B9_7F4A_7C15 }
+        Self {
+            particles: Vec::new(),
+            seed: 0x9E37_79B9_7F4A_7C15,
+        }
     }
 
     /// Seed `n` particles at `center` (screen space) flying outward with a
@@ -887,7 +890,11 @@ mod tests {
         assert_eq!(pool.len(), 12, "spawn_burst seeds exactly N particles");
         let mut out = Vec::new();
         pool.emit(&mut out);
-        assert_eq!(out.len(), 12, "one live SpriteInstance per particle at birth");
+        assert_eq!(
+            out.len(),
+            12,
+            "one live SpriteInstance per particle at birth"
+        );
         // All born at the burst centre.
         for c in &out {
             if let DrawCommand::Sprite(s) = c {
@@ -904,11 +911,16 @@ mod tests {
         assert!(pool.advance(0.05), "still alive mid-life");
         let mut out = Vec::new();
         pool.emit(&mut out);
-        let moved = out.iter().any(|c| matches!(c, DrawCommand::Sprite(s) if s.pos != [0.0, 0.0]));
+        let moved = out
+            .iter()
+            .any(|c| matches!(c, DrawCommand::Sprite(s) if s.pos != [0.0, 0.0]));
         assert!(moved, "advance integrates pos += vel*dt");
         // Past the max lifetime, every particle expires.
         let alive = pool.advance(10.0);
-        assert!(!alive && pool.is_empty(), "all particles expire past their dur");
+        assert!(
+            !alive && pool.is_empty(),
+            "all particles expire past their dur"
+        );
     }
 
     #[test]

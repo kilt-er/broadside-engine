@@ -1,0 +1,8 @@
+[toolchain]
+channel = "1.95.0"
+# miri is omitted: it is not distributed for the stable channel on
+# x86_64-pc-windows-msvc, so listing it makes this pin unresolvable. The
+# quality review rated miri value LOW (only the SetThreadExecutionState FFI is
+# unsafe, opaque to miri). Add it back behind a nightly toolchain if raw-byte
+# parsing ever lands in mesh_import.
+components = ["clippy", "rustfmt"]

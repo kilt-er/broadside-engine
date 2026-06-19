@@ -102,7 +102,9 @@ impl std::error::Error for SaveError {
 }
 
 impl From<io::Error> for SaveError {
-    fn from(e: io::Error) -> Self { SaveError::Io(e) }
+    fn from(e: io::Error) -> Self {
+        SaveError::Io(e)
+    }
 }
 
 impl Run {
@@ -193,10 +195,22 @@ mod tests {
             heat_max: 6,
             locked_out: false,
             shield_profile: ShieldProfile {
-                bow: ShieldFace { armour: 2, charge: 1 },
-                stern: ShieldFace { armour: 0, charge: 0 },
-                port: ShieldFace { armour: 1, charge: 0 },
-                starboard: ShieldFace { armour: 1, charge: 0 },
+                bow: ShieldFace {
+                    armour: 2,
+                    charge: 1,
+                },
+                stern: ShieldFace {
+                    armour: 0,
+                    charge: 0,
+                },
+                port: ShieldFace {
+                    armour: 1,
+                    charge: 0,
+                },
+                starboard: ShieldFace {
+                    armour: 1,
+                    charge: 0,
+                },
             },
             mounts: vec![Mount {
                 id: "m1".into(),

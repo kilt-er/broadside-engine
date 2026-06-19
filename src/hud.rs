@@ -82,8 +82,8 @@ const THREAT_FILL_LETHAL: [f32; 4] = [0.961, 0.341, 0.286, 0.62]; // would-kill 
 const THREAT_FILL_DISPLACE: [f32; 4] = [0.353, 0.624, 0.878, 0.42]; // push/pull/swap
 const THREAT_FILL_STATUS: [f32; 4] = [0.608, 0.549, 0.859, 0.42]; // debuff
 const THREAT_FILL_OTHER: [f32; 4] = [0.55, 0.55, 0.55, 0.34]; // catch-all
-// (#122) PLAYER targeting telegraph = bright CYAN (the player's colour, mirroring
-// the enemy threat red) — the cells a queued player weapon would strike.
+                                                              // (#122) PLAYER targeting telegraph = bright CYAN (the player's colour, mirroring
+                                                              // the enemy threat red) — the cells a queued player weapon would strike.
 const PLAYER_AIM_CYAN: [f32; 4] = [0.30, 0.85, 0.95, 1.0];
 // (#99) THREAT_BEAM (the persistent red enemy→cell intent line) removed — Bruce:
 // clutter. The threatened-cell outline is the cue; the fire beam shows the shot.
@@ -113,8 +113,8 @@ const HULL_BAR_LOW: [f32; 4] = [0.878, 0.286, 0.235, 1.0]; // <=30% red
 // weapon-tile row (Shogun-Showdown style).
 const HUD_BAND_BG: [f32; 4] = [0.055, 0.067, 0.094, 0.92]; // dark panel
 const HUD_LABEL: [f32; 4] = [0.70, 0.78, 0.88, 0.9]; // small text
-// (#98) HUD_TILE_BG / HUD_TILE_COOLDOWN removed with the old mount-tile row —
-// the ability tiles now use the TILE_* palette in push_ability_tiles_2d.
+                                                     // (#98) HUD_TILE_BG / HUD_TILE_COOLDOWN removed with the old mount-tile row —
+                                                     // the ability tiles now use the TILE_* palette in push_ability_tiles_2d.
 
 const SHIELD_PIP_CHARGE: [f32; 4] = [0.329, 0.812, 0.788, 1.0];
 
@@ -129,12 +129,12 @@ const SHIELD_PIP_CHARGE: [f32; 4] = [0.329, 0.812, 0.788, 1.0];
 // the colour so re-enabling is a one-liner).
 #[allow(dead_code)]
 const BOW_MARK_PLAYER: [f32; 4] = [1.0, 0.91, 0.62, 1.0]; // warm gold-white (vs cool hull)
-// (#112) BOW_MARK_ENEMY + the enemy move-arrow were REMOVED in the back-row
-// declutter — an enemy now reads as just its posed hull (no arrow/bars/telegraph
-// pile). The player's heading is carried by its hero hull + motion.
-// (#112 A) Enemy loft render-yaw offset off pure bow-on (Bow(S)=180) so the hull
-// presents a readable 3/4 silhouette instead of an edge-on wedge that reads as a
-// blob — still clearly oncoming toward the player.
+                                                          // (#112) BOW_MARK_ENEMY + the enemy move-arrow were REMOVED in the back-row
+                                                          // declutter — an enemy now reads as just its posed hull (no arrow/bars/telegraph
+                                                          // pile). The player's heading is carried by its hero hull + motion.
+                                                          // (#112 A) Enemy loft render-yaw offset off pure bow-on (Bow(S)=180) so the hull
+                                                          // presents a readable 3/4 silhouette instead of an edge-on wedge that reads as a
+                                                          // blob — still clearly oncoming toward the player.
 const ENEMY_THREE_QUARTER_YAW_DEG: f32 = 28.0;
 // (#118) Idle BOB: a gentle vertical sine on a resting ship so the scene feels
 // alive. Low amplitude + slow Hz — it breathes, it doesn't drift. Per-ship phase
@@ -452,7 +452,12 @@ pub fn lerp_cell_quad(
     t: f32,
 ) -> crate::projector::CellQuad {
     let l1 = |x: f32, y: f32| x + (y - x) * t;
-    let lc = |i: usize| [l1(a.corners[i][0], b.corners[i][0]), l1(a.corners[i][1], b.corners[i][1])];
+    let lc = |i: usize| {
+        [
+            l1(a.corners[i][0], b.corners[i][0]),
+            l1(a.corners[i][1], b.corners[i][1]),
+        ]
+    };
     crate::projector::CellQuad {
         corners: [lc(0), lc(1), lc(2), lc(3)],
         center: [l1(a.center[0], b.center[0]), l1(a.center[1], b.center[1])],
@@ -514,7 +519,14 @@ pub fn compose_scene_2d_tweened(
     let mut ships: Vec<&Ship> = board.cells.iter().flatten().collect();
     ships.sort_by_key(|s| s.pos.row);
     for ship in &ships {
-        push_ship_2d(&mut out, ship, cfg, sprites, tween.visual.get(&ship.id), time_s);
+        push_ship_2d(
+            &mut out,
+            ship,
+            cfg,
+            sprites,
+            tween.visual.get(&ship.id),
+            time_s,
+        );
     }
     // Per-ship overlays LAST, so health bars + queue tiles sit on top of every
     // hull (incl. a nearer ship that overlaps a farther one). Same far→near order.
@@ -604,7 +616,12 @@ fn push_bottom_hud_2d(out: &mut Vec<DrawCommand>, board: &Board) {
     push_polygon(
         out,
         PolygonInstance::flat(
-            [[hp_x, hp_y], [hp_x + hp_w, hp_y], [hp_x + hp_w, hp_y + hp_h], [hp_x, hp_y + hp_h]],
+            [
+                [hp_x, hp_y],
+                [hp_x + hp_w, hp_y],
+                [hp_x + hp_w, hp_y + hp_h],
+                [hp_x, hp_y + hp_h],
+            ],
             HULL_BAR_BG,
             atlas::cell_uvs(atlas::SOLID_WHITE),
         ),
@@ -623,7 +640,12 @@ fn push_bottom_hud_2d(out: &mut Vec<DrawCommand>, board: &Board) {
             push_polygon(
                 out,
                 PolygonInstance::flat(
-                    [[hp_x, hp_y], [hp_x + fw, hp_y], [hp_x + fw, hp_y + hp_h], [hp_x, hp_y + hp_h]],
+                    [
+                        [hp_x, hp_y],
+                        [hp_x + fw, hp_y],
+                        [hp_x + fw, hp_y + hp_h],
+                        [hp_x, hp_y + hp_h],
+                    ],
                     color,
                     atlas::cell_uvs(atlas::SOLID_WHITE),
                 ),
@@ -639,7 +661,8 @@ fn push_bottom_hud_2d(out: &mut Vec<DrawCommand>, board: &Board) {
     let sp = &player.shield_profile;
     let shield_cap: i32 = sp.bow.armour + sp.stern.armour + sp.port.armour + sp.starboard.armour;
     if shield_cap > 0 {
-        let shield_cur: i32 = sp.bow.charge + sp.stern.charge + sp.port.charge + sp.starboard.charge;
+        let shield_cur: i32 =
+            sp.bow.charge + sp.stern.charge + sp.port.charge + sp.starboard.charge;
         let sh_y = hp_y + hp_h + 2.0;
         let sh_h = 4.0;
         push_text_left(out, "SHLD", hp_x + hp_w + 6.0, sh_y - 2.0, 1.0, HUD_LABEL);
@@ -647,7 +670,12 @@ fn push_bottom_hud_2d(out: &mut Vec<DrawCommand>, board: &Board) {
         push_polygon(
             out,
             PolygonInstance::flat(
-                [[hp_x, sh_y], [hp_x + hp_w, sh_y], [hp_x + hp_w, sh_y + sh_h], [hp_x, sh_y + sh_h]],
+                [
+                    [hp_x, sh_y],
+                    [hp_x + hp_w, sh_y],
+                    [hp_x + hp_w, sh_y + sh_h],
+                    [hp_x, sh_y + sh_h],
+                ],
                 HULL_BAR_BG,
                 atlas::cell_uvs(atlas::SOLID_WHITE),
             ),
@@ -658,7 +686,12 @@ fn push_bottom_hud_2d(out: &mut Vec<DrawCommand>, board: &Board) {
             push_polygon(
                 out,
                 PolygonInstance::flat(
-                    [[hp_x, sh_y], [hp_x + fw, sh_y], [hp_x + fw, sh_y + sh_h], [hp_x, sh_y + sh_h]],
+                    [
+                        [hp_x, sh_y],
+                        [hp_x + fw, sh_y],
+                        [hp_x + fw, sh_y + sh_h],
+                        [hp_x, sh_y + sh_h],
+                    ],
                     SHIELD_PIP_CHARGE,
                     atlas::cell_uvs(atlas::SOLID_WHITE),
                 ),
@@ -731,7 +764,12 @@ pub fn push_ability_tiles_2d(out: &mut Vec<DrawCommand>, tiles: &[AbilityTile]) 
         push_polygon(
             out,
             PolygonInstance::flat(
-                [[tx, tile_y], [tx + tile, tile_y], [tx + tile, tile_y + tile], [tx, tile_y + tile]],
+                [
+                    [tx, tile_y],
+                    [tx + tile, tile_y],
+                    [tx + tile, tile_y + tile],
+                    [tx, tile_y + tile],
+                ],
                 bg,
                 atlas::cell_uvs(atlas::SOLID_WHITE),
             ),
@@ -753,9 +791,21 @@ pub fn push_ability_tiles_2d(out: &mut Vec<DrawCommand>, tiles: &[AbilityTile]) 
             push_line(out, pt(c[k]), pt(c[(k + 1) % 4]), bth, border);
         }
         // Desaturated/dim palette for a disabled tile, normal otherwise.
-        let icon_col = if disabled { TILE_DISABLED_INK } else { TILE_ICON };
-        let dmg_col = if disabled { TILE_DISABLED_INK } else { TILE_DAMAGE };
-        let range_col = if disabled { TILE_DISABLED_INK } else { TILE_RANGE };
+        let icon_col = if disabled {
+            TILE_DISABLED_INK
+        } else {
+            TILE_ICON
+        };
+        let dmg_col = if disabled {
+            TILE_DISABLED_INK
+        } else {
+            TILE_DAMAGE
+        };
+        let range_col = if disabled {
+            TILE_DISABLED_INK
+        } else {
+            TILE_RANGE
+        };
         // (#128 Bruce) HAND->QUEUE MOVE: a QUEUED weapon LEAVES the hand — its icon
         // now lives in the top-right QUEUE panel (push_player_queue_panel_2d), so the
         // hand slot HOLLOWS OUT: skip the icon + damage figure here and draw an
@@ -768,8 +818,20 @@ pub fn push_ability_tiles_2d(out: &mut Vec<DrawCommand>, tiles: &[AbilityTile]) 
             // moved up into the queue". Amber so it matches the queue panel's chips.
             let mx = tx + tile / 2.0;
             let my = tile_y + tile / 2.0;
-            push_line(out, pt([mx - 5.0, my + 3.0]), pt([mx, my - 4.0]), 2.0, TILE_QUEUED);
-            push_line(out, pt([mx, my - 4.0]), pt([mx + 5.0, my + 3.0]), 2.0, TILE_QUEUED);
+            push_line(
+                out,
+                pt([mx - 5.0, my + 3.0]),
+                pt([mx, my - 4.0]),
+                2.0,
+                TILE_QUEUED,
+            );
+            push_line(
+                out,
+                pt([mx, my - 4.0]),
+                pt([mx + 5.0, my + 3.0]),
+                2.0,
+                TILE_QUEUED,
+            );
         } else {
             // Icon, centred (nudged up a touch to leave room for the bottom tick row).
             push_sprite(
@@ -783,7 +845,14 @@ pub fn push_ability_tiles_2d(out: &mut Vec<DrawCommand>, tiles: &[AbilityTile]) 
             );
             // DAMAGE = LARGE number, TOP-LEFT (pixel=2; skip 0 = non-damage ability).
             if t.damage > 0 {
-                push_text_left(out, &t.damage.to_string(), tx + 2.0, tile_y + 2.0, 2.0, dmg_col);
+                push_text_left(
+                    out,
+                    &t.damage.to_string(),
+                    tx + 2.0,
+                    tile_y + 2.0,
+                    2.0,
+                    dmg_col,
+                );
             }
         }
         // RANGE = smaller number, TOP-RIGHT (cells; skip 0 = non-targeted).
@@ -797,14 +866,28 @@ pub fn push_ability_tiles_2d(out: &mut Vec<DrawCommand>, tiles: &[AbilityTile]) 
         }
         // KEY = number, BOTTOM-RIGHT.
         let key = t.slot.to_string();
-        push_text_left(out, &key, tx + tile - 6.0, tile_y + tile - 8.0, 1.0, HUD_LABEL);
+        push_text_left(
+            out,
+            &key,
+            tx + tile - 6.0,
+            tile_y + tile - 8.0,
+            1.0,
+            HUD_LABEL,
+        );
         // (#108) ARC letter, BOTTOM-LEFT — F/B/T/R = which side the weapon fires
         // from, so a SIDE weapon (B) reads apart from a forward one (F) at a glance.
         // Broadside gets a brighter tint (it's the stance-dependent one Bruce most
         // needs to notice); the rest use the dim label colour. None = utility card.
         if let Some(arc) = t.arc {
             let arc_col = if arc == 'B' { TILE_RANGE } else { HUD_LABEL };
-            push_text_left(out, &arc.to_string(), tx + 2.0, tile_y + tile - 8.0, 1.0, arc_col);
+            push_text_left(
+                out,
+                &arc.to_string(),
+                tx + 2.0,
+                tile_y + tile - 8.0,
+                1.0,
+                arc_col,
+            );
         }
         // COOLDOWN TICKS along the bottom edge: one per cooldown_max, GREY by
         // default, charging WHITE from the RIGHT as each round passes (rightmost
@@ -822,7 +905,11 @@ pub fn push_ability_tiles_2d(out: &mut Vec<DrawCommand>, tiles: &[AbilityTile]) 
             for k in 0..ticks {
                 let kx = tx + pad + k as f32 * (tw + tick_gap);
                 // Charge from the right: the leftmost `remaining` stay grey.
-                let col = if k >= remaining { TILE_TICK_ELAPSED } else { TILE_TICK_REMAIN };
+                let col = if k >= remaining {
+                    TILE_TICK_ELAPSED
+                } else {
+                    TILE_TICK_REMAIN
+                };
                 push_polygon(
                     out,
                     PolygonInstance::flat(
@@ -877,7 +964,12 @@ pub fn push_ability_tiles_2d(out: &mut Vec<DrawCommand>, tiles: &[AbilityTile]) 
 /// is the bin's fade (1.0 at the press → 0.0 on expiry). Uses the SAME row geometry
 /// as [`push_ability_tiles_2d`] so it lands exactly on the right tile: a pulsing
 /// amber frame + a small "CD" tag. No-op at `intensity <= 0` or unknown slot.
-pub fn push_cooldown_block_cue_2d(out: &mut Vec<DrawCommand>, tiles: &[AbilityTile], slot: char, intensity: f32) {
+pub fn push_cooldown_block_cue_2d(
+    out: &mut Vec<DrawCommand>,
+    tiles: &[AbilityTile],
+    slot: char,
+    intensity: f32,
+) {
     if intensity <= 0.0 || tiles.is_empty() {
         return;
     }
@@ -926,7 +1018,12 @@ pub fn push_cooldown_block_cue_2d(out: &mut Vec<DrawCommand>, tiles: &[AbilityTi
 /// hull box at the ship's cell) rather than a bar rect — it still pops on the ship
 /// that took damage, for player + enemies. Min-clamped so a far hit still reads.
 /// Pure cosmetic; reads the ship's CURRENT pos. Drawn in the bin's overlay pass.
-pub fn push_hull_flash_2d(out: &mut Vec<DrawCommand>, ship: &Ship, intensity: f32, cfg: &ProjectorConfig) {
+pub fn push_hull_flash_2d(
+    out: &mut Vec<DrawCommand>,
+    ship: &Ship,
+    intensity: f32,
+    cfg: &ProjectorConfig,
+) {
     if intensity <= 0.0 || ship.max_hull <= 0 {
         return;
     }
@@ -1081,12 +1178,22 @@ pub fn push_player_targeting_2d(
         let q = grid_cell_quad(tp, cfg);
         // Faint cyan interior + bright cyan outline (mirrors push_threats_2d, the
         // OUTLINE is the cue, never a slab).
-        let faint = [PLAYER_AIM_CYAN[0], PLAYER_AIM_CYAN[1], PLAYER_AIM_CYAN[2], 0.08];
+        let faint = [
+            PLAYER_AIM_CYAN[0],
+            PLAYER_AIM_CYAN[1],
+            PLAYER_AIM_CYAN[2],
+            0.08,
+        ];
         push_polygon(
             out,
             PolygonInstance::flat(q.corners, faint, atlas::cell_uvs(atlas::SOLID_WHITE)),
         );
-        let outline = [PLAYER_AIM_CYAN[0], PLAYER_AIM_CYAN[1], PLAYER_AIM_CYAN[2], 0.95];
+        let outline = [
+            PLAYER_AIM_CYAN[0],
+            PLAYER_AIM_CYAN[1],
+            PLAYER_AIM_CYAN[2],
+            0.95,
+        ];
         let c = q.corners;
         for k in 0..4 {
             push_line(out, pt(c[k]), pt(c[(k + 1) % 4]), 1.0, outline);
@@ -1094,7 +1201,12 @@ pub fn push_player_targeting_2d(
         // Dim cyan aim line player → target so the shot PATH reads (not just the
         // end cell). Thin + semi-transparent so it doesn't compete with the actual
         // fire beam on commit.
-        let aim = [PLAYER_AIM_CYAN[0], PLAYER_AIM_CYAN[1], PLAYER_AIM_CYAN[2], 0.40];
+        let aim = [
+            PLAYER_AIM_CYAN[0],
+            PLAYER_AIM_CYAN[1],
+            PLAYER_AIM_CYAN[2],
+            0.40,
+        ];
         push_line(out, pt(from), pt(q.center), 1.0, aim);
     }
 }
@@ -1105,7 +1217,11 @@ pub fn push_player_targeting_2d(
 /// red "X"-ish mark + a short "no-target" bar over the player's cell. The bin
 /// gates this on (player has a queued weapon) AND (none of the queued weapons
 /// bear). Complements the resting tile grey-out — this is the queued+commit cue.
-pub fn push_fizzle_cue_2d(out: &mut Vec<DrawCommand>, player_pos: crate::grid::Pos, cfg: &ProjectorConfig) {
+pub fn push_fizzle_cue_2d(
+    out: &mut Vec<DrawCommand>,
+    player_pos: crate::grid::Pos,
+    cfg: &ProjectorConfig,
+) {
     let q = grid_cell_quad(player_pos, cfg);
     let scale = q.depth_scale;
     let r = (10.0 * scale).max(7.0);
@@ -1113,7 +1229,7 @@ pub fn push_fizzle_cue_2d(out: &mut Vec<DrawCommand>, player_pos: crate::grid::P
     let cx = q.center[0];
     let cy = q.center[1] - (22.0 * scale + 18.0 * scale).max(26.0);
     let col = [0.95, 0.32, 0.28, 0.95]; // warning red
-    // A bold X (two crossed bars) = "won't fire from here".
+                                        // A bold X (two crossed bars) = "won't fire from here".
     push_line(out, pt([cx - r, cy - r]), pt([cx + r, cy + r]), 2.0, col);
     push_line(out, pt([cx - r, cy + r]), pt([cx + r, cy - r]), 2.0, col);
 }
@@ -1161,7 +1277,12 @@ fn push_fire_2d(out: &mut Vec<DrawCommand>, board: &Board, cfg: &ProjectorConfig
             let core = (q.near_edge_width() * 0.10).clamp(2.0, 5.0);
             push_sprite(
                 out,
-                SpriteInstance::axis_aligned(c, [core, core], IMPACT_FLASH, atlas::cell_uvs(atlas::SOLID_WHITE)),
+                SpriteInstance::axis_aligned(
+                    c,
+                    [core, core],
+                    IMPACT_FLASH,
+                    atlas::cell_uvs(atlas::SOLID_WHITE),
+                ),
             );
             // A few short spark dashes radiating from the impact — reads as a burst
             // without a filled square. Length scales gently with depth, capped.
@@ -1421,7 +1542,9 @@ fn push_ship_2d(
     // (#79) Mid-move/turn: use the bin's interpolated render position/facing so
     // the ship SLIDES + ROTATES; absent ⇒ snap to the logical cell.
     let mut center = vis.map(|v| v.center).unwrap_or(q.center);
-    let near_edge_width = vis.map(|v| v.near_edge_width).unwrap_or_else(|| q.near_edge_width());
+    let near_edge_width = vis
+        .map(|v| v.near_edge_width)
+        .unwrap_or_else(|| q.near_edge_width());
     // (#118) Gentle IDLE BOB so a resting ship reads as alive (Bruce). A small
     // vertical sine on a per-ship phase offset (so the fleet doesn't bob in
     // lockstep), scaled by the cell's depth so a far ship bobs less — keeps it
@@ -1645,7 +1768,10 @@ fn push_ship_2d(
             c[3][0] + (c[2][0] - c[3][0]) * u,
             c[3][1] + (c[2][1] - c[3][1]) * u,
         ];
-        [top[0] + (bot[0] - top[0]) * v, top[1] + (bot[1] - top[1]) * v]
+        [
+            top[0] + (bot[0] - top[0]) * v,
+            top[1] + (bot[1] - top[1]) * v,
+        ]
     };
     // Centre the box on the cell centre (u=v=0.5) with the stance half-fractions.
     let (u0, u1) = (0.5 - fu * 0.5, 0.5 + fu * 0.5);
@@ -3094,7 +3220,14 @@ pub fn push_player_queue_panel_2d(out: &mut Vec<DrawCommand>, tiles: &[AbilityTi
             ),
         );
         // Slot key just LEFT of the chip (which weapon this was in the hand).
-        push_text_left(out, &t.slot.to_string(), fx - half - 7.0, cy - 3.0, 1.0, HUD_LABEL);
+        push_text_left(
+            out,
+            &t.slot.to_string(),
+            fx - half - 7.0,
+            cy - 3.0,
+            1.0,
+            HUD_LABEL,
+        );
         // The HEAD (bottom, k==0) gets a "NEXT" tag at the panel's left edge, same
         // row, so "fires next" reads. Other rows leave that space blank.
         if k == 0 {
@@ -3120,7 +3253,10 @@ pub fn enemy_badge_number(board: &Board, id: &str) -> u32 {
         .map(|s| s.id.as_str())
         .collect();
     ids.sort_unstable();
-    ids.iter().position(|x| *x == id).map(|i| i as u32 + 1).unwrap_or(0)
+    ids.iter()
+        .position(|x| *x == id)
+        .map(|i| i as u32 + 1)
+        .unwrap_or(0)
 }
 
 /// (#131 Bruce) Draw each LIVE enemy's IDENTITY number above-LEFT of its hull on the
@@ -3145,8 +3281,16 @@ pub fn push_enemy_id_badges_2d(
         }
         let q = grid_cell_quad(ship.pos, cfg);
         // Track the sliding hull: use the tweened visual centre when present.
-        let center = tween.visual.get(&ship.id).map(|v| v.center).unwrap_or(q.center);
-        let depth = tween.visual.get(&ship.id).map(|v| v.depth_scale).unwrap_or(q.depth_scale);
+        let center = tween
+            .visual
+            .get(&ship.id)
+            .map(|v| v.center)
+            .unwrap_or(q.center);
+        let depth = tween
+            .visual
+            .get(&ship.id)
+            .map(|v| v.depth_scale)
+            .unwrap_or(q.depth_scale);
         // Above-LEFT of the hull: left of centre, up by ~the hull half-height.
         let half = (q.near_edge_width() * 0.5).max(10.0);
         let bx = center[0] - half;
@@ -3254,7 +3398,12 @@ pub fn push_enemy_info_panel_2d(out: &mut Vec<DrawCommand>, board: &Board) {
         push_polygon(
             out,
             PolygonInstance::flat(
-                [[cx0, hy], [cx0 + bar_w, hy], [cx0 + bar_w, hy + bar_h], [cx0, hy + bar_h]],
+                [
+                    [cx0, hy],
+                    [cx0 + bar_w, hy],
+                    [cx0 + bar_w, hy + bar_h],
+                    [cx0, hy + bar_h],
+                ],
                 HULL_BAR_BG,
                 atlas::cell_uvs(atlas::SOLID_WHITE),
             ),
@@ -3273,7 +3422,12 @@ pub fn push_enemy_info_panel_2d(out: &mut Vec<DrawCommand>, board: &Board) {
                 push_polygon(
                     out,
                     PolygonInstance::flat(
-                        [[cx0, hy], [cx0 + fw, hy], [cx0 + fw, hy + bar_h], [cx0, hy + bar_h]],
+                        [
+                            [cx0, hy],
+                            [cx0 + fw, hy],
+                            [cx0 + fw, hy + bar_h],
+                            [cx0, hy + bar_h],
+                        ],
                         col,
                         atlas::cell_uvs(atlas::SOLID_WHITE),
                     ),
@@ -3316,7 +3470,12 @@ pub fn push_enemy_info_panel_2d(out: &mut Vec<DrawCommand>, board: &Board) {
             push_polygon(
                 out,
                 PolygonInstance::flat(
-                    [[cx0, sy], [cx0 + bar_w, sy], [cx0 + bar_w, sy + sh], [cx0, sy + sh]],
+                    [
+                        [cx0, sy],
+                        [cx0 + bar_w, sy],
+                        [cx0 + bar_w, sy + sh],
+                        [cx0, sy + sh],
+                    ],
                     HULL_BAR_BG,
                     atlas::cell_uvs(atlas::SOLID_WHITE),
                 ),
@@ -3327,7 +3486,12 @@ pub fn push_enemy_info_panel_2d(out: &mut Vec<DrawCommand>, board: &Board) {
                 push_polygon(
                     out,
                     PolygonInstance::flat(
-                        [[cx0, sy], [cx0 + fw, sy], [cx0 + fw, sy + sh], [cx0, sy + sh]],
+                        [
+                            [cx0, sy],
+                            [cx0 + fw, sy],
+                            [cx0 + fw, sy + sh],
+                            [cx0, sy + sh],
+                        ],
                         SHIELD_PIP_CHARGE,
                         atlas::cell_uvs(atlas::SOLID_WHITE),
                     ),
@@ -3429,8 +3593,16 @@ pub fn push_res_readout(out: &mut Vec<DrawCommand>, ship: (u32, u32), scene: (u3
     let pitch = crate::gfx::grid_pitch_step();
     let mode_tag = crate::gfx::grid_mode_tag(); // "" / "STRETCH" / "STRAIGHT"
     if pitch > 0 || !mode_tag.is_empty() {
-        let tag = if mode_tag.is_empty() { String::new() } else { format!(" {mode_tag}") };
-        right_align(out, &format!("PITCH {}/{}{}", pitch, crate::gfx::GRID_PITCH_STEPS, tag), h - 40.0);
+        let tag = if mode_tag.is_empty() {
+            String::new()
+        } else {
+            format!(" {mode_tag}")
+        };
+        right_align(
+            out,
+            &format!("PITCH {}/{}{}", pitch, crate::gfx::GRID_PITCH_STEPS, tag),
+            h - 40.0,
+        );
     }
 }
 
@@ -3448,7 +3620,13 @@ pub fn push_controls_overlay(out: &mut Vec<DrawCommand>) {
     // five lines ~45 px of 270 (~17% height) — a compact corner readout.
     let pixel = 1.0;
     let line_h = 7.0 * pixel + 2.0; // glyph height + tight inter-line gap
-    let lines = ["1 2 3  QUEUE", "ARROWS MOVE", "TAB REORIENT", "V  VENT", "SPACE FIRE"];
+    let lines = [
+        "1 2 3  QUEUE",
+        "ARROWS MOVE",
+        "TAB REORIENT",
+        "V  VENT",
+        "SPACE FIRE",
+    ];
     let left_pad = 4.0;
     let bottom_pad = 4.0;
     let start_y = VIRTUAL_H as f32 - line_h * lines.len() as f32 - bottom_pad;
@@ -3544,7 +3722,7 @@ pub struct AbilityTile {
 }
 
 const TILE_READY: [f32; 4] = [0.329, 0.812, 0.788, 1.0]; // teal (1-D emit_tile path)
-// (#98) Ready 2-D tile = WHITE border ("queue me"); charging tile = dim violet.
+                                                         // (#98) Ready 2-D tile = WHITE border ("queue me"); charging tile = dim violet.
 const TILE_BORDER_READY: [f32; 4] = [0.96, 0.98, 1.0, 1.0]; // white = ready to queue
 const TILE_COOLDOWN: [f32; 4] = [0.42, 0.40, 0.50, 1.0]; // dim violet = on CD
 const TILE_BG: [f32; 4] = [0.094, 0.110, 0.149, 0.92];
@@ -3564,8 +3742,8 @@ const TILE_DISABLED_BG: [f32; 4] = [0.055, 0.062, 0.078, 0.92]; // darker than T
 const TILE_DISABLED_BORDER: [f32; 4] = [0.30, 0.32, 0.36, 1.0]; // dim grey frame
 const TILE_DISABLED_INK: [f32; 4] = [0.42, 0.45, 0.50, 1.0]; // desaturated grey
 const TILE_ENEMY: [f32; 4] = [0.90, 0.34, 0.30, 1.0]; // enemy-intent red frame
-// (#98) Cooldown TICKS along a tile's bottom edge: white = elapsed/ready round,
-// grey = a round still remaining.
+                                                      // (#98) Cooldown TICKS along a tile's bottom edge: white = elapsed/ready round,
+                                                      // grey = a round still remaining.
 const TILE_TICK_ELAPSED: [f32; 4] = [0.92, 0.94, 0.98, 1.0]; // white = ready/elapsed
 const TILE_TICK_REMAIN: [f32; 4] = [0.40, 0.42, 0.50, 1.0]; // grey = round remaining
 
@@ -4493,11 +4671,17 @@ mod tests {
 
         let mut faded = Vec::new();
         push_hull_flash_2d(&mut faded, &ship, 0.0, &cfg);
-        assert!(faded.is_empty(), "an expired flash (intensity 0) must be a no-op");
+        assert!(
+            faded.is_empty(),
+            "an expired flash (intensity 0) must be a no-op"
+        );
 
         let mut neg = Vec::new();
         push_hull_flash_2d(&mut neg, &ship, -0.5, &cfg);
-        assert!(neg.is_empty(), "a negative intensity must be a no-op (defensive)");
+        assert!(
+            neg.is_empty(),
+            "a negative intensity must be a no-op (defensive)"
+        );
     }
 
     /// (#106) The floating damage number renders only for a positive amount that
@@ -4511,7 +4695,10 @@ mod tests {
 
         let mut shown = Vec::new();
         push_damage_number_2d(&mut shown, &ship, 4, 1.0, &cfg);
-        assert!(!shown.is_empty(), "a positive amount mid-fade must render glyphs");
+        assert!(
+            !shown.is_empty(),
+            "a positive amount mid-fade must render glyphs"
+        );
 
         let mut zero = Vec::new();
         push_damage_number_2d(&mut zero, &ship, 0, 1.0, &cfg);
@@ -4519,7 +4706,10 @@ mod tests {
 
         let mut expired = Vec::new();
         push_damage_number_2d(&mut expired, &ship, 4, 0.0, &cfg);
-        assert!(expired.is_empty(), "a fully-faded number (intensity 0) must be a no-op");
+        assert!(
+            expired.is_empty(),
+            "a fully-faded number (intensity 0) must be a no-op"
+        );
     }
 
     /// (#116) A RESTING tile whose weapon can't bear (`!can_fire`, not queued) is
@@ -4528,7 +4718,8 @@ mod tests {
     #[test]
     fn resting_no_target_tile_renders_disabled() {
         let has_bg = |cmds: &[DrawCommand], color: [f32; 4]| {
-            cmds.iter().any(|c| matches!(c, DrawCommand::Polygon(p) if p.color == color))
+            cmds.iter()
+                .any(|c| matches!(c, DrawCommand::Polygon(p) if p.color == color))
         };
         let tile = |can_fire: bool| AbilityTile {
             slot: '1',
@@ -4709,8 +4900,11 @@ mod tests {
             let mut board = empty_board(crate::grid::CELLS);
             // Player on the front row at `col`, facing up-lane, with a class so
             // the loft path engages (mirrors the live player).
-            let mut player =
-                frigate_at(0, Faction::Player, Orientation::BowOn { bow: LaneEnd::Fore });
+            let mut player = frigate_at(
+                0,
+                Faction::Player,
+                Orientation::BowOn { bow: LaneEnd::Fore },
+            );
             player.pos = Pos::new(col, ROWS - 1);
             player.facing = Facing::Bow(Dir4::N);
             player.klass = Some("aegis".to_string());
@@ -4747,14 +4941,17 @@ mod tests {
         let e = Facing::Bow(Dir4::E); // +90
         let w = Facing::Bow(Dir4::W); // -90
         let s = Facing::Bow(Dir4::S); // 180
-        // Endpoints exact.
+                                      // Endpoints exact.
         assert!((lerp_facing_yaw_deg(n, e, 0.0) - 0.0).abs() < 1e-4);
         assert!((lerp_facing_yaw_deg(n, e, 1.0) - 90.0).abs() < 1e-4);
         // N->E half = +45.
         assert!((lerp_facing_yaw_deg(n, e, 0.5) - 45.0).abs() < 1e-4);
         // S(180)->W(-90): naive delta -270, shortest is +90 -> half lands 225
         // (180 + 45), NOT 45. Proves the wrap.
-        assert!((lerp_facing_yaw_deg(s, w, 0.5) - 225.0).abs() < 1e-4, "S->W must wrap +90");
+        assert!(
+            (lerp_facing_yaw_deg(s, w, 0.5) - 225.0).abs() < 1e-4,
+            "S->W must wrap +90"
+        );
         // W(-90)->N(0): +90, half = -45.
         assert!((lerp_facing_yaw_deg(w, n, 0.5) - (-45.0)).abs() < 1e-4);
         // A no-op (same facing) is flat.
@@ -4773,8 +4970,14 @@ mod tests {
         let b = grid_cell_quad(Pos::new(3, 3), &cfg);
         let at0 = lerp_cell_quad(&a, &b, 0.0);
         let at1 = lerp_cell_quad(&a, &b, 1.0);
-        assert!((at0.center[0] - a.center[0]).abs() < 1e-3 && (at0.center[1] - a.center[1]).abs() < 1e-3);
-        assert!((at1.center[0] - b.center[0]).abs() < 1e-3 && (at1.center[1] - b.center[1]).abs() < 1e-3);
+        assert!(
+            (at0.center[0] - a.center[0]).abs() < 1e-3
+                && (at0.center[1] - a.center[1]).abs() < 1e-3
+        );
+        assert!(
+            (at1.center[0] - b.center[0]).abs() < 1e-3
+                && (at1.center[1] - b.center[1]).abs() < 1e-3
+        );
         let mid = lerp_cell_quad(&a, &b, 0.5);
         assert!((mid.center[0] - 0.5 * (a.center[0] + b.center[0])).abs() < 1e-3);
         assert!((mid.center[1] - 0.5 * (a.center[1] + b.center[1])).abs() < 1e-3);
@@ -4788,14 +4991,23 @@ mod tests {
         let cfg = ProjectorConfig::default();
         let mut board = empty_board(crate::grid::CELLS);
         board.cells[crate::grid::Pos::new(2, 3).to_index()] = Some({
-            let mut s = frigate_at(0, Faction::Player, Orientation::BowOn { bow: LaneEnd::Fore });
+            let mut s = frigate_at(
+                0,
+                Faction::Player,
+                Orientation::BowOn { bow: LaneEnd::Fore },
+            );
             s.pos = crate::grid::Pos::new(2, 3);
             s.facing = crate::grid::Facing::Bow(crate::grid::Dir4::N);
             s
         });
         let plain = compose_scene_2d_with(&board, &cfg, &EmptySpriteRegistry);
-        let tweened = compose_scene_2d_tweened(&board, &cfg, &EmptySpriteRegistry, &Tween2d::default(), 0.0);
-        assert_eq!(plain.len(), tweened.len(), "empty Tween2d must not change the draw list");
+        let tweened =
+            compose_scene_2d_tweened(&board, &cfg, &EmptySpriteRegistry, &Tween2d::default(), 0.0);
+        assert_eq!(
+            plain.len(),
+            tweened.len(),
+            "empty Tween2d must not change the draw list"
+        );
     }
 
     #[test]

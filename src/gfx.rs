@@ -1146,7 +1146,8 @@ impl Gfx {
         // swap in Bruce's painted PNGs from assets/backgrounds. A missing/failed
         // manifest keeps the fallback bands rather than blanking the screen.
         let mut background = crate::background::Background::new(&device, &queue);
-        match background.load_manifest(&device, &queue, std::path::Path::new("assets/backgrounds")) {
+        match background.load_manifest(&device, &queue, std::path::Path::new("assets/backgrounds"))
+        {
             Ok(n) => log::info!("background: loaded {n} painted layer(s) from assets/backgrounds"),
             Err(e) => log::warn!("background: manifest load failed ({e}); using fallback bands"),
         }
@@ -1183,11 +1184,7 @@ impl Gfx {
     /// One body for the constructor and the live [`Self::cycle_scene_res`] so the
     /// texture is identical (same format + usages); the COPY_SRC usage lets the
     /// headless capture read the frame back.
-    fn make_offscreen(
-        device: &wgpu::Device,
-        w: u32,
-        h: u32,
-    ) -> (wgpu::Texture, wgpu::TextureView) {
+    fn make_offscreen(device: &wgpu::Device, w: u32, h: u32) -> (wgpu::Texture, wgpu::TextureView) {
         let tex = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("offscreen virtual-res target"),
             size: wgpu::Extent3d {
@@ -1330,7 +1327,8 @@ impl Gfx {
         // 1) Composite the scene into the offscreen exactly as render() does
         //    (minus the swapchain blit) by reusing render() — headless, render()
         //    composites the offscreen then early-returns at the (absent) surface.
-        self.render(commands).map_err(|e| format!("render: {e:?}"))?;
+        self.render(commands)
+            .map_err(|e| format!("render: {e:?}"))?;
 
         // 2) Read the offscreen back. Re-create a matching readback target: the
         //    offscreen view's texture is private, so render a 2nd time into a
@@ -1969,7 +1967,8 @@ impl Gfx {
     /// true once Bruce's 15-facing bake is dropped, false today (→ keep the
     /// current sprite/flat-box path, no regression).
     pub fn has_facing_sprite(&self, class: &str, index: usize) -> bool {
-        self.ship_sprites.contains_key(&format!("{class}_f{index:02}"))
+        self.ship_sprites
+            .contains_key(&format!("{class}_f{index:02}"))
     }
 
     /// Build the per-slot (slot, side, top) bind group on first request
@@ -2393,11 +2392,8 @@ impl Gfx {
                         scene_w() as f32,
                         scene_h() as f32,
                     );
-                    let base_yaw = crate::loft_gpu::chase_cam_ground_yaw_deg(
-                        q.aim_at,
-                        q.facing_yaw_deg,
-                        &cfg,
-                    );
+                    let base_yaw =
+                        crate::loft_gpu::chase_cam_ground_yaw_deg(q.aim_at, q.facing_yaw_deg, &cfg);
 
                     // 1) Render the hull into the shared loft target at the ground-
                     // yawed pose. The fixed house key light (laz -50 / lel 60)

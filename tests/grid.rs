@@ -136,7 +136,11 @@ fn to_index_is_a_bijection_onto_zero_until_cells() {
 
 #[test]
 fn from_index_rejects_the_first_out_of_range_index() {
-    assert_eq!(Pos::from_index(CELLS), None, "index == CELLS is out of range");
+    assert_eq!(
+        Pos::from_index(CELLS),
+        None,
+        "index == CELLS is out of range"
+    );
     assert_eq!(Pos::from_index(CELLS + 1), None);
     assert_eq!(Pos::from_index(usize::MAX), None);
 }
@@ -204,7 +208,11 @@ fn cardinal_deltas_pin_the_absolute_frame_not_just_a_consistent_one() {
     // cardinal. `+row` is toward the camera, so S must be (0, +1) and N (0, -1);
     // `+col` is rightward, so E is (+1, 0) and W (-1, 0). A flip of either pair
     // in `src/grid.rs` lands here.
-    assert_eq!(Dir8::N.delta(), (0, -1), "N steps AWAY from the camera (row--)");
+    assert_eq!(
+        Dir8::N.delta(),
+        (0, -1),
+        "N steps AWAY from the camera (row--)"
+    );
     assert_eq!(Dir8::S.delta(), (0, 1), "S steps TOWARD the camera (row++)");
     assert_eq!(Dir8::E.delta(), (1, 0), "E increases col (rightward)");
     assert_eq!(Dir8::W.delta(), (-1, 0), "W decreases col (leftward)");
@@ -281,18 +289,42 @@ fn dir4_cardinals_inherit_the_same_absolute_frame_via_dir8() {
     // The stance/facing cardinals must share the board frame, otherwise a
     // Bow(S) ship would face away from the camera while the world's S points
     // toward it. Dir4 has no `delta` of its own, so pin it through `to_dir8`.
-    assert_eq!(Dir4::N.to_dir8().delta(), (0, -1), "Dir4::N is world N (row--)");
-    assert_eq!(Dir4::S.to_dir8().delta(), (0, 1), "Dir4::S is world S (row++)");
-    assert_eq!(Dir4::E.to_dir8().delta(), (1, 0), "Dir4::E is world E (col++)");
-    assert_eq!(Dir4::W.to_dir8().delta(), (-1, 0), "Dir4::W is world W (col--)");
+    assert_eq!(
+        Dir4::N.to_dir8().delta(),
+        (0, -1),
+        "Dir4::N is world N (row--)"
+    );
+    assert_eq!(
+        Dir4::S.to_dir8().delta(),
+        (0, 1),
+        "Dir4::S is world S (row++)"
+    );
+    assert_eq!(
+        Dir4::E.to_dir8().delta(),
+        (1, 0),
+        "Dir4::E is world E (col++)"
+    );
+    assert_eq!(
+        Dir4::W.to_dir8().delta(),
+        (-1, 0),
+        "Dir4::W is world W (col--)"
+    );
     // The "positive" direction of each axis (used by `Axis::dirs`) is the one
     // whose delta has a +1 component — S on NorthSouth, E on EastWest. This ties
     // the Axis::dirs ordering (tested elsewhere structurally) to the ABSOLUTE
     // sign, closing the loop between the axis API and the board frame.
     let (ns_pos, _) = Axis::NorthSouth.dirs();
     let (ew_pos, _) = Axis::EastWest.dirs();
-    assert_eq!(ns_pos.to_dir8().delta(), (0, 1), "NorthSouth positive is +row (S)");
-    assert_eq!(ew_pos.to_dir8().delta(), (1, 0), "EastWest positive is +col (E)");
+    assert_eq!(
+        ns_pos.to_dir8().delta(),
+        (0, 1),
+        "NorthSouth positive is +row (S)"
+    );
+    assert_eq!(
+        ew_pos.to_dir8().delta(),
+        (1, 0),
+        "EastWest positive is +col (E)"
+    );
 }
 
 #[test]
@@ -314,7 +346,11 @@ fn all_positions_matches_an_independent_row_major_enumeration() {
     // entry must round-trip to its slot index.
     let lib = all_positions();
     assert_eq!(lib.len(), CELLS, "all_positions has CELLS entries");
-    assert_eq!(lib, every_cell(), "all_positions is row-major over the grid");
+    assert_eq!(
+        lib,
+        every_cell(),
+        "all_positions is row-major over the grid"
+    );
     for (i, p) in lib.into_iter().enumerate() {
         assert_eq!(p.to_index(), i, "all_positions[{i}] sits at index {i}");
     }
@@ -371,7 +407,11 @@ fn dir8_steps_are_distinct_and_cover_zero_until_eight() {
 #[test]
 fn opposite_is_an_involution_and_changes_every_direction() {
     for d in ALL_DIR8 {
-        assert_eq!(d.opposite().opposite(), d, "opposite∘opposite == id for {d:?}");
+        assert_eq!(
+            d.opposite().opposite(),
+            d,
+            "opposite∘opposite == id for {d:?}"
+        );
         assert_ne!(d.opposite(), d, "no direction is its own opposite");
     }
 }
@@ -383,7 +423,10 @@ fn opposite_is_four_clockwise_steps() {
     for d in ALL_DIR8 {
         assert_eq!(d.opposite(), Dir8::from_step(d.step() + 4));
         // Four CW rotations also reach the opposite.
-        assert_eq!(d.rotate_cw().rotate_cw().rotate_cw().rotate_cw(), d.opposite());
+        assert_eq!(
+            d.rotate_cw().rotate_cw().rotate_cw().rotate_cw(),
+            d.opposite()
+        );
     }
 }
 
@@ -422,7 +465,11 @@ fn rotate_cw_advances_exactly_one_clockwise_slot() {
 fn is_cardinal_partitions_the_eight_into_four_and_four() {
     let cardinals: Vec<Dir8> = ALL_DIR8.into_iter().filter(|d| d.is_cardinal()).collect();
     let diagonals: Vec<Dir8> = ALL_DIR8.into_iter().filter(|d| !d.is_cardinal()).collect();
-    assert_eq!(cardinals, [Dir8::N, Dir8::E, Dir8::S, Dir8::W], "the four cardinals");
+    assert_eq!(
+        cardinals,
+        [Dir8::N, Dir8::E, Dir8::S, Dir8::W],
+        "the four cardinals"
+    );
     assert_eq!(diagonals, DIAGONALS.to_vec(), "the four diagonals");
     // A cardinal's opposite is a cardinal; a diagonal's opposite is a diagonal.
     for d in ALL_DIR8 {
@@ -437,7 +484,11 @@ fn delta_plus_opposite_delta_cancels_for_every_direction() {
     for d in ALL_DIR8 {
         let (dc, dr) = d.delta();
         let (oc, or) = d.opposite().delta();
-        assert_eq!((dc + oc, dr + or), (0, 0), "{d:?} delta + opposite delta == 0");
+        assert_eq!(
+            (dc + oc, dr + or),
+            (0, 0),
+            "{d:?} delta + opposite delta == 0"
+        );
     }
 }
 
@@ -447,7 +498,10 @@ fn delta_magnitudes_match_cardinal_vs_diagonal() {
     // Every component is in {-1,0,1} and the step is never the zero vector.
     for d in ALL_DIR8 {
         let (dc, dr) = d.delta();
-        assert!((-1..=1).contains(&dc) && (-1..=1).contains(&dr), "{d:?} unit components");
+        assert!(
+            (-1..=1).contains(&dc) && (-1..=1).contains(&dr),
+            "{d:?} unit components"
+        );
         assert_ne!((dc, dr), (0, 0), "{d:?} is a real step");
         let nonzero = (dc != 0) as u8 + (dr != 0) as u8;
         if d.is_cardinal() {
@@ -565,10 +619,22 @@ fn offset_returns_none_off_the_near_edge_underflow() {
     // Stepping past col 0 / row 0 underflows and must be rejected (not wrap).
     assert_eq!(offset(Pos::new(0, 0), Dir8::W, 1), None, "W off col 0");
     assert_eq!(offset(Pos::new(0, 0), Dir8::N, 1), None, "N off row 0");
-    assert_eq!(offset(Pos::new(0, 0), Dir8::NW, 1), None, "NW off the corner");
+    assert_eq!(
+        offset(Pos::new(0, 0), Dir8::NW, 1),
+        None,
+        "NW off the corner"
+    );
     // Edge cells: stepping along the edge stays on, stepping off it is None.
-    assert_eq!(offset(Pos::new(0, 2), Dir8::W, 1), None, "W off the left wall");
-    assert_eq!(offset(Pos::new(2, 0), Dir8::N, 1), None, "N off the back wall");
+    assert_eq!(
+        offset(Pos::new(0, 2), Dir8::W, 1),
+        None,
+        "W off the left wall"
+    );
+    assert_eq!(
+        offset(Pos::new(2, 0), Dir8::N, 1),
+        None,
+        "N off the back wall"
+    );
 }
 
 #[test]
@@ -592,14 +658,22 @@ fn offset_negative_distance_steps_backward() {
     // the bounds gate still applies at the other end.
     assert_eq!(offset(Pos::new(1, 1), Dir8::SE, -1), Some(Pos::new(0, 0)));
     assert_eq!(offset(Pos::new(2, 2), Dir8::E, -2), Some(Pos::new(0, 2)));
-    assert_eq!(offset(Pos::new(0, 0), Dir8::SE, -1), None, "backward off the near corner");
+    assert_eq!(
+        offset(Pos::new(0, 0), Dir8::SE, -1),
+        None,
+        "backward off the near corner"
+    );
 }
 
 #[test]
 fn offset_distance_zero_is_the_same_cell() {
     for p in every_cell() {
         for d in ALL_DIR8 {
-            assert_eq!(offset(p, d, 0), Some(p), "zero step from {p:?} via {d:?} stays put");
+            assert_eq!(
+                offset(p, d, 0),
+                Some(p),
+                "zero step from {p:?} via {d:?} stays put"
+            );
         }
     }
 }
@@ -625,9 +699,21 @@ fn offset_one_then_opposite_one_returns_home() {
 fn neighbors_count_is_three_five_or_eight_by_position_class() {
     // Corners have 3, edges 5, interior 8.
     assert_eq!(neighbors(Pos::new(0, 0)).len(), 3, "back-left corner");
-    assert_eq!(neighbors(Pos::new(COLS - 1, 0)).len(), 3, "back-right corner");
-    assert_eq!(neighbors(Pos::new(0, ROWS - 1)).len(), 3, "front-left corner");
-    assert_eq!(neighbors(Pos::new(COLS - 1, ROWS - 1)).len(), 3, "front-right corner");
+    assert_eq!(
+        neighbors(Pos::new(COLS - 1, 0)).len(),
+        3,
+        "back-right corner"
+    );
+    assert_eq!(
+        neighbors(Pos::new(0, ROWS - 1)).len(),
+        3,
+        "front-left corner"
+    );
+    assert_eq!(
+        neighbors(Pos::new(COLS - 1, ROWS - 1)).len(),
+        3,
+        "front-right corner"
+    );
     assert_eq!(neighbors(Pos::new(1, 0)).len(), 5, "back edge");
     assert_eq!(neighbors(Pos::new(0, 1)).len(), 5, "left edge");
     assert_eq!(neighbors(Pos::new(2, ROWS - 1)).len(), 5, "front edge");
@@ -659,7 +745,11 @@ fn neighbors_equals_the_in_bounds_unit_offsets() {
     // Pins it against `offset` so the two can't drift apart.
     for p in every_cell() {
         let from_offset: Vec<Pos> = ALL_DIR8.iter().filter_map(|&d| offset(p, d, 1)).collect();
-        assert_eq!(neighbors(p), from_offset, "neighbours of {p:?} == in-bounds 1-offsets");
+        assert_eq!(
+            neighbors(p),
+            from_offset,
+            "neighbours of {p:?} == in-bounds 1-offsets"
+        );
     }
 }
 
@@ -696,7 +786,10 @@ fn distance_is_zero_iff_same_cell() {
         assert_eq!(distance(a, a), 0, "identity at {a:?}");
         for b in every_cell() {
             if a != b {
-                assert!(distance(a, b) > 0, "distinct cells {a:?},{b:?} are > 0 apart");
+                assert!(
+                    distance(a, b) > 0,
+                    "distinct cells {a:?},{b:?} are > 0 apart"
+                );
             }
         }
     }
@@ -715,8 +808,16 @@ fn distance_is_symmetric_over_every_pair() {
 fn distance_is_chebyshev_diagonal_step_costs_one() {
     // The discriminator that makes this Chebyshev and not Manhattan/Euclid: a
     // pure diagonal of length k costs k (max axis), not 2k and not k·√2.
-    assert_eq!(distance(Pos::new(0, 0), Pos::new(3, 3)), 3, "diag 3 costs 3");
-    assert_eq!(distance(Pos::new(0, 0), Pos::new(1, 1)), 1, "diag 1 costs 1");
+    assert_eq!(
+        distance(Pos::new(0, 0), Pos::new(3, 3)),
+        3,
+        "diag 3 costs 3"
+    );
+    assert_eq!(
+        distance(Pos::new(0, 0), Pos::new(1, 1)),
+        1,
+        "diag 1 costs 1"
+    );
     // A mixed step takes the LARGER axis delta, not the sum.
     assert_eq!(distance(Pos::new(0, 0), Pos::new(4, 1)), 4, "max(4,1) == 4");
     assert_eq!(distance(Pos::new(0, 0), Pos::new(1, 3)), 3, "max(1,3) == 3");
@@ -736,7 +837,11 @@ fn the_diameter_of_the_grid_is_the_long_diagonal() {
         }
     }
     assert_eq!(max_seen, (COLS - 1).max(ROWS - 1), "grid diameter");
-    assert_eq!(distance(Pos::new(0, 0), Pos::new(COLS - 1, 0)), COLS - 1, "widest row");
+    assert_eq!(
+        distance(Pos::new(0, 0), Pos::new(COLS - 1, 0)),
+        COLS - 1,
+        "widest row"
+    );
 }
 
 proptest! {
@@ -783,7 +888,11 @@ fn range_band_boundaries_match_decision_six() {
     assert_eq!(range_band(o, Pos::new(0, 2)), Range::Near, "dist 2");
     assert_eq!(range_band(o, Pos::new(0, 3)), Range::Far, "dist 3");
     // Lateral confirms the same cuts on the wider axis (up to dist 4).
-    assert_eq!(range_band(o, Pos::new(1, 0)), Range::Adjacent, "dist 1 lateral");
+    assert_eq!(
+        range_band(o, Pos::new(1, 0)),
+        Range::Adjacent,
+        "dist 1 lateral"
+    );
     assert_eq!(range_band(o, Pos::new(2, 0)), Range::Near, "dist 2 lateral");
     assert_eq!(range_band(o, Pos::new(3, 0)), Range::Far, "dist 3 lateral");
     assert_eq!(range_band(o, Pos::new(4, 0)), Range::Far, "dist 4 lateral");
@@ -794,9 +903,17 @@ fn range_band_counts_a_diagonal_step_as_adjacent() {
     // Because the metric is Chebyshev, a diagonal neighbour is Adjacent (dist 1),
     // not Near — the property that lets corner pressure read as point-blank.
     let o = Pos::new(0, 0);
-    assert_eq!(range_band(o, Pos::new(1, 1)), Range::Adjacent, "diagonal neighbour");
+    assert_eq!(
+        range_band(o, Pos::new(1, 1)),
+        Range::Adjacent,
+        "diagonal neighbour"
+    );
     // A dist-2 diagonal is Near.
-    assert_eq!(range_band(o, Pos::new(2, 2)), Range::Near, "two-step diagonal");
+    assert_eq!(
+        range_band(o, Pos::new(2, 2)),
+        Range::Near,
+        "two-step diagonal"
+    );
 }
 
 #[test]
@@ -868,7 +985,11 @@ fn dir4_to_dir8_maps_to_the_matching_cardinal() {
 fn dir4_dir8_narrow_widen_round_trips_and_diagonals_do_not_narrow() {
     // Widen then narrow is identity on all four cardinals.
     for d4 in ALL_DIR4 {
-        assert_eq!(Dir4::from_dir8(d4.to_dir8()), Some(d4), "{d4:?} round-trips");
+        assert_eq!(
+            Dir4::from_dir8(d4.to_dir8()),
+            Some(d4),
+            "{d4:?} round-trips"
+        );
     }
     // Narrow then widen is identity on the four cardinal Dir8.
     for d8 in [Dir8::N, Dir8::E, Dir8::S, Dir8::W] {
@@ -884,11 +1005,19 @@ fn dir4_dir8_narrow_widen_round_trips_and_diagonals_do_not_narrow() {
 #[test]
 fn dir4_opposite_is_an_involution_and_flips_the_axis_sense() {
     for d4 in ALL_DIR4 {
-        assert_eq!(d4.opposite().opposite(), d4, "opposite∘opposite == id for {d4:?}");
+        assert_eq!(
+            d4.opposite().opposite(),
+            d4,
+            "opposite∘opposite == id for {d4:?}"
+        );
         assert_ne!(d4.opposite(), d4, "no cardinal is its own opposite");
         // Opposite stays on the same axis, and matches the widened Dir8 opposite.
         assert_eq!(d4.opposite().axis(), d4.axis(), "opposite shares the axis");
-        assert_eq!(d4.opposite().to_dir8(), d4.to_dir8().opposite(), "agrees with Dir8 opposite");
+        assert_eq!(
+            d4.opposite().to_dir8(),
+            d4.to_dir8().opposite(),
+            "agrees with Dir8 opposite"
+        );
     }
 }
 
@@ -916,8 +1045,16 @@ fn axis_dirs_are_the_two_opposite_cardinals_on_that_axis() {
     }
     // The "positive" dir is the increasing-coordinate one: +row (S) toward the
     // player for NorthSouth, +col (E) for EastWest — pins the frame convention.
-    assert_eq!(Axis::NorthSouth.dirs(), (Dir4::S, Dir4::N), "NS positive is S (+row)");
-    assert_eq!(Axis::EastWest.dirs(), (Dir4::E, Dir4::W), "EW positive is E (+col)");
+    assert_eq!(
+        Axis::NorthSouth.dirs(),
+        (Dir4::S, Dir4::N),
+        "NS positive is S (+row)"
+    );
+    assert_eq!(
+        Axis::EastWest.dirs(),
+        (Dir4::E, Dir4::W),
+        "EW positive is E (+col)"
+    );
 }
 
 #[test]
@@ -940,11 +1077,23 @@ fn facing_forward_axis_is_the_bow_axis_or_the_hull_axis() {
     }
     // Concretely: a N-facing bow and a Broadside-NS hull share the N/S forward
     // axis (the renderer's bow-arrow must encode the same axis for both).
-    assert_eq!(Facing::Bow(Dir4::N).forward_axis(), Facing::Broadside(Axis::NorthSouth).forward_axis());
-    assert_eq!(Facing::Bow(Dir4::E).forward_axis(), Facing::Broadside(Axis::EastWest).forward_axis());
+    assert_eq!(
+        Facing::Bow(Dir4::N).forward_axis(),
+        Facing::Broadside(Axis::NorthSouth).forward_axis()
+    );
+    assert_eq!(
+        Facing::Bow(Dir4::E).forward_axis(),
+        Facing::Broadside(Axis::EastWest).forward_axis()
+    );
     // Opposite bows share a forward axis (N and S both read NorthSouth).
-    assert_eq!(Facing::Bow(Dir4::N).forward_axis(), Facing::Bow(Dir4::S).forward_axis());
-    assert_eq!(Facing::Bow(Dir4::E).forward_axis(), Facing::Bow(Dir4::W).forward_axis());
+    assert_eq!(
+        Facing::Bow(Dir4::N).forward_axis(),
+        Facing::Bow(Dir4::S).forward_axis()
+    );
+    assert_eq!(
+        Facing::Bow(Dir4::E).forward_axis(),
+        Facing::Bow(Dir4::W).forward_axis()
+    );
 }
 
 /* =========================================================================
@@ -991,7 +1140,10 @@ fn facing_round_trips_through_json_for_both_stances() {
     // later rename of the tag is a visible test break, not a silent save-format
     // change).
     let s = serde_json::to_string(&Facing::Bow(Dir4::N)).unwrap();
-    assert!(s.contains("\"stance\""), "Facing is tagged by `stance`: {s}");
+    assert!(
+        s.contains("\"stance\""),
+        "Facing is tagged by `stance`: {s}"
+    );
 }
 
 #[test]

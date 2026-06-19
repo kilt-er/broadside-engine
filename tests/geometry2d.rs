@@ -177,7 +177,10 @@ fn facing_zone_bow_table_is_exhaustive_and_exact() {
             assert!(!seen[i], "Bow({d:?}) lists {inc:?} twice");
             seen[i] = true;
         }
-        assert!(seen.into_iter().all(|b| b), "Bow({dir:?}) covers all 8 incoming");
+        assert!(
+            seen.into_iter().all(|b| b),
+            "Bow({dir:?}) covers all 8 incoming"
+        );
     }
 }
 
@@ -198,7 +201,10 @@ fn facing_zone_broadside_table_is_exhaustive_and_exact() {
             assert!(!seen[i], "Broadside({a:?}) lists {inc:?} twice");
             seen[i] = true;
         }
-        assert!(seen.into_iter().all(|b| b), "Broadside({axis:?}) covers all 8 incoming");
+        assert!(
+            seen.into_iter().all(|b| b),
+            "Broadside({axis:?}) covers all 8 incoming"
+        );
     }
 }
 
@@ -209,8 +215,16 @@ fn facing_zone_bow_ahead_is_bow_and_directly_behind_is_stern() {
     for dir in ALL_DIR4 {
         let ahead = dir.to_dir8();
         let behind = dir.to_dir8().opposite();
-        assert_eq!(facing_zone(Facing::Bow(dir), ahead), HullZone::Bow, "{dir:?} ahead");
-        assert_eq!(facing_zone(Facing::Bow(dir), behind), HullZone::Stern, "{dir:?} behind");
+        assert_eq!(
+            facing_zone(Facing::Bow(dir), ahead),
+            HullZone::Bow,
+            "{dir:?} ahead"
+        );
+        assert_eq!(
+            facing_zone(Facing::Bow(dir), behind),
+            HullZone::Stern,
+            "{dir:?} behind"
+        );
     }
 }
 
@@ -223,8 +237,16 @@ fn facing_zone_bow_right_is_starboard_left_is_port() {
         let bow = dir.to_dir8();
         let right = bow.rotate_cw().rotate_cw(); // +90°
         let left = bow.rotate_ccw().rotate_ccw(); // −90°
-        assert_eq!(facing_zone(Facing::Bow(dir), right), HullZone::Starboard, "{dir:?} right");
-        assert_eq!(facing_zone(Facing::Bow(dir), left), HullZone::Port, "{dir:?} left");
+        assert_eq!(
+            facing_zone(Facing::Bow(dir), right),
+            HullZone::Starboard,
+            "{dir:?} right"
+        );
+        assert_eq!(
+            facing_zone(Facing::Bow(dir), left),
+            HullZone::Port,
+            "{dir:?} left"
+        );
     }
 }
 
@@ -320,7 +342,11 @@ fn forward_gun_bears_only_on_the_exact_bow_cardinal() {
         let bow = dir.to_dir8();
         for d in ALL_DIR8 {
             let want = d == bow;
-            assert_eq!(arc_bears(f, Arc::Forward, d), want, "Bow({dir:?}) Forward toward {d:?}");
+            assert_eq!(
+                arc_bears(f, Arc::Forward, d),
+                want,
+                "Bow({dir:?}) Forward toward {d:?}"
+            );
         }
     }
 }
@@ -332,7 +358,11 @@ fn rear_gun_bears_only_on_the_exact_stern_cardinal() {
         let astern = dir.to_dir8().opposite();
         for d in ALL_DIR8 {
             let want = d == astern;
-            assert_eq!(arc_bears(f, Arc::Rear, d), want, "Bow({dir:?}) Rear toward {d:?}");
+            assert_eq!(
+                arc_bears(f, Arc::Rear, d),
+                want,
+                "Bow({dir:?}) Rear toward {d:?}"
+            );
         }
     }
 }
@@ -351,7 +381,11 @@ fn broadside_battery_bears_only_on_the_two_exact_flank_cardinals() {
         let (fa8, fb8) = (fa.to_dir8(), fb.to_dir8());
         for d in ALL_DIR8 {
             let want = d == fa8 || d == fb8;
-            assert_eq!(arc_bears(f, Arc::BroadsideArc, d), want, "Broadside({axis:?}) BroadsideArc toward {d:?}");
+            assert_eq!(
+                arc_bears(f, Arc::BroadsideArc, d),
+                want,
+                "Broadside({axis:?}) BroadsideArc toward {d:?}"
+            );
         }
     }
 }
@@ -368,7 +402,10 @@ fn no_arc_ever_bears_on_a_diagonal_under_cardinals_only_firing() {
         let f = Facing::Bow(dir);
         for &arc in &directional {
             for d in diagonals {
-                assert!(!arc_bears(f, arc, d), "Bow({dir:?}) {arc:?} must not fire diagonally {d:?}");
+                assert!(
+                    !arc_bears(f, arc, d),
+                    "Bow({dir:?}) {arc:?} must not fire diagonally {d:?}"
+                );
             }
         }
     }
@@ -376,7 +413,10 @@ fn no_arc_ever_bears_on_a_diagonal_under_cardinals_only_firing() {
         let f = Facing::Broadside(axis);
         for &arc in &directional {
             for d in diagonals {
-                assert!(!arc_bears(f, arc, d), "Broadside({axis:?}) {arc:?} must not fire diagonally {d:?}");
+                assert!(
+                    !arc_bears(f, arc, d),
+                    "Broadside({axis:?}) {arc:?} must not fire diagonally {d:?}"
+                );
             }
         }
     }
@@ -392,18 +432,35 @@ fn firing_arcs_are_strictly_narrower_than_the_receiving_sectors() {
         for d in ALL_DIR8 {
             // Where Forward fires, that direction hits the Bow face.
             if arc_bears(f, Arc::Forward, d) {
-                assert_eq!(facing_zone(f, d), HullZone::Bow, "Bow({dir:?}) fires {d:?} ⇒ hits Bow");
+                assert_eq!(
+                    facing_zone(f, d),
+                    HullZone::Bow,
+                    "Bow({dir:?}) fires {d:?} ⇒ hits Bow"
+                );
             }
             // Where Rear fires, that direction hits the Stern face.
             if arc_bears(f, Arc::Rear, d) {
-                assert_eq!(facing_zone(f, d), HullZone::Stern, "Bow({dir:?}) rear-fires {d:?} ⇒ hits Stern");
+                assert_eq!(
+                    facing_zone(f, d),
+                    HullZone::Stern,
+                    "Bow({dir:?}) rear-fires {d:?} ⇒ hits Stern"
+                );
             }
         }
         // Strictness: the Bow face catches 3 directions, Forward fires at 1 — so
         // there exist directions that hit Bow but Forward cannot answer.
-        let bow_faces = ALL_DIR8.into_iter().filter(|&d| facing_zone(f, d) == HullZone::Bow).count();
-        let forward_fires = ALL_DIR8.into_iter().filter(|&d| arc_bears(f, Arc::Forward, d)).count();
-        assert!(forward_fires < bow_faces, "Bow({dir:?}): firing ({forward_fires}) ⊊ receiving ({bow_faces})");
+        let bow_faces = ALL_DIR8
+            .into_iter()
+            .filter(|&d| facing_zone(f, d) == HullZone::Bow)
+            .count();
+        let forward_fires = ALL_DIR8
+            .into_iter()
+            .filter(|&d| arc_bears(f, Arc::Forward, d))
+            .count();
+        assert!(
+            forward_fires < bow_faces,
+            "Bow({dir:?}): firing ({forward_fires}) ⊊ receiving ({bow_faces})"
+        );
     }
 }
 
@@ -411,12 +468,18 @@ fn firing_arcs_are_strictly_narrower_than_the_receiving_sectors() {
 fn turret_always_bears_for_every_facing_and_direction() {
     for dir in ALL_DIR4 {
         for d in ALL_DIR8 {
-            assert!(arc_bears(Facing::Bow(dir), Arc::Turret, d), "Bow({dir:?}) turret {d:?}");
+            assert!(
+                arc_bears(Facing::Bow(dir), Arc::Turret, d),
+                "Bow({dir:?}) turret {d:?}"
+            );
         }
     }
     for axis in ALL_AXES {
         for d in ALL_DIR8 {
-            assert!(arc_bears(Facing::Broadside(axis), Arc::Turret, d), "Broadside({axis:?}) turret {d:?}");
+            assert!(
+                arc_bears(Facing::Broadside(axis), Arc::Turret, d),
+                "Broadside({axis:?}) turret {d:?}"
+            );
         }
     }
 }
@@ -427,8 +490,14 @@ fn forward_and_rear_never_bear_on_a_broadside_hull() {
     for axis in ALL_AXES {
         let f = Facing::Broadside(axis);
         for d in ALL_DIR8 {
-            assert!(!arc_bears(f, Arc::Forward, d), "Broadside({axis:?}) forward {d:?}");
-            assert!(!arc_bears(f, Arc::Rear, d), "Broadside({axis:?}) rear {d:?}");
+            assert!(
+                !arc_bears(f, Arc::Forward, d),
+                "Broadside({axis:?}) forward {d:?}"
+            );
+            assert!(
+                !arc_bears(f, Arc::Rear, d),
+                "Broadside({axis:?}) rear {d:?}"
+            );
         }
     }
 }
@@ -468,7 +537,10 @@ fn forward_arc_is_exactly_one_direction_wide_cardinal_exact() {
     // fails here even though it still contains dead-ahead.
     for dir in ALL_DIR4 {
         let f = Facing::Bow(dir);
-        let n = ALL_DIR8.into_iter().filter(|&d| arc_bears(f, Arc::Forward, d)).count();
+        let n = ALL_DIR8
+            .into_iter()
+            .filter(|&d| arc_bears(f, Arc::Forward, d))
+            .count();
         assert_eq!(n, 1, "Bow({dir:?}) forward arc width (cardinal-exact)");
     }
 }
@@ -477,7 +549,10 @@ fn forward_arc_is_exactly_one_direction_wide_cardinal_exact() {
 fn rear_arc_is_exactly_one_direction_wide_cardinal_exact() {
     for dir in ALL_DIR4 {
         let f = Facing::Bow(dir);
-        let n = ALL_DIR8.into_iter().filter(|&d| arc_bears(f, Arc::Rear, d)).count();
+        let n = ALL_DIR8
+            .into_iter()
+            .filter(|&d| arc_bears(f, Arc::Rear, d))
+            .count();
         assert_eq!(n, 1, "Bow({dir:?}) rear arc width (cardinal-exact)");
     }
 }
@@ -488,8 +563,14 @@ fn broadside_battery_is_exactly_two_directions_wide_cardinal_exact() {
     // diagonals do not bear. A regressed cone would report 6 and fail here.
     for axis in ALL_AXES {
         let f = Facing::Broadside(axis);
-        let n = ALL_DIR8.into_iter().filter(|&d| arc_bears(f, Arc::BroadsideArc, d)).count();
-        assert_eq!(n, 2, "Broadside({axis:?}) battery arc width (cardinal-exact)");
+        let n = ALL_DIR8
+            .into_iter()
+            .filter(|&d| arc_bears(f, Arc::BroadsideArc, d))
+            .count();
+        assert_eq!(
+            n, 2,
+            "Broadside({axis:?}) battery arc width (cardinal-exact)"
+        );
     }
 }
 
@@ -523,11 +604,31 @@ fn band_falloff_is_not_the_old_1d_five_value_table() {
     // 0.66 (→66) or 0.5 (→50), not 0.6 (→60); Far by 0.5/0.33/0.2, not 0.3.
     // Pin the values the OLD table would have produced and assert we DON'T see
     // them. (raw=100 makes each factor a distinct integer, so this is sharp.)
-    assert_ne!(band_falloff(100, Range::Near), 66, "not 1-D delta-1 factor 0.66");
-    assert_ne!(band_falloff(100, Range::Near), 50, "not 1-D delta-2 factor 0.5");
-    assert_ne!(band_falloff(100, Range::Far), 50, "not 1-D delta-2 factor 0.5");
-    assert_ne!(band_falloff(100, Range::Far), 33, "not 1-D delta-3 factor 0.33");
-    assert_ne!(band_falloff(100, Range::Far), 20, "not 1-D delta-4 factor 0.2");
+    assert_ne!(
+        band_falloff(100, Range::Near),
+        66,
+        "not 1-D delta-1 factor 0.66"
+    );
+    assert_ne!(
+        band_falloff(100, Range::Near),
+        50,
+        "not 1-D delta-2 factor 0.5"
+    );
+    assert_ne!(
+        band_falloff(100, Range::Far),
+        50,
+        "not 1-D delta-2 factor 0.5"
+    );
+    assert_ne!(
+        band_falloff(100, Range::Far),
+        33,
+        "not 1-D delta-3 factor 0.33"
+    );
+    assert_ne!(
+        band_falloff(100, Range::Far),
+        20,
+        "not 1-D delta-4 factor 0.2"
+    );
 }
 
 #[test]
@@ -554,7 +655,11 @@ fn band_falloff_adjacent_is_the_identity() {
     // ×1.0 must be a true pass-through for every non-negative raw (no rounding
     // surprise at the strong band).
     for raw in 0..=50 {
-        assert_eq!(band_falloff(raw, Range::Adjacent), raw, "Adjacent passes {raw} through");
+        assert_eq!(
+            band_falloff(raw, Range::Adjacent),
+            raw,
+            "Adjacent passes {raw} through"
+        );
     }
 }
 
@@ -583,11 +688,17 @@ fn in_band_far_only_weapon_has_a_min_range_deadzone() {
     // The decision-7 play: a Far-only weapon cannot hit a cell it has been
     // closed onto (Adjacent/Near are dead), only reaches across to Far.
     let far_only = [Range::Far];
-    assert!(!in_band(&far_only, p(0, 0), p(0, 0)), "same cell (dist 0) is dead");
+    assert!(
+        !in_band(&far_only, p(0, 0), p(0, 0)),
+        "same cell (dist 0) is dead"
+    );
     assert!(!in_band(&far_only, p(0, 0), p(1, 0)), "Adjacent is dead");
     assert!(!in_band(&far_only, p(0, 0), p(2, 0)), "Near is dead");
     assert!(in_band(&far_only, p(0, 0), p(3, 0)), "Far reaches");
-    assert!(in_band(&far_only, p(0, 0), p(4, 0)), "farther still reaches");
+    assert!(
+        in_band(&far_only, p(0, 0), p(4, 0)),
+        "farther still reaches"
+    );
 }
 
 #[test]
@@ -602,7 +713,10 @@ fn in_band_short_weapon_cannot_reach_far() {
 fn in_band_empty_allowed_set_never_bears() {
     let none: [Range; 0] = [];
     for b in every_cell() {
-        assert!(!in_band(&none, p(2, 2), b), "empty allowed set excludes {b:?}");
+        assert!(
+            !in_band(&none, p(2, 2), b),
+            "empty allowed set excludes {b:?}"
+        );
     }
 }
 
@@ -614,7 +728,11 @@ fn in_band_agrees_with_range_band_membership_over_every_pair() {
     for a in every_cell() {
         for b in every_cell() {
             let want = allowed.contains(&range_band(a, b));
-            assert_eq!(in_band(&allowed, a, b), want, "in_band vs range_band at {a:?},{b:?}");
+            assert_eq!(
+                in_band(&allowed, a, b),
+                want,
+                "in_band vs range_band at {a:?},{b:?}"
+            );
         }
     }
 }
@@ -643,7 +761,11 @@ fn direction_to_agrees_with_from_to_on_axis_aligned_and_45_vectors() {
     for d in ALL_DIR8 {
         let target = grid::offset(c, d, 1).expect("interior 1-step is on-grid");
         assert_eq!(direction_to(c, target), Some(d), "unit {d:?}");
-        assert_eq!(direction_to(c, target), grid::from_to(c, target), "agree with from_to on {d:?}");
+        assert_eq!(
+            direction_to(c, target),
+            grid::from_to(c, target),
+            "agree with from_to on {d:?}"
+        );
     }
 }
 
@@ -652,7 +774,11 @@ fn direction_to_snaps_shallow_vectors_to_the_nearer_cardinal() {
     // The documented divergence: (3,1) is ~18° off East → E (nearest octant),
     // whereas the sign-based from_to reports the diagonal SE.
     assert_eq!(direction_to(p(0, 0), p(3, 1)), Some(Dir8::E), "shallow → E");
-    assert_eq!(grid::from_to(p(0, 0), p(3, 1)), Some(Dir8::SE), "sign octant → SE (contrast)");
+    assert_eq!(
+        grid::from_to(p(0, 0), p(3, 1)),
+        Some(Dir8::SE),
+        "sign octant → SE (contrast)"
+    );
     // Steep mirror on the row axis.
     assert_eq!(direction_to(p(0, 0), p(1, 3)), Some(Dir8::S), "steep → S");
     assert_eq!(grid::from_to(p(0, 0), p(1, 3)), Some(Dir8::SE));
@@ -716,7 +842,11 @@ fn distance_and_range_band_equal_grid_for_every_pair() {
     for a in every_cell() {
         for b in every_cell() {
             assert_eq!(distance(a, b), grid::distance(a, b), "distance {a:?},{b:?}");
-            assert_eq!(range_band(a, b), grid::range_band(a, b), "range_band {a:?},{b:?}");
+            assert_eq!(
+                range_band(a, b),
+                grid::range_band(a, b),
+                "range_band {a:?},{b:?}"
+            );
         }
     }
 }
@@ -748,8 +878,15 @@ fn range_band_boundaries_are_the_three_band_chebyshev_cuts() {
 #[test]
 fn absorb_shield_pool_soaks_down_to_zero_overflow_to_hull() {
     // Pool 1 vs a 10 hit: soaks 1, 9 overflows to hull; pool now 0.
-    let mut face = ShieldFace { armour: 5, charge: 1 };
-    assert_eq!(absorb_shield(&mut face, 10), 9, "overflow past the pool reaches hull");
+    let mut face = ShieldFace {
+        armour: 5,
+        charge: 1,
+    };
+    assert_eq!(
+        absorb_shield(&mut face, 10),
+        9,
+        "overflow past the pool reaches hull"
+    );
     assert_eq!(face.charge, 0, "pool drained");
     assert_eq!(face.armour, 5, "capacity untouched");
 }
@@ -758,7 +895,10 @@ fn absorb_shield_pool_soaks_down_to_zero_overflow_to_hull() {
 fn absorb_shield_empty_pool_passes_full_to_hull() {
     // `armour`/capacity no longer subtracts: an empty pool lets the full hit
     // through (the OLD model would have done 5 - 2 = 3).
-    let mut face = ShieldFace { armour: 2, charge: 0 };
+    let mut face = ShieldFace {
+        armour: 2,
+        charge: 0,
+    };
     assert_eq!(absorb_shield(&mut face, 5), 5, "no flat-armour subtraction");
     assert_eq!(face.armour, 2, "capacity untouched by a hit");
 }
@@ -766,11 +906,17 @@ fn absorb_shield_empty_pool_passes_full_to_hull() {
 #[test]
 fn absorb_shield_partial_soak_and_ignores_nonpositive() {
     // Pool 3 vs a 2 hit: fully soaked, pool drops to 1, 0 reaches hull.
-    let mut face = ShieldFace { armour: 5, charge: 3 };
+    let mut face = ShieldFace {
+        armour: 5,
+        charge: 3,
+    };
     assert_eq!(absorb_shield(&mut face, 2), 0, "small hit fully absorbed");
     assert_eq!(face.charge, 1, "pool spent by exactly the hit");
     // A non-positive hit consumes nothing.
-    let mut other = ShieldFace { armour: 5, charge: 3 };
+    let mut other = ShieldFace {
+        armour: 5,
+        charge: 3,
+    };
     assert_eq!(absorb_shield(&mut other, 0), 0);
     assert_eq!(absorb_shield(&mut other, -4), 0);
     assert_eq!(other.charge, 3, "no pool spent on a non-hit");
@@ -781,10 +927,34 @@ fn default_shield_profile_is_the_frigate_pool() {
     // #103 Model A caps (Bruce-tunable): bow 4 / flanks 3 / stern 1, pools start
     // FULL (charge == capacity == `armour`).
     let p = default_shield_profile();
-    assert_eq!(*p.face(HullZone::Bow), ShieldFace { armour: 4, charge: 4 });
-    assert_eq!(*p.face(HullZone::Stern), ShieldFace { armour: 1, charge: 1 });
-    assert_eq!(*p.face(HullZone::Port), ShieldFace { armour: 3, charge: 3 });
-    assert_eq!(*p.face(HullZone::Starboard), ShieldFace { armour: 3, charge: 3 });
+    assert_eq!(
+        *p.face(HullZone::Bow),
+        ShieldFace {
+            armour: 4,
+            charge: 4
+        }
+    );
+    assert_eq!(
+        *p.face(HullZone::Stern),
+        ShieldFace {
+            armour: 1,
+            charge: 1
+        }
+    );
+    assert_eq!(
+        *p.face(HullZone::Port),
+        ShieldFace {
+            armour: 3,
+            charge: 3
+        }
+    );
+    assert_eq!(
+        *p.face(HullZone::Starboard),
+        ShieldFace {
+            armour: 3,
+            charge: 3
+        }
+    );
 }
 
 proptest! {

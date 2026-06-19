@@ -49,10 +49,22 @@ fn naked_ship(id: &str, faction: Faction, cell: usize, hull: i32) -> Ship {
         heat_max: 6,
         locked_out: false,
         shield_profile: ShieldProfile {
-            bow: ShieldFace { armour: 0, charge: 0 },
-            stern: ShieldFace { armour: 0, charge: 0 },
-            port: ShieldFace { armour: 0, charge: 0 },
-            starboard: ShieldFace { armour: 0, charge: 0 },
+            bow: ShieldFace {
+                armour: 0,
+                charge: 0,
+            },
+            stern: ShieldFace {
+                armour: 0,
+                charge: 0,
+            },
+            port: ShieldFace {
+                armour: 0,
+                charge: 0,
+            },
+            starboard: ShieldFace {
+                armour: 0,
+                charge: 0,
+            },
         },
         mounts: vec![Mount {
             id: "m1".into(),
@@ -96,9 +108,17 @@ fn raw_weapon(optimal: RangeBand, amount: i32) -> Action {
         id: "raw".into(),
         name: "Raw".into(),
         archetype: WeaponArchetype::Beam,
-        cost: ActionCost { heat: 0, cooldown_max: 0, advances_turn: true },
+        cost: ActionCost {
+            heat: 0,
+            cooldown_max: 0,
+            advances_turn: true,
+        },
         targeting: Targeting {
-            range_band: vec![broadside_engine::grid::Range::Adjacent, broadside_engine::grid::Range::Near, broadside_engine::grid::Range::Far],
+            range_band: vec![
+                broadside_engine::grid::Range::Adjacent,
+                broadside_engine::grid::Range::Near,
+                broadside_engine::grid::Range::Far,
+            ],
             optimal_range: broadside_engine::grid::Range::Adjacent,
             pattern: TargetingPattern::BEAM,
             band: vec![
@@ -113,7 +133,10 @@ fn raw_weapon(optimal: RangeBand, amount: i32) -> Action {
             facing_relative: false,
             hits_all: false,
         },
-        effects: vec![Effect::DAMAGE { amount, band_falloff: Some(false) }],
+        effects: vec![Effect::DAMAGE {
+            amount,
+            band_falloff: Some(false),
+        }],
         r#mod: None,
         icon: None,
     }
@@ -122,11 +145,13 @@ fn raw_weapon(optimal: RangeBand, amount: i32) -> Action {
 fn damage_log(board: &mut Board) -> Rc<RefCell<Vec<(usize, i32)>>> {
     let log: Rc<RefCell<Vec<(usize, i32)>>> = Rc::new(RefCell::new(Vec::new()));
     let inner = Rc::clone(&log);
-    board.bus.on(Hook::OnDamageTaken, move |ctx: &mut HookContext| {
-        if let (Some(c), Some(a)) = (ctx.target_cell, ctx.amount) {
-            inner.borrow_mut().push((c, a));
-        }
-    });
+    board
+        .bus
+        .on(Hook::OnDamageTaken, move |ctx: &mut HookContext| {
+            if let (Some(c), Some(a)) = (ctx.target_cell, ctx.amount) {
+                inner.borrow_mut().push((c, a));
+            }
+        });
     log
 }
 
@@ -158,8 +183,19 @@ fn marksman_adds_one_damage_at_long_through_content_trait() {
     );
     let log = damage_log(&mut board);
     let content = DemoContent::default();
-    apply_damage(5, 3, 0, &raw_weapon(RangeBand::Long, 3), &mut board, &content);
-    assert_eq!(*log.borrow(), vec![(5, 3)], "baseline: no modifier, 3 lands");
+    apply_damage(
+        5,
+        3,
+        0,
+        &raw_weapon(RangeBand::Long, 3),
+        &mut board,
+        &content,
+    );
+    assert_eq!(
+        *log.borrow(),
+        vec![(5, 3)],
+        "baseline: no modifier, 3 lands"
+    );
 
     // With Marksman installed on the ATTACKER.
     let mut board = board_with(
@@ -172,7 +208,14 @@ fn marksman_adds_one_damage_at_long_through_content_trait() {
     let log = damage_log(&mut board);
     let mut content = DemoContent::default();
     content.install_subsystem("attacker", MARKSMAN);
-    apply_damage(5, 3, 0, &raw_weapon(RangeBand::Long, 3), &mut board, &content);
+    apply_damage(
+        5,
+        3,
+        0,
+        &raw_weapon(RangeBand::Long, 3),
+        &mut board,
+        &content,
+    );
     assert_eq!(
         *log.borrow(),
         vec![(5, 4)],
@@ -196,7 +239,14 @@ fn marksman_on_target_does_not_modify_damage() {
     let log = damage_log(&mut board);
     let mut content = DemoContent::default();
     content.install_subsystem("target", MARKSMAN);
-    apply_damage(5, 3, 0, &raw_weapon(RangeBand::Long, 3), &mut board, &content);
+    apply_damage(
+        5,
+        3,
+        0,
+        &raw_weapon(RangeBand::Long, 3),
+        &mut board,
+        &content,
+    );
     assert_eq!(
         *log.borrow(),
         vec![(5, 3)],
@@ -229,7 +279,14 @@ fn marksman_is_band_gated() {
     let mut content = DemoContent::default();
     content.install_subsystem("attacker", MARKSMAN);
     // Distance 0->2 = Close (1-D) -> Near (2-D). Marksman fires only at Far.
-    apply_damage(2, 3, 0, &raw_weapon(RangeBand::Close, 3), &mut board, &content);
+    apply_damage(
+        2,
+        3,
+        0,
+        &raw_weapon(RangeBand::Close, 3),
+        &mut board,
+        &content,
+    );
     assert_eq!(
         *log.borrow(),
         vec![(2, 3)],
@@ -256,8 +313,19 @@ fn point_blank_doctrine_adds_two_at_point_blank_through_content_trait() {
     let mut content = DemoContent::default();
     content.install_subsystem("attacker", POINT_BLANK_DOCTRINE);
     // Distance 0->1 = PointBlank.
-    apply_damage(1, 3, 0, &raw_weapon(RangeBand::PointBlank, 3), &mut board, &content);
-    assert_eq!(*log.borrow(), vec![(1, 5)], "PBD on attacker: +2 at PointBlank -> 5 lands");
+    apply_damage(
+        1,
+        3,
+        0,
+        &raw_weapon(RangeBand::PointBlank, 3),
+        &mut board,
+        &content,
+    );
+    assert_eq!(
+        *log.borrow(),
+        vec![(1, 5)],
+        "PBD on attacker: +2 at PointBlank -> 5 lands"
+    );
 }
 
 /* =========================================================================
@@ -285,8 +353,19 @@ fn marksman_and_pbd_cooperate_at_their_respective_bands() {
     // Long range: Marksman applies, PBD doesn't.
     let mut board = make_board();
     let log = damage_log(&mut board);
-    apply_damage(5, 3, 0, &raw_weapon(RangeBand::Long, 3), &mut board, &content);
-    assert_eq!(*log.borrow(), vec![(5, 4)], "at Long: +1 from Marksman only");
+    apply_damage(
+        5,
+        3,
+        0,
+        &raw_weapon(RangeBand::Long, 3),
+        &mut board,
+        &content,
+    );
+    assert_eq!(
+        *log.borrow(),
+        vec![(5, 4)],
+        "at Long: +1 from Marksman only"
+    );
 
     // PointBlank range: PBD applies, Marksman doesn't. Place target at cell 1.
     let mut board = board_with(
@@ -297,8 +376,19 @@ fn marksman_and_pbd_cooperate_at_their_respective_bands() {
         ],
     );
     let log = damage_log(&mut board);
-    apply_damage(1, 3, 0, &raw_weapon(RangeBand::PointBlank, 3), &mut board, &content);
-    assert_eq!(*log.borrow(), vec![(1, 5)], "at PointBlank: +2 from PBD only");
+    apply_damage(
+        1,
+        3,
+        0,
+        &raw_weapon(RangeBand::PointBlank, 3),
+        &mut board,
+        &content,
+    );
+    assert_eq!(
+        *log.borrow(),
+        vec![(1, 5)],
+        "at PointBlank: +2 from PBD only"
+    );
 }
 
 /* =========================================================================
@@ -348,7 +438,10 @@ fn two_heat_sinks_stack_additively_through_resolve_round() {
     content.install_subsystem("p", HEAT_SINK);
     resolve_round(&mut board, &content);
     let p = board.cells[0].as_ref().expect("player");
-    assert_eq!(p.heat, 2, "heat 5 -> 2 (1 base + 2 extra from stacked HeatSinks)");
+    assert_eq!(
+        p.heat, 2,
+        "heat 5 -> 2 (1 base + 2 extra from stacked HeatSinks)"
+    );
 }
 
 /// HeatSink can pull a ship out of lockout when the dropped heat falls
@@ -385,8 +478,19 @@ fn empty_registry_doesnt_perturb_damage_or_heat() {
     );
     let log = damage_log(&mut board);
     let content = DemoContent::default();
-    apply_damage(5, 3, 0, &raw_weapon(RangeBand::Long, 3), &mut board, &content);
-    assert_eq!(*log.borrow(), vec![(5, 3)], "no Installations = no damage modifier");
+    apply_damage(
+        5,
+        3,
+        0,
+        &raw_weapon(RangeBand::Long, 3),
+        &mut board,
+        &content,
+    );
+    assert_eq!(
+        *log.borrow(),
+        vec![(5, 3)],
+        "no Installations = no damage modifier"
+    );
 
     // And end_of_turn dissipates the base 1 heat with no extra.
     let mut player = naked_ship("p", Faction::Player, 0, 10);

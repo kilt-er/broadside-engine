@@ -94,18 +94,31 @@ fn beam(amount: i32, falloff: bool) -> Action {
         id: "beam".into(),
         name: "beam".into(),
         archetype: WeaponArchetype::Beam,
-        cost: ActionCost { heat: 0, cooldown_max: 0, advances_turn: true },
+        cost: ActionCost {
+            heat: 0,
+            cooldown_max: 0,
+            advances_turn: true,
+        },
         targeting: Targeting {
             range_band: vec![Range::Adjacent, Range::Near, Range::Far],
             optimal_range: Range::Adjacent,
             pattern: TargetingPattern::BEAM,
-            band: vec![RangeBand::PointBlank, RangeBand::Close, RangeBand::Mid, RangeBand::Long, RangeBand::Extreme],
+            band: vec![
+                RangeBand::PointBlank,
+                RangeBand::Close,
+                RangeBand::Mid,
+                RangeBand::Long,
+                RangeBand::Extreme,
+            ],
             optimal_band: RangeBand::PointBlank,
             requires_arc: Some(Arc::Forward),
             facing_relative: true,
             hits_all: false,
         },
-        effects: vec![Effect::DAMAGE { amount, band_falloff: Some(falloff) }],
+        effects: vec![Effect::DAMAGE {
+            amount,
+            band_falloff: Some(falloff),
+        }],
         r#mod: None,
         icon: None,
     }
@@ -115,9 +128,20 @@ fn beam(amount: i32, falloff: bool) -> Action {
 /// rest empty. `which` selects the loaded face. Capacity (`armour`) == `cap`
 /// so the pool starts FULL.
 fn one_full_face(which: &str, cap: i32) -> ShieldProfile {
-    let empty = ShieldFace { armour: 0, charge: 0 };
-    let full = ShieldFace { armour: cap, charge: cap };
-    let mut p = ShieldProfile { bow: empty, stern: empty, port: empty, starboard: empty };
+    let empty = ShieldFace {
+        armour: 0,
+        charge: 0,
+    };
+    let full = ShieldFace {
+        armour: cap,
+        charge: cap,
+    };
+    let mut p = ShieldProfile {
+        bow: empty,
+        stern: empty,
+        port: empty,
+        starboard: empty,
+    };
     match which {
         "bow" => p.bow = full,
         "stern" => p.stern = full,
@@ -130,12 +154,24 @@ fn one_full_face(which: &str, cap: i32) -> ShieldProfile {
 
 /// Read a ship's hull by id.
 fn hull(b: &Board, id: &str) -> i32 {
-    b.cells.iter().flatten().find(|s| s.id == id).map(|s| s.hull).unwrap_or(i32::MIN)
+    b.cells
+        .iter()
+        .flatten()
+        .find(|s| s.id == id)
+        .map(|s| s.hull)
+        .unwrap_or(i32::MIN)
 }
 
 /// Read a ship's bow-face shield charge by id.
 fn bow_charge(b: &Board, id: &str) -> i32 {
-    b.cells.iter().flatten().find(|s| s.id == id).unwrap().shield_profile.bow.charge
+    b.cells
+        .iter()
+        .flatten()
+        .find(|s| s.id == id)
+        .unwrap()
+        .shield_profile
+        .bow
+        .charge
 }
 
 /* =========================================================================
@@ -154,14 +190,41 @@ fn apply_damage_2d_applies_modifier_before_target_lock() {
     // from the north lands on the BOW. Naked shields so the post-lock damage
     // lands fully on hull (observable). Distance 1 = Adjacent (no falloff
     // anyway), and we also disable falloff to keep raw == 4.
-    let attacker = ship_2d("atk", Faction::Player, Pos::new(2, 0), 50, Facing::Bow(Dir4::S), Arc::Forward, "beam");
-    let mut target = ship_2d("tgt", Faction::Enemy, Pos::new(2, 1), 50, Facing::Bow(Dir4::N), Arc::Forward, "noop");
+    let attacker = ship_2d(
+        "atk",
+        Faction::Player,
+        Pos::new(2, 0),
+        50,
+        Facing::Bow(Dir4::S),
+        Arc::Forward,
+        "beam",
+    );
+    let mut target = ship_2d(
+        "tgt",
+        Faction::Enemy,
+        Pos::new(2, 1),
+        50,
+        Facing::Bow(Dir4::N),
+        Arc::Forward,
+        "noop",
+    );
     target.shield_profile = naked_shields();
-    target.statuses.push(Status { kind: StatusKind::TargetLock, duration: 5, face: None });
+    target.statuses.push(Status {
+        kind: StatusKind::TargetLock,
+        duration: 5,
+        face: None,
+    });
     let mut board = board_2d(vec![attacker, target]);
     let weapon = beam(4, false);
 
-    apply_damage_2d(Pos::new(2, 1), 4, Pos::new(2, 0), &weapon, &mut board, &FixedMod(1));
+    apply_damage_2d(
+        Pos::new(2, 1),
+        4,
+        Pos::new(2, 0),
+        &weapon,
+        &mut board,
+        &FixedMod(1),
+    );
 
     assert_eq!(
         hull(&board, "tgt"),
@@ -184,16 +247,47 @@ fn apply_damage_2d_applies_modifier_before_target_lock() {
 /// and the post-hit pool value below would change.
 #[test]
 fn apply_damage_2d_strong_bow_pool_soaks_then_overflows_to_hull() {
-    let attacker = ship_2d("atk", Faction::Player, Pos::new(2, 0), 50, Facing::Bow(Dir4::S), Arc::Forward, "beam");
-    let mut target = ship_2d("tgt", Faction::Enemy, Pos::new(2, 1), 10, Facing::Bow(Dir4::N), Arc::Forward, "noop");
+    let attacker = ship_2d(
+        "atk",
+        Faction::Player,
+        Pos::new(2, 0),
+        50,
+        Facing::Bow(Dir4::S),
+        Arc::Forward,
+        "beam",
+    );
+    let mut target = ship_2d(
+        "tgt",
+        Faction::Enemy,
+        Pos::new(2, 1),
+        10,
+        Facing::Bow(Dir4::N),
+        Arc::Forward,
+        "noop",
+    );
     target.shield_profile = one_full_face("bow", 3); // strong bow pool, rest empty
     let mut board = board_2d(vec![attacker, target]);
     let weapon = beam(4, false);
 
-    apply_damage_2d(Pos::new(2, 1), 4, Pos::new(2, 0), &weapon, &mut board, &NoMod);
+    apply_damage_2d(
+        Pos::new(2, 1),
+        4,
+        Pos::new(2, 0),
+        &weapon,
+        &mut board,
+        &NoMod,
+    );
 
-    assert_eq!(hull(&board, "tgt"), 9, "raw 4 vs bow pool 3: 1 overflows to hull (10 -> 9)");
-    assert_eq!(bow_charge(&board, "tgt"), 0, "the bow pool is DEPLETED by the hit (charge 3 -> 0), not left intact by a flat subtract");
+    assert_eq!(
+        hull(&board, "tgt"),
+        9,
+        "raw 4 vs bow pool 3: 1 overflows to hull (10 -> 9)"
+    );
+    assert_eq!(
+        bow_charge(&board, "tgt"),
+        0,
+        "the bow pool is DEPLETED by the hit (charge 3 -> 0), not left intact by a flat subtract"
+    );
 }
 
 /* =========================================================================
@@ -207,17 +301,48 @@ fn apply_damage_2d_strong_bow_pool_soaks_then_overflows_to_hull() {
 /// falloff is disabled to keep the arithmetic about the shield, not the band.)
 #[test]
 fn apply_damage_2d_weak_stern_bleeds_full_hit_to_hull() {
-    let attacker = ship_2d("atk", Faction::Player, Pos::new(2, 3), 50, Facing::Bow(Dir4::N), Arc::Forward, "beam");
-    let mut target = ship_2d("tgt", Faction::Enemy, Pos::new(2, 1), 10, Facing::Bow(Dir4::N), Arc::Forward, "noop");
+    let attacker = ship_2d(
+        "atk",
+        Faction::Player,
+        Pos::new(2, 3),
+        50,
+        Facing::Bow(Dir4::N),
+        Arc::Forward,
+        "beam",
+    );
+    let mut target = ship_2d(
+        "tgt",
+        Faction::Enemy,
+        Pos::new(2, 1),
+        10,
+        Facing::Bow(Dir4::N),
+        Arc::Forward,
+        "noop",
+    );
     target.shield_profile = one_full_face("bow", 3); // bow charged, stern empty
     let mut board = board_2d(vec![attacker, target]);
     let weapon = beam(4, false);
 
     // Shot from the SOUTH lands on the bow-N ship's STERN (empty pool).
-    apply_damage_2d(Pos::new(2, 1), 4, Pos::new(2, 3), &weapon, &mut board, &NoMod);
+    apply_damage_2d(
+        Pos::new(2, 1),
+        4,
+        Pos::new(2, 3),
+        &weapon,
+        &mut board,
+        &NoMod,
+    );
 
-    assert_eq!(hull(&board, "tgt"), 6, "the empty stern pool bleeds the full raw 4 to hull (10 -> 6)");
-    assert_eq!(bow_charge(&board, "tgt"), 3, "the untouched bow pool is unaffected by a stern hit");
+    assert_eq!(
+        hull(&board, "tgt"),
+        6,
+        "the empty stern pool bleeds the full raw 4 to hull (10 -> 6)"
+    );
+    assert_eq!(
+        bow_charge(&board, "tgt"),
+        3,
+        "the untouched bow pool is unaffected by a stern hit"
+    );
 }
 
 /* =========================================================================
@@ -233,14 +358,41 @@ fn apply_damage_2d_weak_stern_bleeds_full_hit_to_hull() {
 #[test]
 fn apply_damage_2d_far_falloff_is_integer_penalty_not_float() {
     // Distance (2,3) -> (2,0) is Chebyshev 3 = Far. Falloff ENABLED (the point).
-    let attacker = ship_2d("atk", Faction::Player, Pos::new(2, 3), 50, Facing::Bow(Dir4::N), Arc::Forward, "beam");
-    let mut target = ship_2d("tgt", Faction::Enemy, Pos::new(2, 0), 20, Facing::Bow(Dir4::N), Arc::Forward, "noop");
+    let attacker = ship_2d(
+        "atk",
+        Faction::Player,
+        Pos::new(2, 3),
+        50,
+        Facing::Bow(Dir4::N),
+        Arc::Forward,
+        "beam",
+    );
+    let mut target = ship_2d(
+        "tgt",
+        Faction::Enemy,
+        Pos::new(2, 0),
+        20,
+        Facing::Bow(Dir4::N),
+        Arc::Forward,
+        "noop",
+    );
     target.shield_profile = naked_shields();
     let mut board = board_2d(vec![attacker, target]);
     let weapon = beam(6, true); // falloff ON
 
-    assert_eq!(broadside_engine::grid::distance(Pos::new(2, 3), Pos::new(2, 0)), 3, "sanity: the shot crosses Far (dist 3)");
-    apply_damage_2d(Pos::new(2, 0), 6, Pos::new(2, 3), &weapon, &mut board, &NoMod);
+    assert_eq!(
+        broadside_engine::grid::distance(Pos::new(2, 3), Pos::new(2, 0)),
+        3,
+        "sanity: the shot crosses Far (dist 3)"
+    );
+    apply_damage_2d(
+        Pos::new(2, 0),
+        6,
+        Pos::new(2, 3),
+        &weapon,
+        &mut board,
+        &NoMod,
+    );
 
     assert_eq!(
         hull(&board, "tgt"),
@@ -260,18 +412,60 @@ fn apply_damage_2d_far_falloff_is_integer_penalty_not_float() {
 /// would double (4 + 4 = 8 -> 12).
 #[test]
 fn apply_damage_2d_target_lock_doubles_only_the_first_hit() {
-    let attacker = ship_2d("atk", Faction::Player, Pos::new(2, 0), 50, Facing::Bow(Dir4::S), Arc::Forward, "beam");
-    let mut target = ship_2d("tgt", Faction::Enemy, Pos::new(2, 1), 20, Facing::Bow(Dir4::N), Arc::Forward, "noop");
+    let attacker = ship_2d(
+        "atk",
+        Faction::Player,
+        Pos::new(2, 0),
+        50,
+        Facing::Bow(Dir4::S),
+        Arc::Forward,
+        "beam",
+    );
+    let mut target = ship_2d(
+        "tgt",
+        Faction::Enemy,
+        Pos::new(2, 1),
+        20,
+        Facing::Bow(Dir4::N),
+        Arc::Forward,
+        "noop",
+    );
     target.shield_profile = naked_shields();
-    target.statuses.push(Status { kind: StatusKind::TargetLock, duration: 5, face: None });
+    target.statuses.push(Status {
+        kind: StatusKind::TargetLock,
+        duration: 5,
+        face: None,
+    });
     let mut board = board_2d(vec![attacker, target]);
     let weapon = beam(2, false);
 
-    apply_damage_2d(Pos::new(2, 1), 2, Pos::new(2, 0), &weapon, &mut board, &NoMod);
-    assert_eq!(hull(&board, "tgt"), 16, "first shot is doubled by the lock: 2*2 = 4 (20 -> 16)");
+    apply_damage_2d(
+        Pos::new(2, 1),
+        2,
+        Pos::new(2, 0),
+        &weapon,
+        &mut board,
+        &NoMod,
+    );
+    assert_eq!(
+        hull(&board, "tgt"),
+        16,
+        "first shot is doubled by the lock: 2*2 = 4 (20 -> 16)"
+    );
 
-    apply_damage_2d(Pos::new(2, 1), 2, Pos::new(2, 0), &weapon, &mut board, &NoMod);
-    assert_eq!(hull(&board, "tgt"), 14, "second shot is NOT doubled (lock already consumed): 2 (16 -> 14)");
+    apply_damage_2d(
+        Pos::new(2, 1),
+        2,
+        Pos::new(2, 0),
+        &weapon,
+        &mut board,
+        &NoMod,
+    );
+    assert_eq!(
+        hull(&board, "tgt"),
+        14,
+        "second shot is NOT doubled (lock already consumed): 2 (16 -> 14)"
+    );
 }
 
 /* =========================================================================
@@ -296,10 +490,26 @@ fn ordnance_damage_lands_on_the_exact_world_phase_it_reaches_the_target() {
     // Player at (2,0) Bow(S), naked so the impact is observable on hull. A
     // mountless enemy at (2,3) so the ONLY thing that happens across phases is
     // the torpedo advancing (no enemy fire, no AI shot to confound the timing).
-    let mut player = ship_2d("p", Faction::Player, Pos::new(2, 0), 30, Facing::Bow(Dir4::S), Arc::Forward, "noop");
+    let mut player = ship_2d(
+        "p",
+        Faction::Player,
+        Pos::new(2, 0),
+        30,
+        Facing::Bow(Dir4::S),
+        Arc::Forward,
+        "noop",
+    );
     player.shield_profile = naked_shields();
     player.mounts.clear();
-    let mut shooter = ship_2d("e", Faction::Enemy, Pos::new(2, 3), 30, Facing::Bow(Dir4::N), Arc::Forward, "noop");
+    let mut shooter = ship_2d(
+        "e",
+        Faction::Enemy,
+        Pos::new(2, 3),
+        30,
+        Facing::Bow(Dir4::N),
+        Arc::Forward,
+        "noop",
+    );
     shooter.mounts.clear(); // never fires; pure spectator so timing is the torpedo's alone
     let mut board = board_2d(vec![player, shooter]);
 
@@ -316,23 +526,42 @@ fn ordnance_damage_lands_on_the_exact_world_phase_it_reaches_the_target() {
         heading8: broadside_engine::grid::Dir8::N,
         speed: 1,
         hull: 2,
-        payload: vec![Effect::DAMAGE { amount: 5, band_falloff: Some(false) }],
+        payload: vec![Effect::DAMAGE {
+            amount: 5,
+            band_falloff: Some(false),
+        }],
         owner_faction: Faction::Enemy,
     });
 
     // Phase 1: torpedo (2,3) -> (2,2). Not yet at the player; no damage.
     run_world_phase(&mut board, &NoMod);
-    assert_eq!(hull(&board, "p"), 30, "phase 1: torpedo still in flight (at 2,2), player undamaged");
+    assert_eq!(
+        hull(&board, "p"),
+        30,
+        "phase 1: torpedo still in flight (at 2,2), player undamaged"
+    );
     assert_eq!(board.ordnance.len(), 1, "phase 1: torpedo still live");
 
     // Phase 2: torpedo (2,2) -> (2,1). Still in flight; no damage.
     run_world_phase(&mut board, &NoMod);
-    assert_eq!(hull(&board, "p"), 30, "phase 2: torpedo still in flight (at 2,1), player undamaged");
+    assert_eq!(
+        hull(&board, "p"),
+        30,
+        "phase 2: torpedo still in flight (at 2,1), player undamaged"
+    );
     assert_eq!(board.ordnance.len(), 1, "phase 2: torpedo still live");
 
     // Phase 3: torpedo (2,1) -> (2,0) = the player. Payload lands NOW: raw 5 on
     // the naked hull (30 -> 25), and the torpedo is consumed.
     run_world_phase(&mut board, &NoMod);
-    assert_eq!(hull(&board, "p"), 25, "phase 3: torpedo reaches the player and deals its full 5 (deterministic timing)");
-    assert_eq!(board.ordnance.len(), 0, "phase 3: the torpedo is consumed on impact");
+    assert_eq!(
+        hull(&board, "p"),
+        25,
+        "phase 3: torpedo reaches the player and deals its full 5 (deterministic timing)"
+    );
+    assert_eq!(
+        board.ordnance.len(),
+        0,
+        "phase 3: the torpedo is consumed on impact"
+    );
 }

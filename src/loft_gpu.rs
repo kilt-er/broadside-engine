@@ -733,8 +733,9 @@ impl LoftGpu {
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
             mapped_at_creation: false,
         });
-        let mut enc =
-            device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("loft rb") });
+        let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("loft rb"),
+        });
         enc.copy_texture_to_buffer(
             wgpu::TexelCopyTextureInfo {
                 texture: &self.out_tex,
@@ -779,14 +780,8 @@ impl LoftGpu {
         drop(data);
         readback.unmap();
 
-        image::save_buffer(
-            path,
-            &rgba,
-            low_w,
-            low_h,
-            image::ColorType::Rgba8,
-        )
-        .map_err(|e| format!("png save: {e}"))
+        image::save_buffer(path, &rgba, low_w, low_h, image::ColorType::Rgba8)
+            .map_err(|e| format!("png save: {e}"))
     }
 
     /// Upload a hull's geometry to a fresh vertex buffer. `colors`, if present,
@@ -936,7 +931,16 @@ impl LoftGpu {
         pitch_deg: f32,
     ) {
         self.render_ship_lit_framed(
-            queue, encoder, vbuf, vcount, yaw_deg, center_y, -50.0, 60.0, 1.6, pitch_deg,
+            queue,
+            encoder,
+            vbuf,
+            vcount,
+            yaw_deg,
+            center_y,
+            -50.0,
+            60.0,
+            1.6,
+            pitch_deg,
             HALF_EXTENT,
         );
     }
@@ -1119,7 +1123,12 @@ fn make_loft_targets(
     device: &wgpu::Device,
     w: u32,
     h: u32,
-) -> (wgpu::TextureView, wgpu::TextureView, wgpu::Texture, wgpu::TextureView) {
+) -> (
+    wgpu::TextureView,
+    wgpu::TextureView,
+    wgpu::Texture,
+    wgpu::TextureView,
+) {
     let mk = |label, format, usage| {
         device.create_texture(&wgpu::TextureDescriptor {
             label: Some(label),
@@ -1142,7 +1151,11 @@ fn make_loft_targets(
         wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
     );
     let scene_view = scene_tex.create_view(&Default::default());
-    let depth_tex = mk("loft depth", DEPTH_FORMAT, wgpu::TextureUsages::RENDER_ATTACHMENT);
+    let depth_tex = mk(
+        "loft depth",
+        DEPTH_FORMAT,
+        wgpu::TextureUsages::RENDER_ATTACHMENT,
+    );
     let depth_view = depth_tex.create_view(&Default::default());
     let out_tex = mk(
         "loft posterized out",
@@ -1433,7 +1446,13 @@ mod tests {
 
     #[test]
     fn camera_view_proj_is_finite() {
-        let m = camera_view_proj_zoom(28f32.to_radians(), 26f32.to_radians(), 1.6, -0.5, HALF_EXTENT);
+        let m = camera_view_proj_zoom(
+            28f32.to_radians(),
+            26f32.to_radians(),
+            1.6,
+            -0.5,
+            HALF_EXTENT,
+        );
         assert!(m.iter().all(|v| v.is_finite()));
     }
 
@@ -1445,7 +1464,10 @@ mod tests {
         // All presets ~1.6:1.
         for (w, h) in LOFT_RES_PRESETS {
             let ar = w as f32 / h as f32;
-            assert!((ar - 1.6).abs() < 0.02, "preset {w}x{h} aspect {ar} not ~1.6");
+            assert!(
+                (ar - 1.6).abs() < 0.02,
+                "preset {w}x{h} aspect {ar} not ~1.6"
+            );
         }
         // Forward wraps through the whole list back to the start.
         let mut cur = LOFT_RES_PRESETS[0];
@@ -1455,7 +1477,10 @@ mod tests {
         assert_eq!(cur, LOFT_RES_PRESETS[0], "forward cycle wraps to start");
         // Back is the inverse of forward.
         for p in LOFT_RES_PRESETS {
-            assert_eq!(prev_loft_res(next_loft_res(p.0, p.1).0, next_loft_res(p.0, p.1).1), p);
+            assert_eq!(
+                prev_loft_res(next_loft_res(p.0, p.1).0, next_loft_res(p.0, p.1).1),
+                p
+            );
         }
         // Off-list size snaps to the first preset (defensive).
         assert_eq!(next_loft_res(999, 999), LOFT_RES_PRESETS[0]);
@@ -1618,8 +1643,7 @@ mod tests {
                 // The yaw at the 480x270 default is the reference.
                 let ref_cfg = ProjectorConfig::for_scene(480.0, 270.0);
                 let ref_aim = grid_cell_quad(Pos::new(col, row), &ref_cfg).center;
-                let ref_yaw =
-                    chase_cam_ground_yaw_deg(ref_aim, facing_yaw(facing), &ref_cfg);
+                let ref_yaw = chase_cam_ground_yaw_deg(ref_aim, facing_yaw(facing), &ref_cfg);
                 for &(w, h) in &SCENE_RES_PRESETS {
                     let cfg = ProjectorConfig::for_scene(w as f32, h as f32);
                     let aim = grid_cell_quad(Pos::new(col, row), &cfg).center;

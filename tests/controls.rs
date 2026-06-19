@@ -63,10 +63,22 @@ fn player_ship(cell: usize) -> Ship {
         heat_max: 6,
         locked_out: false,
         shield_profile: ShieldProfile {
-            bow: ShieldFace { armour: 2, charge: 0 },
-            stern: ShieldFace { armour: 0, charge: 0 },
-            port: ShieldFace { armour: 1, charge: 0 },
-            starboard: ShieldFace { armour: 1, charge: 0 },
+            bow: ShieldFace {
+                armour: 2,
+                charge: 0,
+            },
+            stern: ShieldFace {
+                armour: 0,
+                charge: 0,
+            },
+            port: ShieldFace {
+                armour: 1,
+                charge: 0,
+            },
+            starboard: ShieldFace {
+                armour: 1,
+                charge: 0,
+            },
         },
         mounts: vec![
             Mount {
@@ -151,11 +163,13 @@ fn apply_intent_lib(intent: Intent, board: &mut Board, content: &DemoContent) ->
 fn wire_damage_log(board: &mut Board) -> Rc<RefCell<Vec<(usize, i32)>>> {
     let log: Rc<RefCell<Vec<(usize, i32)>>> = Rc::new(RefCell::new(Vec::new()));
     let inner = Rc::clone(&log);
-    board.bus.on(Hook::OnDamageTaken, move |ctx: &mut HookContext| {
-        if let (Some(c), Some(a)) = (ctx.target_cell, ctx.amount) {
-            inner.borrow_mut().push((c, a));
-        }
-    });
+    board
+        .bus
+        .on(Hook::OnDamageTaken, move |ctx: &mut HookContext| {
+            if let (Some(c), Some(a)) = (ctx.target_cell, ctx.amount) {
+                inner.borrow_mut().push((c, a));
+            }
+        });
     log
 }
 
@@ -179,7 +193,10 @@ fn commit_turn_on_empty_queue_runs_only_end_of_turn() {
 
     let p = board.cells[0].as_ref().unwrap();
     // EOT: heat -= 1, cooldowns -= 1, no firings.
-    assert_eq!(p.heat, 2, "empty-queue commit should still dissipate 1 heat at EOT");
+    assert_eq!(
+        p.heat, 2,
+        "empty-queue commit should still dissipate 1 heat at EOT"
+    );
     assert_eq!(
         p.cooldowns.get("pulse_laser").copied(),
         Some(1),
@@ -225,10 +242,22 @@ fn queue_pulse_laser_then_commit_fires_once_against_a_target() {
         heat_max: 6,
         locked_out: false,
         shield_profile: ShieldProfile {
-            bow: ShieldFace { armour: 0, charge: 0 },
-            stern: ShieldFace { armour: 0, charge: 0 },
-            port: ShieldFace { armour: 0, charge: 0 },
-            starboard: ShieldFace { armour: 0, charge: 0 },
+            bow: ShieldFace {
+                armour: 0,
+                charge: 0,
+            },
+            stern: ShieldFace {
+                armour: 0,
+                charge: 0,
+            },
+            port: ShieldFace {
+                armour: 0,
+                charge: 0,
+            },
+            starboard: ShieldFace {
+                armour: 0,
+                charge: 0,
+            },
         },
         mounts: vec![],
         queue: vec![],
@@ -242,7 +271,11 @@ fn queue_pulse_laser_then_commit_fires_once_against_a_target() {
     let log = wire_damage_log(&mut board);
     let content = DemoContent::default();
 
-    apply_intent_lib(Intent::QueueAction("pulse_laser".into()), &mut board, &content);
+    apply_intent_lib(
+        Intent::QueueAction("pulse_laser".into()),
+        &mut board,
+        &content,
+    );
     apply_intent_lib(Intent::CommitTurn, &mut board, &content);
 
     // Exactly one OnDamageTaken on the target's cell, with the 2-D integer
@@ -254,7 +287,10 @@ fn queue_pulse_laser_then_commit_fires_once_against_a_target() {
         "exactly one OnDamageTaken emit for the target cell with the integer post-falloff 3 damage",
     );
     let p = board.cells[0].as_ref().unwrap();
-    assert!(p.queue.is_empty(), "queue should be drained after resolve_round");
+    assert!(
+        p.queue.is_empty(),
+        "queue should be drained after resolve_round"
+    );
 }
 
 /* =========================================================================
@@ -296,7 +332,10 @@ fn three_thrusts_then_commit_moves_three_cells() {
     apply_intent_lib(Intent::CommitTurn, &mut board, &content);
 
     // Player moved from cell 0 to cell 3.
-    assert!(board.cells[0].is_none(), "player no longer at starting cell");
+    assert!(
+        board.cells[0].is_none(),
+        "player no longer at starting cell"
+    );
     let p = board.cells[3].as_ref().expect("player at cell 3");
     assert_eq!(p.faction, Faction::Player);
     assert!(p.queue.is_empty(), "queue drained after commit");
@@ -326,7 +365,9 @@ fn thrust_clamps_at_board_edge_no_overshoot() {
     // resolver breaks out of the move loop). Third thrust runs from
     // cell 6 again; same result. Final cell == 6.
     assert!(
-        board.cells[6].as_ref().is_some_and(|s| s.faction == Faction::Player),
+        board.cells[6]
+            .as_ref()
+            .is_some_and(|s| s.faction == Faction::Player),
         "player should be at cell 6 (last in-bounds cell)",
     );
     // No overshoot — cell 7 doesn't exist on this 7-cell board.
@@ -441,7 +482,10 @@ fn synthetic_actions_dont_advance_heat_or_set_cooldown() {
         .expect("player survives the round");
     // Both synthetics ran; each is heat 0 cost 0. EOT decrements heat
     // by 1. Starting heat 3 -> 2.
-    assert_eq!(p.heat, 2, "synthetics must not add heat; only EOT -1 applies");
+    assert_eq!(
+        p.heat, 2,
+        "synthetics must not add heat; only EOT -1 applies"
+    );
     // Cooldowns: each synthetic sets cooldowns[id] = 0 unconditionally
     // (cooldown_max == 0). EOT does not decrement past 0. Both synthetic
     // ids are present with value 0.
@@ -473,7 +517,10 @@ fn synthetic_action_ids_are_lib_public() {
         SYNTHETIC_REORIENT_FLIP,
         SYNTHETIC_VENT,
     ] {
-        assert!(id.starts_with("__"), "synthetic id {id} must be __-prefixed");
+        assert!(
+            id.starts_with("__"),
+            "synthetic id {id} must be __-prefixed"
+        );
     }
 }
 

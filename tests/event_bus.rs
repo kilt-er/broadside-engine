@@ -38,7 +38,9 @@ use std::rc::Rc;
 /// content callbacks. The default `damage_modifier` (returns 0) is fine.
 struct NoContent;
 impl Content for NoContent {
-    fn action(&self, _id: &str) -> Option<&Action> { None }
+    fn action(&self, _id: &str) -> Option<&Action> {
+        None
+    }
     fn spawn_projectile(&self, _: &str, _: &Ship) -> Projectile {
         unreachable!("spawn_projectile not used in event_bus tests");
     }
@@ -58,10 +60,22 @@ fn naked_ship(id: &str, faction: Faction, cell: usize, hull: i32) -> Ship {
         heat_max: 6,
         locked_out: false,
         shield_profile: ShieldProfile {
-            bow: ShieldFace { armour: 0, charge: 0 },
-            stern: ShieldFace { armour: 0, charge: 0 },
-            port: ShieldFace { armour: 0, charge: 0 },
-            starboard: ShieldFace { armour: 0, charge: 0 },
+            bow: ShieldFace {
+                armour: 0,
+                charge: 0,
+            },
+            stern: ShieldFace {
+                armour: 0,
+                charge: 0,
+            },
+            port: ShieldFace {
+                armour: 0,
+                charge: 0,
+            },
+            starboard: ShieldFace {
+                armour: 0,
+                charge: 0,
+            },
         },
         mounts: vec![Mount {
             id: "m1".into(),
@@ -99,9 +113,17 @@ fn impact_weapon(amount: i32) -> Action {
         id: "_impact".into(),
         name: "Impact".into(),
         archetype: WeaponArchetype::Ordnance,
-        cost: ActionCost { heat: 0, cooldown_max: 0, advances_turn: true },
+        cost: ActionCost {
+            heat: 0,
+            cooldown_max: 0,
+            advances_turn: true,
+        },
         targeting: Targeting {
-            range_band: vec![broadside_engine::grid::Range::Adjacent, broadside_engine::grid::Range::Near, broadside_engine::grid::Range::Far],
+            range_band: vec![
+                broadside_engine::grid::Range::Adjacent,
+                broadside_engine::grid::Range::Near,
+                broadside_engine::grid::Range::Far,
+            ],
             optimal_range: broadside_engine::grid::Range::Adjacent,
             pattern: TargetingPattern::BEAM,
             band: vec![
@@ -116,7 +138,10 @@ fn impact_weapon(amount: i32) -> Action {
             facing_relative: false,
             hits_all: false,
         },
-        effects: vec![Effect::DAMAGE { amount, band_falloff: Some(false) }],
+        effects: vec![Effect::DAMAGE {
+            amount,
+            band_falloff: Some(false),
+        }],
         r#mod: None,
         icon: None,
     }
@@ -157,17 +182,19 @@ fn callback_emit_through_ctx_board_bus_is_a_noop() {
     // PR weakens the wrapper so the live bus is reachable here, the taken
     // bus has B installed; B fires inside the nested emit and bumps the
     // counter a second time.
-    board.bus.on(Hook::OnDamageTaken, move |ctx: &mut HookContext| {
-        *counter_inner.borrow_mut() += 1;
-        // Take the bus reachable through ctx, attempt a same-hook re-emit
-        // against it, then put it back. This is exactly the dance every
-        // legitimate caller of EventBus::emit does to satisfy the borrow
-        // checker, so a test that mirrors it is also testing the realistic
-        // failure mode.
-        let mut taken = std::mem::take(&mut ctx.board.bus);
-        taken.emit(Hook::OnDamageTaken, ctx);
-        ctx.board.bus = taken;
-    });
+    board
+        .bus
+        .on(Hook::OnDamageTaken, move |ctx: &mut HookContext| {
+            *counter_inner.borrow_mut() += 1;
+            // Take the bus reachable through ctx, attempt a same-hook re-emit
+            // against it, then put it back. This is exactly the dance every
+            // legitimate caller of EventBus::emit does to satisfy the borrow
+            // checker, so a test that mirrors it is also testing the realistic
+            // failure mode.
+            let mut taken = std::mem::take(&mut ctx.board.bus);
+            taken.emit(Hook::OnDamageTaken, ctx);
+            ctx.board.bus = taken;
+        });
 
     // Subscriber B: independent counter-bumper. Fires ONCE for the outer
     // emit; if the nested emit ever leaks through the live bus, this
@@ -177,9 +204,11 @@ fn callback_emit_through_ctx_board_bus_is_a_noop() {
     // its own callback, so a same-hook nested emit would skip A but
     // would fire B if the bus were live. The wrapper's mem::take is
     // what prevents that.)
-    board.bus.on(Hook::OnDamageTaken, move |_ctx: &mut HookContext| {
-        *counter_outer.borrow_mut() += 1;
-    });
+    board
+        .bus
+        .on(Hook::OnDamageTaken, move |_ctx: &mut HookContext| {
+            *counter_outer.borrow_mut() += 1;
+        });
 
     // Trigger one outer OnDamageTaken via the canonical path.
     apply_damage(1, 4, 0, &impact_weapon(4), &mut board, &NoContent);
@@ -243,7 +272,10 @@ fn subscribers_only_fire_on_their_registered_hook() {
     let mut ctx = HookContext::new(&mut board);
     bus.emit(Hook::OnTurnEnd, &mut ctx);
 
-    assert!(*on_turn_end_fired.borrow(), "OnTurnEnd subscriber should fire");
+    assert!(
+        *on_turn_end_fired.borrow(),
+        "OnTurnEnd subscriber should fire"
+    );
     assert!(
         !*on_lethal_fired.borrow(),
         "OnLethal subscriber must NOT fire on OnTurnEnd emit",

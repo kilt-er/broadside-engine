@@ -413,8 +413,7 @@ impl Background {
     ) -> Result<usize, BackgroundLoadError> {
         let manifest_path = dir.join("background_manifest.json");
         let text = std::fs::read_to_string(&manifest_path).map_err(BackgroundLoadError::Io)?;
-        let manifest: Manifest =
-            serde_json::from_str(&text).map_err(BackgroundLoadError::Json)?;
+        let manifest: Manifest = serde_json::from_str(&text).map_err(BackgroundLoadError::Json)?;
 
         // Pull the geometry + parallax constants straight from the manifest.
         self.params = ParallaxParams {
@@ -461,7 +460,11 @@ impl Background {
                 }
                 Err(e) => {
                     // Keep the fallback for this slot; log and continue.
-                    log::warn!("background layer {} ({}) failed to load: {e}", entry.index, file);
+                    log::warn!(
+                        "background layer {} ({}) failed to load: {e}",
+                        entry.index,
+                        file
+                    );
                 }
             }
         }
@@ -520,12 +523,7 @@ impl Background {
         target_view: &wgpu::TextureView,
         clear: Option<wgpu::Color>,
     ) {
-        let draws = visible_layers(
-            self.focus,
-            self.player_pos,
-            self.layers.len(),
-            &self.params,
-        );
+        let draws = visible_layers(self.focus, self.player_pos, self.layers.len(), &self.params);
 
         let px_to_ndc = [2.0 / self.frame_w, 2.0 / self.frame_h];
         let frame_cx = self.frame_w * 0.5;
@@ -779,7 +777,7 @@ fn fallback_layer(
 fn fallback_color(i: usize, count: usize) -> [u8; 4] {
     let denom = (count.max(2) - 1) as f32;
     let t = (i as f32 / denom).clamp(0.0, 1.0); // 0 near .. 1 far
-    // Near tone (#3a4660 cool slate) -> far tone (#0a0e1c deep void).
+                                                // Near tone (#3a4660 cool slate) -> far tone (#0a0e1c deep void).
     let near = [0.227_f32, 0.275, 0.376];
     let far = [0.039_f32, 0.055, 0.110];
     let mut rgb = [
@@ -930,7 +928,7 @@ mod tests {
     fn edge_fade_in_and_out() {
         // A layer at the back edge (s just under visible) fades toward 0.
         let v = visible_layers(-0.5, 2.0, 20, &p()); // layer 0 at s=0.5..; layer where s>4 fades
-        // Construct a focus that puts layer 0 at the exiting-front edge (s<0).
+                                                     // Construct a focus that puts layer 0 at the exiting-front edge (s<0).
         let exiting = visible_layers(0.5, 2.0, 20, &p());
         let l0 = exiting.iter().find(|d| d.layer == 0).unwrap();
         assert!(l0.s < 0.0 && l0.alpha < 1.0 && l0.alpha > 0.0);

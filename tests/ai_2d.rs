@@ -50,7 +50,9 @@ impl Content for AiContent {
 }
 
 fn content(actions: &[Action]) -> AiContent {
-    AiContent { actions: actions.iter().map(|a| (a.id.clone(), a.clone())).collect() }
+    AiContent {
+        actions: actions.iter().map(|a| (a.id.clone(), a.clone())).collect(),
+    }
 }
 
 /// A Forward-arc beam with explicit 2-D + 1-D bands. `raw` damage; `bands_2d`
@@ -62,7 +64,11 @@ fn beam(id: &str, raw: i32, bands_2d: Vec<broadside_engine::grid::Range>) -> Act
         id: id.into(),
         name: id.into(),
         archetype: WeaponArchetype::Beam,
-        cost: ActionCost { heat: 1, cooldown_max: 0, advances_turn: true },
+        cost: ActionCost {
+            heat: 1,
+            cooldown_max: 0,
+            advances_turn: true,
+        },
         targeting: Targeting {
             range_band: bands_2d,
             optimal_range: broadside_engine::grid::Range::Adjacent,
@@ -73,7 +79,10 @@ fn beam(id: &str, raw: i32, bands_2d: Vec<broadside_engine::grid::Range>) -> Act
             facing_relative: true,
             hits_all: false,
         },
-        effects: vec![broadside_engine::types::Effect::DAMAGE { amount: raw, band_falloff: Some(false) }],
+        effects: vec![broadside_engine::types::Effect::DAMAGE {
+            amount: raw,
+            band_falloff: Some(false),
+        }],
         r#mod: None,
         icon: None,
     }
@@ -85,7 +94,10 @@ fn pulse_laser() -> Action {
     beam(
         "pulse_laser",
         4,
-        vec![broadside_engine::grid::Range::Adjacent, broadside_engine::grid::Range::Near],
+        vec![
+            broadside_engine::grid::Range::Adjacent,
+            broadside_engine::grid::Range::Near,
+        ],
     )
 }
 
@@ -107,8 +119,24 @@ fn queue_of(board: &broadside_engine::types::Board, pos: Pos) -> Vec<String> {
 fn ai_queues_threatening_action_when_bears() {
     // Enemy at (2,1) Bow(S) bears down-column on the player at (2,3): distance 2
     // = Near, in pulse_laser's band → it queues the attack.
-    let player = ship_2d("p", Faction::Player, Pos::new(2, 3), 10, Facing::Bow(Dir4::N), Arc::Forward, "pulse_laser");
-    let enemy = ship_2d("e", Faction::Enemy, Pos::new(2, 1), 5, Facing::Bow(Dir4::S), Arc::Forward, "pulse_laser");
+    let player = ship_2d(
+        "p",
+        Faction::Player,
+        Pos::new(2, 3),
+        10,
+        Facing::Bow(Dir4::N),
+        Arc::Forward,
+        "pulse_laser",
+    );
+    let enemy = ship_2d(
+        "e",
+        Faction::Enemy,
+        Pos::new(2, 1),
+        5,
+        Facing::Bow(Dir4::S),
+        Arc::Forward,
+        "pulse_laser",
+    );
     let mut board = board_2d(vec![player, enemy]);
     let c = content(&[pulse_laser()]);
     decide_enemy_action(Pos::new(2, 1).to_index(), &mut board, &c);
@@ -123,14 +151,46 @@ fn ai_queues_threatening_action_when_bears() {
 fn ai_picks_highest_raw_bearing_weapon() {
     // Two mounts both bear; the AI picks the higher-raw one ("heavy" raw 6 over
     // pulse_laser raw 4).
-    let player = ship_2d("p", Faction::Player, Pos::new(2, 3), 20, Facing::Bow(Dir4::N), Arc::Forward, "pulse_laser");
-    let mut enemy = ship_2d("e", Faction::Enemy, Pos::new(2, 2), 5, Facing::Bow(Dir4::S), Arc::Forward, "pulse_laser");
+    let player = ship_2d(
+        "p",
+        Faction::Player,
+        Pos::new(2, 3),
+        20,
+        Facing::Bow(Dir4::N),
+        Arc::Forward,
+        "pulse_laser",
+    );
+    let mut enemy = ship_2d(
+        "e",
+        Faction::Enemy,
+        Pos::new(2, 2),
+        5,
+        Facing::Bow(Dir4::S),
+        Arc::Forward,
+        "pulse_laser",
+    );
     enemy.mounts = vec![
-        Mount { id: "m1".into(), arc: Arc::Forward, weapon: "pulse_laser".into() },
-        Mount { id: "m2".into(), arc: Arc::Forward, weapon: "heavy".into() },
+        Mount {
+            id: "m1".into(),
+            arc: Arc::Forward,
+            weapon: "pulse_laser".into(),
+        },
+        Mount {
+            id: "m2".into(),
+            arc: Arc::Forward,
+            weapon: "heavy".into(),
+        },
     ];
     let mut board = board_2d(vec![player, enemy]);
-    let heavy = beam("heavy", 6, vec![broadside_engine::grid::Range::Adjacent, broadside_engine::grid::Range::Near, broadside_engine::grid::Range::Far]);
+    let heavy = beam(
+        "heavy",
+        6,
+        vec![
+            broadside_engine::grid::Range::Adjacent,
+            broadside_engine::grid::Range::Near,
+            broadside_engine::grid::Range::Far,
+        ],
+    );
     let c = content(&[pulse_laser(), heavy]);
     decide_enemy_action(Pos::new(2, 2).to_index(), &mut board, &c);
     assert_eq!(
@@ -145,11 +205,35 @@ fn ai_skips_friendly_fire_only_target() {
     // The enemy's only Forward target is an ALLY (another enemy) on its ray —
     // the friendly-fire filter rejects firing; with the player not on the ray it
     // must NOT queue the attack.
-    let player = ship_2d("p", Faction::Player, Pos::new(0, 3), 10, Facing::Bow(Dir4::N), Arc::Forward, "pulse_laser");
-    let ally = ship_2d("ally", Faction::Enemy, Pos::new(2, 2), 5, Facing::Bow(Dir4::N), Arc::Forward, "pulse_laser");
+    let player = ship_2d(
+        "p",
+        Faction::Player,
+        Pos::new(0, 3),
+        10,
+        Facing::Bow(Dir4::N),
+        Arc::Forward,
+        "pulse_laser",
+    );
+    let ally = ship_2d(
+        "ally",
+        Faction::Enemy,
+        Pos::new(2, 2),
+        5,
+        Facing::Bow(Dir4::N),
+        Arc::Forward,
+        "pulse_laser",
+    );
     // Shooter at (2,1) Bow(S): its Forward ray down column 2 hits the ALLY at
     // (2,2) first, not the player (who is in column 0).
-    let shooter = ship_2d("e", Faction::Enemy, Pos::new(2, 1), 5, Facing::Bow(Dir4::S), Arc::Forward, "pulse_laser");
+    let shooter = ship_2d(
+        "e",
+        Faction::Enemy,
+        Pos::new(2, 1),
+        5,
+        Facing::Bow(Dir4::S),
+        Arc::Forward,
+        "pulse_laser",
+    );
     let mut board = board_2d(vec![player, ally, shooter]);
     let c = content(&[pulse_laser()]);
     decide_enemy_action(Pos::new(2, 1).to_index(), &mut board, &c);
@@ -164,8 +248,24 @@ fn ai_skips_friendly_fire_only_target() {
 fn ai_respects_lockout_only_queues_zero_heat() {
     // A locked-out enemy can't fire its heat-1 weapon; with no zero-heat
     // fallback its queue stays empty (it does not fire).
-    let player = ship_2d("p", Faction::Player, Pos::new(2, 3), 10, Facing::Bow(Dir4::N), Arc::Forward, "pulse_laser");
-    let mut enemy = ship_2d("e", Faction::Enemy, Pos::new(2, 2), 5, Facing::Bow(Dir4::S), Arc::Forward, "pulse_laser");
+    let player = ship_2d(
+        "p",
+        Faction::Player,
+        Pos::new(2, 3),
+        10,
+        Facing::Bow(Dir4::N),
+        Arc::Forward,
+        "pulse_laser",
+    );
+    let mut enemy = ship_2d(
+        "e",
+        Faction::Enemy,
+        Pos::new(2, 2),
+        5,
+        Facing::Bow(Dir4::S),
+        Arc::Forward,
+        "pulse_laser",
+    );
     enemy.locked_out = true;
     let mut board = board_2d(vec![player, enemy]);
     let c = content(&[pulse_laser()]);
@@ -180,13 +280,36 @@ fn ai_respects_lockout_only_queues_zero_heat() {
 fn ai_allows_action_that_lands_exactly_one_over_heat_max() {
     // The AI tolerates overheating by exactly 1 (heat_max + 1 is allowed). "warm"
     // raw 5 pushes heat to heat_max+1; it should still be queued.
-    let player = ship_2d("p", Faction::Player, Pos::new(2, 3), 20, Facing::Bow(Dir4::N), Arc::Forward, "pulse_laser");
-    let mut enemy = ship_2d("e", Faction::Enemy, Pos::new(2, 2), 5, Facing::Bow(Dir4::S), Arc::Forward, "warm");
+    let player = ship_2d(
+        "p",
+        Faction::Player,
+        Pos::new(2, 3),
+        20,
+        Facing::Bow(Dir4::N),
+        Arc::Forward,
+        "pulse_laser",
+    );
+    let mut enemy = ship_2d(
+        "e",
+        Faction::Enemy,
+        Pos::new(2, 2),
+        5,
+        Facing::Bow(Dir4::S),
+        Arc::Forward,
+        "warm",
+    );
     enemy.heat_max = 2;
     enemy.heat = 1; // +warm's heat (1 via beam default? — set explicitly below)
     let mut board = board_2d(vec![player, enemy]);
     // warm: a heat-2 beam so heat 1 -> 3 = heat_max(2)+1, the tolerated overshoot.
-    let mut warm = beam("warm", 5, vec![broadside_engine::grid::Range::Adjacent, broadside_engine::grid::Range::Near]);
+    let mut warm = beam(
+        "warm",
+        5,
+        vec![
+            broadside_engine::grid::Range::Adjacent,
+            broadside_engine::grid::Range::Near,
+        ],
+    );
     warm.cost.heat = 2;
     let c = content(&[warm]);
     decide_enemy_action(Pos::new(2, 2).to_index(), &mut board, &c);
@@ -233,8 +356,24 @@ fn ai_skips_out_of_band_action_and_closes() {
     // Enemy at (2,0) Bow(S), player at (2,3): distance 3 = Far. pulse_laser is
     // Adjacent+Near only (deadzone) → out of band → it must CLOSE toward the
     // player (south), not fire.
-    let player = ship_2d("p", Faction::Player, Pos::new(2, 3), 10, Facing::Bow(Dir4::N), Arc::Forward, "pulse_laser");
-    let enemy = ship_2d("e", Faction::Enemy, Pos::new(2, 0), 5, Facing::Bow(Dir4::S), Arc::Forward, "pulse_laser");
+    let player = ship_2d(
+        "p",
+        Faction::Player,
+        Pos::new(2, 3),
+        10,
+        Facing::Bow(Dir4::N),
+        Arc::Forward,
+        "pulse_laser",
+    );
+    let enemy = ship_2d(
+        "e",
+        Faction::Enemy,
+        Pos::new(2, 0),
+        5,
+        Facing::Bow(Dir4::S),
+        Arc::Forward,
+        "pulse_laser",
+    );
     let mut board = board_2d(vec![player, enemy]);
     let c = content(&[pulse_laser()]);
     decide_enemy_action(Pos::new(2, 0).to_index(), &mut board, &c);
@@ -245,8 +384,24 @@ fn ai_skips_out_of_band_action_and_closes() {
 fn ai_closes_via_synthetic_move_when_cannot_fire() {
     // Enemy can't fire (out of band, Far) and has no movement mount → it reaches
     // for the synthetic move to close.
-    let player = ship_2d("p", Faction::Player, Pos::new(2, 3), 10, Facing::Bow(Dir4::N), Arc::Forward, "pulse_laser");
-    let enemy = ship_2d("e", Faction::Enemy, Pos::new(2, 0), 5, Facing::Bow(Dir4::S), Arc::Forward, "pulse_laser");
+    let player = ship_2d(
+        "p",
+        Faction::Player,
+        Pos::new(2, 3),
+        10,
+        Facing::Bow(Dir4::N),
+        Arc::Forward,
+        "pulse_laser",
+    );
+    let enemy = ship_2d(
+        "e",
+        Faction::Enemy,
+        Pos::new(2, 0),
+        5,
+        Facing::Bow(Dir4::S),
+        Arc::Forward,
+        "pulse_laser",
+    );
     let mut board = board_2d(vec![player, enemy]);
     let c = content(&[pulse_laser()]);
     decide_enemy_action(Pos::new(2, 0).to_index(), &mut board, &c);
@@ -262,13 +417,32 @@ fn ai_rotates_to_bear_when_misfacing_in_band() {
     // southward bearing, so it queues a quarter-turn (`__rotate_right`) to begin
     // coming about; the next phase finishes the turn and the gun bears.
     use broadside_engine::input::SYNTHETIC_ROTATE_RIGHT;
-    let player = ship_2d("p", Faction::Player, Pos::new(2, 3), 10, Facing::Bow(Dir4::N), Arc::Forward, "pulse_laser");
-    let enemy = ship_2d("e", Faction::Enemy, Pos::new(2, 1), 5, Facing::Bow(Dir4::N), Arc::Forward, "pulse_laser");
+    let player = ship_2d(
+        "p",
+        Faction::Player,
+        Pos::new(2, 3),
+        10,
+        Facing::Bow(Dir4::N),
+        Arc::Forward,
+        "pulse_laser",
+    );
+    let enemy = ship_2d(
+        "e",
+        Faction::Enemy,
+        Pos::new(2, 1),
+        5,
+        Facing::Bow(Dir4::N),
+        Arc::Forward,
+        "pulse_laser",
+    );
     let mut board = board_2d(vec![player, enemy]);
     let c = content(&[pulse_laser()]);
     decide_enemy_action(Pos::new(2, 1).to_index(), &mut board, &c);
     let q = queue_of(&board, Pos::new(2, 1));
-    assert!(!q.contains(&"pulse_laser".to_string()), "can't-bear enemy must not queue the weapon; got {q:?}");
+    assert!(
+        !q.contains(&"pulse_laser".to_string()),
+        "can't-bear enemy must not queue the weapon; got {q:?}"
+    );
     assert_eq!(
         q,
         vec![SYNTHETIC_ROTATE_RIGHT.to_string()],
@@ -279,8 +453,24 @@ fn ai_rotates_to_bear_when_misfacing_in_band() {
 #[test]
 fn ai_skips_action_on_cooldown_and_closes() {
     // The bearing weapon is on cooldown → can't fire → close toward the player.
-    let player = ship_2d("p", Faction::Player, Pos::new(2, 3), 10, Facing::Bow(Dir4::N), Arc::Forward, "pulse_laser");
-    let mut enemy = ship_2d("e", Faction::Enemy, Pos::new(2, 0), 5, Facing::Bow(Dir4::S), Arc::Forward, "pulse_laser");
+    let player = ship_2d(
+        "p",
+        Faction::Player,
+        Pos::new(2, 3),
+        10,
+        Facing::Bow(Dir4::N),
+        Arc::Forward,
+        "pulse_laser",
+    );
+    let mut enemy = ship_2d(
+        "e",
+        Faction::Enemy,
+        Pos::new(2, 0),
+        5,
+        Facing::Bow(Dir4::S),
+        Arc::Forward,
+        "pulse_laser",
+    );
     enemy.cooldowns.insert("pulse_laser".into(), 2);
     let mut board = board_2d(vec![player, enemy]);
     let c = content(&[pulse_laser()]);
@@ -292,13 +482,36 @@ fn ai_skips_action_on_cooldown_and_closes() {
 fn ai_skips_action_that_overshoots_heat_budget_and_closes() {
     // Heat-constrained (not locked): firing would overshoot heat_max by >1, so
     // the AI declines and closes instead of over-committing.
-    let player = ship_2d("p", Faction::Player, Pos::new(2, 3), 10, Facing::Bow(Dir4::N), Arc::Forward, "pulse_laser");
-    let mut enemy = ship_2d("e", Faction::Enemy, Pos::new(2, 2), 5, Facing::Bow(Dir4::S), Arc::Forward, "bighot");
+    let player = ship_2d(
+        "p",
+        Faction::Player,
+        Pos::new(2, 3),
+        10,
+        Facing::Bow(Dir4::N),
+        Arc::Forward,
+        "pulse_laser",
+    );
+    let mut enemy = ship_2d(
+        "e",
+        Faction::Enemy,
+        Pos::new(2, 2),
+        5,
+        Facing::Bow(Dir4::S),
+        Arc::Forward,
+        "bighot",
+    );
     enemy.heat_max = 2;
     enemy.heat = 2;
     let mut board = board_2d(vec![player, enemy]);
     // bighot: heat 5 → from heat 2 lands at 7, way over heat_max+1 = 3 → declined.
-    let mut bighot = beam("bighot", 5, vec![broadside_engine::grid::Range::Adjacent, broadside_engine::grid::Range::Near]);
+    let mut bighot = beam(
+        "bighot",
+        5,
+        vec![
+            broadside_engine::grid::Range::Adjacent,
+            broadside_engine::grid::Range::Near,
+        ],
+    );
     bighot.cost.heat = 5;
     let c = content(&[bighot]);
     decide_enemy_action(Pos::new(2, 2).to_index(), &mut board, &c);
@@ -322,12 +535,44 @@ fn ai_fires_through_ally_to_reach_player() {
     // line ALSO threatens the player beyond → the friendly-fire filter permits
     // it (at least one cell on the ray is hostile). Enemy at (2,0) Bow(S), ally
     // at (2,1), player at (2,2): the down-column ray pierces both.
-    let ally = ship_2d("ally", Faction::Enemy, Pos::new(2, 1), 5, Facing::Bow(Dir4::N), Arc::Forward, "pulse_laser");
-    let player = ship_2d("p", Faction::Player, Pos::new(2, 2), 10, Facing::Bow(Dir4::N), Arc::Forward, "pulse_laser");
-    let enemy = ship_2d("e", Faction::Enemy, Pos::new(2, 0), 5, Facing::Bow(Dir4::S), Arc::Forward, "sweep");
+    let ally = ship_2d(
+        "ally",
+        Faction::Enemy,
+        Pos::new(2, 1),
+        5,
+        Facing::Bow(Dir4::N),
+        Arc::Forward,
+        "pulse_laser",
+    );
+    let player = ship_2d(
+        "p",
+        Faction::Player,
+        Pos::new(2, 2),
+        10,
+        Facing::Bow(Dir4::N),
+        Arc::Forward,
+        "pulse_laser",
+    );
+    let enemy = ship_2d(
+        "e",
+        Faction::Enemy,
+        Pos::new(2, 0),
+        5,
+        Facing::Bow(Dir4::S),
+        Arc::Forward,
+        "sweep",
+    );
     let mut board = board_2d(vec![ally, player, enemy]);
     // sweep: SPINAL_LINE + hits_all so the ray pierces the ally AND the player.
-    let mut sweep = beam("sweep", 4, vec![broadside_engine::grid::Range::Adjacent, broadside_engine::grid::Range::Near, broadside_engine::grid::Range::Far]);
+    let mut sweep = beam(
+        "sweep",
+        4,
+        vec![
+            broadside_engine::grid::Range::Adjacent,
+            broadside_engine::grid::Range::Near,
+            broadside_engine::grid::Range::Far,
+        ],
+    );
     sweep.targeting.pattern = TargetingPattern::SPINAL_LINE;
     sweep.targeting.hits_all = true;
     let c = content(&[sweep]);
@@ -357,23 +602,74 @@ fn ai_pursuit_bonus_flips_pick_toward_the_player_hitting_action() {
     // strong 13 -> weak. So the +2 is decisive. (Contrived to isolate the term,
     // exactly as the canonical test tunes its raw gap; deleting `if pursuit &&
     // hits_player` flips the pick back to "strong" and reddens this.)
-    let player = ship_2d("p", Faction::Player, Pos::new(2, 0), 10, Facing::Bow(Dir4::S), Arc::Forward, "weak");
-    let ally = ship_2d("ally", Faction::Player, Pos::new(2, 3), 10, Facing::Bow(Dir4::N), Arc::Forward, "weak");
-    let mut enemy = ship_2d("e", Faction::Enemy, Pos::new(2, 2), 5, Facing::Bow(Dir4::S), Arc::Forward, "weak");
+    let player = ship_2d(
+        "p",
+        Faction::Player,
+        Pos::new(2, 0),
+        10,
+        Facing::Bow(Dir4::S),
+        Arc::Forward,
+        "weak",
+    );
+    let ally = ship_2d(
+        "ally",
+        Faction::Player,
+        Pos::new(2, 3),
+        10,
+        Facing::Bow(Dir4::N),
+        Arc::Forward,
+        "weak",
+    );
+    let mut enemy = ship_2d(
+        "e",
+        Faction::Enemy,
+        Pos::new(2, 2),
+        5,
+        Facing::Bow(Dir4::S),
+        Arc::Forward,
+        "weak",
+    );
     enemy.heat_max = 10; // generous so neither shot trips the heat gate
     enemy.traits = vec![broadside_engine::types::Trait::Pursuit];
     enemy.mounts = vec![
-        Mount { id: "m1".into(), arc: Arc::Rear, weapon: "weak".into() }, // bears N -> player (2,0)
-        Mount { id: "m2".into(), arc: Arc::Forward, weapon: "strong".into() }, // bears S -> ally (2,3)
+        Mount {
+            id: "m1".into(),
+            arc: Arc::Rear,
+            weapon: "weak".into(),
+        }, // bears N -> player (2,0)
+        Mount {
+            id: "m2".into(),
+            arc: Arc::Forward,
+            weapon: "strong".into(),
+        }, // bears S -> ally (2,3)
     ];
     // Index sanity: the real player must be the FIRST player-faction cell so the
     // AI reads it as player_pos (lower cell index than the ally).
-    assert!(Pos::new(2, 0).to_index() < Pos::new(2, 3).to_index(), "real player precedes ally in scan order");
+    assert!(
+        Pos::new(2, 0).to_index() < Pos::new(2, 3).to_index(),
+        "real player precedes ally in scan order"
+    );
     let mut board = board_2d(vec![player, ally, enemy]);
-    let mut weak = beam("weak", 2, vec![broadside_engine::grid::Range::Adjacent, broadside_engine::grid::Range::Near, broadside_engine::grid::Range::Far]);
+    let mut weak = beam(
+        "weak",
+        2,
+        vec![
+            broadside_engine::grid::Range::Adjacent,
+            broadside_engine::grid::Range::Near,
+            broadside_engine::grid::Range::Far,
+        ],
+    );
     weak.targeting.requires_arc = Some(Arc::Rear);
     weak.cost.heat = 0;
-    let mut strong = beam("strong", 13, vec![broadside_engine::grid::Range::Adjacent, broadside_engine::grid::Range::Near, broadside_engine::grid::Range::Far]);
+    let mut strong = beam(
+        "strong",
+        13,
+        vec![
+            broadside_engine::grid::Range::Adjacent,
+            broadside_engine::grid::Range::Near,
+            broadside_engine::grid::Range::Far,
+        ],
+    );
     strong.targeting.requires_arc = Some(Arc::Forward);
     strong.cost.heat = 0;
     let c = content(&[weak, strong]);

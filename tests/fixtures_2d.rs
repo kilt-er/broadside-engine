@@ -43,26 +43,66 @@ fn dummy_2d_has_no_mounts() {
 #[test]
 fn board_2d_places_every_ship_at_its_pos_index() {
     let ships = vec![
-        ship_2d("p", Faction::Player, Pos::new(2, 3), 30, Facing::Bow(Dir4::N), broadside_engine::types::Arc::Forward, "beam"),
-        ship_2d("e1", Faction::Enemy, Pos::new(2, 0), 4, Facing::Bow(Dir4::S), broadside_engine::types::Arc::Forward, "beam"),
-        ship_2d("e2", Faction::Enemy, Pos::new(1, 0), 4, Facing::Broadside(Axis::EastWest), broadside_engine::types::Arc::BroadsideArc, "beam"),
+        ship_2d(
+            "p",
+            Faction::Player,
+            Pos::new(2, 3),
+            30,
+            Facing::Bow(Dir4::N),
+            broadside_engine::types::Arc::Forward,
+            "beam",
+        ),
+        ship_2d(
+            "e1",
+            Faction::Enemy,
+            Pos::new(2, 0),
+            4,
+            Facing::Bow(Dir4::S),
+            broadside_engine::types::Arc::Forward,
+            "beam",
+        ),
+        ship_2d(
+            "e2",
+            Faction::Enemy,
+            Pos::new(1, 0),
+            4,
+            Facing::Broadside(Axis::EastWest),
+            broadside_engine::types::Arc::BroadsideArc,
+            "beam",
+        ),
     ];
     let b = board_2d(ships);
     // Fixed 5x4 grid backing vector.
     assert_eq!(b.cells.len(), broadside_engine::grid::CELLS);
     // Each ship sits at exactly cells[pos.to_index()].
-    let p = b.cells[Pos::new(2, 3).to_index()].as_ref().expect("player placed");
+    let p = b.cells[Pos::new(2, 3).to_index()]
+        .as_ref()
+        .expect("player placed");
     assert_eq!(p.id, "p");
     assert_eq!(p.faction, Faction::Player);
-    let e1 = b.cells[Pos::new(2, 0).to_index()].as_ref().expect("e1 placed");
+    let e1 = b.cells[Pos::new(2, 0).to_index()]
+        .as_ref()
+        .expect("e1 placed");
     assert_eq!(e1.id, "e1");
-    let e2 = b.cells[Pos::new(1, 0).to_index()].as_ref().expect("e2 placed");
+    let e2 = b.cells[Pos::new(1, 0).to_index()]
+        .as_ref()
+        .expect("e2 placed");
     assert_eq!(e2.id, "e2");
     // And invariant A holds for every occupied slot.
     for (idx, slot) in b.cells.iter().enumerate() {
         if let Some(s) = slot {
-            assert_eq!(s.cell, idx, "occupant {} at slot {idx} reports cell {}", s.id, s.cell);
-            assert_eq!(s.pos.to_index(), idx, "occupant {} pos {:?} indexes slot {idx}", s.id, s.pos);
+            assert_eq!(
+                s.cell, idx,
+                "occupant {} at slot {idx} reports cell {}",
+                s.id, s.cell
+            );
+            assert_eq!(
+                s.pos.to_index(),
+                idx,
+                "occupant {} pos {:?} indexes slot {idx}",
+                s.id,
+                s.pos
+            );
         }
     }
     assert_eq!(enemies_left(&b), 2, "two enemies on the board");
@@ -75,8 +115,24 @@ fn board_2d_panics_on_a_double_booked_cell() {
     // is an authoring bug, surfaced loudly (not a silently-dropped ship like the
     // production build_encounter_board's defensive skip).
     let ships = vec![
-        ship_2d("a", Faction::Enemy, Pos::new(1, 1), 3, Facing::Bow(Dir4::S), broadside_engine::types::Arc::Forward, "beam"),
-        ship_2d("b", Faction::Enemy, Pos::new(1, 1), 3, Facing::Bow(Dir4::S), broadside_engine::types::Arc::Forward, "beam"),
+        ship_2d(
+            "a",
+            Faction::Enemy,
+            Pos::new(1, 1),
+            3,
+            Facing::Bow(Dir4::S),
+            broadside_engine::types::Arc::Forward,
+            "beam",
+        ),
+        ship_2d(
+            "b",
+            Faction::Enemy,
+            Pos::new(1, 1),
+            3,
+            Facing::Bow(Dir4::S),
+            broadside_engine::types::Arc::Forward,
+            "beam",
+        ),
     ];
     let _ = board_2d(ships);
 }
@@ -86,8 +142,24 @@ fn board_2d_distinct_cells_do_not_collide() {
     // The contrast case: distinct positions place cleanly (no false-positive in
     // the double-book guard).
     let ships = vec![
-        ship_2d("a", Faction::Enemy, Pos::new(0, 0), 3, Facing::Bow(Dir4::S), broadside_engine::types::Arc::Forward, "beam"),
-        ship_2d("b", Faction::Enemy, Pos::new(4, 3), 3, Facing::Bow(Dir4::S), broadside_engine::types::Arc::Forward, "beam"),
+        ship_2d(
+            "a",
+            Faction::Enemy,
+            Pos::new(0, 0),
+            3,
+            Facing::Bow(Dir4::S),
+            broadside_engine::types::Arc::Forward,
+            "beam",
+        ),
+        ship_2d(
+            "b",
+            Faction::Enemy,
+            Pos::new(4, 3),
+            3,
+            Facing::Bow(Dir4::S),
+            broadside_engine::types::Arc::Forward,
+            "beam",
+        ),
     ];
     let b = board_2d(ships);
     assert_eq!(enemies_left(&b), 2);

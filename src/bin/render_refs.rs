@@ -30,9 +30,10 @@ struct ClassDef {
 
 /// Classes to render. Add Scout / Gunboat once their `ShipDims` land in
 /// `perspective.rs` (see SPRITE_SPEC.md).
-const CLASSES: &[ClassDef] = &[
-    ClassDef { name: "frigate", dims: FRIGATE_DIMS },
-];
+const CLASSES: &[ClassDef] = &[ClassDef {
+    name: "frigate",
+    dims: FRIGATE_DIMS,
+}];
 
 /// View angles to render references for. Three anchors out of the seven
 /// scrub steps — the angles bruce will paint side / mid / top variants of.
@@ -63,9 +64,9 @@ const ORIENTATIONS: &[Orientation] = &[
 
 /// PNG fill / stroke / background colors (RGBA8). Match the renderer's
 /// PLAYER_HULL palette so bruce's hand-painted art has a matching tone.
-const BG:     [u8; 4] = [12, 18, 28, 255];      // deep-space ink-ish
-const FILL:   [u8; 4] = [26, 42, 62, 255];      // player hull fill
-const STROKE: [u8; 4] = [84, 207, 201, 255];    // player hull stroke (--gold)
+const BG: [u8; 4] = [12, 18, 28, 255]; // deep-space ink-ish
+const FILL: [u8; 4] = [26, 42, 62, 255]; // player hull fill
+const STROKE: [u8; 4] = [84, 207, 201, 255]; // player hull stroke (--gold)
 
 fn main() {
     let out_dir = PathBuf::from("docs/sprite-refs");
@@ -85,11 +86,7 @@ fn main() {
 
 /// Render one silhouette to an image buffer at the given angle. Includes
 /// a small margin around the silhouette so the strokes aren't clipped.
-fn render_silhouette(
-    dims: ShipDims,
-    orient: Orientation,
-    deg: u32,
-) -> image::RgbaImage {
+fn render_silhouette(dims: ShipDims, orient: Orientation, deg: u32) -> image::RgbaImage {
     let angle = (deg as f32).to_radians();
     let cos_a = angle.cos();
     let sin_a = angle.sin();
@@ -144,13 +141,26 @@ fn rasterize_bow_on(
     let right = stern_edge_x.max(bow_corner_x);
 
     // Body quad fill.
-    fill_quad(img, [[left, top_y], [right, top_y], [right, base_y], [left, base_y]], FILL);
+    fill_quad(
+        img,
+        [
+            [left, top_y],
+            [right, top_y],
+            [right, base_y],
+            [left, base_y],
+        ],
+        FILL,
+    );
     // Bow triangle fill (3-vertex polygon).
-    fill_polygon(img, &[
-        (bow_corner_x, top_y),
-        (bow_tip_x, mid_y),
-        (bow_corner_x, base_y),
-    ], FILL);
+    fill_polygon(
+        img,
+        &[
+            (bow_corner_x, top_y),
+            (bow_tip_x, mid_y),
+            (bow_corner_x, base_y),
+        ],
+        FILL,
+    );
 
     // Outline strokes.
     stroke_line(img, stern_edge_x, top_y, stern_edge_x, base_y, STROKE);
@@ -172,29 +182,58 @@ fn rasterize_broadside(
     let half_w = width / 2.0;
     let height = base_y - top_y;
     // Main hull.
-    fill_quad(img, [
-        [cx - half_w, top_y],
-        [cx + half_w, top_y],
-        [cx + half_w, base_y],
-        [cx - half_w, base_y],
-    ], FILL);
+    fill_quad(
+        img,
+        [
+            [cx - half_w, top_y],
+            [cx + half_w, top_y],
+            [cx + half_w, base_y],
+            [cx - half_w, base_y],
+        ],
+        FILL,
+    );
     // Superstructure bump.
     let bump_w = width * 0.4;
     let bump_h = height * 0.30 * cos_a.max(0.1);
-    fill_quad(img, [
-        [cx - bump_w / 2.0, top_y - bump_h],
-        [cx + bump_w / 2.0, top_y - bump_h],
-        [cx + bump_w / 2.0, top_y],
-        [cx - bump_w / 2.0, top_y],
-    ], FILL);
+    fill_quad(
+        img,
+        [
+            [cx - bump_w / 2.0, top_y - bump_h],
+            [cx + bump_w / 2.0, top_y - bump_h],
+            [cx + bump_w / 2.0, top_y],
+            [cx - bump_w / 2.0, top_y],
+        ],
+        FILL,
+    );
     // Outlines.
     stroke_line(img, cx - half_w, top_y, cx + half_w, top_y, STROKE);
     stroke_line(img, cx + half_w, top_y, cx + half_w, base_y, STROKE);
     stroke_line(img, cx + half_w, base_y, cx - half_w, base_y, STROKE);
     stroke_line(img, cx - half_w, base_y, cx - half_w, top_y, STROKE);
-    stroke_line(img, cx - bump_w / 2.0, top_y - bump_h, cx + bump_w / 2.0, top_y - bump_h, STROKE);
-    stroke_line(img, cx + bump_w / 2.0, top_y - bump_h, cx + bump_w / 2.0, top_y, STROKE);
-    stroke_line(img, cx - bump_w / 2.0, top_y - bump_h, cx - bump_w / 2.0, top_y, STROKE);
+    stroke_line(
+        img,
+        cx - bump_w / 2.0,
+        top_y - bump_h,
+        cx + bump_w / 2.0,
+        top_y - bump_h,
+        STROKE,
+    );
+    stroke_line(
+        img,
+        cx + bump_w / 2.0,
+        top_y - bump_h,
+        cx + bump_w / 2.0,
+        top_y,
+        STROKE,
+    );
+    stroke_line(
+        img,
+        cx - bump_w / 2.0,
+        top_y - bump_h,
+        cx - bump_w / 2.0,
+        top_y,
+        STROKE,
+    );
 }
 
 /// Fill a 4-vertex convex polygon with the given color (axis-aligned-ish).
@@ -216,7 +255,10 @@ fn fill_polygon(img: &mut image::RgbaImage, verts: &[(f32, f32)], color: [u8; 4]
         return;
     }
     let y_min = verts.iter().map(|(_, y)| *y).fold(f32::INFINITY, f32::min);
-    let y_max = verts.iter().map(|(_, y)| *y).fold(f32::NEG_INFINITY, f32::max);
+    let y_max = verts
+        .iter()
+        .map(|(_, y)| *y)
+        .fold(f32::NEG_INFINITY, f32::max);
     let (w, h) = (img.width() as i32, img.height() as i32);
     let y_start = (y_min.floor() as i32).max(0);
     let y_end = (y_max.ceil() as i32).min(h - 1);

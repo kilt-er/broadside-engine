@@ -45,27 +45,27 @@ use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowId};
 
 use broadside_engine::cards::PlayResult;
+use broadside_engine::catalog::{enemy_ship_from_catalog_at_tier, load_from_path};
 use broadside_engine::geometry::default_shield_profile;
 use broadside_engine::gfx::{Gfx, VIRTUAL_H, VIRTUAL_W};
+use broadside_engine::grid::{Facing, Pos}; // (#79) TweenAnchor records pre-move pos/facing
 use broadside_engine::hud::{
-    self, push_between_encounter_overlay, push_salvage_hud,
-    win_state, BetweenEncounterChoice, WinState,
-};
-use broadside_engine::runs::{
-    advance_after_win, boss_ship_for_spawn, build_encounter_board, capital_boss_ship_for_spawn,
-    current_encounter, encounter_outcome, fallback_ship_for_spawn, generate_campaign,
-    is_capital_spawn, mark_defeated, placeholder_sectors, AdvanceResult, EncounterOutcome,
+    self, push_between_encounter_overlay, push_salvage_hud, win_state, BetweenEncounterChoice,
+    WinState,
 };
 use broadside_engine::input::{
     intent_to_action_id, key_to_intent, synthetic_card_action_id, DemoContent, Intent, Key,
 };
-use broadside_engine::catalog::{enemy_ship_from_catalog_at_tier, load_from_path};
-use broadside_engine::grid::{Facing, Pos}; // (#79) TweenAnchor records pre-move pos/facing
 use broadside_engine::meta::{salvage_for_capital_encounter, salvage_for_encounter_win};
 use broadside_engine::perspective::{fractional_cell_to_screen, LaneGeometry, DEFAULT_LANE};
 use broadside_engine::projector::ProjectorConfig;
 use broadside_engine::resolve::{
     apply_instant_action, find_player_id, fire_player_queue, run_world_phase, Content,
+};
+use broadside_engine::runs::{
+    advance_after_win, boss_ship_for_spawn, build_encounter_board, capital_boss_ship_for_spawn,
+    current_encounter, encounter_outcome, fallback_ship_for_spawn, generate_campaign,
+    is_capital_spawn, mark_defeated, placeholder_sectors, AdvanceResult, EncounterOutcome,
 };
 use broadside_engine::subsystems::{HEAT_SINK, POINT_BLANK_DOCTRINE};
 use broadside_engine::types::{
@@ -191,8 +191,12 @@ pub fn apply_intent(
             };
             // Two clockwise quarter-turns = a 180° about-face of facing.
             action.effects = vec![
-                Effect::REORIENT { to: ReorientTo::RotateRight },
-                Effect::REORIENT { to: ReorientTo::RotateRight },
+                Effect::REORIENT {
+                    to: ReorientTo::RotateRight,
+                },
+                Effect::REORIENT {
+                    to: ReorientTo::RotateRight,
+                },
             ];
             apply_instant_action(&player_id, &action, board, content);
             // (#126) TURN-BASED (chess): a player turn-action advances the world
@@ -377,7 +381,10 @@ fn load_catalog() -> Option<broadside_engine::types::Catalog> {
     let path = std::path::Path::new("assets/broadside.catalog.json");
     match load_from_path(path) {
         Ok(cat) => {
-            log::info!("catalog loaded: {} enemies for catalog-driven synthesis", cat.enemies.len());
+            log::info!(
+                "catalog loaded: {} enemies for catalog-driven synthesis",
+                cat.enemies.len()
+            );
             Some(cat)
         }
         Err(e) => {
@@ -502,7 +509,10 @@ fn queue_index(ship: &Ship, action_id: &str) -> Option<usize> {
 /// that genuinely can't bring its arc onto an enemy from here.
 fn action_can_fire(action: &broadside_engine::types::Action, board: &Board, ship: &Ship) -> bool {
     use broadside_engine::types::TargetingPattern;
-    if matches!(action.targeting.pattern, TargetingPattern::SELF | TargetingPattern::DEPLOYED_CELL) {
+    if matches!(
+        action.targeting.pattern,
+        TargetingPattern::SELF | TargetingPattern::DEPLOYED_CELL
+    ) {
         return true;
     }
     !broadside_engine::resolve::resolve_targeting_2d(action, board, ship.pos).is_empty()
@@ -534,7 +544,12 @@ fn build_ship_tiles(ship: &Ship, content: &dyn Content, board: &Board) -> Vec<hu
                 icon: archetype_icon(action.archetype),
                 damage: action_damage(action, content, ship),
                 range: action_range(action),
-                cooldown: ship.cooldowns.get(&mount.weapon).copied().unwrap_or(0).max(0),
+                cooldown: ship
+                    .cooldowns
+                    .get(&mount.weapon)
+                    .copied()
+                    .unwrap_or(0)
+                    .max(0),
                 cooldown_max: action.cost.cooldown_max.max(0),
                 queued_index: queue_index(ship, &mount.weapon),
                 can_fire: action_can_fire(action, board, ship),
@@ -653,14 +668,22 @@ fn render_example_board() -> Board {
     };
     place(&mut cells, player_ship(Pos::new(mid, ROWS - 1), bow_n));
     place(&mut cells, enemy_ship("enemy-2", Pos::new(mid, 0), bow_s));
-    place(&mut cells, enemy_ship("enemy-3", Pos::new(mid - 1, 0), bow_s));
-    place(&mut cells, enemy_ship("enemy-5", Pos::new(mid + 1, 0), bow_s));
+    place(
+        &mut cells,
+        enemy_ship("enemy-3", Pos::new(mid - 1, 0), bow_s),
+    );
+    place(
+        &mut cells,
+        enemy_ship("enemy-5", Pos::new(mid + 1, 0), bow_s),
+    );
 
     Board {
         size,
         cells,
         ordnance: Vec::new(),
-        hazards: (0..broadside_engine::grid::CELLS).map(|_| Vec::new()).collect(),
+        hazards: (0..broadside_engine::grid::CELLS)
+            .map(|_| Vec::new())
+            .collect(),
         patrol: 1,
         level: 0,
         threats: Vec::new(),
@@ -673,12 +696,23 @@ fn render_example_board() -> Board {
 fn player_ship(pos: broadside_engine::grid::Pos, facing: broadside_engine::grid::Facing) -> Ship {
     let mut player = make_ship("player", Faction::Player, pos, facing);
     player.shield_profile = ShieldProfile {
-        bow: ShieldFace { armour: 2, charge: 1 },
+        bow: ShieldFace {
+            armour: 2,
+            charge: 1,
+        },
         ..default_shield_profile()
     };
     player.mounts = vec![
-        Mount { id: "m1".into(), arc: TArc::Forward, weapon: "pulse_laser".into() },
-        Mount { id: "m2".into(), arc: TArc::Forward, weapon: "torpedo".into() },
+        Mount {
+            id: "m1".into(),
+            arc: TArc::Forward,
+            weapon: "pulse_laser".into(),
+        },
+        Mount {
+            id: "m2".into(),
+            arc: TArc::Forward,
+            weapon: "torpedo".into(),
+        },
         // m3 (#49): a BROADSIDE-arc gun so key 3 is live AND it only bears when
         // the player turns broadside — teaching the REORIENT mechanic (the point
         // of a game called Broadside: forward guns for the bow-on approach, a
@@ -686,7 +720,11 @@ fn player_ship(pos: broadside_engine::grid::Pos, facing: broadside_engine::grid:
         // catalog gun (Arc::BroadsideArc, band close → 2D Near via #28); no
         // invented numbers. A legibility cue ("this weapon needs you turned") is
         // a renderer follow-up — for now the gun is wired.
-        Mount { id: "m3".into(), arc: TArc::BroadsideArc, weapon: "broadside_battery".into() },
+        Mount {
+            id: "m3".into(),
+            arc: TArc::BroadsideArc,
+            weapon: "broadside_battery".into(),
+        },
     ];
     // "aegis" is the first broadside-native player class (bruce's
     // hand-painted PNGs under assets/sprites/aegis_*.png). The
@@ -745,7 +783,11 @@ fn synth_enemy_for_spawn(
 /// Enemy frigate: one Forward pulse_laser so the AI can actually queue an
 /// action. Without a mount, decide_enemy_action returns nothing and the
 /// enemy looks inert.
-fn enemy_ship(id: &str, pos: broadside_engine::grid::Pos, facing: broadside_engine::grid::Facing) -> Ship {
+fn enemy_ship(
+    id: &str,
+    pos: broadside_engine::grid::Pos,
+    facing: broadside_engine::grid::Facing,
+) -> Ship {
     let mut e = make_ship(id, Faction::Enemy, pos, facing);
     e.mounts = vec![Mount {
         id: "m1".into(),
@@ -1022,7 +1064,9 @@ impl App {
         }
         #[cfg(feature = "audio")]
         {
-            if let Some(state) = broadside_engine::audio::AudioState::new(std::path::Path::new("assets")) {
+            if let Some(state) =
+                broadside_engine::audio::AudioState::new(std::path::Path::new("assets"))
+            {
                 let shared = Rc::new(RefCell::new(state));
                 broadside_engine::audio::install_on_bus(&mut app.board, Rc::clone(&shared));
                 app.audio = Some(shared);
@@ -1096,15 +1140,16 @@ impl App {
         // Compute the salvage with only IMMUTABLE borrows (catalog, enc,
         // sectors), then apply it to self.run with the mutable borrow —
         // avoids borrowing self.catalog and self.run simultaneously.
-        let earned = salvage_for_capital_encounter(enc, catalog, patrol_tier).unwrap_or_else(|| {
-            // Non-capital fallback: per-enemy salvage via the same
-            // spawn→Ship builder build_current_board uses (shared
-            // synth_enemy_for_spawn so board + reward agree on what each
-            // spawn becomes — incl. the #69 armed-capital route).
-            salvage_for_encounter_win(enc, |spawn| {
-                Some(synth_enemy_for_spawn(spawn, Some(catalog), patrol_tier))
-            })
-        });
+        let earned =
+            salvage_for_capital_encounter(enc, catalog, patrol_tier).unwrap_or_else(|| {
+                // Non-capital fallback: per-enemy salvage via the same
+                // spawn→Ship builder build_current_board uses (shared
+                // synth_enemy_for_spawn so board + reward agree on what each
+                // spawn becomes — incl. the #69 armed-capital route).
+                salvage_for_encounter_win(enc, |spawn| {
+                    Some(synth_enemy_for_spawn(spawn, Some(catalog), patrol_tier))
+                })
+            });
         self.run.salvage = self.run.salvage.saturating_add(earned);
     }
 
@@ -1228,7 +1273,9 @@ impl App {
         self.tween_anchors
             .retain(|id, _| self.board.cells.iter().flatten().any(|s| &s.id == id));
         for ship in self.board.cells.iter().flatten() {
-            let Some(&(from_pos, from_facing)) = prev.get(&ship.id) else { continue };
+            let Some(&(from_pos, from_facing)) = prev.get(&ship.id) else {
+                continue;
+            };
             if from_pos == ship.pos && from_facing == ship.facing {
                 // Nothing moved/turned — no tween needed.
                 self.tween_anchors.remove(&ship.id);
@@ -1236,7 +1283,11 @@ impl App {
             }
             self.tween_anchors.insert(
                 ship.id.clone(),
-                TweenAnchor { from_pos, from_facing, started_at: now },
+                TweenAnchor {
+                    from_pos,
+                    from_facing,
+                    started_at: now,
+                },
             );
         }
     }
@@ -1246,12 +1297,18 @@ impl App {
     /// position = lerp of the two cells' projected `CellQuad`s (slides along the
     /// perspective), facing-yaw = shortest-path angular lerp (turns smoothly).
     /// Expired/absent ⇒ no entry ⇒ that ship snaps to its logical cell.
-    fn tween_2d(&self, cfg: &broadside_engine::projector::ProjectorConfig, now: Instant) -> hud::Tween2d {
+    fn tween_2d(
+        &self,
+        cfg: &broadside_engine::projector::ProjectorConfig,
+        now: Instant,
+    ) -> hud::Tween2d {
         use broadside_engine::projector::grid_cell_quad;
         let dur_ms = TWEEN_DURATION_MS as f32;
         let mut tw = hud::Tween2d::default();
         for ship in self.board.cells.iter().flatten() {
-            let Some(anchor) = self.tween_anchors.get(&ship.id) else { continue };
+            let Some(anchor) = self.tween_anchors.get(&ship.id) else {
+                continue;
+            };
             let elapsed = now.duration_since(anchor.started_at).as_secs_f32() * 1000.0;
             let t = (elapsed / dur_ms).clamp(0.0, 1.0);
             // Ease-out quad: 1 - (1 - t)^2 — crisp departure, soft arrival.
@@ -1268,7 +1325,11 @@ impl App {
                     near_edge_y: q.corners[3][1],
                     near_edge_width: q.near_edge_width(),
                     depth_scale: q.depth_scale,
-                    facing_yaw_deg: hud::lerp_facing_yaw_deg(anchor.from_facing, ship.facing, eased),
+                    facing_yaw_deg: hud::lerp_facing_yaw_deg(
+                        anchor.from_facing,
+                        ship.facing,
+                        eased,
+                    ),
                 },
             );
         }
@@ -1319,8 +1380,13 @@ impl ApplicationHandler for App {
         // telegraph overlays are unaffected.
         const AEGIS_GLB: &[u8] = include_bytes!("../../assets/ships/Aegis.glb");
         match gfx.install_player_glb(AEGIS_GLB) {
-            Ok(()) => log::info!("loft: player Aegis hull installed from Aegis.glb ({} bytes)", AEGIS_GLB.len()),
-            Err(e) => log::warn!("loft: Aegis.glb import failed ({e}); player falls back to sprite/flat-box"),
+            Ok(()) => log::info!(
+                "loft: player Aegis hull installed from Aegis.glb ({} bytes)",
+                AEGIS_GLB.len()
+            ),
+            Err(e) => log::warn!(
+                "loft: Aegis.glb import failed ({e}); player falls back to sprite/flat-box"
+            ),
         }
         // (#89) ENEMIES = the SAME Aegis hull, RED-tinted (Bruce): every enemy
         // renders as the player's ship-class in a hostile colour instead of the
@@ -1328,18 +1394,15 @@ impl ApplicationHandler for App {
         // oncoming. loft_kind prefers EnemyLoft once this is installed.
         match gfx.install_enemy_glb(AEGIS_GLB) {
             Ok(()) => log::info!("loft: enemy Aegis hull (steel-grey) installed from Aegis.glb"),
-            Err(e) => log::warn!("loft: enemy Aegis.glb import failed ({e}); enemies fall back to CAD/2D"),
+            Err(e) => {
+                log::warn!("loft: enemy Aegis.glb import failed ({e}); enemies fall back to CAD/2D")
+            }
         }
         self.window = Some(window);
         self.gfx = Some(gfx);
     }
 
-    fn window_event(
-        &mut self,
-        event_loop: &ActiveEventLoop,
-        _id: WindowId,
-        event: WindowEvent,
-    ) {
+    fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         if self.gfx.is_none() {
             return;
         }
@@ -1355,7 +1418,9 @@ impl ApplicationHandler for App {
                 if event.state != ElementState::Pressed || event.repeat {
                     return;
                 }
-                let PhysicalKey::Code(code) = event.physical_key else { return };
+                let PhysicalKey::Code(code) = event.physical_key else {
+                    return;
+                };
                 if code == KeyCode::Escape {
                     event_loop.exit();
                     return;
@@ -1370,13 +1435,17 @@ impl ApplicationHandler for App {
                     if code == KeyCode::Comma {
                         let (w, h) = gfx.cycle_loft_res(false);
                         log::info!("ship res: {w}x{h}");
-                        if let Some(win) = self.window.as_ref() { win.request_redraw(); }
+                        if let Some(win) = self.window.as_ref() {
+                            win.request_redraw();
+                        }
                         return;
                     }
                     if code == KeyCode::Period {
                         let (w, h) = gfx.cycle_loft_res(true);
                         log::info!("ship res: {w}x{h}");
-                        if let Some(win) = self.window.as_ref() { win.request_redraw(); }
+                        if let Some(win) = self.window.as_ref() {
+                            win.request_redraw();
+                        }
                         return;
                     }
                     // `;` = previous scene res, `'` = next. The gfx side recreates
@@ -1386,13 +1455,17 @@ impl ApplicationHandler for App {
                     if code == KeyCode::Semicolon {
                         let (w, h) = gfx.cycle_scene_res(false);
                         log::info!("scene res: {w}x{h}");
-                        if let Some(win) = self.window.as_ref() { win.request_redraw(); }
+                        if let Some(win) = self.window.as_ref() {
+                            win.request_redraw();
+                        }
                         return;
                     }
                     if code == KeyCode::Quote {
                         let (w, h) = gfx.cycle_scene_res(true);
                         log::info!("scene res: {w}x{h}");
-                        if let Some(win) = self.window.as_ref() { win.request_redraw(); }
+                        if let Some(win) = self.window.as_ref() {
+                            win.request_redraw();
+                        }
                         return;
                     }
                     // (#139) `G` cycles the GRID PITCH toward top-down (constant grid
@@ -1404,8 +1477,13 @@ impl ApplicationHandler for App {
                     // they follow the arc toward top-down.
                     if code == KeyCode::KeyG {
                         let step = broadside_engine::gfx::cycle_grid_pitch();
-                        log::info!("grid pitch step: {step}/{}", broadside_engine::gfx::GRID_PITCH_STEPS);
-                        if let Some(win) = self.window.as_ref() { win.request_redraw(); }
+                        log::info!(
+                            "grid pitch step: {step}/{}",
+                            broadside_engine::gfx::GRID_PITCH_STEPS
+                        );
+                        if let Some(win) = self.window.as_ref() {
+                            win.request_redraw();
+                        }
                         return;
                     }
                     // (#140/#142) `T` cycles the GRID MODE: drawbridge (constant
@@ -1414,13 +1492,21 @@ impl ApplicationHandler for App {
                     // pitch step drives the arc within the active mode.
                     if code == KeyCode::KeyT {
                         let mode = broadside_engine::gfx::cycle_grid_mode();
-                        let name = match mode { 1 => "stretch-curved", 2 => "stretch-straight", _ => "drawbridge" };
+                        let name = match mode {
+                            1 => "stretch-curved",
+                            2 => "stretch-straight",
+                            _ => "drawbridge",
+                        };
                         log::info!("grid mode: {mode} ({name})");
-                        if let Some(win) = self.window.as_ref() { win.request_redraw(); }
+                        if let Some(win) = self.window.as_ref() {
+                            win.request_redraw();
+                        }
                         return;
                     }
                 }
-                let Some(key) = keycode_to_key(code) else { return };
+                let Some(key) = keycode_to_key(code) else {
+                    return;
+                };
 
                 // (#133) Lock gameplay input while the player's committed volley is
                 // playing out beat-by-beat. The turn-based model holds — input is just
@@ -1439,7 +1525,9 @@ impl ApplicationHandler for App {
                         if matches!(key, Key::D1 | Key::D2 | Key::D3) {
                             let changed = self.apply_path_choice(key);
                             if changed {
-                                if let Some(w) = self.window.as_ref() { w.request_redraw(); }
+                                if let Some(w) = self.window.as_ref() {
+                                    w.request_redraw();
+                                }
                             }
                         }
                         return;
@@ -1447,7 +1535,9 @@ impl ApplicationHandler for App {
                     DemoState::RunComplete | DemoState::RunDefeated => {
                         if key == Key::Enter {
                             self.restart_run();
-                            if let Some(w) = self.window.as_ref() { w.request_redraw(); }
+                            if let Some(w) = self.window.as_ref() {
+                                w.request_redraw();
+                            }
                         }
                         return;
                     }
@@ -1473,7 +1563,9 @@ impl ApplicationHandler for App {
                 if win_state(&self.board) == WinState::Defeat {
                     mark_defeated(&mut self.run);
                     self.demo_state = DemoState::RunDefeated;
-                    if let Some(w) = self.window.as_ref() { w.request_redraw(); }
+                    if let Some(w) = self.window.as_ref() {
+                        w.request_redraw();
+                    }
                     return;
                 }
 
@@ -1486,8 +1578,12 @@ impl ApplicationHandler for App {
                     .flatten()
                     .find(|s| s.faction == Faction::Player)
                     .cloned();
-                let Some(player) = player_snapshot else { return };
-                let Some(intent) = key_to_intent(key, &player, &self.content) else { return };
+                let Some(player) = player_snapshot else {
+                    return;
+                };
+                let Some(intent) = key_to_intent(key, &player, &self.content) else {
+                    return;
+                };
                 // (#136 Bruce) COOLDOWN GATE on queuing. Per the core model, queuing a
                 // weapon requires it OFF cooldown (the cooldown starts when it FIRES).
                 // The player could previously re-queue an on-cooldown weapon (bug). Read
@@ -1499,7 +1595,9 @@ impl ApplicationHandler for App {
                 if let Intent::QueueAction(ref weapon) = intent {
                     if player.cooldowns.get(weapon).copied().unwrap_or(0) > 0 {
                         self.queue_blocked_flash = Some((weapon.clone(), Instant::now()));
-                        if let Some(w) = self.window.as_ref() { w.request_redraw(); }
+                        if let Some(w) = self.window.as_ref() {
+                            w.request_redraw();
+                        }
                         return;
                     }
                 }
@@ -1528,13 +1626,14 @@ impl ApplicationHandler for App {
                 // (#132) Ordnance ids present BEFORE this turn, so we can spawn a LAUNCH
                 // cue for any NEW player-owned projectile that appears (a torpedo just
                 // left the tube). Diffed against the post-resolve ordnance below.
-                let prev_ordnance: std::collections::HashSet<String> = self
-                    .board
-                    .ordnance
-                    .iter()
-                    .map(|p| p.id.clone())
-                    .collect();
-                let changed = apply_intent(intent, &mut self.board, &mut self.content, &render_example_board);
+                let prev_ordnance: std::collections::HashSet<String> =
+                    self.board.ordnance.iter().map(|p| p.id.clone()).collect();
+                let changed = apply_intent(
+                    intent,
+                    &mut self.board,
+                    &mut self.content,
+                    &render_example_board,
+                );
                 if is_restart {
                     self.restart_run();
                 } else if changed {
@@ -1556,8 +1655,10 @@ impl ApplicationHandler for App {
                                 // signal). Once per death (we're in the resolve
                                 // branch, not per-frame), so it doesn't re-seed.
                                 let pcfg = scene_projector();
-                                let c = broadside_engine::projector::grid_cell_quad(pos, &pcfg).center;
-                                self.particles.spawn_burst(c, 22, EXPLOSION_PARTICLE_COLOR, 0.55);
+                                let c =
+                                    broadside_engine::projector::grid_cell_quad(pos, &pcfg).center;
+                                self.particles
+                                    .spawn_burst(c, 22, EXPLOSION_PARTICLE_COLOR, 0.55);
                             }
                         }
                     }
@@ -1570,7 +1671,8 @@ impl ApplicationHandler for App {
                         if let Some(&prev_hull) = prev_hulls.get(&ship.id) {
                             if ship.hull < prev_hull {
                                 // Record the amount lost (#106) + timestamp (#101).
-                                self.hull_flash.insert(ship.id.clone(), (prev_hull - ship.hull, now));
+                                self.hull_flash
+                                    .insert(ship.id.clone(), (prev_hull - ship.hull, now));
                             }
                         }
                     }
@@ -1581,9 +1683,13 @@ impl ApplicationHandler for App {
                     // then draws it travelling each subsequent turn.
                     let pcfg = scene_projector();
                     for proj in &self.board.ordnance {
-                        if proj.owner_faction == Faction::Player && !prev_ordnance.contains(&proj.id) {
-                            let c = broadside_engine::projector::grid_cell_quad(proj.pos, &pcfg).center;
-                            self.particles.spawn_burst(c, 12, EXPLOSION_PARTICLE_COLOR, 0.30);
+                        if proj.owner_faction == Faction::Player
+                            && !prev_ordnance.contains(&proj.id)
+                        {
+                            let c =
+                                broadside_engine::projector::grid_cell_quad(proj.pos, &pcfg).center;
+                            self.particles
+                                .spawn_burst(c, 12, EXPLOSION_PARTICLE_COLOR, 0.30);
                         }
                     }
                     // (#133) BEAT PLAYBACK: when the player COMMITS a volley of 2+
@@ -1667,26 +1773,34 @@ impl ApplicationHandler for App {
                     // Pop the next due beam WITHOUT holding a borrow across the
                     // self.particles / self.board accesses below (disjoint-field borrow
                     // would otherwise alias). due = the FireEvent to reveal this frame.
-                    let due: Option<broadside_engine::types::FireEvent> = match self.beat_playback.as_mut() {
-                        Some(pb) if now >= pb.next_at => {
-                            let fe = pb.pending.pop_front();
-                            pb.next_at = now + std::time::Duration::from_secs_f32(BEAT_SECS);
-                            fe
-                        }
-                        _ => None,
-                    };
+                    let due: Option<broadside_engine::types::FireEvent> =
+                        match self.beat_playback.as_mut() {
+                            Some(pb) if now >= pb.next_at => {
+                                let fe = pb.pending.pop_front();
+                                pb.next_at = now + std::time::Duration::from_secs_f32(BEAT_SECS);
+                                fe
+                            }
+                            _ => None,
+                        };
                     if let Some(fe) = due {
                         // Impact spark on the struck cell, timed to the beat.
                         if fe.hit {
                             let pcfg = scene_projector();
-                            let c = broadside_engine::projector::grid_cell_quad(fe.to_pos, &pcfg).center;
-                            self.particles.spawn_burst(c, 8, EXPLOSION_PARTICLE_COLOR, 0.25);
+                            let c = broadside_engine::projector::grid_cell_quad(fe.to_pos, &pcfg)
+                                .center;
+                            self.particles
+                                .spawn_burst(c, 8, EXPLOSION_PARTICLE_COLOR, 0.25);
                         }
                         // Re-push the beam so it draws + animates this frame.
                         self.board.fire_events.push(fe);
                     }
                     // Empty queue -> playback done, unlock input.
-                    if self.beat_playback.as_ref().map(|p| p.pending.is_empty()).unwrap_or(false) {
+                    if self
+                        .beat_playback
+                        .as_ref()
+                        .map(|p| p.pending.is_empty())
+                        .unwrap_or(false)
+                    {
                         self.beat_playback = None;
                     }
                 }
@@ -1759,12 +1873,22 @@ impl ApplicationHandler for App {
                     let mut any = false;
                     let mut bears = false;
                     let mut ppos = Pos::new(broadside_engine::grid::COLS / 2, 0);
-                    if let Some(p) = self.board.cells.iter().flatten().find(|s| s.faction == Faction::Player) {
+                    if let Some(p) = self
+                        .board
+                        .cells
+                        .iter()
+                        .flatten()
+                        .find(|s| s.faction == Faction::Player)
+                    {
                         ppos = p.pos;
                         for qid in &p.queue {
                             if let Some(action) = self.content.action(qid) {
                                 any = true;
-                                let hits = broadside_engine::resolve::resolve_targeting_2d(action, &self.board, p.pos);
+                                let hits = broadside_engine::resolve::resolve_targeting_2d(
+                                    action,
+                                    &self.board,
+                                    p.pos,
+                                );
                                 if !hits.is_empty() {
                                     bears = true;
                                     for h in hits {
@@ -1936,7 +2060,13 @@ impl ApplicationHandler for App {
                     for (ship, amount, intensity) in &hull_flashes {
                         hud::push_hull_flash_2d(&mut instances, ship, *intensity, &scene_cfg);
                         // (#106) Floating damage NUMBER above the ship, same timer.
-                        hud::push_damage_number_2d(&mut instances, ship, *amount, *intensity, &scene_cfg);
+                        hud::push_damage_number_2d(
+                            &mut instances,
+                            ship,
+                            *amount,
+                            *intensity,
+                            &scene_cfg,
+                        );
                     }
                     // (#98) Player ability-tile row in the bottom HUD band — drawn
                     // from the real AbilityTile data (damage / cooldown_max), which the
@@ -1960,7 +2090,12 @@ impl ApplicationHandler for App {
                                 .map(|i| (b'1' + i as u8) as char);
                             if let Some(slot) = slot {
                                 let intensity = 1.0 - age / HULL_FLASH_SECS;
-                                hud::push_cooldown_block_cue_2d(&mut instances, &player_tiles, slot, intensity);
+                                hud::push_cooldown_block_cue_2d(
+                                    &mut instances,
+                                    &player_tiles,
+                                    slot,
+                                    intensity,
+                                );
                             }
                         } else {
                             self.queue_blocked_flash = None;
@@ -1986,7 +2121,10 @@ impl ApplicationHandler for App {
                     DemoState::EncounterComplete => {
                         push_between_encounter_overlay(
                             &mut instances,
-                            BetweenEncounterChoice::EncounterComplete { sector_idx, salvage },
+                            BetweenEncounterChoice::EncounterComplete {
+                                sector_idx,
+                                salvage,
+                            },
                         );
                     }
                     DemoState::RunComplete => {
@@ -2040,7 +2178,13 @@ impl ApplicationHandler for App {
                 // The animation-liveness flags are consumed here only to advance
                 // their state each frame; redraw cadence no longer depends on
                 // them (we always redraw), so they no longer gate anything.
-                let _ = (active_tween, vfx_active, ability_active, flash_active, particles_active);
+                let _ = (
+                    active_tween,
+                    vfx_active,
+                    ability_active,
+                    flash_active,
+                    particles_active,
+                );
                 // (#126) TURN-BASED: the world advances ONLY when the player takes a
                 // turn-action (inside apply_intent, on a keypress) — there is no
                 // per-frame world tick. RedrawRequested just keeps the swapchain live
@@ -2173,7 +2317,10 @@ mod tests {
             .find(|s| s.faction == Faction::Player)
             .expect("player still on board");
         assert_eq!(player.pos.col, 4, "Right×2 strafes to col 4 (2→3→4)");
-        assert_eq!(player.pos.row, spawn_row, "strafe keeps the SAME row (lateral only)");
+        assert_eq!(
+            player.pos.row, spawn_row,
+            "strafe keeps the SAME row (lateral only)"
+        );
         assert_eq!(
             player.facing,
             Facing::Bow(Dir4::N),
@@ -2252,8 +2399,15 @@ mod tests {
             .expect("player still on board");
         assert_eq!(player.pos.col, before.col + 1, "MoveRight strafes col+1");
         assert_eq!(player.pos.row, before.row, "strafe keeps the row");
-        assert_eq!(player.facing, Facing::Bow(Dir4::N), "facing unchanged by strafe");
-        assert!(player.queue.is_empty(), "instant intent must NOT push to queue");
+        assert_eq!(
+            player.facing,
+            Facing::Bow(Dir4::N),
+            "facing unchanged by strafe"
+        );
+        assert!(
+            player.queue.is_empty(),
+            "instant intent must NOT push to queue"
+        );
     }
 
     /// (#100 REGRESSION, was the #97 follow-up diagnostic) Bruce's exact live
@@ -2278,28 +2432,60 @@ mod tests {
         let mut board = fresh_board();
         let mut content = fresh_content();
         let hulls = |b: &Board| -> Vec<(String, i32)> {
-            b.cells.iter().flatten().map(|s| (s.id.clone(), s.hull)).collect()
+            b.cells
+                .iter()
+                .flatten()
+                .map(|s| (s.id.clone(), s.hull))
+                .collect()
         };
-        let player = |b: &Board| b.cells.iter().flatten().find(|s| s.faction == Faction::Player).cloned().unwrap();
+        let player = |b: &Board| {
+            b.cells
+                .iter()
+                .flatten()
+                .find(|s| s.faction == Faction::Player)
+                .cloned()
+                .unwrap()
+        };
 
         eprintln!("=== COMBAT REPRO: spawn ===");
         let p0 = player(&board);
-        eprintln!("player pos={:?} facing={:?} mounts={:?}", p0.pos, p0.facing,
-            p0.mounts.iter().map(|m| (m.id.as_str(), format!("{:?}", m.arc), m.weapon.as_str())).collect::<Vec<_>>());
+        eprintln!(
+            "player pos={:?} facing={:?} mounts={:?}",
+            p0.pos,
+            p0.facing,
+            p0.mounts
+                .iter()
+                .map(|m| (m.id.as_str(), format!("{:?}", m.arc), m.weapon.as_str()))
+                .collect::<Vec<_>>()
+        );
         eprintln!("hulls={:?}", hulls(&board));
-        assert!(p0.mounts.len() >= 3, "player loadout has the 3 mount slots Bruce presses 1/2/3");
+        assert!(
+            p0.mounts.len() >= 3,
+            "player loadout has the 3 mount slots Bruce presses 1/2/3"
+        );
 
         // Independent fire-gate verdict for m3 from the spawn pose (the value the
         // tile's `can_fire` MUST mirror).
         let m3 = p0.mounts[2].weapon.clone();
-        let m3_action = content.action(&m3).expect("broadside_battery is a real action").clone();
+        let m3_action = content
+            .action(&m3)
+            .expect("broadside_battery is a real action")
+            .clone();
         let bears_at_spawn = !resolve_targeting_2d(&m3_action, &board, p0.pos).is_empty();
-        eprintln!("broadside_battery bears from {:?} (spawn) = {bears_at_spawn}", p0.pos);
+        eprintln!(
+            "broadside_battery bears from {:?} (spawn) = {bears_at_spawn}",
+            p0.pos
+        );
 
         // --- press 3: queue m3 (broadside_battery). The bin maps Key::D3 ->
         // QueueAction(mounts[2].weapon). ---
         eprintln!("=== press 3: QueueAction({m3}) ===");
-        apply_intent(Intent::QueueAction(m3.clone()), &mut board, &mut content, &fresh_board);
+        apply_intent(
+            Intent::QueueAction(m3.clone()),
+            &mut board,
+            &mut content,
+            &fresh_board,
+        );
         let p1 = player(&board);
         eprintln!("after press 3: player.queue={:?}", p1.queue);
         assert!(
@@ -2310,11 +2496,16 @@ mod tests {
         // Build the tiles the bottom HUD would show + report each tile's state.
         let tiles = build_ship_tiles(&p1, &content, &board);
         for t in &tiles {
-            eprintln!("  tile slot={} dmg={} range={} cd={}/{} queued_index={:?} can_fire={}",
-                t.slot, t.damage, t.range, t.cooldown, t.cooldown_max, t.queued_index, t.can_fire);
+            eprintln!(
+                "  tile slot={} dmg={} range={} cd={}/{} queued_index={:?} can_fire={}",
+                t.slot, t.damage, t.range, t.cooldown, t.cooldown_max, t.queued_index, t.can_fire
+            );
         }
         // The m3 tile is the one Bruce queued: its slot is '3'.
-        let m3_tile = tiles.iter().find(|t| t.slot == '3').expect("m3 tile present");
+        let m3_tile = tiles
+            .iter()
+            .find(|t| t.slot == '3')
+            .expect("m3 tile present");
         assert!(
             m3_tile.queued_index.is_some(),
             "the queued tile must carry queued_index = Some (drives the amber highlight + order badge)"
@@ -2331,8 +2522,10 @@ mod tests {
         let after = hulls(&board);
         eprintln!("fire_events this round: {}", board.fire_events.len());
         for fe in &board.fire_events {
-            eprintln!("  FireEvent {:?}->{:?} arch={:?} faction={:?} hit={}",
-                fe.from_pos, fe.to_pos, fe.archetype, fe.attacker_faction, fe.hit);
+            eprintln!(
+                "  FireEvent {:?}->{:?} arch={:?} faction={:?} hit={}",
+                fe.from_pos, fe.to_pos, fe.archetype, fe.attacker_faction, fe.hit
+            );
         }
         eprintln!("hull BEFORE={before:?}");
         eprintln!("hull AFTER ={after:?}");
@@ -2358,7 +2551,13 @@ mod tests {
     fn card_abilities_never_show_cant_bear_cue() {
         let content = fresh_content();
         let board = fresh_board();
-        let player = board.cells.iter().flatten().find(|s| s.faction == Faction::Player).cloned().unwrap();
+        let player = board
+            .cells
+            .iter()
+            .flatten()
+            .find(|s| s.faction == Faction::Player)
+            .cloned()
+            .unwrap();
 
         for cid in ["mass_lock", "mass_breach", "sensor_pulse"] {
             let synth = synthetic_card_action_id(cid);
@@ -2374,7 +2573,9 @@ mod tests {
         // Sanity: an AIMED weapon that genuinely can't bear from the spawn pose
         // still reports false (the cue is preserved where it belongs). The player's
         // broadside_battery does not bear bow-N at spawn (proven in the #100 repro).
-        let bb = content.action("broadside_battery").expect("broadside_battery exists");
+        let bb = content
+            .action("broadside_battery")
+            .expect("broadside_battery exists");
         assert!(
             !action_can_fire(bb, &board, &player),
             "an aimed weapon out of bears must still read can't-fire (the cue is real for weapons)"
@@ -2394,19 +2595,40 @@ mod tests {
 
         let content = fresh_content();
         let board = fresh_board();
-        let player = board.cells.iter().flatten().find(|s| s.faction == Faction::Player).cloned().unwrap();
+        let player = board
+            .cells
+            .iter()
+            .flatten()
+            .find(|s| s.faction == Faction::Player)
+            .cloned()
+            .unwrap();
         let tiles = build_ship_tiles(&player, &content, &board);
         // Every mount tile (slots 1..3) carries an arc letter; card tiles (5..7) don't.
         for t in &tiles {
             if ('1'..='3').contains(&t.slot) {
-                assert!(t.arc.is_some(), "mount tile slot {} must carry a firing-arc letter", t.slot);
+                assert!(
+                    t.arc.is_some(),
+                    "mount tile slot {} must carry a firing-arc letter",
+                    t.slot
+                );
             } else {
-                assert!(t.arc.is_none(), "card tile slot {} has no firing arc", t.slot);
+                assert!(
+                    t.arc.is_none(),
+                    "card tile slot {} has no firing arc",
+                    t.slot
+                );
             }
         }
         // The player's m3 (broadside_battery) mounts on the BroadsideArc -> 'B'.
-        let m3 = tiles.iter().find(|t| t.slot == '3').expect("m3 tile present");
-        assert_eq!(m3.arc, Some('B'), "the broadside mount tile must read 'B' (side weapon)");
+        let m3 = tiles
+            .iter()
+            .find(|t| t.slot == '3')
+            .expect("m3 tile present");
+        assert_eq!(
+            m3.arc,
+            Some('B'),
+            "the broadside mount tile must read 'B' (side weapon)"
+        );
     }
 
     /// (#117) An ORDNANCE action (SPAWN_ORDNANCE, e.g. torpedo) reports the spawned
@@ -2418,7 +2640,13 @@ mod tests {
     fn ordnance_tile_shows_spawned_projectile_damage() {
         let content = fresh_content();
         let board = fresh_board();
-        let player = board.cells.iter().flatten().find(|s| s.faction == Faction::Player).cloned().unwrap();
+        let player = board
+            .cells
+            .iter()
+            .flatten()
+            .find(|s| s.faction == Faction::Player)
+            .cloned()
+            .unwrap();
         // m2 is the torpedo (SPAWN_ORDNANCE). Its tile damage must be > 0.
         let torp = content.action("torpedo").expect("torpedo action exists");
         let dmg = action_damage(torp, &content, &player);
@@ -2428,8 +2656,15 @@ mod tests {
         );
         // And it flows through to the slot-2 tile.
         let tiles = build_ship_tiles(&player, &content, &board);
-        let t2 = tiles.iter().find(|t| t.slot == '2').expect("m2 tile present");
-        assert!(t2.damage > 0, "the torpedo tile (slot 2) must show nonzero damage; got {}", t2.damage);
+        let t2 = tiles
+            .iter()
+            .find(|t| t.slot == '2')
+            .expect("m2 tile present");
+        assert!(
+            t2.damage > 0,
+            "the torpedo tile (slot 2) must show nonzero damage; got {}",
+            t2.damage
+        );
     }
 
     #[test]
@@ -2452,7 +2687,11 @@ mod tests {
             .flatten()
             .find(|s| s.faction == Faction::Player)
             .expect("player on board after thrust+commit");
-        assert_eq!(player.pos.col, before.col + 1, "player strafed col+1 then committed");
+        assert_eq!(
+            player.pos.col,
+            before.col + 1,
+            "player strafed col+1 then committed"
+        );
         assert_eq!(player.pos.row, before.row);
     }
 
@@ -2471,7 +2710,11 @@ mod tests {
         // (#70 2-D) Restart rebuilds render_example_board → the player is back
         // somewhere on the board (Pos(2,3)), not at 1-D cell 0.
         assert!(
-            board.cells.iter().flatten().any(|s| s.faction == Faction::Player),
+            board
+                .cells
+                .iter()
+                .flatten()
+                .any(|s| s.faction == Faction::Player),
             "restart recreates the player"
         );
     }
@@ -2499,7 +2742,10 @@ mod tests {
             .flatten()
             .find(|s| s.faction == Faction::Player)
             .expect("player after restart");
-        assert_eq!(player.pos, spawn, "restart resets the player to its spawn cell");
+        assert_eq!(
+            player.pos, spawn,
+            "restart resets the player to its spawn cell"
+        );
     }
 
     #[test]
@@ -2514,7 +2760,11 @@ mod tests {
         // card_at(0..3) should resolve to the 3 placeholder cards.
         for i in 0..3 {
             let card = <DemoContent as Content>::card_at(&content, "player", i);
-            assert!(card.is_some(), "expected card at kit slot {} after fresh_content", i);
+            assert!(
+                card.is_some(),
+                "expected card at kit slot {} after fresh_content",
+                i
+            );
         }
     }
 
@@ -2544,7 +2794,10 @@ mod tests {
             &mut content,
             &fresh_board,
         );
-        assert!(changed, "PlayCard with sufficient charges should mutate board");
+        assert!(
+            changed,
+            "PlayCard with sufficient charges should mutate board"
+        );
         // Charges decremented.
         let charges_after = content
             .field_kits
@@ -2552,7 +2805,11 @@ mod tests {
             .and_then(|k| k.find(&card_id))
             .map(|c| c.charges)
             .unwrap_or(0);
-        assert_eq!(charges_after, charges_before - 1, "play should decrement charges");
+        assert_eq!(
+            charges_after,
+            charges_before - 1,
+            "play should decrement charges"
+        );
         // Queue NOT touched — card fired instantly, the synthetic id
         // never lands in `player.queue`.
         let synth_id = synthetic_card_action_id(&card_id);
@@ -2583,6 +2840,9 @@ mod tests {
             .flatten()
             .find(|s| s.faction == Faction::Player)
             .expect("player on board");
-        assert!(player.queue.is_empty(), "no synthetic queued on rejected play");
+        assert!(
+            player.queue.is_empty(),
+            "no synthetic queued on rejected play"
+        );
     }
 }

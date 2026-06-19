@@ -265,7 +265,11 @@ fn sample_height_prof(height: Option<&[Point2]>, x: f32) -> f32 {
         let (ax, bx) = (a.x() as f32, b.x() as f32);
         if x >= ax && x <= bx {
             let span = bx - ax;
-            let u = if span.abs() < 1e-8 { 0.0 } else { (x - ax) / span };
+            let u = if span.abs() < 1e-8 {
+                0.0
+            } else {
+                (x - ax) / span
+            };
             return lerp(a.y() as f32, b.y() as f32, u);
         }
     }
@@ -380,7 +384,12 @@ mod tests {
 
     #[test]
     fn all_normals_are_unit_length() {
-        let mesh = loft_from_profiles(&dagger_plan(), &dagger_section(), None, LoftParams::default());
+        let mesh = loft_from_profiles(
+            &dagger_plan(),
+            &dagger_section(),
+            None,
+            LoftParams::default(),
+        );
         assert!(!mesh.normals.is_empty());
         for n in &mesh.normals {
             let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
@@ -393,8 +402,18 @@ mod tests {
 
     #[test]
     fn loft_is_deterministic() {
-        let a = loft_from_profiles(&dagger_plan(), &dagger_section(), None, LoftParams::default());
-        let b = loft_from_profiles(&dagger_plan(), &dagger_section(), None, LoftParams::default());
+        let a = loft_from_profiles(
+            &dagger_plan(),
+            &dagger_section(),
+            None,
+            LoftParams::default(),
+        );
+        let b = loft_from_profiles(
+            &dagger_plan(),
+            &dagger_section(),
+            None,
+            LoftParams::default(),
+        );
         assert_eq!(a, b);
     }
 
@@ -403,7 +422,12 @@ mod tests {
         // The dagger reads as a dagger: the bow (max +x) must be narrower in z
         // than the stern (min −x... here min x). Measure the z-extent of the
         // vertices nearest each end.
-        let mesh = loft_from_profiles(&dagger_plan(), &dagger_section(), None, LoftParams::default());
+        let mesh = loft_from_profiles(
+            &dagger_plan(),
+            &dagger_section(),
+            None,
+            LoftParams::default(),
+        );
         let xs: Vec<f32> = mesh.positions.iter().map(|p| p[0]).collect();
         let min_x = xs.iter().cloned().fold(f32::INFINITY, f32::min);
         let max_x = xs.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
@@ -432,13 +456,19 @@ mod tests {
             &dagger_plan(),
             &dagger_section(),
             None,
-            LoftParams { stretch: 1.0, ..LoftParams::default() },
+            LoftParams {
+                stretch: 1.0,
+                ..LoftParams::default()
+            },
         );
         let stretched = loft_from_profiles(
             &dagger_plan(),
             &dagger_section(),
             None,
-            LoftParams { stretch: 2.0, ..LoftParams::default() },
+            LoftParams {
+                stretch: 2.0,
+                ..LoftParams::default()
+            },
         );
         let x_extent = |m: &HullMesh| {
             let xs: Vec<f32> = m.positions.iter().map(|p| p[0]).collect();
@@ -447,13 +477,21 @@ mod tests {
             hi - lo
         };
         let ratio = x_extent(&stretched) / x_extent(&base);
-        assert!((ratio - 2.0).abs() < 1e-3, "stretch x2 should double length, ratio {ratio}");
+        assert!(
+            (ratio - 2.0).abs() < 1e-3,
+            "stretch x2 should double length, ratio {ratio}"
+        );
     }
 
     #[test]
     fn height_profile_scales_height() {
         // A height profile of 2.0 everywhere doubles the y-extent vs flat 1.0.
-        let flat = loft_from_profiles(&dagger_plan(), &dagger_section(), None, LoftParams::default());
+        let flat = loft_from_profiles(
+            &dagger_plan(),
+            &dagger_section(),
+            None,
+            LoftParams::default(),
+        );
         let tall_prof = vec![Point2([0.0, 2.0]), Point2([1.0, 2.0])];
         let tall = loft_from_profiles(
             &dagger_plan(),
@@ -468,7 +506,10 @@ mod tests {
             hi - lo
         };
         let ratio = y_extent(&tall) / y_extent(&flat);
-        assert!((ratio - 2.0).abs() < 1e-3, "height profile 2.0 should double height, ratio {ratio}");
+        assert!(
+            (ratio - 2.0).abs() < 1e-3,
+            "height profile 2.0 should double height, ratio {ratio}"
+        );
     }
 
     #[test]
@@ -494,7 +535,11 @@ mod tests {
             &design.plan,
             &design.section,
             None,
-            LoftParams { stretch: 2.0, hscale: 0.7, ..LoftParams::default() },
+            LoftParams {
+                stretch: 2.0,
+                hscale: 0.7,
+                ..LoftParams::default()
+            },
         );
         assert_eq!(via_design, via_profiles);
         assert!(via_design.tri_count() > 0);

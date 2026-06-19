@@ -92,15 +92,41 @@ fn capture_board(player_col: usize, player_row: usize, player_facing: Facing) ->
     player.shield_profile.port.charge = 1;
     place(&mut cells, player);
     let mid = COLS / 2;
-    place(&mut cells, make_ship("enemy-2", Faction::Enemy, Pos::new(mid, 0), enemy_spawn_facing()));
-    place(&mut cells, make_ship("enemy-3", Faction::Enemy, Pos::new(mid - 1, 0), enemy_spawn_facing()));
-    place(&mut cells, make_ship("enemy-5", Faction::Enemy, Pos::new(mid + 1, 0), enemy_spawn_facing()));
+    place(
+        &mut cells,
+        make_ship(
+            "enemy-2",
+            Faction::Enemy,
+            Pos::new(mid, 0),
+            enemy_spawn_facing(),
+        ),
+    );
+    place(
+        &mut cells,
+        make_ship(
+            "enemy-3",
+            Faction::Enemy,
+            Pos::new(mid - 1, 0),
+            enemy_spawn_facing(),
+        ),
+    );
+    place(
+        &mut cells,
+        make_ship(
+            "enemy-5",
+            Faction::Enemy,
+            Pos::new(mid + 1, 0),
+            enemy_spawn_facing(),
+        ),
+    );
 
     Board {
         size: COLS,
         cells,
         ordnance: Vec::new(),
-        hazards: (0..broadside_engine::grid::CELLS).map(|_| Vec::new()).collect(),
+        hazards: (0..broadside_engine::grid::CELLS)
+            .map(|_| Vec::new())
+            .collect(),
         patrol: 1,
         level: 0,
         threats: Vec::new(),
@@ -137,14 +163,18 @@ fn main() {
     const AEGIS_GLB: &[u8] = include_bytes!("../../assets/ships/Aegis.glb");
     match gfx.install_player_glb(AEGIS_GLB) {
         Ok(()) => log::info!("capture: player Aegis hull installed from Aegis.glb"),
-        Err(e) => log::warn!("capture: Aegis.glb import failed ({e}); player falls back to sprite/flat-box"),
+        Err(e) => log::warn!(
+            "capture: Aegis.glb import failed ({e}); player falls back to sprite/flat-box"
+        ),
     }
     // (#89/#93) ENEMIES = the same Aegis hull, STEEL-GREY-tinted (matches the live
     // bin's ENEMY_TINT) so the capture shows the oncoming grey enemy ships (apart
     // from the RED player), not flat boxes.
     match gfx.install_enemy_glb(AEGIS_GLB) {
         Ok(()) => log::info!("capture: enemy Aegis hull (steel-grey) installed from Aegis.glb"),
-        Err(e) => log::warn!("capture: enemy Aegis.glb import failed ({e}); enemies fall back to CAD/2D"),
+        Err(e) => {
+            log::warn!("capture: enemy Aegis.glb import failed ({e}); enemies fall back to CAD/2D")
+        }
     }
 
     // (#76) Optional BROADSIDE_SHIP_RES=N env cycles the SHIP loft res forward N
@@ -206,7 +236,11 @@ fn main() {
         broadside_engine::gfx::cycle_grid_mode();
     }
     if target_mode != 0 {
-        log::info!("capture: grid mode -> {} ({})", target_mode, broadside_engine::gfx::grid_mode_tag());
+        log::info!(
+            "capture: grid mode -> {} ({})",
+            target_mode,
+            broadside_engine::gfx::grid_mode_tag()
+        );
     }
 
     // Optional 2nd arg = player column (0..COLS-1) so the capture can place the
@@ -248,12 +282,19 @@ fn main() {
             .flatten()
             .find(|s| s.faction == Faction::Player)
         {
-            let w = p.mounts.first().map(|m| m.weapon.clone()).unwrap_or_default();
+            let w = p
+                .mounts
+                .first()
+                .map(|m| m.weapon.clone())
+                .unwrap_or_default();
             // Queue it three times — match Bruce queuing several abilities.
             for _ in 0..3 {
                 p.queue.push(w.clone());
             }
-            log::info!("capture: QUEUE demo — player queued '{w}' x{}", p.queue.len());
+            log::info!(
+                "capture: QUEUE demo — player queued '{w}' x{}",
+                p.queue.len()
+            );
         }
         // (#129) Give the enemies a REVEALED queue so the top-left ENEMY INFO panel
         // shows queue icons (the live path fills enemy.queue when the AI telegraphs;
@@ -266,7 +307,11 @@ fn main() {
             .filter(|s| s.faction == Faction::Enemy)
             .enumerate()
         {
-            let w = e.mounts.first().map(|m| m.weapon.clone()).unwrap_or_default();
+            let w = e
+                .mounts
+                .first()
+                .map(|m| m.weapon.clone())
+                .unwrap_or_default();
             if !w.is_empty() {
                 // First enemy telegraphs two shots; second telegraphs one — varied queue.
                 let count = if n == 0 { 2 } else { 1 };
@@ -314,7 +359,10 @@ fn main() {
             heading8: Dir8::N,
             speed: 1,
             hull: 1,
-            payload: vec![Effect::DAMAGE { amount: 6, band_falloff: Some(false) }],
+            payload: vec![Effect::DAMAGE {
+                amount: 6,
+                band_falloff: Some(false),
+            }],
             owner_faction: Faction::Player,
         });
         log::info!("capture: #132 injected in-flight player torpedo at {tpos:?}");
@@ -437,7 +485,12 @@ fn main() {
     broadside_engine::hud::push_salvage_hud(&mut commands, 137);
     // (#134) Debug readouts — also bin-overlay-only; append so the capture shows
     // their NEW bottom-right position (POS/FACE + SHIP/SCENE res).
-    if let Some(p) = board.cells.iter().flatten().find(|s| s.faction == Faction::Player) {
+    if let Some(p) = board
+        .cells
+        .iter()
+        .flatten()
+        .find(|s| s.faction == Faction::Player)
+    {
         broadside_engine::hud::push_player_readout(&mut commands, p.pos, p.facing);
     }
     broadside_engine::hud::push_res_readout(&mut commands, gfx.loft_res(), gfx.scene_res());
@@ -474,7 +527,11 @@ fn main() {
             broadside_engine::hud::push_hull_flash_2d(&mut commands, victim, 1.0, &cfg);
             // (#106) Floating damage number above the same enemy (demo amount).
             broadside_engine::hud::push_damage_number_2d(&mut commands, victim, 3, 1.0, &cfg);
-            log::info!("capture: #101/#106 hull-flash + damage number on surviving enemy {} at {:?}", victim.id, victim.pos);
+            log::info!(
+                "capture: #101/#106 hull-flash + damage number on surviving enemy {} at {:?}",
+                victim.id,
+                victim.pos
+            );
         }
     }
     // (#98/#100) With QUEUE_DEMO, append a representative ability-tile row so the
@@ -489,10 +546,50 @@ fn main() {
     if std::env::var("BROADSIDE_QUEUE_DEMO").is_ok_and(|v| v != "0") {
         use broadside_engine::hud::{AbilityIcon, AbilityTile};
         let tiles = vec![
-            AbilityTile { slot: '1', icon: AbilityIcon::Beam, damage: 3, range: 1, cooldown: 0, cooldown_max: 0, queued_index: Some(1), can_fire: true, arc: Some('F') },
-            AbilityTile { slot: '2', icon: AbilityIcon::Ordnance, damage: 6, range: 3, cooldown: 0, cooldown_max: 0, queued_index: None, can_fire: false, arc: Some('F') },
-            AbilityTile { slot: '3', icon: AbilityIcon::Defensive, damage: 5, range: 2, cooldown: 0, cooldown_max: 3, queued_index: Some(0), can_fire: false, arc: Some('B') },
-            AbilityTile { slot: '5', icon: AbilityIcon::Defensive, damage: 0, range: 0, cooldown: 0, cooldown_max: 0, queued_index: None, can_fire: true, arc: None },
+            AbilityTile {
+                slot: '1',
+                icon: AbilityIcon::Beam,
+                damage: 3,
+                range: 1,
+                cooldown: 0,
+                cooldown_max: 0,
+                queued_index: Some(1),
+                can_fire: true,
+                arc: Some('F'),
+            },
+            AbilityTile {
+                slot: '2',
+                icon: AbilityIcon::Ordnance,
+                damage: 6,
+                range: 3,
+                cooldown: 0,
+                cooldown_max: 0,
+                queued_index: None,
+                can_fire: false,
+                arc: Some('F'),
+            },
+            AbilityTile {
+                slot: '3',
+                icon: AbilityIcon::Defensive,
+                damage: 5,
+                range: 2,
+                cooldown: 0,
+                cooldown_max: 3,
+                queued_index: Some(0),
+                can_fire: false,
+                arc: Some('B'),
+            },
+            AbilityTile {
+                slot: '5',
+                icon: AbilityIcon::Defensive,
+                damage: 0,
+                range: 0,
+                cooldown: 0,
+                cooldown_max: 0,
+                queued_index: None,
+                can_fire: true,
+                arc: None,
+            },
         ];
         broadside_engine::hud::push_ability_tiles_2d(&mut commands, &tiles);
         // (#128) Player QUEUE panel (top-right) from the same demo tiles — slots 1+3
@@ -531,19 +628,25 @@ fn main() {
                 DrawCommand::Sprite(s) if yellowish(&s.color) => {
                     log::info!(
                         "YELLOW sprite #{i}: pos {:?} half {:?} color {:?}",
-                        s.pos, s.half_size, s.color
+                        s.pos,
+                        s.half_size,
+                        s.color
                     );
                 }
                 DrawCommand::Sprite(s) if s.half_size[0] > 40.0 || s.half_size[1] > 40.0 => {
                     log::info!(
                         "BIG sprite #{i}: pos {:?} half {:?} color {:?}",
-                        s.pos, s.half_size, s.color
+                        s.pos,
+                        s.half_size,
+                        s.color
                     );
                 }
                 DrawCommand::Polygon(p) if yellowish(&p.color) => {
                     log::info!(
                         "YELLOW polygon #{i}: p0 {:?} p2 {:?} color {:?}",
-                        p.p0, p.p2, p.color
+                        p.p0,
+                        p.p2,
+                        p.color
                     );
                 }
                 DrawCommand::Polygon(p) => {

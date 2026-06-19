@@ -380,19 +380,43 @@ pub fn boss_ship_for_spawn(spawn: &ShipSpawn) -> Ship {
             // Stronger bow armour than regular enemies — the design's
             // "front of the boss is hard to crack" feel. Stern is still
             // the soft underbelly; the player is rewarded for flanking.
-            bow: ShieldFace { armour: 3, charge: 1 },
-            stern: ShieldFace { armour: 0, charge: 0 },
-            port: ShieldFace { armour: 1, charge: 0 },
-            starboard: ShieldFace { armour: 1, charge: 0 },
+            bow: ShieldFace {
+                armour: 3,
+                charge: 1,
+            },
+            stern: ShieldFace {
+                armour: 0,
+                charge: 0,
+            },
+            port: ShieldFace {
+                armour: 1,
+                charge: 0,
+            },
+            starboard: ShieldFace {
+                armour: 1,
+                charge: 0,
+            },
         },
         mounts: vec![
             // Forward pulse_laser — the AI fires this when range allows.
-            Mount { id: "m1".into(), arc: TArc::Forward, weapon: "pulse_laser".into() },
+            Mount {
+                id: "m1".into(),
+                arc: TArc::Forward,
+                weapon: "pulse_laser".into(),
+            },
             // Forward beam_cannon — high-damage telegraphed move.
-            Mount { id: "m2".into(), arc: TArc::Forward, weapon: "beam_cannon".into() },
+            Mount {
+                id: "m2".into(),
+                arc: TArc::Forward,
+                weapon: "beam_cannon".into(),
+            },
             // Broadside missile_salvo — punishes the player for
             // sitting in the flank arc trying to dodge the bow.
-            Mount { id: "m3".into(), arc: TArc::BroadsideArc, weapon: "missile_salvo".into() },
+            Mount {
+                id: "m3".into(),
+                arc: TArc::BroadsideArc,
+                weapon: "missile_salvo".into(),
+            },
         ],
         queue: Vec::new(),
         cooldowns: HashMap::new(),
@@ -470,10 +494,22 @@ pub fn fallback_ship_for_spawn(spawn: &ShipSpawn) -> Ship {
         heat_max: 6,
         locked_out: false,
         shield_profile: ShieldProfile {
-            bow: ShieldFace { armour: 1, charge: 0 },
-            stern: ShieldFace { armour: 0, charge: 0 },
-            port: ShieldFace { armour: 1, charge: 0 },
-            starboard: ShieldFace { armour: 1, charge: 0 },
+            bow: ShieldFace {
+                armour: 1,
+                charge: 0,
+            },
+            stern: ShieldFace {
+                armour: 0,
+                charge: 0,
+            },
+            port: ShieldFace {
+                armour: 1,
+                charge: 0,
+            },
+            starboard: ShieldFace {
+                armour: 1,
+                charge: 0,
+            },
         },
         mounts: vec![Mount {
             id: "m1".into(),
@@ -1003,12 +1039,7 @@ pub fn generate_sector(
 /// The legacy `cell` field is still populated (centre-out lane order) for the
 /// transition window; the 2-D `pos` from [`enemy_spawn_pos`] is the source of
 /// truth for placement.
-fn sample_encounter_spawns(
-    pool: &SpawnPool,
-    lane: u8,
-    count: usize,
-    seed: u32,
-) -> Vec<ShipSpawn> {
+fn sample_encounter_spawns(pool: &SpawnPool, lane: u8, count: usize, seed: u32) -> Vec<ShipSpawn> {
     // `lane` (the v1 1-D lane length) no longer drives distribution — the grid
     // is a fixed 5×4 and enemies fan across the back rows. Kept in the signature
     // for the `generate_sector` call site / future per-sector tuning.
@@ -1238,7 +1269,10 @@ mod tests {
             id: "drift".into(),
             name: "Drift".into(),
             patrol_tier: 1,
-            encounters: vec![enc("c_e0", Vec::new(), false), enc("c_boss", Vec::new(), true)],
+            encounters: vec![
+                enc("c_e0", Vec::new(), false),
+                enc("c_boss", Vec::new(), true),
+            ],
         };
         let sectors = vec![staging, combat];
         let mut run = new_run();
@@ -1252,7 +1286,10 @@ mod tests {
 
         // Winning it normalizes the run into the combat sector.
         advance_after_win(&mut run, &sectors);
-        assert_eq!(run.current_sector_idx, 1, "advance lands in the combat sector");
+        assert_eq!(
+            run.current_sector_idx, 1,
+            "advance lands in the combat sector"
+        );
         assert_eq!(
             current_encounter(&run, &sectors).map(|e| e.id.as_str()),
             Some("c_boss"),
@@ -1262,7 +1299,10 @@ mod tests {
         // Clearing the final-sector boss flips victorious — the empty
         // leading sector never stalled the run.
         advance_after_win(&mut run, &sectors);
-        assert!(run.victorious, "campaign completes; the empty sector did not stall it");
+        assert!(
+            run.victorious,
+            "campaign completes; the empty sector did not stall it"
+        );
     }
 
     #[test]
@@ -1367,7 +1407,11 @@ mod tests {
     #[test]
     fn placeholder_sectors_have_at_least_one_encounter() {
         for s in placeholder_sectors() {
-            assert!(!s.encounters.is_empty(), "sector {} has no encounters", s.id);
+            assert!(
+                !s.encounters.is_empty(),
+                "sector {} has no encounters",
+                s.id
+            );
         }
     }
 
@@ -1397,7 +1441,10 @@ mod tests {
                 }
             }
         }
-        assert_eq!(boss_count, 1, "exactly one boss encounter total (the final)");
+        assert_eq!(
+            boss_count, 1,
+            "exactly one boss encounter total (the final)"
+        );
     }
 
     #[test]
@@ -1411,8 +1458,10 @@ mod tests {
         // earliest ones on average. Sector 0 first encounter = 2 ships;
         // sector 1 second encounter = 3 ships; sector 2 first encounter
         // = 3 ships. Loose monotonicity:
-        assert!(count[0] <= count[count.len() - 2],
-            "first encounter shouldn't be denser than the boss-precursor");
+        assert!(
+            count[0] <= count[count.len() - 2],
+            "first encounter shouldn't be denser than the boss-precursor"
+        );
     }
 
     /* ---- build_encounter_board ------------------------------------- */
@@ -1441,14 +1490,23 @@ mod tests {
             is_boss: false,
         };
         let player = make_player(3, 8); // pre-board cell shouldn't matter
-        let board = build_encounter_board(&enc, player, |spawn| Some(fallback_ship_for_spawn(spawn)));
+        let board =
+            build_encounter_board(&enc, player, |spawn| Some(fallback_ship_for_spawn(spawn)));
         let ppos = player_start_pos();
         assert_eq!(ppos, crate::grid::Pos::new(2, 3));
         let at = board.ship_at(ppos).unwrap();
         assert_eq!(at.faction, Faction::Player);
         assert_eq!(at.pos, ppos);
-        assert_eq!(at.cell, ppos.to_index(), "invariant A: slot == pos.to_index()");
-        assert_eq!(at.facing, player_spawn_facing(), "player bow N into the board");
+        assert_eq!(
+            at.cell,
+            ppos.to_index(),
+            "invariant A: slot == pos.to_index()"
+        );
+        assert_eq!(
+            at.facing,
+            player_spawn_facing(),
+            "player bow N into the board"
+        );
         // Hull state carries over (prior-encounter ship preserved, not reset).
         assert_eq!(at.hull, 8);
     }
@@ -1480,14 +1538,18 @@ mod tests {
             hazards: vec![],
             is_boss: false,
         };
-        let board = build_encounter_board(&enc, make_player(0, 10),
-            |spawn| Some(fallback_ship_for_spawn(spawn)));
+        let board = build_encounter_board(&enc, make_player(0, 10), |spawn| {
+            Some(fallback_ship_for_spawn(spawn))
+        });
         let e1 = board.ship_at(crate::grid::Pos::new(0, 0)).unwrap();
         assert_eq!(e1.faction, Faction::Enemy);
         assert_eq!(e1.pos, crate::grid::Pos::new(0, 0), "invariant A");
         let e2 = board.ship_at(crate::grid::Pos::new(4, 1)).unwrap();
         assert_eq!(e2.faction, Faction::Enemy);
-        assert_eq!(e2.facing, crate::grid::Facing::Broadside(crate::grid::Axis::EastWest));
+        assert_eq!(
+            e2.facing,
+            crate::grid::Facing::Broadside(crate::grid::Axis::EastWest)
+        );
         assert_eq!(e2.hull, 7, "hp_override applied");
     }
 
@@ -1518,8 +1580,9 @@ mod tests {
             hazards: vec![],
             is_boss: false,
         };
-        let board = build_encounter_board(&enc, make_player(0, 10),
-            |spawn| Some(fallback_ship_for_spawn(spawn)));
+        let board = build_encounter_board(&enc, make_player(0, 10), |spawn| {
+            Some(fallback_ship_for_spawn(spawn))
+        });
         // Player kept its cell; the colliding enemy spawn was dropped.
         let at = board.ship_at(player_start_pos()).unwrap();
         assert_eq!(at.faction, Faction::Player);
@@ -1646,12 +1709,19 @@ mod tests {
         assert!(p0.is_empty(), "Staging introduces nothing");
         // At Drift Belt (idx 1): Skiff + Lancer, display-name → id.
         let p1 = SpawnPool::accumulate(&cat.sectors, 1, &cat);
-        assert_eq!(p1.class_ids, vec!["skiff".to_string(), "lancer".to_string()]);
+        assert_eq!(
+            p1.class_ids,
+            vec!["skiff".to_string(), "lancer".to_string()]
+        );
         // At Ion Reefs (idx 2): pool carries forward + adds gunboat.
         let p2 = SpawnPool::accumulate(&cat.sectors, 2, &cat);
         assert_eq!(
             p2.class_ids,
-            vec!["skiff".to_string(), "lancer".to_string(), "gunboat".to_string()],
+            vec![
+                "skiff".to_string(),
+                "lancer".to_string(),
+                "gunboat".to_string()
+            ],
             "pool accumulates across the route",
         );
     }
@@ -1682,12 +1752,24 @@ mod tests {
             assert!(!e.enemy_ships.is_empty());
             for sp in &e.enemy_ships {
                 assert_ne!(sp.pos, ppos, "enemies never spawn on the player cell");
-                assert!(sp.pos.row < crate::grid::ROWS - 1, "enemies on the back rows");
-                assert_eq!(sp.facing, enemy_spawn_facing(), "enemies bow S toward the player");
-                assert_eq!(sp.cell, sp.pos.to_index(), "invariant A: legacy cell tracks pos");
+                assert!(
+                    sp.pos.row < crate::grid::ROWS - 1,
+                    "enemies on the back rows"
+                );
+                assert_eq!(
+                    sp.facing,
+                    enemy_spawn_facing(),
+                    "enemies bow S toward the player"
+                );
+                assert_eq!(
+                    sp.cell,
+                    sp.pos.to_index(),
+                    "invariant A: legacy cell tracks pos"
+                );
                 assert!(
                     pool.class_ids.contains(&sp.class_id),
-                    "spawn {} drawn from the pool", sp.class_id,
+                    "spawn {} drawn from the pool",
+                    sp.class_id,
                 );
             }
             // Lane-5 sector → 2 enemies per encounter (encounter_enemy_count).
@@ -1724,11 +1806,19 @@ mod tests {
         // in the same column order. This is the wall-with-depth (decision #8).
         let order = [2usize, 1, 3, 0, 4];
         for (i, &col) in order.iter().enumerate() {
-            assert_eq!(enemy_spawn_pos(i), Some(crate::grid::Pos::new(col, 0)), "row-0 slot {i}");
+            assert_eq!(
+                enemy_spawn_pos(i),
+                Some(crate::grid::Pos::new(col, 0)),
+                "row-0 slot {i}"
+            );
         }
         for (k, &col) in order.iter().enumerate() {
             let i = crate::grid::COLS + k;
-            assert_eq!(enemy_spawn_pos(i), Some(crate::grid::Pos::new(col, 1)), "row-1 slot {i}");
+            assert_eq!(
+                enemy_spawn_pos(i),
+                Some(crate::grid::Pos::new(col, 1)),
+                "row-1 slot {i}"
+            );
         }
     }
 
@@ -1739,7 +1829,10 @@ mod tests {
         for i in 0..(crate::grid::CELLS * 2) {
             if let Some(pos) = enemy_spawn_pos(i) {
                 assert!(pos.in_bounds(), "slot {i} pos {pos:?} in bounds");
-                assert!(pos.row < crate::grid::ROWS - 1, "slot {i} pos {pos:?} is a back row");
+                assert!(
+                    pos.row < crate::grid::ROWS - 1,
+                    "slot {i} pos {pos:?} is a back row"
+                );
             }
         }
     }
@@ -1751,8 +1844,15 @@ mod tests {
         // this None is a guard, but pin the exact boundary so a row-count change
         // is a visible break.)
         let back_slots = (crate::grid::ROWS - 1) * crate::grid::COLS;
-        assert!(enemy_spawn_pos(back_slots - 1).is_some(), "last back-row slot is Some");
-        assert_eq!(enemy_spawn_pos(back_slots), None, "first slot past the back rows is None");
+        assert!(
+            enemy_spawn_pos(back_slots - 1).is_some(),
+            "last back-row slot is Some"
+        );
+        assert_eq!(
+            enemy_spawn_pos(back_slots),
+            None,
+            "first slot past the back rows is None"
+        );
         assert_eq!(enemy_spawn_pos(back_slots + 1), None);
     }
 
@@ -1766,7 +1866,11 @@ mod tests {
             let pos = enemy_spawn_pos(i).expect("in-range slot is Some");
             assert!(seen.insert(pos), "slot {i} pos {pos:?} duplicated");
         }
-        assert_eq!(seen.len(), back_slots, "every back-row cell used exactly once");
+        assert_eq!(
+            seen.len(),
+            back_slots,
+            "every back-row cell used exactly once"
+        );
     }
 
     #[test]
@@ -1775,14 +1879,26 @@ mod tests {
         // full wrap, clamped to the back rows (row <= ROWS-2).
         assert_eq!(placeholder_cell_to_pos(0), crate::grid::Pos::new(0, 0));
         assert_eq!(placeholder_cell_to_pos(2), crate::grid::Pos::new(2, 0));
-        assert_eq!(placeholder_cell_to_pos(crate::grid::COLS - 1), crate::grid::Pos::new(crate::grid::COLS - 1, 0));
+        assert_eq!(
+            placeholder_cell_to_pos(crate::grid::COLS - 1),
+            crate::grid::Pos::new(crate::grid::COLS - 1, 0)
+        );
         // Wrapping past COLS drops to row 1.
-        assert_eq!(placeholder_cell_to_pos(crate::grid::COLS), crate::grid::Pos::new(0, 1));
-        assert_eq!(placeholder_cell_to_pos(crate::grid::COLS + 3), crate::grid::Pos::new(3, 1));
+        assert_eq!(
+            placeholder_cell_to_pos(crate::grid::COLS),
+            crate::grid::Pos::new(0, 1)
+        );
+        assert_eq!(
+            placeholder_cell_to_pos(crate::grid::COLS + 3),
+            crate::grid::Pos::new(3, 1)
+        );
         // A large cell clamps the row to the last back row (ROWS-2), never the
         // player's front row.
         let big = placeholder_cell_to_pos(crate::grid::CELLS * 3);
-        assert!(big.row <= crate::grid::ROWS - 2, "clamped off the front row: {big:?}");
+        assert!(
+            big.row <= crate::grid::ROWS - 2,
+            "clamped off the front row: {big:?}"
+        );
         assert!(big.in_bounds());
     }
 
@@ -1792,7 +1908,10 @@ mod tests {
         for cell in 0..(crate::grid::CELLS * 4) {
             let pos = placeholder_cell_to_pos(cell);
             assert!(pos.in_bounds(), "cell {cell} -> {pos:?} in bounds");
-            assert!(pos.row < crate::grid::ROWS - 1, "cell {cell} -> {pos:?} stays off the front row");
+            assert!(
+                pos.row < crate::grid::ROWS - 1,
+                "cell {cell} -> {pos:?} stays off the front row"
+            );
         }
     }
 
@@ -1810,7 +1929,11 @@ mod tests {
             let mut seen = std::collections::HashSet::new();
             for sp in &e.enemy_ships {
                 assert!(sp.pos.in_bounds(), "spawn {sp:?} in bounds");
-                assert!(sp.pos.row < crate::grid::ROWS - 1, "spawn on a back row: {:?}", sp.pos);
+                assert!(
+                    sp.pos.row < crate::grid::ROWS - 1,
+                    "spawn on a back row: {:?}",
+                    sp.pos
+                );
                 assert_ne!(sp.pos, ppos, "spawn never on the player cell");
                 assert!(seen.insert(sp.pos), "two spawns share cell {:?}", sp.pos);
             }
@@ -1838,21 +1961,34 @@ mod tests {
             })
             .collect();
         let board = build_encounter_board(
-            &EncounterDef { id: "fan".into(), enemy_ships, hazards: vec![], is_boss: false },
+            &EncounterDef {
+                id: "fan".into(),
+                enemy_ships,
+                hazards: vec![],
+                is_boss: false,
+            },
             make_player(0, 10),
             |spawn| Some(fallback_ship_for_spawn(spawn)),
         );
         // Player at front-centre.
-        assert_eq!(board.ship_at(player_start_pos()).unwrap().faction, Faction::Player);
+        assert_eq!(
+            board.ship_at(player_start_pos()).unwrap().faction,
+            Faction::Player
+        );
         // All four enemies present, each at its slot's cell (invariant A).
         let mut enemy_cells = std::collections::HashSet::new();
         for i in 0..n {
             let pos = enemy_spawn_pos(i).unwrap();
-            let ship = board.ship_at(pos).unwrap_or_else(|| panic!("enemy missing at slot {i} {pos:?}"));
+            let ship = board
+                .ship_at(pos)
+                .unwrap_or_else(|| panic!("enemy missing at slot {i} {pos:?}"));
             assert_eq!(ship.faction, Faction::Enemy, "slot {i}");
             assert_eq!(ship.cell, pos.to_index(), "invariant A at slot {i}");
             assert_eq!(ship.facing, enemy_spawn_facing(), "enemy bow S at slot {i}");
-            assert!(enemy_cells.insert(pos), "slot {i} cell {pos:?} double-booked");
+            assert!(
+                enemy_cells.insert(pos),
+                "slot {i} cell {pos:?} double-booked"
+            );
         }
         assert_eq!(enemy_cells.len(), n, "four distinct enemy cells");
     }
@@ -1864,8 +2000,14 @@ mod tests {
         let cat = gen_catalog();
         // The generator writes the capital's DISPLAY name into class_id.
         assert!(is_capital_spawn("The Dasher", &cat), "known capital");
-        assert!(!is_capital_spawn("skiff", &cat), "regular enemy is not a capital");
-        assert!(!is_capital_spawn("warlord", &cat), "warlord id is not a catalog capital name");
+        assert!(
+            !is_capital_spawn("skiff", &cat),
+            "regular enemy is not a capital"
+        );
+        assert!(
+            !is_capital_spawn("warlord", &cat),
+            "warlord id is not a catalog capital name"
+        );
         assert!(!is_capital_spawn("Nonexistent", &cat), "unknown name");
     }
 
@@ -1885,11 +2027,23 @@ mod tests {
         let boss = capital_boss_ship_for_spawn(&sp, &cat);
         let popgun = fallback_ship_for_spawn(&sp);
         // Materially tougher + more mounts than the fallback popgun.
-        assert!(boss.hull > popgun.hull, "capital boss must out-hull the fallback ({} vs {})", boss.hull, popgun.hull);
-        assert!(boss.mounts.len() > popgun.mounts.len(),
-            "capital boss must out-gun the fallback ({} vs {} mounts)", boss.mounts.len(), popgun.mounts.len());
+        assert!(
+            boss.hull > popgun.hull,
+            "capital boss must out-hull the fallback ({} vs {})",
+            boss.hull,
+            popgun.hull
+        );
+        assert!(
+            boss.mounts.len() > popgun.mounts.len(),
+            "capital boss must out-gun the fallback ({} vs {} mounts)",
+            boss.mounts.len(),
+            popgun.mounts.len()
+        );
         // Carries the boss's signature ReactorBreach pressure trait.
-        assert!(boss.traits.contains(&Trait::ReactorBreach), "capital boss carries ReactorBreach");
+        assert!(
+            boss.traits.contains(&Trait::ReactorBreach),
+            "capital boss carries ReactorBreach"
+        );
         // Identity preserved so the HUD label + salvage-by-name lookup still work.
         assert_eq!(boss.klass.as_deref(), Some("The Dasher"));
         // hp_override still wins (lets an encounter tier-scale a capital).
@@ -1904,7 +2058,10 @@ mod tests {
         let pool = SpawnPool::accumulate(&cat.sectors, 2, &cat);
         let a = generate_sector(&cat.sectors[2], &pool, 3, &cat);
         let b = generate_sector(&cat.sectors[2], &pool, 3, &cat);
-        assert_eq!(a, b, "same (node, tier, pool) → identical sector (#111 determinism)");
+        assert_eq!(
+            a, b,
+            "same (node, tier, pool) → identical sector (#111 determinism)"
+        );
         // Different patrol tier → (potentially) different layout seed; at
         // minimum it must still be self-consistent and boss-terminated.
         let c = generate_sector(&cat.sectors[2], &pool, 5, &cat);
@@ -1927,11 +2084,19 @@ mod tests {
     fn generate_campaign_covers_every_catalog_sector() {
         let cat = gen_catalog();
         let campaign = generate_campaign(&cat, 1);
-        assert_eq!(campaign.len(), cat.sectors.len(), "one runtime Sector per SectorDef");
+        assert_eq!(
+            campaign.len(),
+            cat.sectors.len(),
+            "one runtime Sector per SectorDef"
+        );
         // Lane sizes carry through (Ion Reefs is lane 7 → 3 enemies/encounter).
         let ion = &campaign[2];
         let non_boss = ion.encounters.iter().find(|e| !e.is_boss).unwrap();
-        assert_eq!(non_boss.enemy_ships.len(), 3, "lane 7 → 3 enemies per encounter");
+        assert_eq!(
+            non_boss.enemy_ships.len(),
+            3,
+            "lane 7 → 3 enemies per encounter"
+        );
     }
 
     #[test]

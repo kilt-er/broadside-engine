@@ -148,7 +148,9 @@ pub trait Content {
     /// overrides to read its [`crate::cards::FieldKitRegistry`].
     ///
     /// Task #63.
-    fn card_at(&self, _ship_id: &str, _idx: usize) -> Option<String> { None }
+    fn card_at(&self, _ship_id: &str, _idx: usize) -> Option<String> {
+        None
+    }
 
     /// Validate and consume one play of `card_id` from `ship_id`'s
     /// field-kit. Returns [`crate::cards::PlayResult`] so the caller can
@@ -251,7 +253,10 @@ pub fn fire_player_queue(ship_id: &str, board: &mut Board, content: &dyn Content
     // ship object — even if the ship moves, the action-id strings are still
     // consumed in order.
     let queue: Vec<String> = match find_cell_by_id(board, ship_id) {
-        Some(c) => board.cells[c].as_ref().map(|s| s.queue.clone()).unwrap_or_default(),
+        Some(c) => board.cells[c]
+            .as_ref()
+            .map(|s| s.queue.clone())
+            .unwrap_or_default(),
         None => return,
     };
 
@@ -486,7 +491,11 @@ pub fn paint_threats(board: &mut Board, content: &dyn Content) {
                 if pos == enemy_pos {
                     continue;
                 }
-                board.threats.push(crate::types::Threat { pos, kind, source: enemy_pos });
+                board.threats.push(crate::types::Threat {
+                    pos,
+                    kind,
+                    source: enemy_pos,
+                });
             }
         }
     }
@@ -513,10 +522,18 @@ fn threat_kind(action: &Action) -> crate::types::ThreatKind {
     if raw_damage > 0 {
         return ThreatKind::Damage { amount: raw_damage };
     }
-    if action.effects.iter().any(|e| matches!(e, Effect::DISPLACE_TARGET { .. })) {
+    if action
+        .effects
+        .iter()
+        .any(|e| matches!(e, Effect::DISPLACE_TARGET { .. }))
+    {
         return ThreatKind::Displace;
     }
-    if action.effects.iter().any(|e| matches!(e, Effect::APPLY_STATUS { .. })) {
+    if action
+        .effects
+        .iter()
+        .any(|e| matches!(e, Effect::APPLY_STATUS { .. }))
+    {
         return ThreatKind::Status;
     }
     ThreatKind::Other
@@ -709,12 +726,19 @@ fn run_action(
     // mod is present, to avoid the scan otherwise.
     let precision_core = WeaponMod::of(action) == Some(WeaponMod::PrecisionCore);
     let precision_targets: Vec<usize> = if precision_core {
-        cells.iter().copied().filter(|&c| board.cells[c].is_some()).collect()
+        cells
+            .iter()
+            .copied()
+            .filter(|&c| board.cells[c].is_some())
+            .collect()
     } else {
         Vec::new()
     };
 
-    let passes = if WeaponMod::of(action).map(WeaponMod::applies_effects_twice).unwrap_or(false) {
+    let passes = if WeaponMod::of(action)
+        .map(WeaponMod::applies_effects_twice)
+        .unwrap_or(false)
+    {
         2
     } else {
         1
@@ -768,7 +792,11 @@ fn run_action(
             // on a clean kill — applied here (after the base insert) so the
             // recharge wins; doing it during effects would be clobbered by this
             // very insert. Keyed by `lookup_id`, the action's cooldown slot.
-            let cd = if precision_kill { 0 } else { action.cost.cooldown_max };
+            let cd = if precision_kill {
+                0
+            } else {
+                action.cost.cooldown_max
+            };
             ship.cooldowns.insert(lookup_id.to_string(), cd);
         }
     }
@@ -1032,7 +1060,11 @@ pub fn resolve_targeting(a: &Action, board: &Board, ship_cell: usize) -> Vec<usi
             let mut out = Vec::new();
             for &end in &[LaneEnd::Fore, LaneEnd::Aft] {
                 if let Some(arc) = t.requires_arc {
-                    let probe = if end == LaneEnd::Fore { board.size - 1 } else { 0 };
+                    let probe = if end == LaneEnd::Fore {
+                        board.size - 1
+                    } else {
+                        0
+                    };
                     if !bears(ship, Some(arc), probe) {
                         continue;
                     }
@@ -1275,7 +1307,11 @@ pub fn resolve_targeting_2d(a: &Action, board: &Board, ship_pos: Pos) -> Vec<Pos
                 if line.is_empty() {
                     continue;
                 }
-                return if t.hits_all { line } else { line.into_iter().take(1).collect() };
+                return if t.hits_all {
+                    line
+                } else {
+                    line.into_iter().take(1).collect()
+                };
             }
             Vec::new()
         }
@@ -1351,9 +1387,15 @@ pub fn apply_damage(
         None => return,
     };
     let band = range_band(atk_cell, target_cell_value);
-    let falloff_disabled = weapon.effects.iter().any(
-        |e| matches!(e, Effect::DAMAGE { band_falloff: Some(false), .. }),
-    );
+    let falloff_disabled = weapon.effects.iter().any(|e| {
+        matches!(
+            e,
+            Effect::DAMAGE {
+                band_falloff: Some(false),
+                ..
+            }
+        )
+    });
     let mut dmg = if falloff_disabled {
         raw
     } else {
@@ -1375,7 +1417,11 @@ pub fn apply_damage(
 
     // 3. Target-lock doubles the incoming hit and is consumed.
     if let Some(target) = board.cells[target_cell].as_mut() {
-        if let Some(pos) = target.statuses.iter().position(|s| s.kind == StatusKind::TargetLock) {
+        if let Some(pos) = target
+            .statuses
+            .iter()
+            .position(|s| s.kind == StatusKind::TargetLock)
+        {
             dmg *= 2;
             target.statuses.swap_remove(pos);
         }
@@ -1451,9 +1497,15 @@ pub fn apply_damage_2d(
     //    [1.0, 0.6, 0.3] curve (decision #6), keyed on the actual band — it does
     //    NOT take `optimal_band` (that was the 1-D distance-from-optimal model).
     let band = crate::geometry2d::range_band(atk_pos, target_pos);
-    let falloff_disabled = weapon.effects.iter().any(
-        |e| matches!(e, Effect::DAMAGE { band_falloff: Some(false), .. }),
-    );
+    let falloff_disabled = weapon.effects.iter().any(|e| {
+        matches!(
+            e,
+            Effect::DAMAGE {
+                band_falloff: Some(false),
+                ..
+            }
+        )
+    });
     let mut dmg = if falloff_disabled {
         raw
     } else {
@@ -1469,7 +1521,11 @@ pub fn apply_damage_2d(
 
     // 3. Target-lock doubles the hit and is consumed.
     if let Some(target) = board.ship_at_mut(target_pos) {
-        if let Some(p) = target.statuses.iter().position(|s| s.kind == StatusKind::TargetLock) {
+        if let Some(p) = target
+            .statuses
+            .iter()
+            .position(|s| s.kind == StatusKind::TargetLock)
+        {
             dmg *= 2;
             target.statuses.swap_remove(p);
         }
@@ -1566,8 +1622,7 @@ pub fn apply_effect(
                     // the attacker's slot, so under invariant (A) both recover
                     // their Pos exactly. apply_damage_2d wires the 2-D Range
                     // falloff + facing_zone, KEEPING the ORDER.
-                    if let (Some(tp), Some(ap)) =
-                        (Pos::from_index(c), Pos::from_index(source_cell))
+                    if let (Some(tp), Some(ap)) = (Pos::from_index(c), Pos::from_index(source_cell))
                     {
                         apply_damage_2d(tp, *amount, ap, a, board, content);
                     }
@@ -1594,7 +1649,10 @@ pub fn apply_effect(
             }
         }
 
-        Effect::VENT_HEAT { amount, recharge_cooldowns } => {
+        Effect::VENT_HEAT {
+            amount,
+            recharge_cooldowns,
+        } => {
             if let Some(source) = board.cells[source_cell].as_mut() {
                 source.heat = (source.heat - amount).max(0);
                 source.locked_out = false;
@@ -1649,7 +1707,12 @@ pub fn apply_effect(
             board.ordnance.push(p);
         }
 
-        Effect::DISPLACE_SELF { mode, distance, direction, direction_2d } => {
+        Effect::DISPLACE_SELF {
+            mode,
+            distance,
+            direction,
+            direction_2d,
+        } => {
             // R6: the LIVE path is now 2-D. Convert source_cell -> Pos (exact
             // under Board invariant (A): source_cell == ship.pos.to_index()) and
             // move via resolve_self_move_2d. We pass BOTH the 2-D `direction_2d`
@@ -1660,7 +1723,15 @@ pub fn apply_effect(
             // facing). The legacy 1-D resolve_self_move + its fixture tests stay
             // until CONTRACT.
             if let Some(source_pos) = Pos::from_index(source_cell) {
-                resolve_self_move_2d(source_pos, *mode, *distance, *direction_2d, *direction, board, content);
+                resolve_self_move_2d(
+                    source_pos,
+                    *mode,
+                    *distance,
+                    *direction_2d,
+                    *direction,
+                    board,
+                    content,
+                );
             }
         }
 
@@ -1671,7 +1742,9 @@ pub fn apply_effect(
             if let Some(source_pos) = Pos::from_index(source_cell) {
                 for &c in cells {
                     if let Some(target_pos) = Pos::from_index(c) {
-                        resolve_target_move_2d(target_pos, source_pos, *mode, *distance, board, content);
+                        resolve_target_move_2d(
+                            target_pos, source_pos, *mode, *distance, board, content,
+                        );
                     }
                 }
             }
@@ -2029,7 +2102,11 @@ pub fn add_status(cell: usize, kind: StatusKind, duration: i32, board: &mut Boar
     if let Some(existing) = ship.statuses.iter_mut().find(|s| s.kind == kind) {
         existing.duration = existing.duration.max(duration);
     } else {
-        ship.statuses.push(Status { kind, duration, face: None });
+        ship.statuses.push(Status {
+            kind,
+            duration,
+            face: None,
+        });
     }
 }
 
@@ -2066,7 +2143,11 @@ fn tick_statuses(cell: usize, board: &mut Board, content: &dyn Content) {
 pub fn skips_turn(board: &Board, cell: usize) -> bool {
     board.cells[cell]
         .as_ref()
-        .map(|s| s.statuses.iter().any(|s| s.kind == StatusKind::SystemsOffline))
+        .map(|s| {
+            s.statuses
+                .iter()
+                .any(|s| s.kind == StatusKind::SystemsOffline)
+        })
         .unwrap_or(false)
 }
 
@@ -2083,7 +2164,10 @@ pub fn destroy(cell: usize, board: &mut Board, content: &dyn Content) {
     let Some(ship) = board.cells[cell].take() else {
         return;
     };
-    let has_reactor_breach = ship.traits.iter().any(|t| matches!(t, crate::types::Trait::ReactorBreach));
+    let has_reactor_breach = ship
+        .traits
+        .iter()
+        .any(|t| matches!(t, crate::types::Trait::ReactorBreach));
     let owner_cell = cell;
     board.destroys_this_window += 1;
 
@@ -2173,7 +2257,11 @@ pub(crate) fn resolver_ai_move(action_id: &str) -> Option<Action> {
         id: action_id.to_string(),
         name: name.into(),
         archetype: WeaponArchetype::Movement,
-        cost: ActionCost { heat: 0, cooldown_max: 0, advances_turn: true },
+        cost: ActionCost {
+            heat: 0,
+            cooldown_max: 0,
+            advances_turn: true,
+        },
         targeting: Targeting {
             pattern: TargetingPattern::SELF,
             band: vec![RangeBand::PointBlank],
@@ -2199,13 +2287,28 @@ pub(crate) fn resolver_ai_move(action_id: &str) -> Option<Action> {
     // arc follows next phase.
     match action_id {
         crate::input::SYNTHETIC_ROTATE_LEFT => {
-            return Some(shell("Rotate Left", Effect::REORIENT { to: ReorientTo::RotateLeft }));
+            return Some(shell(
+                "Rotate Left",
+                Effect::REORIENT {
+                    to: ReorientTo::RotateLeft,
+                },
+            ));
         }
         crate::input::SYNTHETIC_ROTATE_RIGHT => {
-            return Some(shell("Rotate Right", Effect::REORIENT { to: ReorientTo::RotateRight }));
+            return Some(shell(
+                "Rotate Right",
+                Effect::REORIENT {
+                    to: ReorientTo::RotateRight,
+                },
+            ));
         }
         crate::input::SYNTHETIC_REORIENT_FLIP => {
-            return Some(shell("Flip", Effect::REORIENT { to: ReorientTo::Flip }));
+            return Some(shell(
+                "Flip",
+                Effect::REORIENT {
+                    to: ReorientTo::Flip,
+                },
+            ));
         }
         _ => {}
     }
@@ -2244,7 +2347,11 @@ fn dummy_weapon() -> Action {
         id: "_impact".into(),
         name: "Impact".into(),
         archetype: WeaponArchetype::Ordnance,
-        cost: ActionCost { heat: 0, cooldown_max: 0, advances_turn: true },
+        cost: ActionCost {
+            heat: 0,
+            cooldown_max: 0,
+            advances_turn: true,
+        },
         targeting: Targeting {
             pattern: TargetingPattern::BEAM,
             band: vec![
@@ -2267,7 +2374,10 @@ fn dummy_weapon() -> Action {
             facing_relative: false,
             hits_all: false,
         },
-        effects: vec![Effect::DAMAGE { amount: 0, band_falloff: Some(false) }],
+        effects: vec![Effect::DAMAGE {
+            amount: 0,
+            band_falloff: Some(false),
+        }],
         r#mod: None,
         icon: None,
     }
@@ -2548,8 +2658,7 @@ fn resolve_self_move(
     // actually move — the cell value still needs to be updated on the ship
     // record, but since `cell == ship_cell` there's nothing to copy.
     if landing != start {
-        let mut ship = board
-            .cells[ship_cell]
+        let mut ship = board.cells[ship_cell]
             .take()
             .expect("source still occupied at start");
         ship.cell = final_cell;
@@ -2562,7 +2671,14 @@ fn resolve_self_move(
     // beyond the landing cell — so `atk_cell` is one further in `step`.
     if collision_dmg > 0 {
         let phantom_atk = (landing + step).clamp(0, size - 1) as usize;
-        apply_damage(final_cell, collision_dmg, phantom_atk, &dummy_weapon(), board, content);
+        apply_damage(
+            final_cell,
+            collision_dmg,
+            phantom_atk,
+            &dummy_weapon(),
+            board,
+            content,
+        );
     }
 }
 
@@ -2629,7 +2745,7 @@ fn resolve_self_move_2d(
         MovementMode::THRUST => {
             // Always one cardinal step; distance ignored (THRUST is 1).
             match crate::grid::offset(ship_pos, dir, 1) {
-                None => (ship_pos, 1),                              // wall: stop, 1 collision
+                None => (ship_pos, 1), // wall: stop, 1 collision
                 Some(next) if board.ship_at(next).is_some() => (ship_pos, 1), // occupant: stop, 1
                 Some(next) => (next, 0),
             }
@@ -2640,7 +2756,9 @@ fn resolve_self_move_2d(
             let mut cur = ship_pos;
             let mut steps_taken = 0;
             for _ in 0..distance {
-                let Some(next) = crate::grid::offset(cur, dir, 1) else { break };
+                let Some(next) = crate::grid::offset(cur, dir, 1) else {
+                    break;
+                };
                 if board.ship_at(next).is_some() {
                     break;
                 }
@@ -2657,7 +2775,9 @@ fn resolve_self_move_2d(
             let mut cur = ship_pos;
             let mut scanned = 0;
             while scanned < distance {
-                let Some(next) = crate::grid::offset(cur, dir, 1) else { break };
+                let Some(next) = crate::grid::offset(cur, dir, 1) else {
+                    break;
+                };
                 cur = next;
                 scanned += 1;
             }
@@ -2871,8 +2991,7 @@ fn resolve_target_move(
 
             // Move the target if it actually moved.
             if landing != target_cell {
-                let mut t = board
-                    .cells[target_cell]
+                let mut t = board.cells[target_cell]
                     .take()
                     .expect("target still occupied at start of move");
                 t.cell = landing;
@@ -2882,7 +3001,14 @@ fn resolve_target_move(
             // Collision damage if we were blocked.
             if remaining > 0 {
                 let phantom_atk = (c + step).clamp(0, size - 1) as usize;
-                apply_damage(landing, remaining, phantom_atk, &dummy_weapon(), board, content);
+                apply_damage(
+                    landing,
+                    remaining,
+                    phantom_atk,
+                    &dummy_weapon(),
+                    board,
+                    content,
+                );
             }
         }
     }
@@ -2959,7 +3085,9 @@ fn resolve_target_move_2d(
             let mut cur = target_pos;
             let mut steps_taken = 0;
             for _ in 0..distance {
-                let Some(next) = crate::grid::offset(cur, dir, 1) else { break };
+                let Some(next) = crate::grid::offset(cur, dir, 1) else {
+                    break;
+                };
                 if board.ship_at(next).is_some() {
                     break;
                 }
@@ -3030,7 +3158,9 @@ mod tests {
     /// Empty content for tests that don't invoke action lookups or spawns.
     struct NoContent;
     impl Content for NoContent {
-        fn action(&self, _id: &str) -> Option<&Action> { None }
+        fn action(&self, _id: &str) -> Option<&Action> {
+            None
+        }
         fn spawn_projectile(&self, _kind: &str, _owner: &Ship) -> Projectile {
             panic!("spawn_projectile not used in this test");
         }
@@ -3073,7 +3203,11 @@ mod tests {
             heat_max: 6,
             locked_out: false,
             shield_profile: default_shield_profile(),
-            mounts: vec![Mount { id: "m1".into(), arc: Arc::Forward, weapon: "pulse_laser".into() }],
+            mounts: vec![Mount {
+                id: "m1".into(),
+                arc: Arc::Forward,
+                weapon: "pulse_laser".into(),
+            }],
             queue: Vec::new(),
             cooldowns: HashMap::new(),
             statuses: Vec::new(),
@@ -3095,7 +3229,11 @@ mod tests {
             id: "pulse_laser".into(),
             name: "Pulse Laser".into(),
             archetype: WeaponArchetype::Beam,
-            cost: ActionCost { heat: 1, cooldown_max: 0, advances_turn: true },
+            cost: ActionCost {
+                heat: 1,
+                cooldown_max: 0,
+                advances_turn: true,
+            },
             targeting: Targeting {
                 pattern: TargetingPattern::BEAM,
                 band: vec![RangeBand::PointBlank, RangeBand::Close, RangeBand::Mid],
@@ -3106,7 +3244,10 @@ mod tests {
                 facing_relative: true,
                 hits_all: false,
             },
-            effects: vec![Effect::DAMAGE { amount: 4, band_falloff: None }],
+            effects: vec![Effect::DAMAGE {
+                amount: 4,
+                band_falloff: None,
+            }],
             r#mod: None,
             icon: None,
         }
@@ -3173,7 +3314,11 @@ mod tests {
             heat_max: 12,
             locked_out: false,
             shield_profile: shield,
-            mounts: vec![Mount { id: format!("{id}-m1"), arc, weapon: weapon.into() }],
+            mounts: vec![Mount {
+                id: format!("{id}-m1"),
+                arc,
+                weapon: weapon.into(),
+            }],
             queue: Vec::new(),
             cooldowns: HashMap::new(),
             statuses: Vec::new(),
@@ -3185,10 +3330,22 @@ mod tests {
     /// All-zero shield faces, so a hit lands raw on hull (legible arithmetic).
     fn naked() -> ShieldProfile {
         ShieldProfile {
-            bow: crate::types::ShieldFace { armour: 0, charge: 0 },
-            stern: crate::types::ShieldFace { armour: 0, charge: 0 },
-            port: crate::types::ShieldFace { armour: 0, charge: 0 },
-            starboard: crate::types::ShieldFace { armour: 0, charge: 0 },
+            bow: crate::types::ShieldFace {
+                armour: 0,
+                charge: 0,
+            },
+            stern: crate::types::ShieldFace {
+                armour: 0,
+                charge: 0,
+            },
+            port: crate::types::ShieldFace {
+                armour: 0,
+                charge: 0,
+            },
+            starboard: crate::types::ShieldFace {
+                armour: 0,
+                charge: 0,
+            },
         }
     }
 
@@ -3200,7 +3357,12 @@ mod tests {
     fn armed_board_2d(ships: Vec<Ship>) -> Board {
         let mut cells: Vec<Option<Ship>> = (0..crate::grid::CELLS).map(|_| None).collect();
         for s in ships {
-            assert!(s.pos.in_bounds(), "ship {} pos {:?} out of bounds", s.id, s.pos);
+            assert!(
+                s.pos.in_bounds(),
+                "ship {} pos {:?} out of bounds",
+                s.id,
+                s.pos
+            );
             let idx = s.pos.to_index();
             assert_eq!(s.cell, idx, "ship {} breaks invariant A", s.id);
             assert!(cells[idx].is_none(), "two ships share cell {idx}");
@@ -3229,9 +3391,10 @@ mod tests {
     fn apply_damage_weak_stern_takes_post_falloff_hit() {
         let attacker = make_ship("frigate", Faction::Player, 0, 10, LaneEnd::Fore);
         let scout = make_ship("scout", Faction::Enemy, 1, 5, LaneEnd::Fore);
-        let mut board = make_board(7, vec![
-            Some(attacker), Some(scout), None, None, None, None, None,
-        ]);
+        let mut board = make_board(
+            7,
+            vec![Some(attacker), Some(scout), None, None, None, None, None],
+        );
         let weapon = pulse_laser();
         apply_damage(1, 4, 0, &weapon, &mut board, &NoContent);
         let scout_hull = board.cells[1].as_ref().map(|s| s.hull);
@@ -3245,9 +3408,10 @@ mod tests {
     fn apply_damage_strong_bow_soaks_to_zero() {
         let attacker = make_ship("frigate", Faction::Player, 0, 10, LaneEnd::Fore);
         let scout = make_ship("scout", Faction::Enemy, 1, 5, LaneEnd::Aft);
-        let mut board = make_board(7, vec![
-            Some(attacker), Some(scout), None, None, None, None, None,
-        ]);
+        let mut board = make_board(
+            7,
+            vec![Some(attacker), Some(scout), None, None, None, None, None],
+        );
         let weapon = pulse_laser();
         apply_damage(1, 4, 0, &weapon, &mut board, &NoContent);
         let scout_hull = board.cells[1].as_ref().map(|s| s.hull);
@@ -3259,11 +3423,16 @@ mod tests {
     #[test]
     fn apply_damage_target_lock_doubles_and_consumes() {
         let mut scout = make_ship("scout", Faction::Enemy, 1, 20, LaneEnd::Fore);
-        scout.statuses.push(Status { kind: StatusKind::TargetLock, duration: 5, face: None });
+        scout.statuses.push(Status {
+            kind: StatusKind::TargetLock,
+            duration: 5,
+            face: None,
+        });
         let attacker = make_ship("frigate", Faction::Player, 0, 10, LaneEnd::Fore);
-        let mut board = make_board(7, vec![
-            Some(attacker), Some(scout), None, None, None, None, None,
-        ]);
+        let mut board = make_board(
+            7,
+            vec![Some(attacker), Some(scout), None, None, None, None, None],
+        );
         let weapon = pulse_laser();
         apply_damage(1, 4, 0, &weapon, &mut board, &NoContent);
         let scout = board.cells[1].as_ref().unwrap();
@@ -3272,7 +3441,10 @@ mod tests {
         // 20 - 4 = 16.
         assert_eq!(scout.hull, 16);
         // Lock consumed.
-        assert!(scout.statuses.iter().all(|s| s.kind != StatusKind::TargetLock));
+        assert!(scout
+            .statuses
+            .iter()
+            .all(|s| s.kind != StatusKind::TargetLock));
     }
 
     /// Lethal damage clears the cell and emits no further hits. Uses
@@ -3282,18 +3454,37 @@ mod tests {
         let attacker = make_ship("frigate", Faction::Player, 0, 10, LaneEnd::Fore);
         let mut scout = make_ship("scout", Faction::Enemy, 1, 3, LaneEnd::Fore);
         scout.shield_profile = ShieldProfile {
-            bow: crate::types::ShieldFace { armour: 0, charge: 0 },
-            stern: crate::types::ShieldFace { armour: 0, charge: 0 },
-            port: crate::types::ShieldFace { armour: 0, charge: 0 },
-            starboard: crate::types::ShieldFace { armour: 0, charge: 0 },
+            bow: crate::types::ShieldFace {
+                armour: 0,
+                charge: 0,
+            },
+            stern: crate::types::ShieldFace {
+                armour: 0,
+                charge: 0,
+            },
+            port: crate::types::ShieldFace {
+                armour: 0,
+                charge: 0,
+            },
+            starboard: crate::types::ShieldFace {
+                armour: 0,
+                charge: 0,
+            },
         };
-        let mut board = make_board(7, vec![
-            Some(attacker), Some(scout), None, None, None, None, None,
-        ]);
+        let mut board = make_board(
+            7,
+            vec![Some(attacker), Some(scout), None, None, None, None, None],
+        );
         let mut weapon = pulse_laser();
-        weapon.effects = vec![Effect::DAMAGE { amount: 4, band_falloff: Some(false) }];
+        weapon.effects = vec![Effect::DAMAGE {
+            amount: 4,
+            band_falloff: Some(false),
+        }];
         apply_damage(1, 4, 0, &weapon, &mut board, &NoContent);
-        assert!(board.cells[1].is_none(), "cell should be cleared after lethal damage");
+        assert!(
+            board.cells[1].is_none(),
+            "cell should be cleared after lethal damage"
+        );
         assert_eq!(board.destroys_this_window, 1);
     }
 
@@ -3304,26 +3495,51 @@ mod tests {
     /// heat/lockout/cooldown bookkeeping runs through the live 2-D fire path.)
     #[test]
     fn execute_queue_overheats_and_records_cooldown() {
-        let mut attacker = armed_ship_2d("frigate", Faction::Player, crate::grid::Pos::new(2, 1), 10, crate::grid::Facing::Bow(crate::grid::Dir4::S), Arc::Forward, "pulse_laser", default_shield_profile());
+        let mut attacker = armed_ship_2d(
+            "frigate",
+            Faction::Player,
+            crate::grid::Pos::new(2, 1),
+            10,
+            crate::grid::Facing::Bow(crate::grid::Dir4::S),
+            Arc::Forward,
+            "pulse_laser",
+            default_shield_profile(),
+        );
         attacker.heat = 5;
         attacker.heat_max = 6;
         attacker.queue = vec!["pulse_laser".into()];
-        let scout = armed_ship_2d("scout", Faction::Enemy, crate::grid::Pos::new(2, 2), 5, crate::grid::Facing::Bow(crate::grid::Dir4::N), Arc::Forward, "pulse_laser", default_shield_profile());
+        let scout = armed_ship_2d(
+            "scout",
+            Faction::Enemy,
+            crate::grid::Pos::new(2, 2),
+            5,
+            crate::grid::Facing::Bow(crate::grid::Dir4::N),
+            Arc::Forward,
+            "pulse_laser",
+            default_shield_profile(),
+        );
         let mut board = armed_board_2d(vec![attacker, scout]);
         struct OneAction(Action);
         impl Content for OneAction {
             fn action(&self, id: &str) -> Option<&Action> {
                 (id == "pulse_laser").then_some(&self.0)
             }
-            fn spawn_projectile(&self, _: &str, _: &Ship) -> Projectile { unreachable!() }
+            fn spawn_projectile(&self, _: &str, _: &Ship) -> Projectile {
+                unreachable!()
+            }
         }
         let content = OneAction(pulse_laser());
         fire_player_queue("frigate", &mut board, &content);
-        let p = board.cells[crate::grid::Pos::new(2, 1).to_index()].as_ref().unwrap();
+        let p = board.cells[crate::grid::Pos::new(2, 1).to_index()]
+            .as_ref()
+            .unwrap();
         assert_eq!(p.heat, 6, "heat should be 5 + 1");
         assert!(p.locked_out, "heat at heat_max triggers lockout");
         assert_eq!(p.cooldowns.get("pulse_laser").copied(), Some(0));
-        assert!(p.queue.is_empty(), "queue should be cleared after execution");
+        assert!(
+            p.queue.is_empty(),
+            "queue should be cleared after execution"
+        );
     }
 
     /// Regression for task #52: three queued THRUST actions all execute,
@@ -3347,7 +3563,11 @@ mod tests {
             id: "__thrust".into(),
             name: "Thrust".into(),
             archetype: WeaponArchetype::Movement,
-            cost: ActionCost { heat: 0, cooldown_max: 0, advances_turn: true },
+            cost: ActionCost {
+                heat: 0,
+                cooldown_max: 0,
+                advances_turn: true,
+            },
             targeting: Targeting {
                 pattern: TargetingPattern::SELF,
                 band: vec![RangeBand::PointBlank],
@@ -3372,14 +3592,14 @@ mod tests {
             fn action(&self, id: &str) -> Option<&Action> {
                 (id == "__thrust").then_some(&self.0)
             }
-            fn spawn_projectile(&self, _: &str, _: &Ship) -> Projectile { unreachable!() }
+            fn spawn_projectile(&self, _: &str, _: &Ship) -> Projectile {
+                unreachable!()
+            }
         }
 
         let mut player = make_ship("frigate", Faction::Player, 0, 10, LaneEnd::Fore);
         player.queue = vec!["__thrust".into(), "__thrust".into(), "__thrust".into()];
-        let mut board = make_board(7, vec![
-            Some(player), None, None, None, None, None, None,
-        ]);
+        let mut board = make_board(7, vec![Some(player), None, None, None, None, None, None]);
 
         fire_player_queue("frigate", &mut board, &OneAction(thrust));
 
@@ -3394,7 +3614,10 @@ mod tests {
         // Queue must be drained — pre-fix the third clear was gated on
         // the (now stale) starting cell and silently skipped.
         let p = board.cells[cell_of_frigate].as_ref().unwrap();
-        assert!(p.queue.is_empty(), "queue should be cleared after execute_queue completes");
+        assert!(
+            p.queue.is_empty(),
+            "queue should be cleared after execute_queue completes"
+        );
     }
 
     /// Edge-clamp companion to task #52's three-thrust regression: a
@@ -3410,7 +3633,11 @@ mod tests {
             id: "__thrust".into(),
             name: "Thrust".into(),
             archetype: WeaponArchetype::Movement,
-            cost: ActionCost { heat: 0, cooldown_max: 0, advances_turn: true },
+            cost: ActionCost {
+                heat: 0,
+                cooldown_max: 0,
+                advances_turn: true,
+            },
             targeting: Targeting {
                 pattern: TargetingPattern::SELF,
                 band: vec![RangeBand::PointBlank],
@@ -3435,7 +3662,9 @@ mod tests {
             fn action(&self, id: &str) -> Option<&Action> {
                 (id == "__thrust").then_some(&self.0)
             }
-            fn spawn_projectile(&self, _: &str, _: &Ship) -> Projectile { unreachable!() }
+            fn spawn_projectile(&self, _: &str, _: &Ship) -> Projectile {
+                unreachable!()
+            }
         }
 
         // Start at cell 5 with three thrusts: 5 -> 6 (last cell), 6 -> 6
@@ -3443,9 +3672,7 @@ mod tests {
         // execute, but the last two are no-ops on position.
         let mut player = make_ship("frigate", Faction::Player, 5, 10, LaneEnd::Fore);
         player.queue = vec!["__thrust".into(), "__thrust".into(), "__thrust".into()];
-        let mut board = make_board(7, vec![
-            None, None, None, None, None, Some(player), None,
-        ]);
+        let mut board = make_board(7, vec![None, None, None, None, None, Some(player), None]);
 
         fire_player_queue("frigate", &mut board, &OneAction(thrust));
 
@@ -3456,7 +3683,10 @@ mod tests {
             .expect("frigate still on the board");
         assert_eq!(cell_of_frigate, 6, "thrust chain clamps at last lane cell");
         let p = board.cells[cell_of_frigate].as_ref().unwrap();
-        assert!(p.queue.is_empty(), "queue should be cleared even when later moves no-op");
+        assert!(
+            p.queue.is_empty(),
+            "queue should be cleared even when later moves no-op"
+        );
     }
 
     /// Seam #1: `apply_instant_action` applies one action and mutates board
@@ -3467,15 +3697,17 @@ mod tests {
     #[test]
     fn apply_instant_action_moves_ship_without_queueing() {
         let player = make_ship("frigate", Faction::Player, 0, 10, LaneEnd::Fore);
-        let mut board = make_board(7, vec![
-            Some(player), None, None, None, None, None, None,
-        ]);
+        let mut board = make_board(7, vec![Some(player), None, None, None, None, None, None]);
 
         let thrust = Action {
             id: "__thrust".into(),
             name: "Thrust".into(),
             archetype: WeaponArchetype::Movement,
-            cost: ActionCost { heat: 0, cooldown_max: 0, advances_turn: true },
+            cost: ActionCost {
+                heat: 0,
+                cooldown_max: 0,
+                advances_turn: true,
+            },
             targeting: Targeting {
                 pattern: TargetingPattern::SELF,
                 band: vec![RangeBand::PointBlank],
@@ -3497,8 +3729,12 @@ mod tests {
         };
         struct NoLookup;
         impl Content for NoLookup {
-            fn action(&self, _: &str) -> Option<&Action> { None }
-            fn spawn_projectile(&self, _: &str, _: &Ship) -> Projectile { unreachable!() }
+            fn action(&self, _: &str) -> Option<&Action> {
+                None
+            }
+            fn spawn_projectile(&self, _: &str, _: &Ship) -> Projectile {
+                unreachable!()
+            }
         }
 
         apply_instant_action("frigate", &thrust, &mut board, &NoLookup);
@@ -3506,7 +3742,10 @@ mod tests {
         let cell = find_cell_by_id(&board, "frigate").expect("frigate still on board");
         assert_eq!(cell, 1, "instant thrust should move the ship +1");
         let p = board.cells[cell].as_ref().unwrap();
-        assert!(p.queue.is_empty(), "instant action must NOT touch the queue");
+        assert!(
+            p.queue.is_empty(),
+            "instant action must NOT touch the queue"
+        );
     }
 
     /// Seam #2: `run_world_phase` advances ordnance + runs enemy queues +
@@ -3521,16 +3760,16 @@ mod tests {
         player.queue = vec!["pulse_laser".into()];
         // Pre-load a cooldown on the player to verify EOT decrements it.
         player.cooldowns.insert("rail".into(), 2);
-        let mut board = make_board(7, vec![
-            Some(player), None, None, None, None, None, None,
-        ]);
+        let mut board = make_board(7, vec![Some(player), None, None, None, None, None, None]);
 
         struct OneAction(Action);
         impl Content for OneAction {
             fn action(&self, id: &str) -> Option<&Action> {
                 (id == "pulse_laser").then_some(&self.0)
             }
-            fn spawn_projectile(&self, _: &str, _: &Ship) -> Projectile { unreachable!() }
+            fn spawn_projectile(&self, _: &str, _: &Ship) -> Projectile {
+                unreachable!()
+            }
         }
         let content = OneAction(pulse_laser());
 
@@ -3538,11 +3777,17 @@ mod tests {
 
         // Player queue untouched.
         let p = board.cells[0].as_ref().unwrap();
-        assert_eq!(p.queue, vec!["pulse_laser".to_string()],
-            "run_world_phase must NOT fire the player queue");
+        assert_eq!(
+            p.queue,
+            vec!["pulse_laser".to_string()],
+            "run_world_phase must NOT fire the player queue"
+        );
         // EOT ran: player cooldown decremented.
-        assert_eq!(p.cooldowns.get("rail").copied(), Some(1),
-            "EOT should tick down player cooldown by 1");
+        assert_eq!(
+            p.cooldowns.get("rail").copied(),
+            Some(1),
+            "EOT should tick down player cooldown by 1"
+        );
     }
 
     /// Seam #3: `resolve_round` composes `fire_player_queue` +
@@ -3554,23 +3799,29 @@ mod tests {
         let mut player = make_ship("frigate", Faction::Player, 0, 10, LaneEnd::Fore);
         player.queue = vec!["pulse_laser".into()];
         let scout = make_ship("scout", Faction::Enemy, 1, 5, LaneEnd::Fore);
-        let mut board = make_board(7, vec![
-            Some(player), Some(scout), None, None, None, None, None,
-        ]);
+        let mut board = make_board(
+            7,
+            vec![Some(player), Some(scout), None, None, None, None, None],
+        );
 
         struct OneAction(Action);
         impl Content for OneAction {
             fn action(&self, id: &str) -> Option<&Action> {
                 (id == "pulse_laser").then_some(&self.0)
             }
-            fn spawn_projectile(&self, _: &str, _: &Ship) -> Projectile { unreachable!() }
+            fn spawn_projectile(&self, _: &str, _: &Ship) -> Projectile {
+                unreachable!()
+            }
         }
         let content = OneAction(pulse_laser());
 
         resolve_round(&mut board, &content);
 
         let p = board.cells[0].as_ref().unwrap();
-        assert!(p.queue.is_empty(), "resolve_round should drain the player queue");
+        assert!(
+            p.queue.is_empty(),
+            "resolve_round should drain the player queue"
+        );
         // pulse_laser sets cooldown to 0 (cooldown_max=0), EOT subtracts 1
         // floored at 0, so still 0. But the key is the queue drained AND
         // the world ran (i.e. heat dissipated by 1 too). Pulse_laser
@@ -3585,15 +3836,15 @@ mod tests {
         let mut attacker = make_ship("frigate", Faction::Player, 0, 10, LaneEnd::Fore);
         attacker.heat = 0;
         attacker.queue = vec!["pulse_laser".into()];
-        let mut board = make_board(7, vec![
-            Some(attacker), None, None, None, None, None, None,
-        ]);
+        let mut board = make_board(7, vec![Some(attacker), None, None, None, None, None, None]);
         struct OneAction(Action);
         impl Content for OneAction {
             fn action(&self, id: &str) -> Option<&Action> {
                 (id == "pulse_laser").then_some(&self.0)
             }
-            fn spawn_projectile(&self, _: &str, _: &Ship) -> Projectile { unreachable!() }
+            fn spawn_projectile(&self, _: &str, _: &Ship) -> Projectile {
+                unreachable!()
+            }
         }
         let content = OneAction(pulse_laser());
         fire_player_queue("frigate", &mut board, &content);
@@ -3608,9 +3859,10 @@ mod tests {
     fn apply_damage_applies_band_falloff_when_outside_optimal() {
         let attacker = make_ship("frigate", Faction::Player, 0, 10, LaneEnd::Fore);
         let scout = make_ship("scout", Faction::Enemy, 5, 5, LaneEnd::Fore);
-        let mut board = make_board(7, vec![
-            Some(attacker), None, None, None, None, Some(scout), None,
-        ]);
+        let mut board = make_board(
+            7,
+            vec![Some(attacker), None, None, None, None, Some(scout), None],
+        );
         let weapon = pulse_laser();
         apply_damage(5, 4, 0, &weapon, &mut board, &NoContent);
         // distance 5 -> long; delta from close (idx 1) to long (idx 3) = 2 ->
@@ -3625,11 +3877,15 @@ mod tests {
     fn apply_damage_band_falloff_disabled_lands_full_amount() {
         let attacker = make_ship("frigate", Faction::Player, 0, 10, LaneEnd::Fore);
         let scout = make_ship("scout", Faction::Enemy, 5, 5, LaneEnd::Fore);
-        let mut board = make_board(7, vec![
-            Some(attacker), None, None, None, None, Some(scout), None,
-        ]);
+        let mut board = make_board(
+            7,
+            vec![Some(attacker), None, None, None, None, Some(scout), None],
+        );
         let mut weapon = pulse_laser();
-        weapon.effects = vec![Effect::DAMAGE { amount: 4, band_falloff: Some(false) }];
+        weapon.effects = vec![Effect::DAMAGE {
+            amount: 4,
+            band_falloff: Some(false),
+        }];
         apply_damage(5, 4, 0, &weapon, &mut board, &NoContent);
         // No falloff, no armour -> 5 - 4 = 1.
         let scout_hull = board.cells[5].as_ref().map(|s| s.hull);
@@ -3643,14 +3899,16 @@ mod tests {
         attacker.heat = 6;
         attacker.locked_out = true;
         attacker.cooldowns.insert("pulse_laser".into(), 3);
-        let mut board = make_board(7, vec![
-            Some(attacker), None, None, None, None, None, None,
-        ]);
+        let mut board = make_board(7, vec![Some(attacker), None, None, None, None, None, None]);
         let vent = Action {
             id: "vent".into(),
             name: "Vent".into(),
             archetype: WeaponArchetype::Defensive,
-            cost: ActionCost { heat: 0, cooldown_max: 0, advances_turn: true },
+            cost: ActionCost {
+                heat: 0,
+                cooldown_max: 0,
+                advances_turn: true,
+            },
             targeting: Targeting {
                 pattern: TargetingPattern::SELF,
                 band: vec![RangeBand::PointBlank],
@@ -3661,7 +3919,10 @@ mod tests {
                 facing_relative: false,
                 hits_all: false,
             },
-            effects: vec![Effect::VENT_HEAT { amount: 4, recharge_cooldowns: Some(true) }],
+            effects: vec![Effect::VENT_HEAT {
+                amount: 4,
+                recharge_cooldowns: Some(true),
+            }],
             r#mod: None,
             icon: None,
         };
@@ -3677,14 +3938,16 @@ mod tests {
     #[test]
     fn reorient_flip_swaps_bow_end() {
         let attacker = make_ship("frigate", Faction::Player, 0, 10, LaneEnd::Fore);
-        let mut board = make_board(7, vec![
-            Some(attacker), None, None, None, None, None, None,
-        ]);
+        let mut board = make_board(7, vec![Some(attacker), None, None, None, None, None, None]);
         let action = Action {
             id: "flip".into(),
             name: "Flip".into(),
             archetype: WeaponArchetype::Movement,
-            cost: ActionCost { heat: 0, cooldown_max: 0, advances_turn: true },
+            cost: ActionCost {
+                heat: 0,
+                cooldown_max: 0,
+                advances_turn: true,
+            },
             targeting: Targeting {
                 pattern: TargetingPattern::SELF,
                 band: vec![RangeBand::PointBlank],
@@ -3695,7 +3958,9 @@ mod tests {
                 facing_relative: false,
                 hits_all: false,
             },
-            effects: vec![Effect::REORIENT { to: ReorientTo::Flip }],
+            effects: vec![Effect::REORIENT {
+                to: ReorientTo::Flip,
+            }],
             r#mod: None,
             icon: None,
         };
@@ -3712,9 +3977,7 @@ mod tests {
         attacker.heat = 3;
         attacker.cooldowns.insert("pulse_laser".into(), 2);
         attacker.cooldowns.insert("rail".into(), 0);
-        let mut board = make_board(7, vec![
-            Some(attacker), None, None, None, None, None, None,
-        ]);
+        let mut board = make_board(7, vec![Some(attacker), None, None, None, None, None, None]);
         end_of_turn(&mut board, &NoContent);
         let p = board.cells[0].as_ref().unwrap();
         assert_eq!(p.heat, 2);
@@ -3728,19 +3991,30 @@ mod tests {
     #[test]
     fn hull_breach_status_ticks_damage_and_expires() {
         let mut scout = make_ship("scout", Faction::Enemy, 1, 5, LaneEnd::Fore);
-        scout.statuses.push(Status { kind: StatusKind::HullBreach, duration: 2, face: None });
-        let mut board = make_board(7, vec![
-            None, Some(scout), None, None, None, None, None,
-        ]);
+        scout.statuses.push(Status {
+            kind: StatusKind::HullBreach,
+            duration: 2,
+            face: None,
+        });
+        let mut board = make_board(7, vec![None, Some(scout), None, None, None, None, None]);
         end_of_turn(&mut board, &NoContent);
         let s = board.cells[1].as_ref().unwrap();
         assert_eq!(s.hull, 4); // -1 from the breach.
-        assert_eq!(s.statuses.iter().filter(|st| st.kind == StatusKind::HullBreach).count(), 1);
+        assert_eq!(
+            s.statuses
+                .iter()
+                .filter(|st| st.kind == StatusKind::HullBreach)
+                .count(),
+            1
+        );
         end_of_turn(&mut board, &NoContent);
         let s = board.cells[1].as_ref().unwrap();
         assert_eq!(s.hull, 3); // -1 more.
-        // Duration was 2 -> 1 -> 0; should expire after the second tick.
-        assert!(s.statuses.iter().all(|st| st.kind != StatusKind::HullBreach));
+                               // Duration was 2 -> 1 -> 0; should expire after the second tick.
+        assert!(s
+            .statuses
+            .iter()
+            .all(|st| st.kind != StatusKind::HullBreach));
     }
 
     /// Parity lock (task #131): a lethal hullBreach tick routes through
@@ -3762,10 +4036,12 @@ mod tests {
 
         // Hull 1 + a hullBreach: the tick deals 1, hull -> 0, destroy fires.
         let mut scout = make_ship("scout", Faction::Enemy, 1, 1, LaneEnd::Fore);
-        scout.statuses.push(Status { kind: StatusKind::HullBreach, duration: 3, face: None });
-        let mut board = make_board(7, vec![
-            None, Some(scout), None, None, None, None, None,
-        ]);
+        scout.statuses.push(Status {
+            kind: StatusKind::HullBreach,
+            duration: 3,
+            face: None,
+        });
+        let mut board = make_board(7, vec![None, Some(scout), None, None, None, None, None]);
 
         let lethal = Rc::new(Cell::new(0u32));
         let l2 = lethal.clone();
@@ -3792,12 +4068,26 @@ mod tests {
         let attacker = make_ship("frigate", Faction::Player, 0, 10, LaneEnd::Fore);
         let scout = make_ship("scout", Faction::Enemy, 2, 5, LaneEnd::Fore);
         let gunboat = make_ship("gunboat", Faction::Enemy, 4, 5, LaneEnd::Fore);
-        let board = make_board(7, vec![
-            Some(attacker), None, Some(scout), None, Some(gunboat), None, None,
-        ]);
+        let board = make_board(
+            7,
+            vec![
+                Some(attacker),
+                None,
+                Some(scout),
+                None,
+                Some(gunboat),
+                None,
+                None,
+            ],
+        );
         let mut spinal = pulse_laser();
         spinal.targeting.pattern = TargetingPattern::SPINAL_LINE;
-        spinal.targeting.band = vec![RangeBand::Close, RangeBand::Mid, RangeBand::Long, RangeBand::Extreme];
+        spinal.targeting.band = vec![
+            RangeBand::Close,
+            RangeBand::Mid,
+            RangeBand::Long,
+            RangeBand::Extreme,
+        ];
         spinal.targeting.hits_all = false;
         let cells = resolve_targeting(&spinal, &board, 0);
         assert_eq!(cells, vec![2]);
@@ -3809,12 +4099,26 @@ mod tests {
         let attacker = make_ship("frigate", Faction::Player, 0, 10, LaneEnd::Fore);
         let scout = make_ship("scout", Faction::Enemy, 2, 5, LaneEnd::Fore);
         let gunboat = make_ship("gunboat", Faction::Enemy, 4, 5, LaneEnd::Fore);
-        let board = make_board(7, vec![
-            Some(attacker), None, Some(scout), None, Some(gunboat), None, None,
-        ]);
+        let board = make_board(
+            7,
+            vec![
+                Some(attacker),
+                None,
+                Some(scout),
+                None,
+                Some(gunboat),
+                None,
+                None,
+            ],
+        );
         let mut spinal = pulse_laser();
         spinal.targeting.pattern = TargetingPattern::SPINAL_LINE;
-        spinal.targeting.band = vec![RangeBand::Close, RangeBand::Mid, RangeBand::Long, RangeBand::Extreme];
+        spinal.targeting.band = vec![
+            RangeBand::Close,
+            RangeBand::Mid,
+            RangeBand::Long,
+            RangeBand::Extreme,
+        ];
         spinal.targeting.hits_all = true;
         let cells = resolve_targeting(&spinal, &board, 0);
         assert_eq!(cells, vec![2, 4]);
@@ -3842,9 +4146,7 @@ mod tests {
     #[test]
     fn execute_queue_resets_chain_window_on_entry() {
         let attacker = make_ship("frigate", Faction::Player, 0, 10, LaneEnd::Fore);
-        let mut board = make_board(7, vec![
-            Some(attacker), None, None, None, None, None, None,
-        ]);
+        let mut board = make_board(7, vec![Some(attacker), None, None, None, None, None, None]);
         // Pre-populate the counter as if a prior phase had killed someone.
         board.destroys_this_window = 3;
 
@@ -3853,12 +4155,18 @@ mod tests {
         // value, not the pre-populated 3.
         struct Empty;
         impl Content for Empty {
-            fn action(&self, _: &str) -> Option<&Action> { None }
-            fn spawn_projectile(&self, _: &str, _: &Ship) -> Projectile { unreachable!() }
+            fn action(&self, _: &str) -> Option<&Action> {
+                None
+            }
+            fn spawn_projectile(&self, _: &str, _: &Ship) -> Projectile {
+                unreachable!()
+            }
         }
         fire_player_queue("frigate", &mut board, &Empty);
-        assert_eq!(board.destroys_this_window, 0,
-            "execute_queue must reset destroys_this_window on entry");
+        assert_eq!(
+            board.destroys_this_window, 0,
+            "execute_queue must reset destroys_this_window on entry"
+        );
     }
 
     /// `resolve_round`'s ordnance phase also resets the window so an ordnance
@@ -3871,22 +4179,40 @@ mod tests {
         board.destroys_this_window = 4;
         struct Empty;
         impl Content for Empty {
-            fn action(&self, _: &str) -> Option<&Action> { None }
-            fn spawn_projectile(&self, _: &str, _: &Ship) -> Projectile { unreachable!() }
+            fn action(&self, _: &str) -> Option<&Action> {
+                None
+            }
+            fn spawn_projectile(&self, _: &str, _: &Ship) -> Projectile {
+                unreachable!()
+            }
         }
         resolve_round(&mut board, &Empty);
-        assert_eq!(board.destroys_this_window, 0,
-            "the ordnance-phase reset must zero the counter");
+        assert_eq!(
+            board.destroys_this_window, 0,
+            "the ordnance-phase reset must zero the counter"
+        );
     }
 
     /* ---- self-movement modes --------------------------------------------- */
 
     fn no_armour_profile() -> ShieldProfile {
         ShieldProfile {
-            bow: crate::types::ShieldFace { armour: 0, charge: 0 },
-            stern: crate::types::ShieldFace { armour: 0, charge: 0 },
-            port: crate::types::ShieldFace { armour: 0, charge: 0 },
-            starboard: crate::types::ShieldFace { armour: 0, charge: 0 },
+            bow: crate::types::ShieldFace {
+                armour: 0,
+                charge: 0,
+            },
+            stern: crate::types::ShieldFace {
+                armour: 0,
+                charge: 0,
+            },
+            port: crate::types::ShieldFace {
+                armour: 0,
+                charge: 0,
+            },
+            starboard: crate::types::ShieldFace {
+                armour: 0,
+                charge: 0,
+            },
         }
     }
 
@@ -3895,9 +4221,7 @@ mod tests {
     #[test]
     fn self_move_thrust_advances_one_cell_when_clear() {
         let ship = make_ship("s", Faction::Player, 2, 10, LaneEnd::Fore);
-        let mut board = make_board(7, vec![
-            None, None, Some(ship), None, None, None, None,
-        ]);
+        let mut board = make_board(7, vec![None, None, Some(ship), None, None, None, None]);
         super::resolve_self_move(2, MovementMode::THRUST, 1, None, &mut board, &NoContent);
         assert!(board.cells[2].is_none(), "vacated origin");
         assert_eq!(board.cells[3].as_ref().map(|s| s.cell), Some(3));
@@ -3910,9 +4234,10 @@ mod tests {
         let mut ship = make_ship("s", Faction::Player, 2, 5, LaneEnd::Fore);
         ship.shield_profile = no_armour_profile();
         let blocker = make_ship("b", Faction::Enemy, 3, 5, LaneEnd::Fore);
-        let mut board = make_board(7, vec![
-            None, None, Some(ship), Some(blocker), None, None, None,
-        ]);
+        let mut board = make_board(
+            7,
+            vec![None, None, Some(ship), Some(blocker), None, None, None],
+        );
         super::resolve_self_move(2, MovementMode::THRUST, 1, None, &mut board, &NoContent);
         // Did not move.
         assert!(board.cells[2].is_some());
@@ -3926,9 +4251,7 @@ mod tests {
     fn self_move_thrust_at_wall_takes_one_collision() {
         let mut ship = make_ship("s", Faction::Player, 6, 5, LaneEnd::Fore);
         ship.shield_profile = no_armour_profile();
-        let mut board = make_board(7, vec![
-            None, None, None, None, None, None, Some(ship),
-        ]);
+        let mut board = make_board(7, vec![None, None, None, None, None, None, Some(ship)]);
         super::resolve_self_move(6, MovementMode::THRUST, 1, None, &mut board, &NoContent);
         assert_eq!(board.cells[6].as_ref().unwrap().hull, 4);
     }
@@ -3937,9 +4260,7 @@ mod tests {
     #[test]
     fn self_move_burn_advances_full_distance_when_clear() {
         let ship = make_ship("s", Faction::Player, 1, 10, LaneEnd::Fore);
-        let mut board = make_board(7, vec![
-            None, Some(ship), None, None, None, None, None,
-        ]);
+        let mut board = make_board(7, vec![None, Some(ship), None, None, None, None, None]);
         super::resolve_self_move(1, MovementMode::BURN, 3, None, &mut board, &NoContent);
         assert!(board.cells[1].is_none());
         assert_eq!(board.cells[4].as_ref().map(|s| s.cell), Some(4));
@@ -3953,9 +4274,10 @@ mod tests {
         let mut ship = make_ship("s", Faction::Player, 1, 10, LaneEnd::Fore);
         ship.shield_profile = no_armour_profile();
         let blocker = make_ship("b", Faction::Enemy, 4, 5, LaneEnd::Fore);
-        let mut board = make_board(7, vec![
-            None, Some(ship), None, None, Some(blocker), None, None,
-        ]);
+        let mut board = make_board(
+            7,
+            vec![None, Some(ship), None, None, Some(blocker), None, None],
+        );
         super::resolve_self_move(1, MovementMode::BURN, 5, None, &mut board, &NoContent);
         // Stopped at cell 3 (one short of the blocker at 4).
         // Steps taken: 2 (1->2, 2->3). Requested: 5. Remaining: 3.
@@ -3969,9 +4291,18 @@ mod tests {
         let ship = make_ship("s", Faction::Player, 0, 10, LaneEnd::Fore);
         let blocker_a = make_ship("a", Faction::Enemy, 1, 5, LaneEnd::Fore);
         let blocker_b = make_ship("b", Faction::Enemy, 2, 5, LaneEnd::Fore);
-        let mut board = make_board(7, vec![
-            Some(ship), Some(blocker_a), Some(blocker_b), None, None, None, None,
-        ]);
+        let mut board = make_board(
+            7,
+            vec![
+                Some(ship),
+                Some(blocker_a),
+                Some(blocker_b),
+                None,
+                None,
+                None,
+                None,
+            ],
+        );
         super::resolve_self_move(0, MovementMode::SLIP, 2, None, &mut board, &NoContent);
         // SLIP scans 2 cells (lands at 2), finds it occupied, walks forward
         // to 3 which is free.
@@ -3984,9 +4315,7 @@ mod tests {
     #[test]
     fn self_move_jump_teleports_to_free_target() {
         let ship = make_ship("s", Faction::Player, 0, 10, LaneEnd::Fore);
-        let mut board = make_board(7, vec![
-            Some(ship), None, None, None, None, None, None,
-        ]);
+        let mut board = make_board(7, vec![Some(ship), None, None, None, None, None, None]);
         super::resolve_self_move(0, MovementMode::JUMP, 4, None, &mut board, &NoContent);
         assert!(board.cells[0].is_none());
         assert_eq!(board.cells[4].as_ref().map(|s| s.cell), Some(4));
@@ -3998,9 +4327,10 @@ mod tests {
     fn self_move_jump_onto_occupied_is_noop() {
         let ship = make_ship("s", Faction::Player, 0, 10, LaneEnd::Fore);
         let blocker = make_ship("b", Faction::Enemy, 4, 5, LaneEnd::Fore);
-        let mut board = make_board(7, vec![
-            Some(ship), None, None, None, Some(blocker), None, None,
-        ]);
+        let mut board = make_board(
+            7,
+            vec![Some(ship), None, None, None, Some(blocker), None, None],
+        );
         super::resolve_self_move(0, MovementMode::JUMP, 4, None, &mut board, &NoContent);
         assert!(board.cells[0].is_some(), "jump failed; ship stayed home");
         assert_eq!(board.cells[0].as_ref().unwrap().hull, 10);
@@ -4011,9 +4341,7 @@ mod tests {
     fn self_move_jump_off_board_clamps_with_overflow_collision() {
         let mut ship = make_ship("s", Faction::Player, 4, 10, LaneEnd::Fore);
         ship.shield_profile = no_armour_profile();
-        let mut board = make_board(7, vec![
-            None, None, None, None, Some(ship), None, None,
-        ]);
+        let mut board = make_board(7, vec![None, None, None, None, Some(ship), None, None]);
         super::resolve_self_move(4, MovementMode::JUMP, 5, None, &mut board, &NoContent);
         // Target = 4 + 5 = 9; clamped to 6; overflow = 9 - 6 = 3.
         assert!(board.cells[6].is_some());
@@ -4025,12 +4353,26 @@ mod tests {
     fn self_move_tractor_swap_trades_with_adjacent() {
         let ship = make_ship("s", Faction::Player, 2, 10, LaneEnd::Fore);
         let other = make_ship("o", Faction::Enemy, 3, 5, LaneEnd::Fore);
-        let mut board = make_board(7, vec![
-            None, None, Some(ship), Some(other), None, None, None,
-        ]);
-        super::resolve_self_move(2, MovementMode::TRACTOR_SWAP, 1, None, &mut board, &NoContent);
-        assert_eq!(board.cells[2].as_ref().map(|s| s.id.clone()), Some("o".into()));
-        assert_eq!(board.cells[3].as_ref().map(|s| s.id.clone()), Some("s".into()));
+        let mut board = make_board(
+            7,
+            vec![None, None, Some(ship), Some(other), None, None, None],
+        );
+        super::resolve_self_move(
+            2,
+            MovementMode::TRACTOR_SWAP,
+            1,
+            None,
+            &mut board,
+            &NoContent,
+        );
+        assert_eq!(
+            board.cells[2].as_ref().map(|s| s.id.clone()),
+            Some("o".into())
+        );
+        assert_eq!(
+            board.cells[3].as_ref().map(|s| s.id.clone()),
+            Some("s".into())
+        );
         // Cells updated to match new positions.
         assert_eq!(board.cells[2].as_ref().unwrap().cell, 2);
         assert_eq!(board.cells[3].as_ref().unwrap().cell, 3);
@@ -4042,9 +4384,7 @@ mod tests {
     #[test]
     fn self_move_thrust_honours_direction_override_aft() {
         let ship = make_ship("p", Faction::Player, 3, 10, LaneEnd::Fore);
-        let mut board = make_board(7, vec![
-            None, None, None, Some(ship), None, None, None,
-        ]);
+        let mut board = make_board(7, vec![None, None, None, Some(ship), None, None, None]);
         super::resolve_self_move(
             3,
             MovementMode::THRUST,
@@ -4067,9 +4407,7 @@ mod tests {
     #[test]
     fn self_move_thrust_honours_direction_override_fore() {
         let ship = make_ship("p", Faction::Player, 3, 10, LaneEnd::Aft);
-        let mut board = make_board(7, vec![
-            None, None, None, Some(ship), None, None, None,
-        ]);
+        let mut board = make_board(7, vec![None, None, None, Some(ship), None, None, None]);
         super::resolve_self_move(
             3,
             MovementMode::THRUST,
@@ -4091,9 +4429,7 @@ mod tests {
     #[test]
     fn self_move_thrust_no_direction_uses_bow() {
         let ship = make_ship("p", Faction::Player, 3, 10, LaneEnd::Aft);
-        let mut board = make_board(7, vec![
-            None, None, None, Some(ship), None, None, None,
-        ]);
+        let mut board = make_board(7, vec![None, None, None, Some(ship), None, None, None]);
         super::resolve_self_move(3, MovementMode::THRUST, 1, None, &mut board, &NoContent);
         // bow=Aft -> step -1.
         assert_eq!(board.cells[2].as_ref().map(|s| s.cell), Some(2));
@@ -4106,10 +4442,18 @@ mod tests {
     fn target_move_push_advances_when_clear() {
         let source = make_ship("src", Faction::Player, 0, 10, LaneEnd::Fore);
         let target = make_ship("tgt", Faction::Enemy, 2, 5, LaneEnd::Fore);
-        let mut board = make_board(7, vec![
-            Some(source), None, Some(target), None, None, None, None,
-        ]);
-        super::resolve_target_move(2, 0, crate::types::DisplaceMode::Push, 2, &mut board, &NoContent);
+        let mut board = make_board(
+            7,
+            vec![Some(source), None, Some(target), None, None, None, None],
+        );
+        super::resolve_target_move(
+            2,
+            0,
+            crate::types::DisplaceMode::Push,
+            2,
+            &mut board,
+            &NoContent,
+        );
         // Target was at 2, source at 0, push direction is +1 (away from
         // source). Should land at cell 4.
         assert!(board.cells[2].is_none());
@@ -4125,10 +4469,26 @@ mod tests {
         let mut target = make_ship("tgt", Faction::Enemy, 2, 5, LaneEnd::Fore);
         target.shield_profile = no_armour_profile();
         let blocker = make_ship("blk", Faction::Enemy, 4, 5, LaneEnd::Fore);
-        let mut board = make_board(7, vec![
-            Some(source), None, Some(target), None, Some(blocker), None, None,
-        ]);
-        super::resolve_target_move(2, 0, crate::types::DisplaceMode::Push, 3, &mut board, &NoContent);
+        let mut board = make_board(
+            7,
+            vec![
+                Some(source),
+                None,
+                Some(target),
+                None,
+                Some(blocker),
+                None,
+                None,
+            ],
+        );
+        super::resolve_target_move(
+            2,
+            0,
+            crate::types::DisplaceMode::Push,
+            3,
+            &mut board,
+            &NoContent,
+        );
         // Step is +1. Cells walked: 3 (free) -> at 3. Next would be 4, occupied.
         // steps_taken=1, remaining=2 -> 2 collision damage.
         assert!(board.cells[3].is_some());
@@ -4141,10 +4501,18 @@ mod tests {
         let source = make_ship("src", Faction::Player, 4, 10, LaneEnd::Fore);
         let mut target = make_ship("tgt", Faction::Enemy, 6, 5, LaneEnd::Fore);
         target.shield_profile = no_armour_profile();
-        let mut board = make_board(7, vec![
-            None, None, None, None, Some(source), None, Some(target),
-        ]);
-        super::resolve_target_move(6, 4, crate::types::DisplaceMode::Push, 3, &mut board, &NoContent);
+        let mut board = make_board(
+            7,
+            vec![None, None, None, None, Some(source), None, Some(target)],
+        );
+        super::resolve_target_move(
+            6,
+            4,
+            crate::types::DisplaceMode::Push,
+            3,
+            &mut board,
+            &NoContent,
+        );
         // Target at 6, push +1 (away from source at 4). Cannot move
         // (cell 7 off-board). steps_taken=0, remaining=3.
         assert!(board.cells[6].is_some());
@@ -4156,10 +4524,18 @@ mod tests {
     fn target_move_pull_advances_toward_source() {
         let source = make_ship("src", Faction::Player, 6, 10, LaneEnd::Fore);
         let target = make_ship("tgt", Faction::Enemy, 2, 5, LaneEnd::Fore);
-        let mut board = make_board(7, vec![
-            None, None, Some(target), None, None, None, Some(source),
-        ]);
-        super::resolve_target_move(2, 6, crate::types::DisplaceMode::Pull, 2, &mut board, &NoContent);
+        let mut board = make_board(
+            7,
+            vec![None, None, Some(target), None, None, None, Some(source)],
+        );
+        super::resolve_target_move(
+            2,
+            6,
+            crate::types::DisplaceMode::Pull,
+            2,
+            &mut board,
+            &NoContent,
+        );
         // Target at 2, source at 6, pull direction is +1 (toward source).
         // Lands at cell 4.
         assert!(board.cells[2].is_none());
@@ -4173,10 +4549,18 @@ mod tests {
         let source = make_ship("src", Faction::Player, 3, 10, LaneEnd::Fore);
         let mut target = make_ship("tgt", Faction::Enemy, 0, 5, LaneEnd::Fore);
         target.shield_profile = no_armour_profile();
-        let mut board = make_board(7, vec![
-            Some(target), None, None, Some(source), None, None, None,
-        ]);
-        super::resolve_target_move(0, 3, crate::types::DisplaceMode::Pull, 5, &mut board, &NoContent);
+        let mut board = make_board(
+            7,
+            vec![Some(target), None, None, Some(source), None, None, None],
+        );
+        super::resolve_target_move(
+            0,
+            3,
+            crate::types::DisplaceMode::Pull,
+            5,
+            &mut board,
+            &NoContent,
+        );
         // Pull direction +1 toward source at 3. Steps: 0->1, 1->2 (both free).
         // 2->3 is source, blocks. steps_taken=2, remaining=3.
         assert!(board.cells[2].is_some());
@@ -4188,12 +4572,26 @@ mod tests {
     fn target_move_swap_trades_cells() {
         let source = make_ship("src", Faction::Player, 0, 10, LaneEnd::Fore);
         let target = make_ship("tgt", Faction::Enemy, 4, 5, LaneEnd::Fore);
-        let mut board = make_board(7, vec![
-            Some(source), None, None, None, Some(target), None, None,
-        ]);
-        super::resolve_target_move(4, 0, crate::types::DisplaceMode::Swap, 1, &mut board, &NoContent);
-        assert_eq!(board.cells[0].as_ref().map(|s| s.id.clone()), Some("tgt".into()));
-        assert_eq!(board.cells[4].as_ref().map(|s| s.id.clone()), Some("src".into()));
+        let mut board = make_board(
+            7,
+            vec![Some(source), None, None, None, Some(target), None, None],
+        );
+        super::resolve_target_move(
+            4,
+            0,
+            crate::types::DisplaceMode::Swap,
+            1,
+            &mut board,
+            &NoContent,
+        );
+        assert_eq!(
+            board.cells[0].as_ref().map(|s| s.id.clone()),
+            Some("tgt".into())
+        );
+        assert_eq!(
+            board.cells[4].as_ref().map(|s| s.id.clone()),
+            Some("src".into())
+        );
         assert_eq!(board.cells[0].as_ref().unwrap().cell, 0);
         assert_eq!(board.cells[4].as_ref().unwrap().cell, 4);
     }
@@ -4202,10 +4600,15 @@ mod tests {
     #[test]
     fn target_move_push_no_target_is_noop() {
         let source = make_ship("src", Faction::Player, 0, 10, LaneEnd::Fore);
-        let mut board = make_board(7, vec![
-            Some(source), None, None, None, None, None, None,
-        ]);
-        super::resolve_target_move(3, 0, crate::types::DisplaceMode::Push, 2, &mut board, &NoContent);
+        let mut board = make_board(7, vec![Some(source), None, None, None, None, None, None]);
+        super::resolve_target_move(
+            3,
+            0,
+            crate::types::DisplaceMode::Push,
+            2,
+            &mut board,
+            &NoContent,
+        );
         assert!(board.cells[3].is_none(), "no target, no move");
     }
 
@@ -4216,8 +4619,12 @@ mod tests {
     /// modifier is unconditional — so the trait param can stay anonymous.
     struct FixedModifier(i32);
     impl Content for FixedModifier {
-        fn action(&self, _: &str) -> Option<&Action> { None }
-        fn spawn_projectile(&self, _: &str, _: &Ship) -> Projectile { unreachable!() }
+        fn action(&self, _: &str) -> Option<&Action> {
+            None
+        }
+        fn spawn_projectile(&self, _: &str, _: &Ship) -> Projectile {
+            unreachable!()
+        }
         fn damage_modifier(&self, _attacker: &Ship, _b: crate::grid::Range, _board: &Board) -> i32 {
             self.0
         }
@@ -4227,9 +4634,7 @@ mod tests {
     #[test]
     fn apply_modifiers_default_is_passthrough() {
         let scout = make_ship("scout", Faction::Enemy, 1, 5, LaneEnd::Fore);
-        let board = make_board(7, vec![
-            None, Some(scout), None, None, None, None, None,
-        ]);
+        let board = make_board(7, vec![None, Some(scout), None, None, None, None, None]);
         let out = super::apply_modifiers(4, 1, crate::grid::Range::Near, &board, &NoContent);
         assert_eq!(out, 4);
     }
@@ -4243,9 +4648,10 @@ mod tests {
         let attacker = make_ship("frigate", Faction::Player, 0, 10, LaneEnd::Fore);
         let mut scout = make_ship("scout", Faction::Enemy, 1, 10, LaneEnd::Fore);
         scout.shield_profile = no_armour_profile();
-        let mut board = make_board(7, vec![
-            Some(attacker), Some(scout), None, None, None, None, None,
-        ]);
+        let mut board = make_board(
+            7,
+            vec![Some(attacker), Some(scout), None, None, None, None, None],
+        );
         let weapon = pulse_laser();
         apply_damage(1, 4, 0, &weapon, &mut board, &FixedModifier(1));
         let hull = board.cells[1].as_ref().unwrap().hull;
@@ -4260,9 +4666,10 @@ mod tests {
         let attacker = make_ship("frigate", Faction::Player, 0, 10, LaneEnd::Fore);
         let mut scout = make_ship("scout", Faction::Enemy, 1, 10, LaneEnd::Fore);
         scout.shield_profile = no_armour_profile();
-        let mut board = make_board(7, vec![
-            Some(attacker), Some(scout), None, None, None, None, None,
-        ]);
+        let mut board = make_board(
+            7,
+            vec![Some(attacker), Some(scout), None, None, None, None, None],
+        );
         let weapon = pulse_laser();
         // -100 modifier obliterates the 2-damage post-falloff hit.
         apply_damage(1, 4, 0, &weapon, &mut board, &FixedModifier(-100));
@@ -4278,17 +4685,24 @@ mod tests {
         let attacker = make_ship("frigate", Faction::Player, 0, 10, LaneEnd::Fore);
         let mut scout = make_ship("scout", Faction::Enemy, 1, 20, LaneEnd::Fore);
         scout.shield_profile = no_armour_profile();
-        scout.statuses.push(Status { kind: StatusKind::TargetLock, duration: 5, face: None });
-        let mut board = make_board(7, vec![
-            Some(attacker), Some(scout), None, None, None, None, None,
-        ]);
+        scout.statuses.push(Status {
+            kind: StatusKind::TargetLock,
+            duration: 5,
+            face: None,
+        });
+        let mut board = make_board(
+            7,
+            vec![Some(attacker), Some(scout), None, None, None, None, None],
+        );
         let weapon = pulse_laser();
         apply_damage(1, 4, 0, &weapon, &mut board, &FixedModifier(1));
         let hull = board.cells[1].as_ref().unwrap().hull;
         // 4 -> falloff factor 0.66 -> 2 -> +1 mod = 3 -> *2 lock = 6.
         // 20 - 6 = 14. If lock ran before mod we'd get 2*2+1=5; 20-5=15.
-        assert_eq!(hull, 14,
-            "modifier must apply before target-lock doubling per TS pipeline order");
+        assert_eq!(
+            hull, 14,
+            "modifier must apply before target-lock doubling per TS pipeline order"
+        );
     }
 
     /* ---- enemy AI -------------------------------------------------------- */
@@ -4297,14 +4711,22 @@ mod tests {
         actions: HashMap<String, Action>,
     }
     impl Content for AiContent {
-        fn action(&self, id: &str) -> Option<&Action> { self.actions.get(id) }
-        fn spawn_projectile(&self, _: &str, _: &Ship) -> Projectile { unreachable!() }
+        fn action(&self, id: &str) -> Option<&Action> {
+            self.actions.get(id)
+        }
+        fn spawn_projectile(&self, _: &str, _: &Ship) -> Projectile {
+            unreachable!()
+        }
     }
 
     /// Helper: an enemy with one mount carrying the named weapon.
     fn enemy_with_weapon(id: &str, cell: usize, weapon: &str, arc: Arc, bow: LaneEnd) -> Ship {
         let mut s = make_ship(id, Faction::Enemy, cell, 5, bow);
-        s.mounts = vec![Mount { id: "m1".into(), arc, weapon: weapon.into() }];
+        s.mounts = vec![Mount {
+            id: "m1".into(),
+            arc,
+            weapon: weapon.into(),
+        }];
         s
     }
 
@@ -4314,16 +4736,20 @@ mod tests {
         let player = make_ship("p", Faction::Player, 0, 10, LaneEnd::Fore);
         // Enemy at cell 2, bow=aft so its forward arc faces the player at 0.
         let enemy = enemy_with_weapon("e", 2, "pulse_laser", Arc::Forward, LaneEnd::Aft);
-        let mut board = make_board(7, vec![
-            Some(player), None, Some(enemy), None, None, None, None,
-        ]);
+        let mut board = make_board(
+            7,
+            vec![Some(player), None, Some(enemy), None, None, None, None],
+        );
         let content = AiContent {
             actions: HashMap::from([("pulse_laser".into(), pulse_laser())]),
         };
         crate::ai::decide_enemy_action(2, &mut board, &content);
         let queue = board.cells[2].as_ref().unwrap().queue.clone();
-        assert_eq!(queue, vec!["pulse_laser".to_string()],
-            "AI should queue the threatening pulse_laser");
+        assert_eq!(
+            queue,
+            vec!["pulse_laser".to_string()],
+            "AI should queue the threatening pulse_laser"
+        );
     }
 
     // (#30/#33) The 1-D make_ship stub of `ai_skips_out_of_band_action` was
@@ -4367,9 +4793,18 @@ mod tests {
         let mut enemy_a = enemy_with_weapon("ea", 1, "pulse_laser", Arc::Forward, LaneEnd::Fore);
         enemy_a.queue = vec!["pulse_laser".into()]; // covers the aft end
         let enemy_b = enemy_with_weapon("eb", 2, "pulse_laser", Arc::Forward, LaneEnd::Fore);
-        let mut board = make_board(7, vec![
-            None, Some(enemy_a), Some(enemy_b), Some(player), None, None, None,
-        ]);
+        let mut board = make_board(
+            7,
+            vec![
+                None,
+                Some(enemy_a),
+                Some(enemy_b),
+                Some(player),
+                None,
+                None,
+                None,
+            ],
+        );
         let content = AiContent {
             actions: HashMap::from([("pulse_laser".into(), pulse_laser())]),
         };
@@ -4408,10 +4843,18 @@ mod tests {
         let player = make_ship("p", Faction::Player, 0, 10, LaneEnd::Fore);
         let scout = make_ship("scout", Faction::Enemy, 1, 5, LaneEnd::Aft);
         let gunboat = enemy_with_weapon("gunboat", 4, "pulse_laser", Arc::Forward, LaneEnd::Aft);
-        let mut board = make_board(7, vec![
-            Some(player), Some(scout), None, None, Some(gunboat),
-            None, None,
-        ]);
+        let mut board = make_board(
+            7,
+            vec![
+                Some(player),
+                Some(scout),
+                None,
+                None,
+                Some(gunboat),
+                None,
+                None,
+            ],
+        );
         let content = AiContent {
             actions: HashMap::from([("pulse_laser".into(), {
                 let mut a = pulse_laser();
@@ -4419,8 +4862,11 @@ mod tests {
                 // pulse_laser is pointBlank/close/mid which already
                 // includes mid, but extending makes the intent explicit.
                 a.targeting.band = vec![
-                    RangeBand::PointBlank, RangeBand::Close, RangeBand::Mid,
-                    RangeBand::Long, RangeBand::Extreme,
+                    RangeBand::PointBlank,
+                    RangeBand::Close,
+                    RangeBand::Mid,
+                    RangeBand::Long,
+                    RangeBand::Extreme,
                 ];
                 a
             })]),
@@ -4431,8 +4877,10 @@ mod tests {
         // friendly-fire filter rejects firing pulse_laser. It must NOT queue
         // the friendly-only shot; instead (#68) it CLOSES toward the player
         // (cell 0 is aft of cell 4 => __move_left).
-        assert!(!queue.contains(&"pulse_laser".to_string()),
-            "AI must skip an action whose only target is a same-faction ship; got {queue:?}");
+        assert!(
+            !queue.contains(&"pulse_laser".to_string()),
+            "AI must skip an action whose only target is a same-faction ship; got {queue:?}"
+        );
         assert_eq!(queue, vec![crate::input::SYNTHETIC_MOVE_LEFT.to_string()],
             "#68: friendly-fire-blocked enemy closes toward the player instead of camping; got {queue:?}");
     }
@@ -4448,17 +4896,20 @@ mod tests {
         let mut enemy = enemy_with_weapon("e", 2, "pulse_laser", Arc::Forward, LaneEnd::Aft);
         enemy.locked_out = true;
         enemy.heat = enemy.heat_max;
-        let mut board = make_board(7, vec![
-            Some(player), None, Some(enemy), None, None, None, None,
-        ]);
+        let mut board = make_board(
+            7,
+            vec![Some(player), None, Some(enemy), None, None, None, None],
+        );
         let content = AiContent {
             actions: HashMap::from([("pulse_laser".into(), pulse_laser())]),
         };
         crate::ai::decide_enemy_action(2, &mut board, &content);
         let queue = board.cells[2].as_ref().unwrap().queue.clone();
         // Pulse laser has heat:1 -> locked out can't fire it. No fallback.
-        assert!(queue.is_empty(),
-            "AI lockout + only heat-bearing weapon -> empty queue");
+        assert!(
+            queue.is_empty(),
+            "AI lockout + only heat-bearing weapon -> empty queue"
+        );
     }
 
     /* ---- content invariant spec, series B (net-new locks) ----------------
@@ -4494,22 +4945,37 @@ mod tests {
         let player = make_ship("p", Faction::Player, 0, 10, LaneEnd::Fore);
         let mut enemy = make_ship("e", Faction::Enemy, 2, 5, LaneEnd::Aft);
         enemy.mounts = vec![
-            Mount { id: "m1".into(), arc: Arc::Forward, weapon: "light".into() },
-            Mount { id: "m2".into(), arc: Arc::Forward, weapon: "heavy".into() },
+            Mount {
+                id: "m1".into(),
+                arc: Arc::Forward,
+                weapon: "light".into(),
+            },
+            Mount {
+                id: "m2".into(),
+                arc: Arc::Forward,
+                weapon: "heavy".into(),
+            },
         ];
-        let mut board = make_board(7, vec![
-            Some(player), None, Some(enemy), None, None, None, None,
-        ]);
+        let mut board = make_board(
+            7,
+            vec![Some(player), None, Some(enemy), None, None, None, None],
+        );
         let light = {
             let mut a = pulse_laser();
             a.id = "light".into();
-            a.effects = vec![Effect::DAMAGE { amount: 2, band_falloff: None }];
+            a.effects = vec![Effect::DAMAGE {
+                amount: 2,
+                band_falloff: None,
+            }];
             a
         };
         let heavy = {
             let mut a = pulse_laser();
             a.id = "heavy".into();
-            a.effects = vec![Effect::DAMAGE { amount: 8, band_falloff: None }];
+            a.effects = vec![Effect::DAMAGE {
+                amount: 8,
+                band_falloff: None,
+            }];
             a
         };
         let content = AiContent {
@@ -4517,8 +4983,11 @@ mod tests {
         };
         crate::ai::decide_enemy_action(2, &mut board, &content);
         let queue = board.cells[2].as_ref().unwrap().queue.clone();
-        assert_eq!(queue, vec!["heavy".to_string()],
-            "among bearing options the AI picks the highest raw damage");
+        assert_eq!(
+            queue,
+            vec!["heavy".to_string()],
+            "among bearing options the AI picks the highest raw damage"
+        );
     }
 
     // (#20/#33) The 1-D make_ship stub of `ai_skips_action_that_overshoots_heat_budget`
@@ -4533,13 +5002,18 @@ mod tests {
         let mut enemy = enemy_with_weapon("e", 2, "warm", Arc::Forward, LaneEnd::Aft);
         enemy.heat = 5;
         enemy.heat_max = 6; // 5 + 2 = 7 == heat_max + 1 -> allowed
-        let mut board = make_board(7, vec![
-            Some(player), None, Some(enemy), None, None, None, None,
-        ]);
+        let mut board = make_board(
+            7,
+            vec![Some(player), None, Some(enemy), None, None, None, None],
+        );
         let warm = {
             let mut a = pulse_laser();
             a.id = "warm".into();
-            a.cost = ActionCost { heat: 2, cooldown_max: 0, advances_turn: true };
+            a.cost = ActionCost {
+                heat: 2,
+                cooldown_max: 0,
+                advances_turn: true,
+            };
             a
         };
         let content = AiContent {
@@ -4547,8 +5021,11 @@ mod tests {
         };
         crate::ai::decide_enemy_action(2, &mut board, &content);
         let queue = board.cells[2].as_ref().unwrap().queue.clone();
-        assert_eq!(queue, vec!["warm".to_string()],
-            "AI tolerates overheating by exactly 1 (heat_max + 1 is allowed)");
+        assert_eq!(
+            queue,
+            vec!["warm".to_string()],
+            "AI tolerates overheating by exactly 1 (heat_max + 1 is allowed)"
+        );
     }
 
     // (#20/#33) The 1-D make_ship stub of `ai_pursuit_bonus_flips_pick_toward_the_player_hitting_action`
@@ -4573,24 +5050,47 @@ mod tests {
         enemy.heat_max = 10; // generous so neither action trips the heat gate
         enemy.traits = vec![crate::types::Trait::BurnHard];
         enemy.mounts = vec![
-            Mount { id: "m1".into(), arc: Arc::Forward, weapon: "cheap".into() },
-            Mount { id: "m2".into(), arc: Arc::Forward, weapon: "hot".into() },
+            Mount {
+                id: "m1".into(),
+                arc: Arc::Forward,
+                weapon: "cheap".into(),
+            },
+            Mount {
+                id: "m2".into(),
+                arc: Arc::Forward,
+                weapon: "hot".into(),
+            },
         ];
-        let mut board = make_board(7, vec![
-            Some(player), None, Some(enemy), None, None, None, None,
-        ]);
+        let mut board = make_board(
+            7,
+            vec![Some(player), None, Some(enemy), None, None, None, None],
+        );
         let cheap = {
             let mut a = pulse_laser();
             a.id = "cheap".into();
-            a.cost = ActionCost { heat: 0, cooldown_max: 0, advances_turn: true };
-            a.effects = vec![Effect::DAMAGE { amount: 4, band_falloff: None }];
+            a.cost = ActionCost {
+                heat: 0,
+                cooldown_max: 0,
+                advances_turn: true,
+            };
+            a.effects = vec![Effect::DAMAGE {
+                amount: 4,
+                band_falloff: None,
+            }];
             a
         };
         let hot = {
             let mut a = pulse_laser();
             a.id = "hot".into();
-            a.cost = ActionCost { heat: 4, cooldown_max: 0, advances_turn: true };
-            a.effects = vec![Effect::DAMAGE { amount: 8, band_falloff: None }];
+            a.cost = ActionCost {
+                heat: 4,
+                cooldown_max: 0,
+                advances_turn: true,
+            };
+            a.effects = vec![Effect::DAMAGE {
+                amount: 8,
+                band_falloff: None,
+            }];
             a
         };
         let content = AiContent {
@@ -4598,8 +5098,11 @@ mod tests {
         };
         crate::ai::decide_enemy_action(2, &mut board, &content);
         let queue = board.cells[2].as_ref().unwrap().queue.clone();
-        assert_eq!(queue, vec!["hot".to_string()],
-            "BurnHard halves the heat penalty so the hot high-damage action wins");
+        assert_eq!(
+            queue,
+            vec!["hot".to_string()],
+            "BurnHard halves the heat penalty so the hot high-damage action wins"
+        );
     }
 
     /// End-to-end: two lethal hits inside one `execute_queue` window cause
@@ -4614,10 +5117,37 @@ mod tests {
         // weapon; one shot should pierce and kill both. (#20 2-D fixture:
         // attacker at (2,3) Bow(N) fires N up column 2; scout at (2,2) and gunboat
         // at (2,1) are both on the ray, so the SPINAL_LINE hits_all pierces both.)
-        let mut attacker = armed_ship_2d("frigate", Faction::Player, crate::grid::Pos::new(2, 3), 10, crate::grid::Facing::Bow(crate::grid::Dir4::N), Arc::Forward, "chain_lance", default_shield_profile());
+        let mut attacker = armed_ship_2d(
+            "frigate",
+            Faction::Player,
+            crate::grid::Pos::new(2, 3),
+            10,
+            crate::grid::Facing::Bow(crate::grid::Dir4::N),
+            Arc::Forward,
+            "chain_lance",
+            default_shield_profile(),
+        );
         attacker.queue = vec!["chain_lance".into()];
-        let scout = armed_ship_2d("scout", Faction::Enemy, crate::grid::Pos::new(2, 2), 1, crate::grid::Facing::Bow(crate::grid::Dir4::S), Arc::Forward, "chain_lance", naked());
-        let gunboat = armed_ship_2d("gunboat", Faction::Enemy, crate::grid::Pos::new(2, 1), 1, crate::grid::Facing::Bow(crate::grid::Dir4::S), Arc::Forward, "chain_lance", naked());
+        let scout = armed_ship_2d(
+            "scout",
+            Faction::Enemy,
+            crate::grid::Pos::new(2, 2),
+            1,
+            crate::grid::Facing::Bow(crate::grid::Dir4::S),
+            Arc::Forward,
+            "chain_lance",
+            naked(),
+        );
+        let gunboat = armed_ship_2d(
+            "gunboat",
+            Faction::Enemy,
+            crate::grid::Pos::new(2, 1),
+            1,
+            crate::grid::Facing::Bow(crate::grid::Dir4::S),
+            Arc::Forward,
+            "chain_lance",
+            naked(),
+        );
         let mut board = armed_board_2d(vec![attacker, scout, gunboat]);
 
         // Subscribe to OnChainKill BEFORE we lose the bus mutability into
@@ -4634,21 +5164,35 @@ mod tests {
             id: "chain_lance".into(),
             name: "Chain Lance".into(),
             archetype: WeaponArchetype::Beam,
-            cost: ActionCost { heat: 0, cooldown_max: 0, advances_turn: true },
+            cost: ActionCost {
+                heat: 0,
+                cooldown_max: 0,
+                advances_turn: true,
+            },
             targeting: Targeting {
                 pattern: TargetingPattern::SPINAL_LINE,
                 band: vec![
-                    RangeBand::PointBlank, RangeBand::Close, RangeBand::Mid,
-                    RangeBand::Long, RangeBand::Extreme,
+                    RangeBand::PointBlank,
+                    RangeBand::Close,
+                    RangeBand::Mid,
+                    RangeBand::Long,
+                    RangeBand::Extreme,
                 ],
                 optimal_band: RangeBand::Mid,
-                range_band: vec![crate::grid::Range::Adjacent, crate::grid::Range::Near, crate::grid::Range::Far],
+                range_band: vec![
+                    crate::grid::Range::Adjacent,
+                    crate::grid::Range::Near,
+                    crate::grid::Range::Far,
+                ],
                 optimal_range: crate::grid::Range::Near,
                 requires_arc: Some(Arc::Forward),
                 facing_relative: true,
                 hits_all: true,
             },
-            effects: vec![Effect::DAMAGE { amount: 1, band_falloff: Some(false) }],
+            effects: vec![Effect::DAMAGE {
+                amount: 1,
+                band_falloff: Some(false),
+            }],
             r#mod: None,
             icon: None,
         };
@@ -4657,14 +5201,22 @@ mod tests {
             fn action(&self, id: &str) -> Option<&Action> {
                 (id == "chain_lance").then_some(&self.0)
             }
-            fn spawn_projectile(&self, _: &str, _: &Ship) -> Projectile { unreachable!() }
+            fn spawn_projectile(&self, _: &str, _: &Ship) -> Projectile {
+                unreachable!()
+            }
         }
         let content = OneAction(chain_lance);
         fire_player_queue("frigate", &mut board, &content);
 
         // Both ships should be gone, and OnChainKill should have fired once.
-        assert!(board.cells[crate::grid::Pos::new(2, 2).to_index()].is_none(), "scout was killed");
-        assert!(board.cells[crate::grid::Pos::new(2, 1).to_index()].is_none(), "gunboat was killed");
+        assert!(
+            board.cells[crate::grid::Pos::new(2, 2).to_index()].is_none(),
+            "scout was killed"
+        );
+        assert!(
+            board.cells[crate::grid::Pos::new(2, 1).to_index()].is_none(),
+            "gunboat was killed"
+        );
         assert_eq!(count.get(), 1, "OnChainKill fires once for the window");
     }
 
@@ -4691,21 +5243,35 @@ mod tests {
             id: "rear_gun".into(),
             name: "Rear Gun".into(),
             archetype: WeaponArchetype::Beam,
-            cost: ActionCost { heat: 1, cooldown_max: 0, advances_turn: true },
+            cost: ActionCost {
+                heat: 1,
+                cooldown_max: 0,
+                advances_turn: true,
+            },
             targeting: Targeting {
                 pattern: TargetingPattern::BEAM,
                 band: vec![
-                    RangeBand::PointBlank, RangeBand::Close, RangeBand::Mid,
-                    RangeBand::Long, RangeBand::Extreme,
+                    RangeBand::PointBlank,
+                    RangeBand::Close,
+                    RangeBand::Mid,
+                    RangeBand::Long,
+                    RangeBand::Extreme,
                 ],
                 optimal_band: RangeBand::Mid,
-                range_band: vec![crate::grid::Range::Adjacent, crate::grid::Range::Near, crate::grid::Range::Far],
+                range_band: vec![
+                    crate::grid::Range::Adjacent,
+                    crate::grid::Range::Near,
+                    crate::grid::Range::Far,
+                ],
                 optimal_range: crate::grid::Range::Near,
                 requires_arc: Some(arc),
                 facing_relative: true,
                 hits_all: false,
             },
-            effects: vec![Effect::DAMAGE { amount: 4, band_falloff: None }],
+            effects: vec![Effect::DAMAGE {
+                amount: 4,
+                band_falloff: None,
+            }],
             r#mod: None,
             icon: None,
         };
@@ -4713,9 +5279,10 @@ mod tests {
         // Rear arc on a bow=fore ship at cell 0 -> must bear AFT (was None
         // pre-fix).
         let rear = rear_gun(Arc::Rear);
-        let board = make_board(7, vec![
-            Some(ship.clone()), None, None, None, None, None, None,
-        ]);
+        let board = make_board(
+            7,
+            vec![Some(ship.clone()), None, None, None, None, None, None],
+        );
         assert_eq!(
             bearing_direction(&ship, 0, &board, &rear),
             Some(LaneEnd::Aft),
@@ -4756,22 +5323,36 @@ mod tests {
             id: "self_destruct".into(),
             name: "Reactor Overload".into(),
             archetype: WeaponArchetype::Beam,
-            cost: ActionCost { heat: 0, cooldown_max: 0, advances_turn: true },
+            cost: ActionCost {
+                heat: 0,
+                cooldown_max: 0,
+                advances_turn: true,
+            },
             targeting: Targeting {
                 pattern: TargetingPattern::SELF,
                 band: vec![
-                    RangeBand::PointBlank, RangeBand::Close, RangeBand::Mid,
-                    RangeBand::Long, RangeBand::Extreme,
+                    RangeBand::PointBlank,
+                    RangeBand::Close,
+                    RangeBand::Mid,
+                    RangeBand::Long,
+                    RangeBand::Extreme,
                 ],
                 optimal_band: RangeBand::PointBlank,
-                range_band: vec![crate::grid::Range::Adjacent, crate::grid::Range::Near, crate::grid::Range::Far],
+                range_band: vec![
+                    crate::grid::Range::Adjacent,
+                    crate::grid::Range::Near,
+                    crate::grid::Range::Far,
+                ],
                 optimal_range: crate::grid::Range::Adjacent,
                 requires_arc: None,
                 facing_relative: false,
                 hits_all: false,
             },
             // band_falloff:false so the raw 9 lands intact even at PointBlank.
-            effects: vec![Effect::DAMAGE { amount: 9, band_falloff: Some(false) }],
+            effects: vec![Effect::DAMAGE {
+                amount: 9,
+                band_falloff: Some(false),
+            }],
             r#mod: None,
             icon: None,
         };
@@ -4780,21 +5361,33 @@ mod tests {
             fn action(&self, id: &str) -> Option<&Action> {
                 (id == "self_destruct").then_some(&self.0)
             }
-            fn spawn_projectile(&self, _: &str, _: &Ship) -> Projectile { unreachable!() }
+            fn spawn_projectile(&self, _: &str, _: &Ship) -> Projectile {
+                unreachable!()
+            }
         }
 
         // Firing ship: hull 3, ZERO-armour shields so the self-hit lands full.
         let mut ship = make_ship("kamikaze", Faction::Player, 0, 3, LaneEnd::Fore);
         ship.shield_profile = ShieldProfile {
-            bow: crate::types::ShieldFace { armour: 0, charge: 0 },
-            stern: crate::types::ShieldFace { armour: 0, charge: 0 },
-            port: crate::types::ShieldFace { armour: 0, charge: 0 },
-            starboard: crate::types::ShieldFace { armour: 0, charge: 0 },
+            bow: crate::types::ShieldFace {
+                armour: 0,
+                charge: 0,
+            },
+            stern: crate::types::ShieldFace {
+                armour: 0,
+                charge: 0,
+            },
+            port: crate::types::ShieldFace {
+                armour: 0,
+                charge: 0,
+            },
+            starboard: crate::types::ShieldFace {
+                armour: 0,
+                charge: 0,
+            },
         };
         ship.queue = vec!["self_destruct".into()];
-        let mut board = make_board(7, vec![
-            Some(ship), None, None, None, None, None, None,
-        ]);
+        let mut board = make_board(7, vec![Some(ship), None, None, None, None, None, None]);
 
         // Count OnDamageDealt emits via a side-channel before the bus is
         // borrowed into the resolver.
@@ -4831,7 +5424,9 @@ mod tests {
         fn action(&self, id: &str) -> Option<&Action> {
             (id == self.0.id).then_some(&self.0)
         }
-        fn spawn_projectile(&self, _: &str, _: &Ship) -> Projectile { unreachable!() }
+        fn spawn_projectile(&self, _: &str, _: &Ship) -> Projectile {
+            unreachable!()
+        }
     }
 
     /// A no-falloff pulse laser carrying mod `mod_id`, firing `amount` damage.
@@ -4839,8 +5434,15 @@ mod tests {
         let mut a = pulse_laser();
         a.id = id.into();
         a.r#mod = Some(mod_id.into());
-        a.cost = ActionCost { heat: 0, cooldown_max: 3, advances_turn: true };
-        a.effects = vec![Effect::DAMAGE { amount, band_falloff: Some(false) }];
+        a.cost = ActionCost {
+            heat: 0,
+            cooldown_max: 3,
+            advances_turn: true,
+        };
+        a.effects = vec![Effect::DAMAGE {
+            amount,
+            band_falloff: Some(false),
+        }];
         a
     }
 
@@ -4873,48 +5475,171 @@ mod tests {
         // take 1, proving the splash is faction-blind. Naked shields so the 1
         // lands on hull. The hit cell itself is not re-damaged.
         let attacker = {
-            let mut a = armed_ship_2d("p", Faction::Player, crate::grid::Pos::new(2, 3), 5, crate::grid::Facing::Bow(crate::grid::Dir4::N), Arc::Forward, "flak", naked());
+            let mut a = armed_ship_2d(
+                "p",
+                Faction::Player,
+                crate::grid::Pos::new(2, 3),
+                5,
+                crate::grid::Facing::Bow(crate::grid::Dir4::N),
+                Arc::Forward,
+                "flak",
+                naked(),
+            );
             a.queue = vec!["flak".into()];
             a
         };
-        let t = armed_ship_2d("t", Faction::Enemy, crate::grid::Pos::new(2, 1), 5, crate::grid::Facing::Bow(crate::grid::Dir4::S), Arc::Forward, "flak", naked());
-        let ally = armed_ship_2d("ally", Faction::Player, crate::grid::Pos::new(1, 1), 5, crate::grid::Facing::Bow(crate::grid::Dir4::S), Arc::Forward, "flak", naked());
-        let enemy_n = armed_ship_2d("n", Faction::Enemy, crate::grid::Pos::new(3, 1), 5, crate::grid::Facing::Bow(crate::grid::Dir4::S), Arc::Forward, "flak", naked());
+        let t = armed_ship_2d(
+            "t",
+            Faction::Enemy,
+            crate::grid::Pos::new(2, 1),
+            5,
+            crate::grid::Facing::Bow(crate::grid::Dir4::S),
+            Arc::Forward,
+            "flak",
+            naked(),
+        );
+        let ally = armed_ship_2d(
+            "ally",
+            Faction::Player,
+            crate::grid::Pos::new(1, 1),
+            5,
+            crate::grid::Facing::Bow(crate::grid::Dir4::S),
+            Arc::Forward,
+            "flak",
+            naked(),
+        );
+        let enemy_n = armed_ship_2d(
+            "n",
+            Faction::Enemy,
+            crate::grid::Pos::new(3, 1),
+            5,
+            crate::grid::Facing::Bow(crate::grid::Dir4::S),
+            Arc::Forward,
+            "flak",
+            naked(),
+        );
         let mut board = armed_board_2d(vec![attacker, t, ally, enemy_n]);
-        fire_player_queue("p", &mut board, &ModContent(modded_weapon("flak", "flak_burst", 3)));
+        fire_player_queue(
+            "p",
+            &mut board,
+            &ModContent(modded_weapon("flak", "flak_burst", 3)),
+        );
 
         // Primary hit: target at (2,1) takes the 3-dmg pulse (5 -> 2).
-        assert_eq!(board.cells[crate::grid::Pos::new(2, 1).to_index()].as_ref().unwrap().hull, 2, "primary pulse lands on target");
+        assert_eq!(
+            board.cells[crate::grid::Pos::new(2, 1).to_index()]
+                .as_ref()
+                .unwrap()
+                .hull,
+            2,
+            "primary pulse lands on target"
+        );
         // Splash: the hit cell's E-W neighbours each take 1 — faction-blind.
-        assert_eq!(board.cells[crate::grid::Pos::new(3, 1).to_index()].as_ref().unwrap().hull, 4, "E neighbour (enemy) takes 1 flak splash");
-        assert_eq!(board.cells[crate::grid::Pos::new(1, 1).to_index()].as_ref().unwrap().hull, 4, "W neighbour (player-faction ally) takes 1 — faction-blind");
+        assert_eq!(
+            board.cells[crate::grid::Pos::new(3, 1).to_index()]
+                .as_ref()
+                .unwrap()
+                .hull,
+            4,
+            "E neighbour (enemy) takes 1 flak splash"
+        );
+        assert_eq!(
+            board.cells[crate::grid::Pos::new(1, 1).to_index()]
+                .as_ref()
+                .unwrap()
+                .hull,
+            4,
+            "W neighbour (player-faction ally) takes 1 — faction-blind"
+        );
     }
 
     /// incendiary: APPLY_STATUS hullBreach 3 on the hit cell. (#20 2-D fixture:
     /// p at (2,1) Bow(S) fires S onto t directly ahead at (2,2), Adjacent.)
     #[test]
     fn mod_incendiary_applies_hull_breach_on_hit() {
-        let mut p = armed_ship_2d("p", Faction::Player, crate::grid::Pos::new(2, 1), 5, crate::grid::Facing::Bow(crate::grid::Dir4::S), Arc::Forward, "inc", default_shield_profile());
+        let mut p = armed_ship_2d(
+            "p",
+            Faction::Player,
+            crate::grid::Pos::new(2, 1),
+            5,
+            crate::grid::Facing::Bow(crate::grid::Dir4::S),
+            Arc::Forward,
+            "inc",
+            default_shield_profile(),
+        );
         p.queue = vec!["inc".into()];
-        let t = armed_ship_2d("t", Faction::Enemy, crate::grid::Pos::new(2, 2), 20, crate::grid::Facing::Bow(crate::grid::Dir4::N), Arc::Forward, "inc", default_shield_profile());
+        let t = armed_ship_2d(
+            "t",
+            Faction::Enemy,
+            crate::grid::Pos::new(2, 2),
+            20,
+            crate::grid::Facing::Bow(crate::grid::Dir4::N),
+            Arc::Forward,
+            "inc",
+            default_shield_profile(),
+        );
         let mut board = armed_board_2d(vec![p, t]);
-        fire_player_queue("p", &mut board, &ModContent(modded_weapon("inc", "incendiary", 3)));
-        let st = &board.cells[crate::grid::Pos::new(2, 2).to_index()].as_ref().unwrap().statuses;
-        let breach = st.iter().find(|s| s.kind == StatusKind::HullBreach).expect("hullBreach applied");
-        assert_eq!(breach.duration, 3, "incendiary applies hullBreach for 3 turns");
+        fire_player_queue(
+            "p",
+            &mut board,
+            &ModContent(modded_weapon("inc", "incendiary", 3)),
+        );
+        let st = &board.cells[crate::grid::Pos::new(2, 2).to_index()]
+            .as_ref()
+            .unwrap()
+            .statuses;
+        let breach = st
+            .iter()
+            .find(|s| s.kind == StatusKind::HullBreach)
+            .expect("hullBreach applied");
+        assert_eq!(
+            breach.duration, 3,
+            "incendiary applies hullBreach for 3 turns"
+        );
     }
 
     /// emp_charge: APPLY_STATUS systemsOffline 3 on the hit cell. (#20 2-D fixture.)
     #[test]
     fn mod_emp_charge_applies_systems_offline_on_hit() {
-        let mut p = armed_ship_2d("p", Faction::Player, crate::grid::Pos::new(2, 1), 5, crate::grid::Facing::Bow(crate::grid::Dir4::S), Arc::Forward, "emp", default_shield_profile());
+        let mut p = armed_ship_2d(
+            "p",
+            Faction::Player,
+            crate::grid::Pos::new(2, 1),
+            5,
+            crate::grid::Facing::Bow(crate::grid::Dir4::S),
+            Arc::Forward,
+            "emp",
+            default_shield_profile(),
+        );
         p.queue = vec!["emp".into()];
-        let t = armed_ship_2d("t", Faction::Enemy, crate::grid::Pos::new(2, 2), 20, crate::grid::Facing::Bow(crate::grid::Dir4::N), Arc::Forward, "emp", default_shield_profile());
+        let t = armed_ship_2d(
+            "t",
+            Faction::Enemy,
+            crate::grid::Pos::new(2, 2),
+            20,
+            crate::grid::Facing::Bow(crate::grid::Dir4::N),
+            Arc::Forward,
+            "emp",
+            default_shield_profile(),
+        );
         let mut board = armed_board_2d(vec![p, t]);
-        fire_player_queue("p", &mut board, &ModContent(modded_weapon("emp", "emp_charge", 3)));
-        let st = &board.cells[crate::grid::Pos::new(2, 2).to_index()].as_ref().unwrap().statuses;
-        let off = st.iter().find(|s| s.kind == StatusKind::SystemsOffline).expect("systemsOffline applied");
-        assert_eq!(off.duration, 3, "emp_charge applies systemsOffline for 3 turns");
+        fire_player_queue(
+            "p",
+            &mut board,
+            &ModContent(modded_weapon("emp", "emp_charge", 3)),
+        );
+        let st = &board.cells[crate::grid::Pos::new(2, 2).to_index()]
+            .as_ref()
+            .unwrap()
+            .statuses;
+        let off = st
+            .iter()
+            .find(|s| s.kind == StatusKind::SystemsOffline)
+            .expect("systemsOffline applied");
+        assert_eq!(
+            off.duration, 3,
+            "emp_charge applies systemsOffline for 3 turns"
+        );
     }
 
     /// targeting_laser: APPLY_STATUS targetLock on hit — and it lands even when
@@ -4923,25 +5648,64 @@ mod tests {
     /// the southward shot presents absorbs the full pulse — the rider still lands.)
     #[test]
     fn mod_targeting_laser_applies_target_lock_even_through_full_shield() {
-        let mut p = armed_ship_2d("p", Faction::Player, crate::grid::Pos::new(2, 1), 5, crate::grid::Facing::Bow(crate::grid::Dir4::S), Arc::Forward, "tl", default_shield_profile());
+        let mut p = armed_ship_2d(
+            "p",
+            Faction::Player,
+            crate::grid::Pos::new(2, 1),
+            5,
+            crate::grid::Facing::Bow(crate::grid::Dir4::S),
+            Arc::Forward,
+            "tl",
+            default_shield_profile(),
+        );
         p.queue = vec!["tl".into()];
         // #103 Model A: a FULL shield pool on every face (charge 99) soaks the
         // whole hit on whichever zone the southward shot presents — so the hull
         // damage is fully absorbed and we can prove the targetLock rider still
         // lands. (`armour` is the pool CAPACITY now; `charge` is what absorbs.)
         let armoured = ShieldProfile {
-            bow: crate::types::ShieldFace { armour: 99, charge: 99 },
-            stern: crate::types::ShieldFace { armour: 99, charge: 99 },
-            port: crate::types::ShieldFace { armour: 99, charge: 99 },
-            starboard: crate::types::ShieldFace { armour: 99, charge: 99 },
+            bow: crate::types::ShieldFace {
+                armour: 99,
+                charge: 99,
+            },
+            stern: crate::types::ShieldFace {
+                armour: 99,
+                charge: 99,
+            },
+            port: crate::types::ShieldFace {
+                armour: 99,
+                charge: 99,
+            },
+            starboard: crate::types::ShieldFace {
+                armour: 99,
+                charge: 99,
+            },
         };
-        let t = armed_ship_2d("t", Faction::Enemy, crate::grid::Pos::new(2, 2), 20, crate::grid::Facing::Bow(crate::grid::Dir4::N), Arc::Forward, "tl", armoured);
+        let t = armed_ship_2d(
+            "t",
+            Faction::Enemy,
+            crate::grid::Pos::new(2, 2),
+            20,
+            crate::grid::Facing::Bow(crate::grid::Dir4::N),
+            Arc::Forward,
+            "tl",
+            armoured,
+        );
         let mut board = armed_board_2d(vec![p, t]);
-        fire_player_queue("p", &mut board, &ModContent(modded_weapon("tl", "targeting_laser", 3)));
-        let t_ref = board.cells[crate::grid::Pos::new(2, 2).to_index()].as_ref().unwrap();
+        fire_player_queue(
+            "p",
+            &mut board,
+            &ModContent(modded_weapon("tl", "targeting_laser", 3)),
+        );
+        let t_ref = board.cells[crate::grid::Pos::new(2, 2).to_index()]
+            .as_ref()
+            .unwrap();
         assert_eq!(t_ref.hull, 20, "shield fully absorbed the hull damage");
         assert!(
-            t_ref.statuses.iter().any(|s| s.kind == StatusKind::TargetLock),
+            t_ref
+                .statuses
+                .iter()
+                .any(|s| s.kind == StatusKind::TargetLock),
             "targeting_laser applies targetLock on contact even through full shield absorption",
         );
     }
@@ -4955,27 +5719,87 @@ mod tests {
         // cooldown for "pc" must be 0 afterward (not the cost's 3).
         let p_pos = crate::grid::Pos::new(2, 1);
         let t_pos = crate::grid::Pos::new(2, 2);
-        let mut p = armed_ship_2d("p", Faction::Player, p_pos, 5, crate::grid::Facing::Bow(crate::grid::Dir4::S), Arc::Forward, "pc", default_shield_profile());
+        let mut p = armed_ship_2d(
+            "p",
+            Faction::Player,
+            p_pos,
+            5,
+            crate::grid::Facing::Bow(crate::grid::Dir4::S),
+            Arc::Forward,
+            "pc",
+            default_shield_profile(),
+        );
         p.queue = vec!["pc".into()];
-        let t = armed_ship_2d("t", Faction::Enemy, t_pos, 3, crate::grid::Facing::Bow(crate::grid::Dir4::N), Arc::Forward, "pc", naked());
+        let t = armed_ship_2d(
+            "t",
+            Faction::Enemy,
+            t_pos,
+            3,
+            crate::grid::Facing::Bow(crate::grid::Dir4::N),
+            Arc::Forward,
+            "pc",
+            naked(),
+        );
         let mut board = armed_board_2d(vec![p, t]);
-        fire_player_queue("p", &mut board, &ModContent(modded_weapon("pc", "precision_core", 3)));
-        assert!(board.cells[t_pos.to_index()].is_none(), "lethal hit killed the target");
+        fire_player_queue(
+            "p",
+            &mut board,
+            &ModContent(modded_weapon("pc", "precision_core", 3)),
+        );
+        assert!(
+            board.cells[t_pos.to_index()].is_none(),
+            "lethal hit killed the target"
+        );
         assert_eq!(
-            board.cells[p_pos.to_index()].as_ref().unwrap().cooldowns.get("pc").copied(),
+            board.cells[p_pos.to_index()]
+                .as_ref()
+                .unwrap()
+                .cooldowns
+                .get("pc")
+                .copied(),
             Some(0),
             "precision_core recharges cooldown to 0 on a clean kill",
         );
 
         // Non-lethal: target survives, cooldown stays at the cost (3).
-        let mut p2 = armed_ship_2d("p", Faction::Player, p_pos, 5, crate::grid::Facing::Bow(crate::grid::Dir4::S), Arc::Forward, "pc", default_shield_profile());
+        let mut p2 = armed_ship_2d(
+            "p",
+            Faction::Player,
+            p_pos,
+            5,
+            crate::grid::Facing::Bow(crate::grid::Dir4::S),
+            Arc::Forward,
+            "pc",
+            default_shield_profile(),
+        );
         p2.queue = vec!["pc".into()];
-        let t2 = armed_ship_2d("t", Faction::Enemy, t_pos, 20, crate::grid::Facing::Bow(crate::grid::Dir4::N), Arc::Forward, "pc", naked());
+        let t2 = armed_ship_2d(
+            "t",
+            Faction::Enemy,
+            t_pos,
+            20,
+            crate::grid::Facing::Bow(crate::grid::Dir4::N),
+            Arc::Forward,
+            "pc",
+            naked(),
+        );
         let mut board2 = armed_board_2d(vec![p2, t2]);
-        fire_player_queue("p", &mut board2, &ModContent(modded_weapon("pc", "precision_core", 3)));
-        assert!(board2.cells[t_pos.to_index()].is_some(), "non-lethal hit left the target alive");
+        fire_player_queue(
+            "p",
+            &mut board2,
+            &ModContent(modded_weapon("pc", "precision_core", 3)),
+        );
+        assert!(
+            board2.cells[t_pos.to_index()].is_some(),
+            "non-lethal hit left the target alive"
+        );
         assert_eq!(
-            board2.cells[p_pos.to_index()].as_ref().unwrap().cooldowns.get("pc").copied(),
+            board2.cells[p_pos.to_index()]
+                .as_ref()
+                .unwrap()
+                .cooldowns
+                .get("pc")
+                .copied(),
             Some(3),
             "precision_core does NOT recharge when the hit fails to kill",
         );
@@ -4986,20 +5810,56 @@ mod tests {
     /// fixture: p at (2,1) Bow(S) fires S onto t at (2,2), naked so 6 lands raw.)
     #[test]
     fn mod_twin_linked_applies_effects_twice() {
-        let mut p = armed_ship_2d("p", Faction::Player, crate::grid::Pos::new(2, 1), 5, crate::grid::Facing::Bow(crate::grid::Dir4::S), Arc::Forward, "twin", default_shield_profile());
+        let mut p = armed_ship_2d(
+            "p",
+            Faction::Player,
+            crate::grid::Pos::new(2, 1),
+            5,
+            crate::grid::Facing::Bow(crate::grid::Dir4::S),
+            Arc::Forward,
+            "twin",
+            default_shield_profile(),
+        );
         p.heat = 0;
         p.queue = vec!["twin".into()];
-        let t = armed_ship_2d("t", Faction::Enemy, crate::grid::Pos::new(2, 2), 20, crate::grid::Facing::Bow(crate::grid::Dir4::N), Arc::Forward, "twin", naked());
+        let t = armed_ship_2d(
+            "t",
+            Faction::Enemy,
+            crate::grid::Pos::new(2, 2),
+            20,
+            crate::grid::Facing::Bow(crate::grid::Dir4::N),
+            Arc::Forward,
+            "twin",
+            naked(),
+        );
         let weapon = {
             let mut a = modded_weapon("twin", "twin_linked", 3);
-            a.cost = ActionCost { heat: 2, cooldown_max: 3, advances_turn: true };
+            a.cost = ActionCost {
+                heat: 2,
+                cooldown_max: 3,
+                advances_turn: true,
+            };
             a
         };
         let mut board = armed_board_2d(vec![p, t]);
         fire_player_queue("p", &mut board, &ModContent(weapon));
-        assert_eq!(board.cells[crate::grid::Pos::new(2, 2).to_index()].as_ref().unwrap().hull, 14, "twin_linked lands 3 twice = 6 (20 -> 14)");
+        assert_eq!(
+            board.cells[crate::grid::Pos::new(2, 2).to_index()]
+                .as_ref()
+                .unwrap()
+                .hull,
+            14,
+            "twin_linked lands 3 twice = 6 (20 -> 14)"
+        );
         // Cost paid ONCE: heat went up by 2 (not 4).
-        assert_eq!(board.cells[crate::grid::Pos::new(2, 1).to_index()].as_ref().unwrap().heat, 2, "twin_linked pays heat once, not per volley");
+        assert_eq!(
+            board.cells[crate::grid::Pos::new(2, 1).to_index()]
+                .as_ref()
+                .unwrap()
+                .heat,
+            2,
+            "twin_linked pays heat once, not per volley"
+        );
     }
 
     /// autoloader: the turn-dispatch seam reports the action as free-fire
@@ -5008,18 +5868,31 @@ mod tests {
     fn mod_autoloader_overrides_advances_turn_for_dispatch() {
         let mut a = pulse_laser();
         a.id = "auto".into();
-        a.cost = ActionCost { heat: 1, cooldown_max: 3, advances_turn: true };
+        a.cost = ActionCost {
+            heat: 1,
+            cooldown_max: 3,
+            advances_turn: true,
+        };
         a.r#mod = Some("autoloader".into());
-        assert!(!action_advances_turn(&a), "autoloader forces free-fire (no turn advance)");
+        assert!(
+            !action_advances_turn(&a),
+            "autoloader forces free-fire (no turn advance)"
+        );
 
         // A plain action with no mod keeps its declared advances_turn.
         let plain = pulse_laser();
-        assert!(action_advances_turn(&plain), "un-modded action keeps its declared advances_turn");
+        assert!(
+            action_advances_turn(&plain),
+            "un-modded action keeps its declared advances_turn"
+        );
 
         // A non-autoloader mod does not change advances_turn.
         let mut flak = pulse_laser();
         flak.r#mod = Some("flak_burst".into());
-        assert!(action_advances_turn(&flak), "flak_burst leaves advances_turn alone");
+        assert!(
+            action_advances_turn(&flak),
+            "flak_burst leaves advances_turn alone"
+        );
     }
 
     /// #59: FireEvents accumulate across the WHOLE round — the player's fired
@@ -5032,15 +5905,42 @@ mod tests {
         // pulse up its column. Two enemies on column 2 ahead, Bow(S) so their
         // forward guns bear back down-column on the player and telegraph a shot.
         let p_idx = crate::grid::Pos::new(2, 3).to_index();
-        let mut player = armed_ship_2d("p", Faction::Player, crate::grid::Pos::new(2, 3), 40, crate::grid::Facing::Bow(crate::grid::Dir4::N), Arc::Forward, "pulse_laser", default_shield_profile());
+        let mut player = armed_ship_2d(
+            "p",
+            Faction::Player,
+            crate::grid::Pos::new(2, 3),
+            40,
+            crate::grid::Facing::Bow(crate::grid::Dir4::N),
+            Arc::Forward,
+            "pulse_laser",
+            default_shield_profile(),
+        );
         player.heat_max = 99; // never lock out across the round
         player.queue = vec!["pulse_laser".into()];
         // e1 at (2,2): player's pulse (Adjacent) bears + in band -> player shot
         // lands here. e1 (Bow S) also bears on the player down the column.
-        let mut e1 = armed_ship_2d("e1", Faction::Enemy, crate::grid::Pos::new(2, 2), 40, crate::grid::Facing::Bow(crate::grid::Dir4::S), Arc::Forward, "pulse_laser", default_shield_profile());
+        let mut e1 = armed_ship_2d(
+            "e1",
+            Faction::Enemy,
+            crate::grid::Pos::new(2, 2),
+            40,
+            crate::grid::Facing::Bow(crate::grid::Dir4::S),
+            Arc::Forward,
+            "pulse_laser",
+            default_shield_profile(),
+        );
         e1.heat_max = 99;
         // e2 at (2,1) (Near), Bow S, also bears on the player.
-        let mut e2 = armed_ship_2d("e2", Faction::Enemy, crate::grid::Pos::new(2, 1), 40, crate::grid::Facing::Bow(crate::grid::Dir4::S), Arc::Forward, "pulse_laser", default_shield_profile());
+        let mut e2 = armed_ship_2d(
+            "e2",
+            Faction::Enemy,
+            crate::grid::Pos::new(2, 1),
+            40,
+            crate::grid::Facing::Bow(crate::grid::Dir4::S),
+            Arc::Forward,
+            "pulse_laser",
+            default_shield_profile(),
+        );
         e2.heat_max = 99;
         let mut board = armed_board_2d(vec![player, e1, e2]);
         let content = AiContent {
@@ -5062,8 +5962,14 @@ mod tests {
         // again. fire_events must contain the player's shot AND BOTH enemies'
         // shots — proving accumulation (no per-enemy wipe) and the
         // start-of-round clear (no carryover of round-1 events).
-        if let Some(c) = board.cells.iter().position(|s| s.as_ref().map(|s| s.id == "p").unwrap_or(false)) {
-            if let Some(s) = board.cells[c].as_mut() { s.queue.push("pulse_laser".into()); }
+        if let Some(c) = board
+            .cells
+            .iter()
+            .position(|s| s.as_ref().map(|s| s.id == "p").unwrap_or(false))
+        {
+            if let Some(s) = board.cells[c].as_mut() {
+                s.queue.push("pulse_laser".into());
+            }
         }
         resolve_round(&mut board, &content);
         let after_second = &board.fire_events;
@@ -5101,7 +6007,11 @@ mod tests {
         let mut s = make_ship(id, faction, pos.to_index(), 10, LaneEnd::Fore);
         s.pos = pos;
         s.facing = facing;
-        s.mounts = vec![Mount { id: "m".into(), arc, weapon: "w".into() }];
+        s.mounts = vec![Mount {
+            id: "m".into(),
+            arc,
+            weapon: "w".into(),
+        }];
         s
     }
 
@@ -5131,7 +6041,13 @@ mod tests {
     #[test]
     fn rt2d_self_returns_own_pos() {
         let p = Pos::new(2, 3);
-        let board = board_2d(vec![ship_2d("p", Faction::Player, p, Facing::Bow(Dir4::N), Arc::Turret)]);
+        let board = board_2d(vec![ship_2d(
+            "p",
+            Faction::Player,
+            p,
+            Facing::Bow(Dir4::N),
+            Arc::Turret,
+        )]);
         let a = action_2d(TargetingPattern::SELF, None, false);
         assert_eq!(resolve_targeting_2d(&a, &board, p), vec![p]);
     }
@@ -5140,20 +6056,53 @@ mod tests {
     fn rt2d_beam_forward_hits_first_occupant_up_the_bow_column() {
         // Player at (2,3) facing Bow(N) (up-board). Forward beam walks N (row
         // decreasing) along column 2; the enemy at (2,1) is the first occupant.
-        let player = ship_2d("p", Faction::Player, Pos::new(2, 3), Facing::Bow(Dir4::N), Arc::Forward);
-        let near = ship_2d("e1", Faction::Enemy, Pos::new(2, 1), Facing::Bow(Dir4::S), Arc::Turret);
-        let far = ship_2d("e2", Faction::Enemy, Pos::new(2, 0), Facing::Bow(Dir4::S), Arc::Turret);
+        let player = ship_2d(
+            "p",
+            Faction::Player,
+            Pos::new(2, 3),
+            Facing::Bow(Dir4::N),
+            Arc::Forward,
+        );
+        let near = ship_2d(
+            "e1",
+            Faction::Enemy,
+            Pos::new(2, 1),
+            Facing::Bow(Dir4::S),
+            Arc::Turret,
+        );
+        let far = ship_2d(
+            "e2",
+            Faction::Enemy,
+            Pos::new(2, 0),
+            Facing::Bow(Dir4::S),
+            Arc::Turret,
+        );
         let board = board_2d(vec![player, near, far]);
         let a = action_2d(TargetingPattern::BEAM, Some(Arc::Forward), false);
-        assert_eq!(resolve_targeting_2d(&a, &board, Pos::new(2, 3)), vec![Pos::new(2, 1)]);
+        assert_eq!(
+            resolve_targeting_2d(&a, &board, Pos::new(2, 3)),
+            vec![Pos::new(2, 1)]
+        );
     }
 
     #[test]
     fn rt2d_beam_does_not_bear_off_the_bow_column() {
         // Same player, but the only enemy is in a different column (off the N
         // ray) — a Forward beam fires straight N and finds nothing.
-        let player = ship_2d("p", Faction::Player, Pos::new(2, 3), Facing::Bow(Dir4::N), Arc::Forward);
-        let off = ship_2d("e", Faction::Enemy, Pos::new(0, 1), Facing::Bow(Dir4::S), Arc::Turret);
+        let player = ship_2d(
+            "p",
+            Faction::Player,
+            Pos::new(2, 3),
+            Facing::Bow(Dir4::N),
+            Arc::Forward,
+        );
+        let off = ship_2d(
+            "e",
+            Faction::Enemy,
+            Pos::new(0, 1),
+            Facing::Bow(Dir4::S),
+            Arc::Turret,
+        );
         let board = board_2d(vec![player, off]);
         let a = action_2d(TargetingPattern::BEAM, Some(Arc::Forward), false);
         assert!(resolve_targeting_2d(&a, &board, Pos::new(2, 3)).is_empty());
@@ -5163,10 +6112,34 @@ mod tests {
     fn rt2d_broadside_fires_both_flanks() {
         // Broadside(EastWest) hull at (2,2): flanks face N and S. Enemies due N
         // (2,0) and due S (2,3) both get hit; a third off-flank (0,2) does not.
-        let ship = ship_2d("p", Faction::Player, Pos::new(2, 2), Facing::Broadside(Axis::EastWest), Arc::BroadsideArc);
-        let n = ship_2d("n", Faction::Enemy, Pos::new(2, 0), Facing::Bow(Dir4::S), Arc::Turret);
-        let s = ship_2d("s", Faction::Enemy, Pos::new(2, 3), Facing::Bow(Dir4::N), Arc::Turret);
-        let w = ship_2d("w", Faction::Enemy, Pos::new(0, 2), Facing::Bow(Dir4::E), Arc::Turret);
+        let ship = ship_2d(
+            "p",
+            Faction::Player,
+            Pos::new(2, 2),
+            Facing::Broadside(Axis::EastWest),
+            Arc::BroadsideArc,
+        );
+        let n = ship_2d(
+            "n",
+            Faction::Enemy,
+            Pos::new(2, 0),
+            Facing::Bow(Dir4::S),
+            Arc::Turret,
+        );
+        let s = ship_2d(
+            "s",
+            Faction::Enemy,
+            Pos::new(2, 3),
+            Facing::Bow(Dir4::N),
+            Arc::Turret,
+        );
+        let w = ship_2d(
+            "w",
+            Faction::Enemy,
+            Pos::new(0, 2),
+            Facing::Bow(Dir4::E),
+            Arc::Turret,
+        );
         let board = board_2d(vec![ship, n, s, w]);
         let a = action_2d(TargetingPattern::BROADSIDE, Some(Arc::BroadsideArc), false);
         let mut hit = resolve_targeting_2d(&a, &board, Pos::new(2, 2));
@@ -5177,9 +6150,27 @@ mod tests {
     #[test]
     fn rt2d_spinal_pierces_all_when_hits_all() {
         // Forward spinal up column 2 from (2,3): both (2,1) and (2,0) pierce.
-        let player = ship_2d("p", Faction::Player, Pos::new(2, 3), Facing::Bow(Dir4::N), Arc::Forward);
-        let a1 = ship_2d("a", Faction::Enemy, Pos::new(2, 1), Facing::Bow(Dir4::S), Arc::Turret);
-        let a0 = ship_2d("b", Faction::Enemy, Pos::new(2, 0), Facing::Bow(Dir4::S), Arc::Turret);
+        let player = ship_2d(
+            "p",
+            Faction::Player,
+            Pos::new(2, 3),
+            Facing::Bow(Dir4::N),
+            Arc::Forward,
+        );
+        let a1 = ship_2d(
+            "a",
+            Faction::Enemy,
+            Pos::new(2, 1),
+            Facing::Bow(Dir4::S),
+            Arc::Turret,
+        );
+        let a0 = ship_2d(
+            "b",
+            Faction::Enemy,
+            Pos::new(2, 0),
+            Facing::Bow(Dir4::S),
+            Arc::Turret,
+        );
         let board = board_2d(vec![player, a1, a0]);
         let pierce = action_2d(TargetingPattern::SPINAL_LINE, Some(Arc::Forward), true);
         assert_eq!(
@@ -5188,7 +6179,10 @@ mod tests {
         );
         // hits_all=false -> just the first.
         let first = action_2d(TargetingPattern::SPINAL_LINE, Some(Arc::Forward), false);
-        assert_eq!(resolve_targeting_2d(&first, &board, Pos::new(2, 3)), vec![Pos::new(2, 1)]);
+        assert_eq!(
+            resolve_targeting_2d(&first, &board, Pos::new(2, 3)),
+            vec![Pos::new(2, 1)]
+        );
     }
 
     #[test]
@@ -5196,8 +6190,20 @@ mod tests {
         // Forward blast up column 2 from (3,3): center is the first occupant
         // (3,1); splash is its in-bounds 8-neighbours. (The ±1->8-neighbour
         // widening, reviewer gate #2.)
-        let player = ship_2d("p", Faction::Player, Pos::new(3, 3), Facing::Bow(Dir4::N), Arc::Forward);
-        let center = ship_2d("c", Faction::Enemy, Pos::new(3, 1), Facing::Bow(Dir4::S), Arc::Turret);
+        let player = ship_2d(
+            "p",
+            Faction::Player,
+            Pos::new(3, 3),
+            Facing::Bow(Dir4::N),
+            Arc::Forward,
+        );
+        let center = ship_2d(
+            "c",
+            Faction::Enemy,
+            Pos::new(3, 1),
+            Facing::Bow(Dir4::S),
+            Arc::Turret,
+        );
         let board = board_2d(vec![player, center]);
         let a = action_2d(TargetingPattern::BLAST, Some(Arc::Forward), false);
         let hit = resolve_targeting_2d(&a, &board, Pos::new(3, 3));
@@ -5213,8 +6219,20 @@ mod tests {
     fn rt2d_far_only_weapon_cannot_hit_adjacent_deadzone() {
         // Decision #7 over-extension deadzone: a Far-only weapon does NOT bear
         // on an adjacent target. Player (2,3) Bow(N); enemy adjacent at (2,2).
-        let player = ship_2d("p", Faction::Player, Pos::new(2, 3), Facing::Bow(Dir4::N), Arc::Forward);
-        let adj = ship_2d("e", Faction::Enemy, Pos::new(2, 2), Facing::Bow(Dir4::S), Arc::Turret);
+        let player = ship_2d(
+            "p",
+            Faction::Player,
+            Pos::new(2, 3),
+            Facing::Bow(Dir4::N),
+            Arc::Forward,
+        );
+        let adj = ship_2d(
+            "e",
+            Faction::Enemy,
+            Pos::new(2, 2),
+            Facing::Bow(Dir4::S),
+            Arc::Turret,
+        );
         let board = board_2d(vec![player, adj]);
         let mut a = action_2d(TargetingPattern::BEAM, Some(Arc::Forward), false);
         a.targeting.range_band = vec![Range::Far]; // Far only
@@ -5227,8 +6245,20 @@ mod tests {
     #[test]
     fn rt2d_broadside_bow_stance_does_not_bear() {
         // A BroadsideArc weapon on a Bow stance never bears (wrong stance).
-        let ship = ship_2d("p", Faction::Player, Pos::new(2, 2), Facing::Bow(Dir4::N), Arc::BroadsideArc);
-        let n = ship_2d("n", Faction::Enemy, Pos::new(2, 0), Facing::Bow(Dir4::S), Arc::Turret);
+        let ship = ship_2d(
+            "p",
+            Faction::Player,
+            Pos::new(2, 2),
+            Facing::Bow(Dir4::N),
+            Arc::BroadsideArc,
+        );
+        let n = ship_2d(
+            "n",
+            Faction::Enemy,
+            Pos::new(2, 0),
+            Facing::Bow(Dir4::S),
+            Arc::Turret,
+        );
         let board = board_2d(vec![ship, n]);
         let a = action_2d(TargetingPattern::BROADSIDE, Some(Arc::BroadsideArc), false);
         assert!(resolve_targeting_2d(&a, &board, Pos::new(2, 2)).is_empty());
@@ -5243,9 +6273,27 @@ mod tests {
     #[test]
     fn rotate_right_turns_facing_and_the_fire_gate_follows() {
         // Player at the interior cell (2,2) so it has occupants due N and due E.
-        let player = ship_2d("p", Faction::Player, Pos::new(2, 2), Facing::Bow(Dir4::N), Arc::Forward);
-        let north = ship_2d("n", Faction::Enemy, Pos::new(2, 0), Facing::Bow(Dir4::S), Arc::Turret);
-        let east = ship_2d("e", Faction::Enemy, Pos::new(4, 2), Facing::Bow(Dir4::W), Arc::Turret);
+        let player = ship_2d(
+            "p",
+            Faction::Player,
+            Pos::new(2, 2),
+            Facing::Bow(Dir4::N),
+            Arc::Forward,
+        );
+        let north = ship_2d(
+            "n",
+            Faction::Enemy,
+            Pos::new(2, 0),
+            Facing::Bow(Dir4::S),
+            Arc::Turret,
+        );
+        let east = ship_2d(
+            "e",
+            Faction::Enemy,
+            Pos::new(4, 2),
+            Facing::Bow(Dir4::W),
+            Arc::Turret,
+        );
         let mut board = board_2d(vec![player, north, east]);
         let beam = action_2d(TargetingPattern::BEAM, Some(Arc::Forward), false);
 
@@ -5259,12 +6307,25 @@ mod tests {
         // Apply the live rotate-right REORIENT effect (the queued-action path).
         let action = synthetic_rotate_right_action();
         let fx = action.effects[0].clone();
-        apply_effect(&fx, &action, Pos::new(2, 2).to_index(), &[], &mut board, &NoContent);
+        apply_effect(
+            &fx,
+            &action,
+            Pos::new(2, 2).to_index(),
+            &[],
+            &mut board,
+            &NoContent,
+        );
 
         // Facing turned N→E; orientation re-derived to Broadside (E/W flank).
-        let p = board.ship_at(Pos::new(2, 2)).expect("player still at (2,2)");
+        let p = board
+            .ship_at(Pos::new(2, 2))
+            .expect("player still at (2,2)");
         assert_eq!(p.facing, Facing::Bow(Dir4::E), "rotate-right: N→E");
-        assert_eq!(p.orientation, Orientation::Broadside, "orientation re-derived from facing");
+        assert_eq!(
+            p.orientation,
+            Orientation::Broadside,
+            "orientation re-derived from facing"
+        );
 
         // After: the SAME Forward beam now bears EAST along row 2 → hits (4,2),
         // and no longer the northern enemy. The fire-gate followed the facing.
@@ -5279,15 +6340,43 @@ mod tests {
     /// and one rotate-left from Bow(N) is Bow(W).
     #[test]
     fn rotate_left_is_ccw_and_four_turns_round_trip() {
-        let mut board = board_2d(vec![ship_2d("p", Faction::Player, Pos::new(2, 2), Facing::Bow(Dir4::N), Arc::Forward)]);
+        let mut board = board_2d(vec![ship_2d(
+            "p",
+            Faction::Player,
+            Pos::new(2, 2),
+            Facing::Bow(Dir4::N),
+            Arc::Forward,
+        )]);
         let action = synthetic_rotate_left_action();
         let fx = action.effects[0].clone();
-        apply_effect(&fx, &action, Pos::new(2, 2).to_index(), &[], &mut board, &NoContent);
-        assert_eq!(board.ship_at(Pos::new(2, 2)).unwrap().facing, Facing::Bow(Dir4::W), "N→W (ccw)");
+        apply_effect(
+            &fx,
+            &action,
+            Pos::new(2, 2).to_index(),
+            &[],
+            &mut board,
+            &NoContent,
+        );
+        assert_eq!(
+            board.ship_at(Pos::new(2, 2)).unwrap().facing,
+            Facing::Bow(Dir4::W),
+            "N→W (ccw)"
+        );
         for _ in 0..3 {
-            apply_effect(&fx, &action, Pos::new(2, 2).to_index(), &[], &mut board, &NoContent);
+            apply_effect(
+                &fx,
+                &action,
+                Pos::new(2, 2).to_index(),
+                &[],
+                &mut board,
+                &NoContent,
+            );
         }
-        assert_eq!(board.ship_at(Pos::new(2, 2)).unwrap().facing, Facing::Bow(Dir4::N), "four ccw turns round-trip");
+        assert_eq!(
+            board.ship_at(Pos::new(2, 2)).unwrap().facing,
+            Facing::Bow(Dir4::N),
+            "four ccw turns round-trip"
+        );
     }
 
     /// (#75) Tab's 180° about-face: two RotateRight effects (the bin's Tab
@@ -5296,26 +6385,58 @@ mod tests {
     /// orientation only, which no longer moves the facing-driven render/arcs).
     #[test]
     fn two_rotate_rights_are_a_180_about_face() {
-        let mut board = board_2d(vec![ship_2d("p", Faction::Player, Pos::new(2, 2), Facing::Bow(Dir4::N), Arc::Forward)]);
+        let mut board = board_2d(vec![ship_2d(
+            "p",
+            Faction::Player,
+            Pos::new(2, 2),
+            Facing::Bow(Dir4::N),
+            Arc::Forward,
+        )]);
         let action = synthetic_rotate_right_action();
         let fx = action.effects[0].clone();
-        apply_effect(&fx, &action, Pos::new(2, 2).to_index(), &[], &mut board, &NoContent);
-        apply_effect(&fx, &action, Pos::new(2, 2).to_index(), &[], &mut board, &NoContent);
+        apply_effect(
+            &fx,
+            &action,
+            Pos::new(2, 2).to_index(),
+            &[],
+            &mut board,
+            &NoContent,
+        );
+        apply_effect(
+            &fx,
+            &action,
+            Pos::new(2, 2).to_index(),
+            &[],
+            &mut board,
+            &NoContent,
+        );
         let p = board.ship_at(Pos::new(2, 2)).unwrap();
-        assert_eq!(p.facing, Facing::Bow(Dir4::S), "N + 2x rotate-right = S (about-face)");
-        assert_eq!(p.orientation, Orientation::BowOn { bow: LaneEnd::Aft }, "orientation re-derived: S -> Aft");
+        assert_eq!(
+            p.facing,
+            Facing::Bow(Dir4::S),
+            "N + 2x rotate-right = S (about-face)"
+        );
+        assert_eq!(
+            p.orientation,
+            Orientation::BowOn { bow: LaneEnd::Aft },
+            "orientation re-derived: S -> Aft"
+        );
     }
 
     /// Local builders for the rotate REORIENT effects (mirror
     /// `input::synthetic_rotate_*` without depending on the input module here).
     fn synthetic_rotate_right_action() -> Action {
         let mut a = action_2d(TargetingPattern::SELF, None, false);
-        a.effects = vec![Effect::REORIENT { to: ReorientTo::RotateRight }];
+        a.effects = vec![Effect::REORIENT {
+            to: ReorientTo::RotateRight,
+        }];
         a
     }
     fn synthetic_rotate_left_action() -> Action {
         let mut a = action_2d(TargetingPattern::SELF, None, false);
-        a.effects = vec![Effect::REORIENT { to: ReorientTo::RotateLeft }];
+        a.effects = vec![Effect::REORIENT {
+            to: ReorientTo::RotateLeft,
+        }];
         a
     }
 
@@ -5328,17 +6449,37 @@ mod tests {
     /// Assert the ship `id` is at `pos` AND invariant (A) holds for it
     /// (slot == pos.to_index(), pos == cell-as-index).
     fn assert_ship_at(board: &Board, id: &str, pos: Pos) {
-        let s = board.ship_at(pos).unwrap_or_else(|| panic!("{id} not at {pos:?}"));
+        let s = board
+            .ship_at(pos)
+            .unwrap_or_else(|| panic!("{id} not at {pos:?}"));
         assert_eq!(s.id, id, "wrong ship at {pos:?}");
         assert_eq!(s.pos, pos, "{id}.pos mismatch");
-        assert_eq!(s.cell, pos.to_index(), "{id}.cell != pos.to_index (invariant A)");
+        assert_eq!(
+            s.cell,
+            pos.to_index(),
+            "{id}.cell != pos.to_index (invariant A)"
+        );
     }
 
     #[test]
     fn rsm2d_thrust_moves_one_cell_along_direction_2d_override() {
         // Override N from (2,2): move to (2,1), slot+pos updated, old cell empty.
-        let mut board = board_2d(vec![ship_2d("p", Faction::Player, Pos::new(2, 2), Facing::Bow(Dir4::S), Arc::Turret)]);
-        resolve_self_move_2d(Pos::new(2, 2), MovementMode::THRUST, 1, Some(Dir4::N), None, &mut board, &NoContent);
+        let mut board = board_2d(vec![ship_2d(
+            "p",
+            Faction::Player,
+            Pos::new(2, 2),
+            Facing::Bow(Dir4::S),
+            Arc::Turret,
+        )]);
+        resolve_self_move_2d(
+            Pos::new(2, 2),
+            MovementMode::THRUST,
+            1,
+            Some(Dir4::N),
+            None,
+            &mut board,
+            &NoContent,
+        );
         assert_ship_at(&board, "p", Pos::new(2, 1));
         assert!(board.ship_at(Pos::new(2, 2)).is_none(), "old cell vacated");
     }
@@ -5346,8 +6487,22 @@ mod tests {
     #[test]
     fn rsm2d_thrust_none_derives_direction_from_facing() {
         // No override: a Bow(N) ship thrusts N (toward row 0). From (2,2)->(2,1).
-        let mut board = board_2d(vec![ship_2d("p", Faction::Player, Pos::new(2, 2), Facing::Bow(Dir4::N), Arc::Turret)]);
-        resolve_self_move_2d(Pos::new(2, 2), MovementMode::THRUST, 1, None, None, &mut board, &NoContent);
+        let mut board = board_2d(vec![ship_2d(
+            "p",
+            Faction::Player,
+            Pos::new(2, 2),
+            Facing::Bow(Dir4::N),
+            Arc::Turret,
+        )]);
+        resolve_self_move_2d(
+            Pos::new(2, 2),
+            MovementMode::THRUST,
+            1,
+            None,
+            None,
+            &mut board,
+            &NoContent,
+        );
         assert_ship_at(&board, "p", Pos::new(2, 1));
     }
 
@@ -5358,18 +6513,48 @@ mod tests {
         // shield would otherwise mediate it — a bow-first wall hit lands on the
         // strong bow armour, which is its own behavior, not what this asserts).
         let zero = ShieldProfile {
-            bow: crate::types::ShieldFace { armour: 0, charge: 0 },
-            stern: crate::types::ShieldFace { armour: 0, charge: 0 },
-            port: crate::types::ShieldFace { armour: 0, charge: 0 },
-            starboard: crate::types::ShieldFace { armour: 0, charge: 0 },
+            bow: crate::types::ShieldFace {
+                armour: 0,
+                charge: 0,
+            },
+            stern: crate::types::ShieldFace {
+                armour: 0,
+                charge: 0,
+            },
+            port: crate::types::ShieldFace {
+                armour: 0,
+                charge: 0,
+            },
+            starboard: crate::types::ShieldFace {
+                armour: 0,
+                charge: 0,
+            },
         };
-        let mut p = ship_2d("p", Faction::Player, Pos::new(2, 0), Facing::Bow(Dir4::N), Arc::Turret);
+        let mut p = ship_2d(
+            "p",
+            Faction::Player,
+            Pos::new(2, 0),
+            Facing::Bow(Dir4::N),
+            Arc::Turret,
+        );
         p.shield_profile = zero;
         let mut board = board_2d(vec![p]);
         let hull_before = board.ship_at(Pos::new(2, 0)).unwrap().hull;
-        resolve_self_move_2d(Pos::new(2, 0), MovementMode::THRUST, 1, None, None, &mut board, &NoContent);
+        resolve_self_move_2d(
+            Pos::new(2, 0),
+            MovementMode::THRUST,
+            1,
+            None,
+            None,
+            &mut board,
+            &NoContent,
+        );
         assert_ship_at(&board, "p", Pos::new(2, 0)); // didn't move
-        assert_eq!(board.ship_at(Pos::new(2, 0)).unwrap().hull, hull_before - 1, "wall collision = 1 (shieldless)");
+        assert_eq!(
+            board.ship_at(Pos::new(2, 0)).unwrap().hull,
+            hull_before - 1,
+            "wall collision = 1 (shieldless)"
+        );
     }
 
     #[test]
@@ -5380,19 +6565,51 @@ mod tests {
         // R4 migrates apply_damage to 2D; this asserts the collision happened +
         // the block, not the zone).
         let zero = ShieldProfile {
-            bow: crate::types::ShieldFace { armour: 0, charge: 0 },
-            stern: crate::types::ShieldFace { armour: 0, charge: 0 },
-            port: crate::types::ShieldFace { armour: 0, charge: 0 },
-            starboard: crate::types::ShieldFace { armour: 0, charge: 0 },
+            bow: crate::types::ShieldFace {
+                armour: 0,
+                charge: 0,
+            },
+            stern: crate::types::ShieldFace {
+                armour: 0,
+                charge: 0,
+            },
+            port: crate::types::ShieldFace {
+                armour: 0,
+                charge: 0,
+            },
+            starboard: crate::types::ShieldFace {
+                armour: 0,
+                charge: 0,
+            },
         };
-        let mut p = ship_2d("p", Faction::Player, Pos::new(2, 2), Facing::Bow(Dir4::N), Arc::Turret);
+        let mut p = ship_2d(
+            "p",
+            Faction::Player,
+            Pos::new(2, 2),
+            Facing::Bow(Dir4::N),
+            Arc::Turret,
+        );
         p.shield_profile = zero;
         let mut board = board_2d(vec![
             p,
-            ship_2d("b", Faction::Enemy, Pos::new(2, 1), Facing::Bow(Dir4::S), Arc::Turret),
+            ship_2d(
+                "b",
+                Faction::Enemy,
+                Pos::new(2, 1),
+                Facing::Bow(Dir4::S),
+                Arc::Turret,
+            ),
         ]);
         let hull_before = board.ship_at(Pos::new(2, 2)).unwrap().hull;
-        resolve_self_move_2d(Pos::new(2, 2), MovementMode::THRUST, 1, None, None, &mut board, &NoContent);
+        resolve_self_move_2d(
+            Pos::new(2, 2),
+            MovementMode::THRUST,
+            1,
+            None,
+            None,
+            &mut board,
+            &NoContent,
+        );
         assert_ship_at(&board, "p", Pos::new(2, 2)); // blocked
         assert_ship_at(&board, "b", Pos::new(2, 1)); // blocker unmoved
         assert_eq!(board.ship_at(Pos::new(2, 2)).unwrap().hull, hull_before - 1);
@@ -5403,10 +6620,30 @@ mod tests {
         // BURN W distance 3 from (4,1): walks (3,1),(2,1) then stops before
         // blocker at (1,1). Lands (2,1).
         let mut board = board_2d(vec![
-            ship_2d("p", Faction::Player, Pos::new(4, 1), Facing::Bow(Dir4::W), Arc::Turret),
-            ship_2d("b", Faction::Enemy, Pos::new(1, 1), Facing::Bow(Dir4::E), Arc::Turret),
+            ship_2d(
+                "p",
+                Faction::Player,
+                Pos::new(4, 1),
+                Facing::Bow(Dir4::W),
+                Arc::Turret,
+            ),
+            ship_2d(
+                "b",
+                Faction::Enemy,
+                Pos::new(1, 1),
+                Facing::Bow(Dir4::E),
+                Arc::Turret,
+            ),
         ]);
-        resolve_self_move_2d(Pos::new(4, 1), MovementMode::BURN, 3, Some(Dir4::W), None, &mut board, &NoContent);
+        resolve_self_move_2d(
+            Pos::new(4, 1),
+            MovementMode::BURN,
+            3,
+            Some(Dir4::W),
+            None,
+            &mut board,
+            &NoContent,
+        );
         assert_ship_at(&board, "p", Pos::new(2, 1));
         assert_ship_at(&board, "b", Pos::new(1, 1));
     }
@@ -5414,8 +6651,22 @@ mod tests {
     #[test]
     fn rsm2d_jump_blinks_to_target_cell() {
         // JUMP S distance 2 from (0,0): direct to (0,2), no path scan.
-        let mut board = board_2d(vec![ship_2d("p", Faction::Player, Pos::new(0, 0), Facing::Bow(Dir4::S), Arc::Turret)]);
-        resolve_self_move_2d(Pos::new(0, 0), MovementMode::JUMP, 2, Some(Dir4::S), None, &mut board, &NoContent);
+        let mut board = board_2d(vec![ship_2d(
+            "p",
+            Faction::Player,
+            Pos::new(0, 0),
+            Facing::Bow(Dir4::S),
+            Arc::Turret,
+        )]);
+        resolve_self_move_2d(
+            Pos::new(0, 0),
+            MovementMode::JUMP,
+            2,
+            Some(Dir4::S),
+            None,
+            &mut board,
+            &NoContent,
+        );
         assert_ship_at(&board, "p", Pos::new(0, 2));
     }
 
@@ -5423,10 +6674,30 @@ mod tests {
     fn rsm2d_jump_fails_on_occupied_target() {
         // JUMP S dist 2 from (0,0) but (0,2) occupied -> jump fails, stay.
         let mut board = board_2d(vec![
-            ship_2d("p", Faction::Player, Pos::new(0, 0), Facing::Bow(Dir4::S), Arc::Turret),
-            ship_2d("x", Faction::Enemy, Pos::new(0, 2), Facing::Bow(Dir4::N), Arc::Turret),
+            ship_2d(
+                "p",
+                Faction::Player,
+                Pos::new(0, 0),
+                Facing::Bow(Dir4::S),
+                Arc::Turret,
+            ),
+            ship_2d(
+                "x",
+                Faction::Enemy,
+                Pos::new(0, 2),
+                Facing::Bow(Dir4::N),
+                Arc::Turret,
+            ),
         ]);
-        resolve_self_move_2d(Pos::new(0, 0), MovementMode::JUMP, 2, Some(Dir4::S), None, &mut board, &NoContent);
+        resolve_self_move_2d(
+            Pos::new(0, 0),
+            MovementMode::JUMP,
+            2,
+            Some(Dir4::S),
+            None,
+            &mut board,
+            &NoContent,
+        );
         assert_ship_at(&board, "p", Pos::new(0, 0)); // stayed
         assert_ship_at(&board, "x", Pos::new(0, 2));
     }
@@ -5435,10 +6706,30 @@ mod tests {
     fn rsm2d_tractor_swap_trades_with_adjacent_and_keeps_invariant() {
         // SWAP E from (1,1): trade with occupant at (2,1). Both pos+slot swap.
         let mut board = board_2d(vec![
-            ship_2d("p", Faction::Player, Pos::new(1, 1), Facing::Bow(Dir4::E), Arc::Turret),
-            ship_2d("o", Faction::Enemy, Pos::new(2, 1), Facing::Bow(Dir4::W), Arc::Turret),
+            ship_2d(
+                "p",
+                Faction::Player,
+                Pos::new(1, 1),
+                Facing::Bow(Dir4::E),
+                Arc::Turret,
+            ),
+            ship_2d(
+                "o",
+                Faction::Enemy,
+                Pos::new(2, 1),
+                Facing::Bow(Dir4::W),
+                Arc::Turret,
+            ),
         ]);
-        resolve_self_move_2d(Pos::new(1, 1), MovementMode::TRACTOR_SWAP, 1, Some(Dir4::E), None, &mut board, &NoContent);
+        resolve_self_move_2d(
+            Pos::new(1, 1),
+            MovementMode::TRACTOR_SWAP,
+            1,
+            Some(Dir4::E),
+            None,
+            &mut board,
+            &NoContent,
+        );
         assert_ship_at(&board, "o", Pos::new(1, 1)); // other now where p was
         assert_ship_at(&board, "p", Pos::new(2, 1)); // p now where other was
     }
@@ -5446,8 +6737,22 @@ mod tests {
     #[test]
     fn rsm2d_tractor_swap_no_adjacent_is_noop() {
         // SWAP E from (4,3) (col 4 = E edge): nothing adjacent -> no-op.
-        let mut board = board_2d(vec![ship_2d("p", Faction::Player, Pos::new(4, 3), Facing::Bow(Dir4::E), Arc::Turret)]);
-        resolve_self_move_2d(Pos::new(4, 3), MovementMode::TRACTOR_SWAP, 1, Some(Dir4::E), None, &mut board, &NoContent);
+        let mut board = board_2d(vec![ship_2d(
+            "p",
+            Faction::Player,
+            Pos::new(4, 3),
+            Facing::Bow(Dir4::E),
+            Arc::Turret,
+        )]);
+        resolve_self_move_2d(
+            Pos::new(4, 3),
+            MovementMode::TRACTOR_SWAP,
+            1,
+            Some(Dir4::E),
+            None,
+            &mut board,
+            &NoContent,
+        );
         assert_ship_at(&board, "p", Pos::new(4, 3)); // unmoved
     }
 
@@ -5463,7 +6768,12 @@ mod tests {
         ] {
             let a = resolver_ai_move(id).unwrap_or_else(|| panic!("no action for {id}"));
             match &a.effects[0] {
-                Effect::DISPLACE_SELF { direction_2d, mode, distance, .. } => {
+                Effect::DISPLACE_SELF {
+                    direction_2d,
+                    mode,
+                    distance,
+                    ..
+                } => {
                     assert_eq!(*direction_2d, Some(want), "{id} dir");
                     assert_eq!(*mode, MovementMode::THRUST);
                     assert_eq!(*distance, 1);
@@ -5484,10 +6794,29 @@ mod tests {
         // moves E (away) to (4,1)? offset E by 2 from (2,1) = (4,1) (cols 3,4
         // free). Lands (4,1).
         let mut board = board_2d(vec![
-            ship_2d("src", Faction::Player, Pos::new(1, 1), Facing::Bow(Dir4::E), Arc::Turret),
-            ship_2d("tgt", Faction::Enemy, Pos::new(2, 1), Facing::Bow(Dir4::W), Arc::Turret),
+            ship_2d(
+                "src",
+                Faction::Player,
+                Pos::new(1, 1),
+                Facing::Bow(Dir4::E),
+                Arc::Turret,
+            ),
+            ship_2d(
+                "tgt",
+                Faction::Enemy,
+                Pos::new(2, 1),
+                Facing::Bow(Dir4::W),
+                Arc::Turret,
+            ),
         ]);
-        resolve_target_move_2d(Pos::new(2, 1), Pos::new(1, 1), crate::types::DisplaceMode::Push, 2, &mut board, &NoContent);
+        resolve_target_move_2d(
+            Pos::new(2, 1),
+            Pos::new(1, 1),
+            crate::types::DisplaceMode::Push,
+            2,
+            &mut board,
+            &NoContent,
+        );
         assert_ship_at(&board, "tgt", Pos::new(4, 1)); // pushed E by 2
         assert_ship_at(&board, "src", Pos::new(1, 1)); // source unmoved
     }
@@ -5498,23 +6827,64 @@ mod tests {
         // (2,1) then stops before blocker (3,1). Lands (2,1). Shieldless target
         // so the collision (remaining 2) is observable on hull.
         let zero = ShieldProfile {
-            bow: crate::types::ShieldFace { armour: 0, charge: 0 },
-            stern: crate::types::ShieldFace { armour: 0, charge: 0 },
-            port: crate::types::ShieldFace { armour: 0, charge: 0 },
-            starboard: crate::types::ShieldFace { armour: 0, charge: 0 },
+            bow: crate::types::ShieldFace {
+                armour: 0,
+                charge: 0,
+            },
+            stern: crate::types::ShieldFace {
+                armour: 0,
+                charge: 0,
+            },
+            port: crate::types::ShieldFace {
+                armour: 0,
+                charge: 0,
+            },
+            starboard: crate::types::ShieldFace {
+                armour: 0,
+                charge: 0,
+            },
         };
-        let mut tgt = ship_2d("tgt", Faction::Enemy, Pos::new(1, 1), Facing::Bow(Dir4::W), Arc::Turret);
+        let mut tgt = ship_2d(
+            "tgt",
+            Faction::Enemy,
+            Pos::new(1, 1),
+            Facing::Bow(Dir4::W),
+            Arc::Turret,
+        );
         tgt.shield_profile = zero;
         let mut board = board_2d(vec![
-            ship_2d("src", Faction::Player, Pos::new(0, 1), Facing::Bow(Dir4::E), Arc::Turret),
+            ship_2d(
+                "src",
+                Faction::Player,
+                Pos::new(0, 1),
+                Facing::Bow(Dir4::E),
+                Arc::Turret,
+            ),
             tgt,
-            ship_2d("blk", Faction::Enemy, Pos::new(3, 1), Facing::Bow(Dir4::W), Arc::Turret),
+            ship_2d(
+                "blk",
+                Faction::Enemy,
+                Pos::new(3, 1),
+                Facing::Bow(Dir4::W),
+                Arc::Turret,
+            ),
         ]);
         let hull_before = board.ship_at(Pos::new(1, 1)).unwrap().hull;
-        resolve_target_move_2d(Pos::new(1, 1), Pos::new(0, 1), crate::types::DisplaceMode::Push, 3, &mut board, &NoContent);
+        resolve_target_move_2d(
+            Pos::new(1, 1),
+            Pos::new(0, 1),
+            crate::types::DisplaceMode::Push,
+            3,
+            &mut board,
+            &NoContent,
+        );
         assert_ship_at(&board, "tgt", Pos::new(2, 1)); // stopped before blocker
         assert_ship_at(&board, "blk", Pos::new(3, 1));
-        assert_eq!(board.ship_at(Pos::new(2, 1)).unwrap().hull, hull_before - 2, "remaining-2 collision");
+        assert_eq!(
+            board.ship_at(Pos::new(2, 1)).unwrap().hull,
+            hull_before - 2,
+            "remaining-2 collision"
+        );
     }
 
     #[test]
@@ -5522,10 +6892,29 @@ mod tests {
         // Source (0,1), target (3,1). Pull 2 -> target moves W (toward source)
         // to (1,1) (cols 2,1 free), stopping short of source.
         let mut board = board_2d(vec![
-            ship_2d("src", Faction::Player, Pos::new(0, 1), Facing::Bow(Dir4::E), Arc::Turret),
-            ship_2d("tgt", Faction::Enemy, Pos::new(3, 1), Facing::Bow(Dir4::W), Arc::Turret),
+            ship_2d(
+                "src",
+                Faction::Player,
+                Pos::new(0, 1),
+                Facing::Bow(Dir4::E),
+                Arc::Turret,
+            ),
+            ship_2d(
+                "tgt",
+                Faction::Enemy,
+                Pos::new(3, 1),
+                Facing::Bow(Dir4::W),
+                Arc::Turret,
+            ),
         ]);
-        resolve_target_move_2d(Pos::new(3, 1), Pos::new(0, 1), crate::types::DisplaceMode::Pull, 2, &mut board, &NoContent);
+        resolve_target_move_2d(
+            Pos::new(3, 1),
+            Pos::new(0, 1),
+            crate::types::DisplaceMode::Pull,
+            2,
+            &mut board,
+            &NoContent,
+        );
         assert_ship_at(&board, "tgt", Pos::new(1, 1)); // pulled W by 2
         assert_ship_at(&board, "src", Pos::new(0, 1));
     }
@@ -5534,10 +6923,29 @@ mod tests {
     fn rtm2d_swap_trades_source_and_target_cells() {
         // Swap source (1,2) <-> target (3,0): both pos+slot swap, invariant kept.
         let mut board = board_2d(vec![
-            ship_2d("src", Faction::Player, Pos::new(1, 2), Facing::Bow(Dir4::N), Arc::Turret),
-            ship_2d("tgt", Faction::Enemy, Pos::new(3, 0), Facing::Bow(Dir4::S), Arc::Turret),
+            ship_2d(
+                "src",
+                Faction::Player,
+                Pos::new(1, 2),
+                Facing::Bow(Dir4::N),
+                Arc::Turret,
+            ),
+            ship_2d(
+                "tgt",
+                Faction::Enemy,
+                Pos::new(3, 0),
+                Facing::Bow(Dir4::S),
+                Arc::Turret,
+            ),
         ]);
-        resolve_target_move_2d(Pos::new(3, 0), Pos::new(1, 2), crate::types::DisplaceMode::Swap, 1, &mut board, &NoContent);
+        resolve_target_move_2d(
+            Pos::new(3, 0),
+            Pos::new(1, 2),
+            crate::types::DisplaceMode::Swap,
+            1,
+            &mut board,
+            &NoContent,
+        );
         assert_ship_at(&board, "src", Pos::new(3, 0)); // source now where target was
         assert_ship_at(&board, "tgt", Pos::new(1, 2)); // target now where source was
     }
@@ -5545,8 +6953,21 @@ mod tests {
     #[test]
     fn rtm2d_empty_target_cell_is_noop() {
         // No ship at the target pos -> no-op (no panic).
-        let mut board = board_2d(vec![ship_2d("src", Faction::Player, Pos::new(0, 0), Facing::Bow(Dir4::E), Arc::Turret)]);
-        resolve_target_move_2d(Pos::new(2, 2), Pos::new(0, 0), crate::types::DisplaceMode::Push, 1, &mut board, &NoContent);
+        let mut board = board_2d(vec![ship_2d(
+            "src",
+            Faction::Player,
+            Pos::new(0, 0),
+            Facing::Bow(Dir4::E),
+            Arc::Turret,
+        )]);
+        resolve_target_move_2d(
+            Pos::new(2, 2),
+            Pos::new(0, 0),
+            crate::types::DisplaceMode::Push,
+            1,
+            &mut board,
+            &NoContent,
+        );
         assert!(board.ship_at(Pos::new(2, 2)).is_none());
         assert_ship_at(&board, "src", Pos::new(0, 0));
     }
@@ -5594,12 +7015,23 @@ mod tests {
             crate::grid::Dir8::E,
             2,
             Faction::Player,
-            vec![Effect::DAMAGE { amount: 3, band_falloff: None }],
+            vec![Effect::DAMAGE {
+                amount: 3,
+                band_falloff: None,
+            }],
         ));
         advance_projectile_2d("t", &mut board, &NoContent);
-        let p = board.ordnance.iter().find(|p| p.id == "t").expect("still in flight");
+        let p = board
+            .ordnance
+            .iter()
+            .find(|p| p.id == "t")
+            .expect("still in flight");
         assert_eq!(p.pos, Pos::new(2, 1), "advanced 2 cells E");
-        assert_eq!(p.cell, Pos::new(2, 1).to_index(), "cell mirror in sync (invariant A)");
+        assert_eq!(
+            p.cell,
+            Pos::new(2, 1).to_index(),
+            "cell mirror in sync (invariant A)"
+        );
     }
 
     #[test]
@@ -5613,10 +7045,16 @@ mod tests {
             crate::grid::Dir8::E,
             1,
             Faction::Player,
-            vec![Effect::DAMAGE { amount: 3, band_falloff: None }],
+            vec![Effect::DAMAGE {
+                amount: 3,
+                band_falloff: None,
+            }],
         ));
         advance_projectile_2d("t", &mut board, &NoContent);
-        assert!(board.ordnance.iter().all(|p| p.id != "t"), "off-grid projectile removed");
+        assert!(
+            board.ordnance.iter().all(|p| p.id != "t"),
+            "off-grid projectile removed"
+        );
     }
 
     #[test]
@@ -5626,12 +7064,30 @@ mod tests {
         // through apply_damage_2d, and is consumed. Shieldless so the hit is
         // observable on hull regardless of which face it lands on.
         let zero = ShieldProfile {
-            bow: crate::types::ShieldFace { armour: 0, charge: 0 },
-            stern: crate::types::ShieldFace { armour: 0, charge: 0 },
-            port: crate::types::ShieldFace { armour: 0, charge: 0 },
-            starboard: crate::types::ShieldFace { armour: 0, charge: 0 },
+            bow: crate::types::ShieldFace {
+                armour: 0,
+                charge: 0,
+            },
+            stern: crate::types::ShieldFace {
+                armour: 0,
+                charge: 0,
+            },
+            port: crate::types::ShieldFace {
+                armour: 0,
+                charge: 0,
+            },
+            starboard: crate::types::ShieldFace {
+                armour: 0,
+                charge: 0,
+            },
         };
-        let mut tgt = ship_2d("e", Faction::Enemy, Pos::new(2, 1), Facing::Bow(Dir4::W), Arc::Turret);
+        let mut tgt = ship_2d(
+            "e",
+            Faction::Enemy,
+            Pos::new(2, 1),
+            Facing::Bow(Dir4::W),
+            Arc::Turret,
+        );
         tgt.shield_profile = zero;
         let hull_before = tgt.hull;
         let mut board = board_2d(vec![tgt]);
@@ -5641,13 +7097,23 @@ mod tests {
             crate::grid::Dir8::E,
             3,
             Faction::Player,
-            vec![Effect::DAMAGE { amount: 5, band_falloff: None }],
+            vec![Effect::DAMAGE {
+                amount: 5,
+                band_falloff: None,
+            }],
         ));
         advance_projectile_2d("t", &mut board, &NoContent);
         // Adjacent-band falloff factor 1.0 on the (1,1)->(2,1) impact step:
         // floor(5 * 1.0) = 5 lands on a shieldless hull.
-        assert_eq!(board.ship_at(Pos::new(2, 1)).unwrap().hull, hull_before - 5, "payload landed");
-        assert!(board.ordnance.iter().all(|p| p.id != "t"), "consumed on impact");
+        assert_eq!(
+            board.ship_at(Pos::new(2, 1)).unwrap().hull,
+            hull_before - 5,
+            "payload landed"
+        );
+        assert!(
+            board.ordnance.iter().all(|p| p.id != "t"),
+            "consumed on impact"
+        );
     }
 
     #[test]
@@ -5657,7 +7123,13 @@ mod tests {
         // Torpedo heading E impacts a ship whose BOW faces W (toward the
         // incoming shot) -> the bow armour soaks it. Same ship, same payload,
         // but the strong bow now absorbs where a stern would not.
-        let mut tgt = ship_2d("e", Faction::Enemy, Pos::new(2, 1), Facing::Bow(Dir4::W), Arc::Turret);
+        let mut tgt = ship_2d(
+            "e",
+            Faction::Enemy,
+            Pos::new(2, 1),
+            Facing::Bow(Dir4::W),
+            Arc::Turret,
+        );
         // #103 Model A pool profile: bow pool {4,4}. Shot from W hits the bow ->
         // its full pool soaks the falloff-2 torpedo, 0 reaches hull.
         tgt.shield_profile = pooled_shield_profile();
@@ -5669,12 +7141,19 @@ mod tests {
             crate::grid::Dir8::E,
             3,
             Faction::Player,
-            vec![Effect::DAMAGE { amount: 2, band_falloff: None }],
+            vec![Effect::DAMAGE {
+                amount: 2,
+                band_falloff: None,
+            }],
         ));
         advance_projectile_2d("t", &mut board, &NoContent);
         // incoming_from = opposite(E) = W; facing Bow(W) -> bow zone, pool {4,4}.
         // falloff at Adjacent = 2 raw; the bow pool soaks all 2, 0 reaches hull.
-        assert_eq!(board.ship_at(Pos::new(2, 1)).unwrap().hull, hull_before, "bow pool soaked the head-on shot");
+        assert_eq!(
+            board.ship_at(Pos::new(2, 1)).unwrap().hull,
+            hull_before,
+            "bow pool soaked the head-on shot"
+        );
     }
 
     #[test]
@@ -5682,7 +7161,13 @@ mod tests {
         // A projectile does NOT detonate on a same-faction ship. Player torpedo
         // heading E over a friendly Player ship at (2,1): it keeps going (here
         // speed 3 carries it past to (3,1)) rather than impacting.
-        let friendly = ship_2d("f", Faction::Player, Pos::new(2, 1), Facing::Bow(Dir4::W), Arc::Turret);
+        let friendly = ship_2d(
+            "f",
+            Faction::Player,
+            Pos::new(2, 1),
+            Facing::Bow(Dir4::W),
+            Arc::Turret,
+        );
         let mut board = board_2d(vec![friendly]);
         board.ordnance.push(proj_2d(
             "t",
@@ -5690,19 +7175,36 @@ mod tests {
             crate::grid::Dir8::E,
             3,
             Faction::Player,
-            vec![Effect::DAMAGE { amount: 5, band_falloff: None }],
+            vec![Effect::DAMAGE {
+                amount: 5,
+                band_falloff: None,
+            }],
         ));
         advance_projectile_2d("t", &mut board, &NoContent);
         // Friendly unharmed; projectile flew past to (3,1).
-        assert_eq!(board.ship_at(Pos::new(2, 1)).unwrap().hull, 10, "friendly untouched");
-        let p = board.ordnance.iter().find(|p| p.id == "t").expect("still flying past friendly");
+        assert_eq!(
+            board.ship_at(Pos::new(2, 1)).unwrap().hull,
+            10,
+            "friendly untouched"
+        );
+        let p = board
+            .ordnance
+            .iter()
+            .find(|p| p.id == "t")
+            .expect("still flying past friendly");
         assert_eq!(p.pos, Pos::new(3, 1), "passed through to (3,1)");
     }
 
     #[test]
     fn ap2d_apply_status_payload_lands_on_impact() {
         // An APPLY_STATUS payload is applied to the impacted enemy on contact.
-        let tgt = ship_2d("e", Faction::Enemy, Pos::new(1, 1), Facing::Bow(Dir4::W), Arc::Turret);
+        let tgt = ship_2d(
+            "e",
+            Faction::Enemy,
+            Pos::new(1, 1),
+            Facing::Bow(Dir4::W),
+            Arc::Turret,
+        );
         let mut board = board_2d(vec![tgt]);
         board.ordnance.push(proj_2d(
             "t",
@@ -5710,7 +7212,10 @@ mod tests {
             crate::grid::Dir8::E,
             1,
             Faction::Player,
-            vec![Effect::APPLY_STATUS { status: StatusKind::TargetLock, duration: 2 }],
+            vec![Effect::APPLY_STATUS {
+                status: StatusKind::TargetLock,
+                duration: 2,
+            }],
         ));
         advance_projectile_2d("t", &mut board, &NoContent);
         let e = board.ship_at(Pos::new(1, 1)).expect("enemy present");
@@ -5718,7 +7223,10 @@ mod tests {
             e.statuses.iter().any(|s| s.kind == StatusKind::TargetLock),
             "status applied on impact"
         );
-        assert!(board.ordnance.iter().all(|p| p.id != "t"), "consumed on impact");
+        assert!(
+            board.ordnance.iter().all(|p| p.id != "t"),
+            "consumed on impact"
+        );
     }
 
     /* =====================================================================
@@ -5750,8 +7258,20 @@ mod tests {
         // Enemy at (2,1) Bow(S) with a queued forward beam; player at (2,3) is
         // down the S column. The threat paints on the player's cell, kind
         // Damage{4} (pulse_laser's raw), source = the enemy's pos.
-        let player = ship_2d("p", Faction::Player, Pos::new(2, 3), Facing::Bow(Dir4::N), Arc::Turret);
-        let enemy = enemy_queued_2d("e", Pos::new(2, 1), Facing::Bow(Dir4::S), Arc::Forward, "pulse_laser");
+        let player = ship_2d(
+            "p",
+            Faction::Player,
+            Pos::new(2, 3),
+            Facing::Bow(Dir4::N),
+            Arc::Turret,
+        );
+        let enemy = enemy_queued_2d(
+            "e",
+            Pos::new(2, 1),
+            Facing::Bow(Dir4::S),
+            Arc::Forward,
+            "pulse_laser",
+        );
         let mut board = board_2d(vec![player, enemy]);
         // pulse_laser with the full band so it bears at this range.
         let weapon = action_2d(TargetingPattern::BEAM, Some(Arc::Forward), false);
@@ -5761,15 +7281,31 @@ mod tests {
         let t = board.threats[0];
         assert_eq!(t.pos, Pos::new(2, 3), "threat on the player's cell");
         assert_eq!(t.source, Pos::new(2, 1), "source is the firing enemy");
-        assert_eq!(t.kind, crate::types::ThreatKind::Damage { amount: 4 }, "raw pulse damage");
+        assert_eq!(
+            t.kind,
+            crate::types::ThreatKind::Damage { amount: 4 },
+            "raw pulse damage"
+        );
     }
 
     #[test]
     fn pt2d_threat_set_equals_resolve_targeting_2d_single_source() {
         // THE V4-at-R8 invariant: the painted cell set is exactly what
         // resolve_targeting_2d returns for the same queued action + enemy pos.
-        let player = ship_2d("p", Faction::Player, Pos::new(2, 3), Facing::Bow(Dir4::N), Arc::Turret);
-        let enemy = enemy_queued_2d("e", Pos::new(2, 1), Facing::Bow(Dir4::S), Arc::Forward, "pulse_laser");
+        let player = ship_2d(
+            "p",
+            Faction::Player,
+            Pos::new(2, 3),
+            Facing::Bow(Dir4::N),
+            Arc::Turret,
+        );
+        let enemy = enemy_queued_2d(
+            "e",
+            Pos::new(2, 1),
+            Facing::Bow(Dir4::S),
+            Arc::Forward,
+            "pulse_laser",
+        );
         let mut board = board_2d(vec![player, enemy]);
         let weapon = action_2d(TargetingPattern::BEAM, Some(Arc::Forward), false);
         let content = OneAction("pulse_laser".into(), weapon.clone());
@@ -5777,14 +7313,29 @@ mod tests {
         let fired = resolve_targeting_2d(&weapon, &board, Pos::new(2, 1));
         paint_threats(&mut board, &content);
         let painted: Vec<Pos> = board.threats.iter().map(|t| t.pos).collect();
-        assert_eq!(painted, fired, "painted threats must equal the fired cell set");
+        assert_eq!(
+            painted, fired,
+            "painted threats must equal the fired cell set"
+        );
     }
 
     #[test]
     fn pt2d_empty_queue_paints_nothing() {
         // An enemy with no queued action telegraphs no threat.
-        let player = ship_2d("p", Faction::Player, Pos::new(2, 3), Facing::Bow(Dir4::N), Arc::Turret);
-        let enemy = ship_2d("e", Faction::Enemy, Pos::new(2, 1), Facing::Bow(Dir4::S), Arc::Forward);
+        let player = ship_2d(
+            "p",
+            Faction::Player,
+            Pos::new(2, 3),
+            Facing::Bow(Dir4::N),
+            Arc::Turret,
+        );
+        let enemy = ship_2d(
+            "e",
+            Faction::Enemy,
+            Pos::new(2, 1),
+            Facing::Bow(Dir4::S),
+            Arc::Forward,
+        );
         let mut board = board_2d(vec![player, enemy]);
         let content = OneAction("pulse_laser".into(), pulse_laser());
         paint_threats(&mut board, &content);
@@ -5795,7 +7346,13 @@ mod tests {
     fn pt2d_clears_stale_threats_each_pass() {
         // paint_threats rebuilds: a pre-populated stale threat is cleared even
         // when the current queues paint nothing.
-        let enemy = ship_2d("e", Faction::Enemy, Pos::new(2, 1), Facing::Bow(Dir4::S), Arc::Forward);
+        let enemy = ship_2d(
+            "e",
+            Faction::Enemy,
+            Pos::new(2, 1),
+            Facing::Bow(Dir4::S),
+            Arc::Forward,
+        );
         let mut board = board_2d(vec![enemy]);
         board.threats.push(crate::types::Threat {
             pos: Pos::new(0, 0),
@@ -5812,13 +7369,28 @@ mod tests {
         // Player not on the enemy's forward column -> the queued beam bears on
         // nothing -> no threat (the deterministic basis for R7's whiff: the
         // shot will find an empty cell).
-        let player = ship_2d("p", Faction::Player, Pos::new(0, 3), Facing::Bow(Dir4::N), Arc::Turret);
-        let enemy = enemy_queued_2d("e", Pos::new(2, 1), Facing::Bow(Dir4::S), Arc::Forward, "pulse_laser");
+        let player = ship_2d(
+            "p",
+            Faction::Player,
+            Pos::new(0, 3),
+            Facing::Bow(Dir4::N),
+            Arc::Turret,
+        );
+        let enemy = enemy_queued_2d(
+            "e",
+            Pos::new(2, 1),
+            Facing::Bow(Dir4::S),
+            Arc::Forward,
+            "pulse_laser",
+        );
         let mut board = board_2d(vec![player, enemy]);
         let weapon = action_2d(TargetingPattern::BEAM, Some(Arc::Forward), false);
         let content = OneAction("pulse_laser".into(), weapon);
         paint_threats(&mut board, &content);
-        assert!(board.threats.is_empty(), "off-ray queued shot paints no threat");
+        assert!(
+            board.threats.is_empty(),
+            "off-ray queued shot paints no threat"
+        );
     }
 
     #[test]
@@ -5827,21 +7399,36 @@ mod tests {
         // Damage wins even if combined with displace.
         let mut dmg = pulse_laser();
         dmg.effects = vec![
-            Effect::DISPLACE_TARGET { mode: crate::types::DisplaceMode::Push, distance: 1 },
-            Effect::DAMAGE { amount: 3, band_falloff: None },
+            Effect::DISPLACE_TARGET {
+                mode: crate::types::DisplaceMode::Push,
+                distance: 1,
+            },
+            Effect::DAMAGE {
+                amount: 3,
+                band_falloff: None,
+            },
         ];
         assert_eq!(threat_kind(&dmg), ThreatKind::Damage { amount: 3 });
 
         let mut disp = pulse_laser();
-        disp.effects = vec![Effect::DISPLACE_TARGET { mode: crate::types::DisplaceMode::Pull, distance: 2 }];
+        disp.effects = vec![Effect::DISPLACE_TARGET {
+            mode: crate::types::DisplaceMode::Pull,
+            distance: 2,
+        }];
         assert_eq!(threat_kind(&disp), ThreatKind::Displace);
 
         let mut status = pulse_laser();
-        status.effects = vec![Effect::APPLY_STATUS { status: StatusKind::TargetLock, duration: 3 }];
+        status.effects = vec![Effect::APPLY_STATUS {
+            status: StatusKind::TargetLock,
+            duration: 3,
+        }];
         assert_eq!(threat_kind(&status), ThreatKind::Status);
 
         let mut other = pulse_laser();
-        other.effects = vec![Effect::VENT_HEAT { amount: 2, recharge_cooldowns: None }];
+        other.effects = vec![Effect::VENT_HEAT {
+            amount: 2,
+            recharge_cooldowns: None,
+        }];
         assert_eq!(threat_kind(&other), ThreatKind::Other);
     }
 
@@ -5858,7 +7445,13 @@ mod tests {
         // player has since moved off (2,3) — that cell is now empty. Firing the
         // queued beam this phase: no target on the S ray -> nothing-bore, but
         // the whiff draws first: a hit:false FireEvent (2,1) -> (2,3).
-        let enemy = ship_2d("e", Faction::Enemy, Pos::new(2, 1), Facing::Bow(Dir4::S), Arc::Forward);
+        let enemy = ship_2d(
+            "e",
+            Faction::Enemy,
+            Pos::new(2, 1),
+            Facing::Bow(Dir4::S),
+            Arc::Forward,
+        );
         let mut board = board_2d(vec![enemy]); // (2,3) deliberately EMPTY now
         board.threats.push(crate::types::Threat {
             pos: Pos::new(2, 3),
@@ -5879,8 +7472,20 @@ mod tests {
     fn r7_no_whiff_when_telegraphed_cell_still_occupied() {
         // Same telegraph, but the player is STILL on (2,3). The shot connects
         // normally (hit:true) and there is NO whiff.
-        let enemy = ship_2d("e", Faction::Enemy, Pos::new(2, 1), Facing::Bow(Dir4::S), Arc::Forward);
-        let player = ship_2d("p", Faction::Player, Pos::new(2, 3), Facing::Bow(Dir4::N), Arc::Turret);
+        let enemy = ship_2d(
+            "e",
+            Faction::Enemy,
+            Pos::new(2, 1),
+            Facing::Bow(Dir4::S),
+            Arc::Forward,
+        );
+        let player = ship_2d(
+            "p",
+            Faction::Player,
+            Pos::new(2, 3),
+            Facing::Bow(Dir4::N),
+            Arc::Turret,
+        );
         let mut board = board_2d(vec![enemy, player]);
         board.threats.push(crate::types::Threat {
             pos: Pos::new(2, 3),
@@ -5890,15 +7495,30 @@ mod tests {
         let weapon = action_2d(TargetingPattern::BEAM, Some(Arc::Forward), false);
         let content = OneAction("w".into(), weapon.clone());
         run_action("e", "w", &weapon, &mut board, &content);
-        assert!(board.fire_events.iter().all(|f| f.hit), "occupied target -> no whiff, only hit:true");
-        assert!(board.fire_events.iter().any(|f| f.hit && f.to_pos == Pos::new(2, 3)), "the connecting hit is recorded");
+        assert!(
+            board.fire_events.iter().all(|f| f.hit),
+            "occupied target -> no whiff, only hit:true"
+        );
+        assert!(
+            board
+                .fire_events
+                .iter()
+                .any(|f| f.hit && f.to_pos == Pos::new(2, 3)),
+            "the connecting hit is recorded"
+        );
     }
 
     #[test]
     fn r7_no_whiff_for_a_non_damage_action() {
         // A queued non-DAMAGE action (here a SELF vent) does not whiff even if a
         // stale threat exists — only DAMAGE-bearing shots draw a miss.
-        let mut enemy = ship_2d("e", Faction::Enemy, Pos::new(2, 1), Facing::Bow(Dir4::S), Arc::Forward);
+        let mut enemy = ship_2d(
+            "e",
+            Faction::Enemy,
+            Pos::new(2, 1),
+            Facing::Bow(Dir4::S),
+            Arc::Forward,
+        );
         enemy.heat = 3; // so the vent does something; irrelevant to the whiff gate
         let mut board = board_2d(vec![enemy]);
         board.threats.push(crate::types::Threat {
@@ -5909,30 +7529,56 @@ mod tests {
         let mut vent = pulse_laser();
         vent.targeting.pattern = TargetingPattern::SELF;
         vent.targeting.requires_arc = None;
-        vent.effects = vec![Effect::VENT_HEAT { amount: 2, recharge_cooldowns: None }];
+        vent.effects = vec![Effect::VENT_HEAT {
+            amount: 2,
+            recharge_cooldowns: None,
+        }];
         let content = OneAction("vent".into(), vent.clone());
         run_action("e", "vent", &vent, &mut board, &content);
-        assert!(board.fire_events.is_empty(), "a non-DAMAGE action emits no FireEvent (hit or whiff)");
+        assert!(
+            board.fire_events.is_empty(),
+            "a non-DAMAGE action emits no FireEvent (hit or whiff)"
+        );
     }
 
     #[test]
     fn r7_whiff_only_for_this_firers_telegraph() {
         // Two enemies telegraphed different cells; firing enemy A must only
         // whiff A's vacated cell, not B's (filtered by Threat.source).
-        let a = ship_2d("a", Faction::Enemy, Pos::new(2, 1), Facing::Bow(Dir4::S), Arc::Forward);
-        let b = ship_2d("b", Faction::Enemy, Pos::new(0, 1), Facing::Bow(Dir4::S), Arc::Forward);
+        let a = ship_2d(
+            "a",
+            Faction::Enemy,
+            Pos::new(2, 1),
+            Facing::Bow(Dir4::S),
+            Arc::Forward,
+        );
+        let b = ship_2d(
+            "b",
+            Faction::Enemy,
+            Pos::new(0, 1),
+            Facing::Bow(Dir4::S),
+            Arc::Forward,
+        );
         let mut board = board_2d(vec![a, b]); // (2,3) and (0,3) both empty
         board.threats.push(crate::types::Threat {
-            pos: Pos::new(2, 3), kind: crate::types::ThreatKind::Damage { amount: 4 }, source: Pos::new(2, 1),
+            pos: Pos::new(2, 3),
+            kind: crate::types::ThreatKind::Damage { amount: 4 },
+            source: Pos::new(2, 1),
         });
         board.threats.push(crate::types::Threat {
-            pos: Pos::new(0, 3), kind: crate::types::ThreatKind::Damage { amount: 4 }, source: Pos::new(0, 1),
+            pos: Pos::new(0, 3),
+            kind: crate::types::ThreatKind::Damage { amount: 4 },
+            source: Pos::new(0, 1),
         });
         let weapon = action_2d(TargetingPattern::BEAM, Some(Arc::Forward), false);
         let content = OneAction("w".into(), weapon.clone());
         run_action("a", "w", &weapon, &mut board, &content);
         let whiffs: Vec<_> = board.fire_events.iter().filter(|f| !f.hit).collect();
         assert_eq!(whiffs.len(), 1, "only A's telegraph whiffs");
-        assert_eq!(whiffs[0].to_pos, Pos::new(2, 3), "A's vacated cell, not B's");
+        assert_eq!(
+            whiffs[0].to_pos,
+            Pos::new(2, 3),
+            "A's vacated cell, not B's"
+        );
     }
 }

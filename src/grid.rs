@@ -96,7 +96,10 @@ impl Pos {
         if index >= CELLS {
             return None;
         }
-        Some(Self { col: index % COLS, row: index / COLS })
+        Some(Self {
+            col: index % COLS,
+            row: index / COLS,
+        })
     }
 }
 
@@ -105,7 +108,10 @@ impl Pos {
 /// and tests; cheap (`Copy` items, no allocation beyond the returned `Vec`).
 pub fn all_positions() -> Vec<Pos> {
     (0..CELLS)
-        .map(|i| Pos { col: i % COLS, row: i / COLS })
+        .map(|i| Pos {
+            col: i % COLS,
+            row: i / COLS,
+        })
         .collect()
 }
 
@@ -256,7 +262,10 @@ pub fn offset(pos: Pos, dir: Dir8, dist: i32) -> Option<Pos> {
     if col < 0 || row < 0 || col >= COLS as i32 || row >= ROWS as i32 {
         return None;
     }
-    Some(Pos { col: col as usize, row: row as usize })
+    Some(Pos {
+        col: col as usize,
+        row: row as usize,
+    })
 }
 
 /// The in-bounds 8-neighbours of `pos`, in clockwise [`Dir8::ALL`] order.

@@ -5,7 +5,9 @@
 //! content lookups — just geometry. The TypeScript engine is the canonical
 //! reference; when this port and the TS disagree, the TS is right.
 
-use crate::types::{Arc, HullZone, LaneEnd, Orientation, RangeBand, ShieldFace, ShieldProfile, Ship};
+use crate::types::{
+    Arc, HullZone, LaneEnd, Orientation, RangeBand, ShieldFace, ShieldProfile, Ship,
+};
 
 /// `fore` is toward higher cell index; `opposite(fore) = aft` and vice versa.
 pub fn opposite(end: LaneEnd) -> LaneEnd {
@@ -156,10 +158,22 @@ pub fn absorb_shield(face: &mut ShieldFace, dmg: i32) -> i32 {
 /// throughout `demo.ts`.
 pub fn default_shield_profile() -> ShieldProfile {
     ShieldProfile {
-        bow: ShieldFace { armour: 2, charge: 0 },
-        stern: ShieldFace { armour: 0, charge: 0 },
-        port: ShieldFace { armour: 1, charge: 0 },
-        starboard: ShieldFace { armour: 1, charge: 0 },
+        bow: ShieldFace {
+            armour: 2,
+            charge: 0,
+        },
+        stern: ShieldFace {
+            armour: 0,
+            charge: 0,
+        },
+        port: ShieldFace {
+            armour: 1,
+            charge: 0,
+        },
+        starboard: ShieldFace {
+            armour: 1,
+            charge: 0,
+        },
     }
 }
 
@@ -220,7 +234,10 @@ mod tests {
         // delta 1 => factor 0.66 => floor(4 * 0.66) = 2
         assert_eq!(band_falloff(4, RangeBand::Mid, RangeBand::Close), 2);
         // delta 4 => factor 0.2 => floor(10 * 0.2) = 2
-        assert_eq!(band_falloff(10, RangeBand::Extreme, RangeBand::PointBlank), 2);
+        assert_eq!(
+            band_falloff(10, RangeBand::Extreme, RangeBand::PointBlank),
+            2
+        );
     }
 
     #[test]
@@ -257,7 +274,11 @@ mod tests {
         let o = Orientation::BowOn { bow: LaneEnd::Fore };
         assert!(arc_bears(o, Arc::Turret, LaneEnd::Fore));
         assert!(arc_bears(o, Arc::Turret, LaneEnd::Aft));
-        assert!(arc_bears(Orientation::Broadside, Arc::Turret, LaneEnd::Fore));
+        assert!(arc_bears(
+            Orientation::Broadside,
+            Arc::Turret,
+            LaneEnd::Fore
+        ));
     }
 
     #[test]
@@ -266,7 +287,11 @@ mod tests {
         assert!(arc_bears(o, Arc::Forward, LaneEnd::Fore));
         assert!(!arc_bears(o, Arc::Forward, LaneEnd::Aft));
         // Forward never bears when the hull is broadside.
-        assert!(!arc_bears(Orientation::Broadside, Arc::Forward, LaneEnd::Fore));
+        assert!(!arc_bears(
+            Orientation::Broadside,
+            Arc::Forward,
+            LaneEnd::Fore
+        ));
     }
 
     #[test]
@@ -278,15 +303,26 @@ mod tests {
 
     #[test]
     fn arc_bears_broadside_only_when_turned_broadside() {
-        assert!(arc_bears(Orientation::Broadside, Arc::BroadsideArc, LaneEnd::Fore));
-        assert!(arc_bears(Orientation::Broadside, Arc::BroadsideArc, LaneEnd::Aft));
+        assert!(arc_bears(
+            Orientation::Broadside,
+            Arc::BroadsideArc,
+            LaneEnd::Fore
+        ));
+        assert!(arc_bears(
+            Orientation::Broadside,
+            Arc::BroadsideArc,
+            LaneEnd::Aft
+        ));
         let o = Orientation::BowOn { bow: LaneEnd::Fore };
         assert!(!arc_bears(o, Arc::BroadsideArc, LaneEnd::Fore));
     }
 
     #[test]
     fn absorb_shield_charge_negates_hit_and_decrements() {
-        let mut face = ShieldFace { armour: 5, charge: 1 };
+        let mut face = ShieldFace {
+            armour: 5,
+            charge: 1,
+        };
         let through = absorb_shield(&mut face, 10);
         assert_eq!(through, 0);
         assert_eq!(face.charge, 0);
@@ -294,7 +330,10 @@ mod tests {
 
     #[test]
     fn absorb_shield_falls_back_to_armour_when_no_charge() {
-        let mut face = ShieldFace { armour: 2, charge: 0 };
+        let mut face = ShieldFace {
+            armour: 2,
+            charge: 0,
+        };
         let through = absorb_shield(&mut face, 5);
         assert_eq!(through, 3);
         // Armour is permanent — unchanged.
@@ -303,13 +342,19 @@ mod tests {
 
     #[test]
     fn absorb_shield_clamps_when_armour_exceeds_damage() {
-        let mut face = ShieldFace { armour: 5, charge: 0 };
+        let mut face = ShieldFace {
+            armour: 5,
+            charge: 0,
+        };
         assert_eq!(absorb_shield(&mut face, 2), 0);
     }
 
     #[test]
     fn absorb_shield_ignores_non_positive_damage() {
-        let mut face = ShieldFace { armour: 5, charge: 3 };
+        let mut face = ShieldFace {
+            armour: 5,
+            charge: 3,
+        };
         assert_eq!(absorb_shield(&mut face, 0), 0);
         // Charge must not be consumed if there was nothing to absorb.
         assert_eq!(face.charge, 3);
@@ -318,9 +363,33 @@ mod tests {
     #[test]
     fn default_shield_profile_matches_the_doc() {
         let p = default_shield_profile();
-        assert_eq!(*p.face(HullZone::Bow), ShieldFace { armour: 2, charge: 0 });
-        assert_eq!(*p.face(HullZone::Stern), ShieldFace { armour: 0, charge: 0 });
-        assert_eq!(*p.face(HullZone::Port), ShieldFace { armour: 1, charge: 0 });
-        assert_eq!(*p.face(HullZone::Starboard), ShieldFace { armour: 1, charge: 0 });
+        assert_eq!(
+            *p.face(HullZone::Bow),
+            ShieldFace {
+                armour: 2,
+                charge: 0
+            }
+        );
+        assert_eq!(
+            *p.face(HullZone::Stern),
+            ShieldFace {
+                armour: 0,
+                charge: 0
+            }
+        );
+        assert_eq!(
+            *p.face(HullZone::Port),
+            ShieldFace {
+                armour: 1,
+                charge: 0
+            }
+        );
+        assert_eq!(
+            *p.face(HullZone::Starboard),
+            ShieldFace {
+                armour: 1,
+                charge: 0
+            }
+        );
     }
 }

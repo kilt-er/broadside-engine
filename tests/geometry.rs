@@ -24,8 +24,7 @@ use broadside_engine::geometry::{
     facing_zone, in_band, opposite, range_band,
 };
 use broadside_engine::types::{
-    Arc, Faction, HullZone, LaneEnd, Mount, Orientation, RangeBand, ShieldFace, ShieldProfile,
-    Ship,
+    Arc, Faction, HullZone, LaneEnd, Mount, Orientation, RangeBand, ShieldFace, ShieldProfile, Ship,
 };
 use std::collections::HashMap;
 
@@ -117,9 +116,17 @@ fn range_band_bucket_sweep_zero_through_eight() {
         (8, RangeBand::Extreme),
     ];
     for (d, want) in expected {
-        assert_eq!(range_band(0, d), want, "range_band(0,{d}) should be {want:?}");
+        assert_eq!(
+            range_band(0, d),
+            want,
+            "range_band(0,{d}) should be {want:?}"
+        );
         // Symmetry: distance is absolute, so swapping cells must not change band.
-        assert_eq!(range_band(d, 0), want, "range_band({d},0) should be {want:?}");
+        assert_eq!(
+            range_band(d, 0),
+            want,
+            "range_band({d},0) should be {want:?}"
+        );
     }
 }
 
@@ -158,7 +165,11 @@ fn band_falloff_delta_zero_returns_raw_unchanged() {
         RangeBand::Long,
         RangeBand::Extreme,
     ] {
-        assert_eq!(band_falloff(10, b, b), 10, "{b:?} self-pair should be unchanged");
+        assert_eq!(
+            band_falloff(10, b, b),
+            10,
+            "{b:?} self-pair should be unchanged"
+        );
     }
 }
 
@@ -189,7 +200,10 @@ fn band_falloff_delta_three_applies_third_factor() {
 #[test]
 fn band_falloff_delta_four_applies_one_fifth_factor() {
     // 0.2 * 10 = 2
-    assert_eq!(band_falloff(10, RangeBand::Extreme, RangeBand::PointBlank), 2);
+    assert_eq!(
+        band_falloff(10, RangeBand::Extreme, RangeBand::PointBlank),
+        2
+    );
 }
 
 #[test]
@@ -220,7 +234,10 @@ fn band_falloff_clamps_negative_raw_at_zero() {
     // The TS does `Math.max(0, ...)`. Negative raw must never produce a
     // negative output.
     assert_eq!(band_falloff(-1, RangeBand::Mid, RangeBand::Mid), 0);
-    assert_eq!(band_falloff(-100, RangeBand::Extreme, RangeBand::PointBlank), 0);
+    assert_eq!(
+        band_falloff(-100, RangeBand::Extreme, RangeBand::PointBlank),
+        0
+    );
 }
 
 #[test]
@@ -270,12 +287,18 @@ fn facing_zone_bow_on_aft_incoming_from_fore_hits_stern() {
 fn facing_zone_broadside_fore_routes_to_starboard() {
     // The deterministic split: incoming-from-fore -> starboard,
     // incoming-from-aft -> port. The model is stable; tests pin it.
-    assert_eq!(facing_zone(Orientation::Broadside, LaneEnd::Fore), HullZone::Starboard);
+    assert_eq!(
+        facing_zone(Orientation::Broadside, LaneEnd::Fore),
+        HullZone::Starboard
+    );
 }
 
 #[test]
 fn facing_zone_broadside_aft_routes_to_port() {
-    assert_eq!(facing_zone(Orientation::Broadside, LaneEnd::Aft), HullZone::Port);
+    assert_eq!(
+        facing_zone(Orientation::Broadside, LaneEnd::Aft),
+        HullZone::Port
+    );
 }
 
 #[test]
@@ -406,9 +429,15 @@ fn bears_broadside_arc_fires_in_either_lane_direction_when_turned_broadside() {
 
 #[test]
 fn absorb_shield_zero_damage_short_circuits_without_consuming_charge() {
-    let mut f = ShieldFace { armour: 5, charge: 2 };
+    let mut f = ShieldFace {
+        armour: 5,
+        charge: 2,
+    };
     assert_eq!(absorb_shield(&mut f, 0), 0);
-    assert_eq!(f.charge, 2, "zero-damage hit must not consume a shield charge");
+    assert_eq!(
+        f.charge, 2,
+        "zero-damage hit must not consume a shield charge"
+    );
 }
 
 #[test]
@@ -416,7 +445,10 @@ fn absorb_shield_negative_damage_short_circuits_without_consuming_charge() {
     // The TS guard is `if (dmg <= 0)`. Negative damage shouldn't happen in
     // practice (band_falloff floors at 0) but the contract is "no charge
     // consumed unless damage was actually inflicted".
-    let mut f = ShieldFace { armour: 5, charge: 2 };
+    let mut f = ShieldFace {
+        armour: 5,
+        charge: 2,
+    };
     assert_eq!(absorb_shield(&mut f, -3), 0);
     assert_eq!(f.charge, 2);
 }
@@ -424,14 +456,20 @@ fn absorb_shield_negative_damage_short_circuits_without_consuming_charge() {
 #[test]
 fn absorb_shield_charge_negates_arbitrarily_large_hit() {
     // One shield charge eats one hit entirely, regardless of magnitude.
-    let mut f = ShieldFace { armour: 0, charge: 1 };
+    let mut f = ShieldFace {
+        armour: 0,
+        charge: 1,
+    };
     assert_eq!(absorb_shield(&mut f, 999), 0);
     assert_eq!(f.charge, 0);
 }
 
 #[test]
 fn absorb_shield_charge_consumes_exactly_one_per_hit() {
-    let mut f = ShieldFace { armour: 0, charge: 3 };
+    let mut f = ShieldFace {
+        armour: 0,
+        charge: 3,
+    };
     absorb_shield(&mut f, 4);
     assert_eq!(f.charge, 2);
     absorb_shield(&mut f, 4);
@@ -444,7 +482,10 @@ fn absorb_shield_charge_consumes_exactly_one_per_hit() {
 
 #[test]
 fn absorb_shield_armour_subtracts_when_no_charge() {
-    let mut f = ShieldFace { armour: 2, charge: 0 };
+    let mut f = ShieldFace {
+        armour: 2,
+        charge: 0,
+    };
     assert_eq!(absorb_shield(&mut f, 5), 3);
     // Armour is permanent — it does NOT decrement on a hit.
     assert_eq!(f.armour, 2);
@@ -453,14 +494,20 @@ fn absorb_shield_armour_subtracts_when_no_charge() {
 #[test]
 fn absorb_shield_armour_clamps_at_zero_when_overkill() {
     // damage 2, armour 5 -> 0 (not -3). TS uses Math.max(0, dmg - armour).
-    let mut f = ShieldFace { armour: 5, charge: 0 };
+    let mut f = ShieldFace {
+        armour: 5,
+        charge: 0,
+    };
     assert_eq!(absorb_shield(&mut f, 2), 0);
 }
 
 #[test]
 fn absorb_shield_armour_equal_to_damage_returns_zero() {
     // Boundary case: armour exactly meets the damage.
-    let mut f = ShieldFace { armour: 3, charge: 0 };
+    let mut f = ShieldFace {
+        armour: 3,
+        charge: 0,
+    };
     assert_eq!(absorb_shield(&mut f, 3), 0);
 }
 
@@ -469,8 +516,15 @@ fn absorb_shield_charge_is_checked_before_armour() {
     // If both charge and armour are present, charge eats the hit FIRST.
     // If the order were reversed, this hit would be reduced to 8 (10-2)
     // by armour and the charge would not be consumed.
-    let mut f = ShieldFace { armour: 2, charge: 1 };
-    assert_eq!(absorb_shield(&mut f, 10), 0, "charge should negate before armour applies");
+    let mut f = ShieldFace {
+        armour: 2,
+        charge: 1,
+    };
+    assert_eq!(
+        absorb_shield(&mut f, 10),
+        0,
+        "charge should negate before armour applies"
+    );
     assert_eq!(f.charge, 0);
     assert_eq!(f.armour, 2);
 }
@@ -483,10 +537,34 @@ fn absorb_shield_charge_is_checked_before_armour() {
 fn default_shield_profile_is_the_canonical_frigate_layout() {
     let p: ShieldProfile = default_shield_profile();
     // Strong bow, weak stern, medium flanks — the Frigate doc shape.
-    assert_eq!(p.bow, ShieldFace { armour: 2, charge: 0 });
-    assert_eq!(p.stern, ShieldFace { armour: 0, charge: 0 });
-    assert_eq!(p.port, ShieldFace { armour: 1, charge: 0 });
-    assert_eq!(p.starboard, ShieldFace { armour: 1, charge: 0 });
+    assert_eq!(
+        p.bow,
+        ShieldFace {
+            armour: 2,
+            charge: 0
+        }
+    );
+    assert_eq!(
+        p.stern,
+        ShieldFace {
+            armour: 0,
+            charge: 0
+        }
+    );
+    assert_eq!(
+        p.port,
+        ShieldFace {
+            armour: 1,
+            charge: 0
+        }
+    );
+    assert_eq!(
+        p.starboard,
+        ShieldFace {
+            armour: 1,
+            charge: 0
+        }
+    );
 }
 
 #[test]

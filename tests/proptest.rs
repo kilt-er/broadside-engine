@@ -53,7 +53,10 @@ fn any_band() -> impl Strategy<Value = RangeBand> {
 
 /// Index of `b` in [`ALL_BANDS`]. Used by monotonicity property below.
 fn band_idx(b: RangeBand) -> usize {
-    ALL_BANDS.iter().position(|&x| x == b).expect("ALL_BANDS covers every variant")
+    ALL_BANDS
+        .iter()
+        .position(|&x| x == b)
+        .expect("ALL_BANDS covers every variant")
 }
 
 proptest! {
@@ -200,7 +203,7 @@ proptest! {
 mod heat {
     use broadside_engine::resolve::{end_of_turn, fire_player_queue, Content};
     use broadside_engine::types::{
-        Action, ActionCost, Arc, Board, EventBus, Effect, Faction, LaneEnd, Mount, Orientation,
+        Action, ActionCost, Arc, Board, Effect, EventBus, Faction, LaneEnd, Mount, Orientation,
         Projectile, RangeBand, ShieldFace, ShieldProfile, Ship, Targeting, TargetingPattern,
         WeaponArchetype,
     };
@@ -209,15 +212,34 @@ mod heat {
 
     fn naked_shields() -> ShieldProfile {
         ShieldProfile {
-            bow: ShieldFace { armour: 0, charge: 0 },
-            stern: ShieldFace { armour: 0, charge: 0 },
-            port: ShieldFace { armour: 0, charge: 0 },
-            starboard: ShieldFace { armour: 0, charge: 0 },
+            bow: ShieldFace {
+                armour: 0,
+                charge: 0,
+            },
+            stern: ShieldFace {
+                armour: 0,
+                charge: 0,
+            },
+            port: ShieldFace {
+                armour: 0,
+                charge: 0,
+            },
+            starboard: ShieldFace {
+                armour: 0,
+                charge: 0,
+            },
         }
     }
 
     /// A ship with one forward-arc mount loaded with `weapon`.
-    fn ship(id: &str, faction: Faction, cell: usize, hull: i32, bow: LaneEnd, weapon: &str) -> Ship {
+    fn ship(
+        id: &str,
+        faction: Faction,
+        cell: usize,
+        hull: i32,
+        bow: LaneEnd,
+        weapon: &str,
+    ) -> Ship {
         Ship {
             id: id.into(),
             faction,
@@ -231,7 +253,11 @@ mod heat {
             heat_max: 6,
             locked_out: false,
             shield_profile: naked_shields(),
-            mounts: vec![Mount { id: format!("{id}-m1"), arc: Arc::Forward, weapon: weapon.into() }],
+            mounts: vec![Mount {
+                id: format!("{id}-m1"),
+                arc: Arc::Forward,
+                weapon: weapon.into(),
+            }],
             queue: Vec::new(),
             cooldowns: HashMap::new(),
             statuses: Vec::new(),
@@ -247,21 +273,35 @@ mod heat {
             id: "beam".into(),
             name: "beam".into(),
             archetype: WeaponArchetype::Beam,
-            cost: ActionCost { heat, cooldown_max: 0, advances_turn: true },
+            cost: ActionCost {
+                heat,
+                cooldown_max: 0,
+                advances_turn: true,
+            },
             targeting: Targeting {
-                range_band: vec![broadside_engine::grid::Range::Adjacent, broadside_engine::grid::Range::Near, broadside_engine::grid::Range::Far],
+                range_band: vec![
+                    broadside_engine::grid::Range::Adjacent,
+                    broadside_engine::grid::Range::Near,
+                    broadside_engine::grid::Range::Far,
+                ],
                 optimal_range: broadside_engine::grid::Range::Adjacent,
                 pattern: TargetingPattern::BEAM,
                 band: vec![
-                    RangeBand::PointBlank, RangeBand::Close, RangeBand::Mid,
-                    RangeBand::Long, RangeBand::Extreme,
+                    RangeBand::PointBlank,
+                    RangeBand::Close,
+                    RangeBand::Mid,
+                    RangeBand::Long,
+                    RangeBand::Extreme,
                 ],
                 optimal_band: RangeBand::PointBlank,
                 requires_arc: Some(Arc::Forward),
                 facing_relative: true,
                 hits_all: false,
             },
-            effects: vec![Effect::DAMAGE { amount: 1, band_falloff: Some(false) }],
+            effects: vec![Effect::DAMAGE {
+                amount: 1,
+                band_falloff: Some(false),
+            }],
             r#mod: None,
             icon: None,
         }
@@ -294,7 +334,12 @@ mod heat {
 
     /// Read the shooter's (heat, heat_max, locked_out).
     fn read(b: &Board, id: &str) -> (i32, i32, bool) {
-        let s = b.cells.iter().flatten().find(|s| s.id == id).expect("shooter alive");
+        let s = b
+            .cells
+            .iter()
+            .flatten()
+            .find(|s| s.id == id)
+            .expect("shooter alive");
         (s.heat, s.heat_max, s.locked_out)
     }
 
@@ -310,7 +355,10 @@ mod heat {
             locked,
             heat >= heat_max,
             "{} locked_out={} but heat={} heat_max={} (lockout must hold iff heat >= heat_max)",
-            when, locked, heat, heat_max,
+            when,
+            locked,
+            heat,
+            heat_max,
         );
         Ok(())
     }
@@ -373,7 +421,7 @@ mod combat_2d {
     use broadside_engine::grid::{Axis, Dir4, Dir8, Facing, Pos, CELLS, COLS, ROWS};
     use broadside_engine::resolve::{apply_damage_2d, resolve_targeting_2d, Content};
     use broadside_engine::types::{
-        Action, ActionCost, Arc, Board, EventBus, Effect, Faction, HullZone, LaneEnd, Mount,
+        Action, ActionCost, Arc, Board, Effect, EventBus, Faction, HullZone, LaneEnd, Mount,
         Orientation, Projectile, RangeBand, ShieldFace, ShieldProfile, Ship, Targeting,
         TargetingPattern, WeaponArchetype,
     };
@@ -388,8 +436,14 @@ mod combat_2d {
 
     fn any_dir8() -> impl Strategy<Value = Dir8> {
         prop_oneof![
-            Just(Dir8::N), Just(Dir8::NE), Just(Dir8::E), Just(Dir8::SE),
-            Just(Dir8::S), Just(Dir8::SW), Just(Dir8::W), Just(Dir8::NW),
+            Just(Dir8::N),
+            Just(Dir8::NE),
+            Just(Dir8::E),
+            Just(Dir8::SE),
+            Just(Dir8::S),
+            Just(Dir8::SW),
+            Just(Dir8::W),
+            Just(Dir8::NW),
         ]
     }
 
@@ -409,7 +463,10 @@ mod combat_2d {
 
     /// A `HullZone` is always one of the four faces — used to assert totality.
     fn is_valid_zone(z: HullZone) -> bool {
-        matches!(z, HullZone::Bow | HullZone::Stern | HullZone::Port | HullZone::Starboard)
+        matches!(
+            z,
+            HullZone::Bow | HullZone::Stern | HullZone::Port | HullZone::Starboard
+        )
     }
 
     proptest! {
@@ -436,10 +493,22 @@ mod combat_2d {
 
     fn naked() -> ShieldProfile {
         ShieldProfile {
-            bow: ShieldFace { armour: 0, charge: 0 },
-            stern: ShieldFace { armour: 0, charge: 0 },
-            port: ShieldFace { armour: 0, charge: 0 },
-            starboard: ShieldFace { armour: 0, charge: 0 },
+            bow: ShieldFace {
+                armour: 0,
+                charge: 0,
+            },
+            stern: ShieldFace {
+                armour: 0,
+                charge: 0,
+            },
+            port: ShieldFace {
+                armour: 0,
+                charge: 0,
+            },
+            starboard: ShieldFace {
+                armour: 0,
+                charge: 0,
+            },
         }
     }
 
@@ -457,7 +526,11 @@ mod combat_2d {
             heat_max: 12,
             locked_out: false,
             shield_profile: naked(),
-            mounts: vec![Mount { id: format!("{id}-m"), arc: Arc::Turret, weapon: "w".into() }],
+            mounts: vec![Mount {
+                id: format!("{id}-m"),
+                arc: Arc::Turret,
+                weapon: "w".into(),
+            }],
             queue: Vec::new(),
             cooldowns: HashMap::new(),
             statuses: Vec::new(),
@@ -492,7 +565,11 @@ mod combat_2d {
             id: "w".into(),
             name: "w".into(),
             archetype: WeaponArchetype::Beam,
-            cost: ActionCost { heat: 1, cooldown_max: 0, advances_turn: true },
+            cost: ActionCost {
+                heat: 1,
+                cooldown_max: 0,
+                advances_turn: true,
+            },
             targeting: Targeting {
                 pattern,
                 band: vec![RangeBand::PointBlank, RangeBand::Close, RangeBand::Mid],
@@ -507,7 +584,10 @@ mod combat_2d {
                 facing_relative: true,
                 hits_all,
             },
-            effects: vec![Effect::DAMAGE { amount: 4, band_falloff: None }],
+            effects: vec![Effect::DAMAGE {
+                amount: 4,
+                band_falloff: None,
+            }],
             r#mod: None,
             icon: None,
         }

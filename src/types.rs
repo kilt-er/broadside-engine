@@ -502,17 +502,26 @@ impl ShieldProfile {
     /// Mutable refs to all four faces (any order) — for the per-turn shield-regen
     /// pass (#103 Model A) in `crate::resolve::end_of_turn`.
     pub fn faces_mut(&mut self) -> [&mut ShieldFace; 4] {
-        [&mut self.bow, &mut self.stern, &mut self.port, &mut self.starboard]
+        [
+            &mut self.bow,
+            &mut self.stern,
+            &mut self.port,
+            &mut self.starboard,
+        ]
     }
 }
 
 impl std::ops::Index<HullZone> for ShieldProfile {
     type Output = ShieldFace;
-    fn index(&self, zone: HullZone) -> &ShieldFace { self.face(zone) }
+    fn index(&self, zone: HullZone) -> &ShieldFace {
+        self.face(zone)
+    }
 }
 
 impl std::ops::IndexMut<HullZone> for ShieldProfile {
-    fn index_mut(&mut self, zone: HullZone) -> &mut ShieldFace { self.face_mut(zone) }
+    fn index_mut(&mut self, zone: HullZone) -> &mut ShieldFace {
+        self.face_mut(zone)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -683,7 +692,11 @@ pub enum Effect {
         /// the predicate is `effects.some(...)` in TS, so ONE damage effect
         /// on the action with `bandFalloff: false` disables falloff for the
         /// whole `applyDamage` call, not per-effect.
-        #[serde(rename = "bandFalloff", default, skip_serializing_if = "Option::is_none")]
+        #[serde(
+            rename = "bandFalloff",
+            default,
+            skip_serializing_if = "Option::is_none"
+        )]
         band_falloff: Option<bool>,
     },
     APPLY_STATUS {
@@ -735,7 +748,11 @@ pub enum Effect {
     },
     VENT_HEAT {
         amount: i32,
-        #[serde(rename = "rechargeCooldowns", default, skip_serializing_if = "Option::is_none")]
+        #[serde(
+            rename = "rechargeCooldowns",
+            default,
+            skip_serializing_if = "Option::is_none"
+        )]
         recharge_cooldowns: Option<bool>,
     },
     DEPLOY {
@@ -1544,10 +1561,9 @@ mod tests {
             assert_eq!(s.capital, None, "sentinel {sentinel} should be None");
         }
         // A real name is preserved.
-        let s: SectorDef = serde_json::from_str(
-            r#"{"name":"X","node":"9","lane":9,"capital":"Citadel Warlord"}"#,
-        )
-        .unwrap();
+        let s: SectorDef =
+            serde_json::from_str(r#"{"name":"X","node":"9","lane":9,"capital":"Citadel Warlord"}"#)
+                .unwrap();
         assert_eq!(s.capital.as_deref(), Some("Citadel Warlord"));
     }
 
@@ -1632,14 +1648,20 @@ mod tests {
     #[test]
     fn effect_damage_roundtrips_with_optional_band_falloff() {
         // With band_falloff omitted (the common case).
-        let dmg = Effect::DAMAGE { amount: 4, band_falloff: None };
+        let dmg = Effect::DAMAGE {
+            amount: 4,
+            band_falloff: None,
+        };
         let s = serde_json::to_string(&dmg).unwrap();
         assert_eq!(s, r#"{"kind":"DAMAGE","amount":4}"#);
         let parsed: Effect = serde_json::from_str(&s).unwrap();
         assert_eq!(parsed, dmg);
 
         // With band_falloff:false (the dummy-weapon case in resolve.ts).
-        let dmg2 = Effect::DAMAGE { amount: 0, band_falloff: Some(false) };
+        let dmg2 = Effect::DAMAGE {
+            amount: 0,
+            band_falloff: Some(false),
+        };
         let s2 = serde_json::to_string(&dmg2).unwrap();
         assert_eq!(s2, r#"{"kind":"DAMAGE","amount":0,"bandFalloff":false}"#);
     }
@@ -1674,7 +1696,10 @@ mod tests {
             direction_2d: None,
         };
         let s = serde_json::to_string(&with_dir).unwrap();
-        assert_eq!(s, r#"{"kind":"DISPLACE_SELF","mode":"THRUST","distance":1,"direction":"aft"}"#);
+        assert_eq!(
+            s,
+            r#"{"kind":"DISPLACE_SELF","mode":"THRUST","distance":1,"direction":"aft"}"#
+        );
         let parsed: Effect = serde_json::from_str(&s).unwrap();
         assert_eq!(parsed, with_dir);
 
@@ -1693,13 +1718,19 @@ mod tests {
 
     #[test]
     fn range_band_serializes_camel_case() {
-        assert_eq!(serde_json::to_string(&RangeBand::PointBlank).unwrap(), r#""pointBlank""#);
+        assert_eq!(
+            serde_json::to_string(&RangeBand::PointBlank).unwrap(),
+            r#""pointBlank""#
+        );
         assert_eq!(serde_json::to_string(&RangeBand::Mid).unwrap(), r#""mid""#);
     }
 
     #[test]
     fn targeting_pattern_preserves_screaming_snake() {
-        assert_eq!(serde_json::to_string(&TargetingPattern::SPINAL_LINE).unwrap(), r#""SPINAL_LINE""#);
+        assert_eq!(
+            serde_json::to_string(&TargetingPattern::SPINAL_LINE).unwrap(),
+            r#""SPINAL_LINE""#
+        );
         let p: TargetingPattern = serde_json::from_str(r#""POINT_BLANK""#).unwrap();
         assert_eq!(p, TargetingPattern::POINT_BLANK);
     }
@@ -1715,15 +1746,34 @@ mod tests {
             pos: Pos::new(0, 0),
             orientation: Orientation::BowOn { bow: LaneEnd::Fore },
             facing: Facing::Bow(Dir4::S),
-            hull: 10, max_hull: 10,
-            heat: 0, heat_max: 6, locked_out: false,
+            hull: 10,
+            max_hull: 10,
+            heat: 0,
+            heat_max: 6,
+            locked_out: false,
             shield_profile: ShieldProfile {
-                bow:       ShieldFace { armour: 2, charge: 0 },
-                stern:     ShieldFace { armour: 0, charge: 0 },
-                port:      ShieldFace { armour: 1, charge: 0 },
-                starboard: ShieldFace { armour: 1, charge: 0 },
+                bow: ShieldFace {
+                    armour: 2,
+                    charge: 0,
+                },
+                stern: ShieldFace {
+                    armour: 0,
+                    charge: 0,
+                },
+                port: ShieldFace {
+                    armour: 1,
+                    charge: 0,
+                },
+                starboard: ShieldFace {
+                    armour: 1,
+                    charge: 0,
+                },
             },
-            mounts: vec![Mount { id: "m1".into(), arc: Arc::Forward, weapon: "pulse_laser".into() }],
+            mounts: vec![Mount {
+                id: "m1".into(),
+                arc: Arc::Forward,
+                weapon: "pulse_laser".into(),
+            }],
             queue: vec!["pulse_laser".into()],
             cooldowns: HashMap::new(),
             statuses: vec![],
@@ -1755,10 +1805,22 @@ mod tests {
     fn shield_profile_index_mut_decrements_charge() {
         // M1 helper: resolver mutates charge via the IndexMut impl.
         let mut sp = ShieldProfile {
-            bow:       ShieldFace { armour: 0, charge: 1 },
-            stern:     ShieldFace { armour: 0, charge: 0 },
-            port:      ShieldFace { armour: 0, charge: 0 },
-            starboard: ShieldFace { armour: 0, charge: 0 },
+            bow: ShieldFace {
+                armour: 0,
+                charge: 1,
+            },
+            stern: ShieldFace {
+                armour: 0,
+                charge: 0,
+            },
+            port: ShieldFace {
+                armour: 0,
+                charge: 0,
+            },
+            starboard: ShieldFace {
+                armour: 0,
+                charge: 0,
+            },
         };
         sp[HullZone::Bow].charge -= 1;
         assert_eq!(sp.bow.charge, 0);
@@ -1796,7 +1858,10 @@ mod tests {
         assert_eq!(parsed.unlock_salvage, None);
 
         // And a Some(n) round-trips as a number.
-        let s_some = SubsystemDef { unlock_salvage: Some(2), ..s };
+        let s_some = SubsystemDef {
+            unlock_salvage: Some(2),
+            ..s
+        };
         let json2 = serde_json::to_string(&s_some).unwrap();
         assert!(json2.contains(r#""unlockSalvage":2"#));
     }
@@ -1807,15 +1872,32 @@ mod tests {
         // Some(true) BOTH apply falloff. This test pins that down so a future
         // resolver port can't drift to `band_falloff.unwrap_or(true) == false`
         // or similar without one of these assertions breaking.
-        let absent = Effect::DAMAGE { amount: 4, band_falloff: None };
-        let on     = Effect::DAMAGE { amount: 4, band_falloff: Some(true) };
-        let off    = Effect::DAMAGE { amount: 4, band_falloff: Some(false) };
+        let absent = Effect::DAMAGE {
+            amount: 4,
+            band_falloff: None,
+        };
+        let on = Effect::DAMAGE {
+            amount: 4,
+            band_falloff: Some(true),
+        };
+        let off = Effect::DAMAGE {
+            amount: 4,
+            band_falloff: Some(false),
+        };
 
-        let bypass = |e: &Effect| matches!(e, Effect::DAMAGE { band_falloff: Some(false), .. });
+        let bypass = |e: &Effect| {
+            matches!(
+                e,
+                Effect::DAMAGE {
+                    band_falloff: Some(false),
+                    ..
+                }
+            )
+        };
 
         assert!(!bypass(&absent), "absent => apply falloff");
-        assert!(!bypass(&on),     "Some(true) => apply falloff");
-        assert!( bypass(&off),    "Some(false) => bypass falloff");
+        assert!(!bypass(&on), "Some(true) => apply falloff");
+        assert!(bypass(&off), "Some(false) => bypass falloff");
     }
 
     #[test]
@@ -1826,9 +1908,17 @@ mod tests {
         // Hook variant and bumps `slot` (which they must, to satisfy
         // exhaustiveness) without also bumping HOOK_COUNT, this test fails.
         let all = [
-            Hook::Passive, Hook::OnChainKill, Hook::OnTurnEnd, Hook::OnVent,
-            Hook::OnWaveStart, Hook::OnHeatThreshold, Hook::OnDamageDealt,
-            Hook::OnDamageTaken, Hook::OnHeal, Hook::OnReorient, Hook::OnLethal,
+            Hook::Passive,
+            Hook::OnChainKill,
+            Hook::OnTurnEnd,
+            Hook::OnVent,
+            Hook::OnWaveStart,
+            Hook::OnHeatThreshold,
+            Hook::OnDamageDealt,
+            Hook::OnDamageTaken,
+            Hook::OnHeal,
+            Hook::OnReorient,
+            Hook::OnLethal,
         ];
         // If a Hook variant is added without being added here, the existing
         // EventBus::slot exhaustiveness check forces touching this list too:
@@ -1838,11 +1928,18 @@ mod tests {
         let mut slots: Vec<usize> = all.iter().copied().map(EventBus::slot).collect();
         slots.sort_unstable();
         slots.dedup();
-        assert_eq!(slots, (0..HOOK_COUNT).collect::<Vec<_>>(),
-            "slot mapping must be dense in 0..HOOK_COUNT");
-        assert_eq!(all.len(), HOOK_COUNT,
+        assert_eq!(
+            slots,
+            (0..HOOK_COUNT).collect::<Vec<_>>(),
+            "slot mapping must be dense in 0..HOOK_COUNT"
+        );
+        assert_eq!(
+            all.len(),
+            HOOK_COUNT,
             "HOOK_COUNT={} but {} hook variants listed — bump HOOK_COUNT",
-            HOOK_COUNT, all.len());
+            HOOK_COUNT,
+            all.len()
+        );
     }
 
     #[test]
@@ -1934,7 +2031,10 @@ mod tests {
                 kind: HazardKind::Mine,
                 cell: 2,
                 pos: Pos::new(0, 0),
-                payload: vec![Effect::DAMAGE { amount: 2, band_falloff: Some(false) }],
+                payload: vec![Effect::DAMAGE {
+                    amount: 2,
+                    band_falloff: Some(false),
+                }],
                 ttl: None,
             }],
             is_boss: false,
@@ -1974,22 +2074,45 @@ mod tests {
             pos: Pos::new(0, 0),
             orientation: Orientation::BowOn { bow: LaneEnd::Fore },
             facing: Facing::Bow(Dir4::S),
-            hull: 4, max_hull: 5,
-            heat: 1, heat_max: 6, locked_out: false,
+            hull: 4,
+            max_hull: 5,
+            heat: 1,
+            heat_max: 6,
+            locked_out: false,
             shield_profile: ShieldProfile {
-                bow:       ShieldFace { armour: 2, charge: 1 },
-                stern:     ShieldFace { armour: 0, charge: 0 },
-                port:      ShieldFace { armour: 1, charge: 0 },
-                starboard: ShieldFace { armour: 1, charge: 0 },
+                bow: ShieldFace {
+                    armour: 2,
+                    charge: 1,
+                },
+                stern: ShieldFace {
+                    armour: 0,
+                    charge: 0,
+                },
+                port: ShieldFace {
+                    armour: 1,
+                    charge: 0,
+                },
+                starboard: ShieldFace {
+                    armour: 1,
+                    charge: 0,
+                },
             },
-            mounts: vec![Mount { id: "m1".into(), arc: Arc::Forward, weapon: "pulse_laser".into() }],
+            mounts: vec![Mount {
+                id: "m1".into(),
+                arc: Arc::Forward,
+                weapon: "pulse_laser".into(),
+            }],
             queue: vec!["pulse_laser".into()],
             cooldowns: {
                 let mut m = HashMap::new();
                 m.insert("torpedo".into(), 2);
                 m
             },
-            statuses: vec![Status { kind: StatusKind::TargetLock, duration: 1, face: None }],
+            statuses: vec![Status {
+                kind: StatusKind::TargetLock,
+                duration: 1,
+                face: None,
+            }],
             traits: vec![Trait::Agile],
             klass: Some("wanderer".into()),
         };
@@ -2018,17 +2141,34 @@ mod tests {
             pos: Pos::new(0, 0),
             orientation: Orientation::BowOn { bow: LaneEnd::Fore },
             facing: Facing::Bow(Dir4::S),
-            hull: 5, max_hull: 5,
-            heat: 0, heat_max: 6, locked_out: false,
+            hull: 5,
+            max_hull: 5,
+            heat: 0,
+            heat_max: 6,
+            locked_out: false,
             shield_profile: ShieldProfile {
-                bow:       ShieldFace { armour: 2, charge: 0 },
-                stern:     ShieldFace { armour: 0, charge: 0 },
-                port:      ShieldFace { armour: 1, charge: 0 },
-                starboard: ShieldFace { armour: 1, charge: 0 },
+                bow: ShieldFace {
+                    armour: 2,
+                    charge: 0,
+                },
+                stern: ShieldFace {
+                    armour: 0,
+                    charge: 0,
+                },
+                port: ShieldFace {
+                    armour: 1,
+                    charge: 0,
+                },
+                starboard: ShieldFace {
+                    armour: 1,
+                    charge: 0,
+                },
             },
             mounts: vec![],
-            queue: vec![], cooldowns: HashMap::new(),
-            statuses: vec![], traits: vec![],
+            queue: vec![],
+            cooldowns: HashMap::new(),
+            statuses: vec![],
+            traits: vec![],
             klass: Some("wanderer".into()),
         };
         let run = Run::new(player.clone());
@@ -2047,10 +2187,22 @@ mod tests {
         // snapshot with a fresh EventBus. The snapshot must NOT carry the
         // bus or the destroys_this_window counter.
         let mut shield = ShieldProfile {
-            bow:       ShieldFace { armour: 2, charge: 0 },
-            stern:     ShieldFace { armour: 0, charge: 0 },
-            port:      ShieldFace { armour: 1, charge: 0 },
-            starboard: ShieldFace { armour: 1, charge: 0 },
+            bow: ShieldFace {
+                armour: 2,
+                charge: 0,
+            },
+            stern: ShieldFace {
+                armour: 0,
+                charge: 0,
+            },
+            port: ShieldFace {
+                armour: 1,
+                charge: 0,
+            },
+            starboard: ShieldFace {
+                armour: 1,
+                charge: 0,
+            },
         };
         shield.bow.charge = 1;
         let ship = Ship {
@@ -2060,10 +2212,17 @@ mod tests {
             pos: Pos::new(0, 0),
             orientation: Orientation::BowOn { bow: LaneEnd::Fore },
             facing: Facing::Bow(Dir4::S),
-            hull: 10, max_hull: 10,
-            heat: 2, heat_max: 6, locked_out: false,
+            hull: 10,
+            max_hull: 10,
+            heat: 2,
+            heat_max: 6,
+            locked_out: false,
             shield_profile: shield,
-            mounts: vec![Mount { id: "m1".into(), arc: Arc::Forward, weapon: "pulse_laser".into() }],
+            mounts: vec![Mount {
+                id: "m1".into(),
+                arc: Arc::Forward,
+                weapon: "pulse_laser".into(),
+            }],
             queue: vec![],
             cooldowns: HashMap::new(),
             statuses: vec![],
@@ -2079,7 +2238,7 @@ mod tests {
             level: 0,
             threats: Vec::new(),
             bus: EventBus::default(),
-            destroys_this_window: 7,  // runtime junk that must NOT round-trip
+            destroys_this_window: 7, // runtime junk that must NOT round-trip
             fire_events: vec![FireEvent {
                 from_cell: 0,
                 to_cell: 2,
@@ -2099,20 +2258,33 @@ mod tests {
         // for this test we just need a placeholder; the rest of the assertions
         // are about the snapshot, not Run.player.
         let placeholder_player = board.cells[0].as_ref().unwrap().clone();
-        let save = SaveState { run: Run {
-            current_sector_idx: 0, salvage: 0, completed_encounters: 0,
-            defeated: false, victorious: false,
-            player: placeholder_player,
-        }, board: snap };
+        let save = SaveState {
+            run: Run {
+                current_sector_idx: 0,
+                salvage: 0,
+                completed_encounters: 0,
+                defeated: false,
+                victorious: false,
+                player: placeholder_player,
+            },
+            board: snap,
+        };
 
         let json = serde_json::to_string(&save).unwrap();
         // Snapshot must not contain the bus or the destroys counter, even
         // as field names — they're structurally absent.
-        assert!(!json.contains("\"bus\""), "BoardSnapshot leaked bus into JSON: {json}");
-        assert!(!json.contains("destroys_this_window"),
-            "BoardSnapshot leaked destroys_this_window: {json}");
-        assert!(!json.contains("fire_events"),
-            "BoardSnapshot leaked fire_events (transient render state): {json}");
+        assert!(
+            !json.contains("\"bus\""),
+            "BoardSnapshot leaked bus into JSON: {json}"
+        );
+        assert!(
+            !json.contains("destroys_this_window"),
+            "BoardSnapshot leaked destroys_this_window: {json}"
+        );
+        assert!(
+            !json.contains("fire_events"),
+            "BoardSnapshot leaked fire_events (transient render state): {json}"
+        );
 
         let back: SaveState = serde_json::from_str(&json).unwrap();
         assert_eq!(save, back);
@@ -2121,10 +2293,14 @@ mod tests {
         let rebuilt = back.board.into_board(EventBus::default());
         assert_eq!(rebuilt.size, 3);
         assert_eq!(rebuilt.patrol, 1);
-        assert_eq!(rebuilt.destroys_this_window, 0,
-            "rebuilt board resets the chain-kill counter to 0");
-        assert!(rebuilt.fire_events.is_empty(),
-            "rebuilt board starts with no fire events");
+        assert_eq!(
+            rebuilt.destroys_this_window, 0,
+            "rebuilt board resets the chain-kill counter to 0"
+        );
+        assert!(
+            rebuilt.fire_events.is_empty(),
+            "rebuilt board starts with no fire events"
+        );
         // The Ship's pre-save state is preserved (cell, hull, heat, charge).
         let s = rebuilt.cells[0].as_ref().unwrap();
         assert_eq!(s.heat, 2);
@@ -2137,9 +2313,18 @@ mod tests {
         // Matches the canonical doc's string literals ("flexible" / "bowOn"
         // / "broadside"). `BowOn` is the one that needs camelCase, the
         // others are single lowercase tokens.
-        assert_eq!(serde_json::to_string(&ClassAffinity::Flexible).unwrap(), r#""flexible""#);
-        assert_eq!(serde_json::to_string(&ClassAffinity::BowOn).unwrap(),    r#""bowOn""#);
-        assert_eq!(serde_json::to_string(&ClassAffinity::Broadside).unwrap(),r#""broadside""#);
+        assert_eq!(
+            serde_json::to_string(&ClassAffinity::Flexible).unwrap(),
+            r#""flexible""#
+        );
+        assert_eq!(
+            serde_json::to_string(&ClassAffinity::BowOn).unwrap(),
+            r#""bowOn""#
+        );
+        assert_eq!(
+            serde_json::to_string(&ClassAffinity::Broadside).unwrap(),
+            r#""broadside""#
+        );
 
         let parsed: ClassAffinity = serde_json::from_str(r#""bowOn""#).unwrap();
         assert_eq!(parsed, ClassAffinity::BowOn);
@@ -2160,7 +2345,9 @@ mod tests {
             set2: vec!["Railgun Broadside".into(), "Grav Snare".into()],
             signature: "Slip — move forward to trade places with the ship directly ahead.".into(),
             passive: None,
-            desc: "The starting hull; a balanced beam + broadside opener with no strong stance bias.".into(),
+            desc:
+                "The starting hull; a balanced beam + broadside opener with no strong stance bias."
+                    .into(),
         };
         let json = serde_json::to_string(&wanderer).unwrap();
         let back: ClassDef = serde_json::from_str(&json).unwrap();
@@ -2169,7 +2356,10 @@ mod tests {
         // `passive:null` in TS, but JSON serializers vary; we choose absent
         // for consistency with the rest of the Rust port's `?:`-style
         // optional fields. A future strict-canonical pass can flip this.
-        assert!(!json.contains("\"passive\""), "passive should be omitted when None, got {json}");
+        assert!(
+            !json.contains("\"passive\""),
+            "passive should be omitted when None, got {json}"
+        );
 
         // And the placeholder `Catalog.classes` path: an empty array still
         // parses, and a populated one preserves order through the catalog

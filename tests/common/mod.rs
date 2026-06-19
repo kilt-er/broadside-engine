@@ -29,10 +29,22 @@ use std::collections::HashMap;
 /// the canonical [`broadside_engine::geometry::default_shield_profile`] shape.
 pub fn frigate_shields() -> ShieldProfile {
     ShieldProfile {
-        bow: ShieldFace { armour: 2, charge: 0 },
-        stern: ShieldFace { armour: 0, charge: 0 },
-        port: ShieldFace { armour: 1, charge: 0 },
-        starboard: ShieldFace { armour: 1, charge: 0 },
+        bow: ShieldFace {
+            armour: 2,
+            charge: 0,
+        },
+        stern: ShieldFace {
+            armour: 0,
+            charge: 0,
+        },
+        port: ShieldFace {
+            armour: 1,
+            charge: 0,
+        },
+        starboard: ShieldFace {
+            armour: 1,
+            charge: 0,
+        },
     }
 }
 
@@ -40,10 +52,22 @@ pub fn frigate_shields() -> ShieldProfile {
 /// point of damage to land on hull (observable) rather than being soaked.
 pub fn naked_shields() -> ShieldProfile {
     ShieldProfile {
-        bow: ShieldFace { armour: 0, charge: 0 },
-        stern: ShieldFace { armour: 0, charge: 0 },
-        port: ShieldFace { armour: 0, charge: 0 },
-        starboard: ShieldFace { armour: 0, charge: 0 },
+        bow: ShieldFace {
+            armour: 0,
+            charge: 0,
+        },
+        stern: ShieldFace {
+            armour: 0,
+            charge: 0,
+        },
+        port: ShieldFace {
+            armour: 0,
+            charge: 0,
+        },
+        starboard: ShieldFace {
+            armour: 0,
+            charge: 0,
+        },
     }
 }
 
@@ -97,7 +121,11 @@ pub fn ship_2d(
         heat_max: 12,
         locked_out: false,
         shield_profile: frigate_shields(),
-        mounts: vec![Mount { id: format!("{id}-m1"), arc, weapon: weapon.into() }],
+        mounts: vec![Mount {
+            id: format!("{id}-m1"),
+            arc,
+            weapon: weapon.into(),
+        }],
         queue: Vec::new(),
         cooldowns: HashMap::new(),
         statuses: Vec::new(),
@@ -124,10 +152,23 @@ pub fn board_2d(ships: Vec<Ship>) -> Board {
     let hazards: Vec<Vec<broadside_engine::types::Hazard>> =
         (0..CELLS).map(|_| Vec::new()).collect();
     for s in ships {
-        assert!(s.pos.in_bounds(), "ship {} pos {:?} out of bounds", s.id, s.pos);
+        assert!(
+            s.pos.in_bounds(),
+            "ship {} pos {:?} out of bounds",
+            s.id,
+            s.pos
+        );
         let idx = s.pos.to_index();
-        assert_eq!(s.cell, idx, "ship {} breaks invariant A (cell {} != pos.to_index() {idx})", s.id, s.cell);
-        assert!(cells[idx].is_none(), "two ships share cell {idx} (pos {:?})", s.pos);
+        assert_eq!(
+            s.cell, idx,
+            "ship {} breaks invariant A (cell {} != pos.to_index() {idx})",
+            s.id, s.cell
+        );
+        assert!(
+            cells[idx].is_none(),
+            "two ships share cell {idx} (pos {:?})",
+            s.pos
+        );
         cells[idx] = Some(s);
     }
     Board {
@@ -146,5 +187,9 @@ pub fn board_2d(ships: Vec<Ship>) -> Board {
 
 /// Count the live `Faction::Enemy` ships on a board.
 pub fn enemies_left(b: &Board) -> usize {
-    b.cells.iter().flatten().filter(|s| s.faction == Faction::Enemy).count()
+    b.cells
+        .iter()
+        .flatten()
+        .filter(|s| s.faction == Faction::Enemy)
+        .count()
 }

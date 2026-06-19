@@ -23,7 +23,7 @@
 
 use broadside_engine::resolve::{apply_instant_action, Content};
 use broadside_engine::types::{
-    Action, ActionCost, Arc, Board, EventBus, Effect, Faction, LaneEnd, Mount, Orientation,
+    Action, ActionCost, Arc, Board, Effect, EventBus, Faction, LaneEnd, Mount, Orientation,
     Projectile, RangeBand, ShieldFace, ShieldProfile, Ship, StatusKind, Targeting,
     TargetingPattern, WeaponArchetype,
 };
@@ -35,10 +35,22 @@ use std::collections::HashMap;
 
 fn zero_profile() -> ShieldProfile {
     ShieldProfile {
-        bow: ShieldFace { armour: 0, charge: 0 },
-        stern: ShieldFace { armour: 0, charge: 0 },
-        port: ShieldFace { armour: 0, charge: 0 },
-        starboard: ShieldFace { armour: 0, charge: 0 },
+        bow: ShieldFace {
+            armour: 0,
+            charge: 0,
+        },
+        stern: ShieldFace {
+            armour: 0,
+            charge: 0,
+        },
+        port: ShieldFace {
+            armour: 0,
+            charge: 0,
+        },
+        starboard: ShieldFace {
+            armour: 0,
+            charge: 0,
+        },
     }
 }
 
@@ -47,7 +59,13 @@ fn zero_profile() -> ShieldProfile {
 /// `pos.to_index() == col`, so the cell asserts below read directly as columns.
 /// (#22 2-D migration: every M-scenario lives on row 0 so the BEAM bears E/W
 /// along the row and the flak `+/-1` neighbours stay in-bounds and spatial.)
-fn ship(id: &str, faction: Faction, col: usize, hull: i32, facing: broadside_engine::grid::Facing) -> Ship {
+fn ship(
+    id: &str,
+    faction: Faction,
+    col: usize,
+    hull: i32,
+    facing: broadside_engine::grid::Facing,
+) -> Ship {
     let pos = broadside_engine::grid::Pos::new(col, 0);
     Ship {
         id: id.into(),
@@ -62,7 +80,11 @@ fn ship(id: &str, faction: Faction, col: usize, hull: i32, facing: broadside_eng
         heat_max: 6,
         locked_out: false,
         shield_profile: zero_profile(),
-        mounts: vec![Mount { id: "m1".into(), arc: Arc::Forward, weapon: "w".into() }],
+        mounts: vec![Mount {
+            id: "m1".into(),
+            arc: Arc::Forward,
+            weapon: "w".into(),
+        }],
         queue: Vec::new(),
         cooldowns: HashMap::new(),
         statuses: Vec::new(),
@@ -85,7 +107,9 @@ fn board_2d(ships: Vec<Ship>) -> Board {
         size: broadside_engine::grid::COLS,
         cells,
         ordnance: Vec::new(),
-        hazards: (0..broadside_engine::grid::CELLS).map(|_| Vec::new()).collect(),
+        hazards: (0..broadside_engine::grid::CELLS)
+            .map(|_| Vec::new())
+            .collect(),
         patrol: 1,
         level: 0,
         threats: Vec::new(),
@@ -104,9 +128,17 @@ fn damage_action(id: &str, raw: i32, r#mod: Option<&str>, cooldown_max: i32, hea
         id: id.into(),
         name: id.into(),
         archetype: WeaponArchetype::Beam,
-        cost: ActionCost { heat, cooldown_max, advances_turn: true },
+        cost: ActionCost {
+            heat,
+            cooldown_max,
+            advances_turn: true,
+        },
         targeting: Targeting {
-            range_band: vec![broadside_engine::grid::Range::Adjacent, broadside_engine::grid::Range::Near, broadside_engine::grid::Range::Far],
+            range_band: vec![
+                broadside_engine::grid::Range::Adjacent,
+                broadside_engine::grid::Range::Near,
+                broadside_engine::grid::Range::Far,
+            ],
             optimal_range: broadside_engine::grid::Range::Adjacent,
             pattern: TargetingPattern::BEAM,
             band: vec![
@@ -121,7 +153,10 @@ fn damage_action(id: &str, raw: i32, r#mod: Option<&str>, cooldown_max: i32, hea
             facing_relative: true,
             hits_all: false,
         },
-        effects: vec![Effect::DAMAGE { amount: raw, band_falloff: Some(false) }],
+        effects: vec![Effect::DAMAGE {
+            amount: raw,
+            band_falloff: Some(false),
+        }],
         r#mod: r#mod.map(|s| s.to_string()),
         icon: None,
     }
@@ -152,7 +187,12 @@ impl Content for ModContent {
     fn spawn_projectile(&self, _: &str, _: &Ship) -> Projectile {
         unreachable!("mod tests fire beams, not ordnance");
     }
-    fn damage_modifier(&self, attacker: &Ship, band: broadside_engine::grid::Range, _board: &Board) -> i32 {
+    fn damage_modifier(
+        &self,
+        attacker: &Ship,
+        band: broadside_engine::grid::Range,
+        _board: &Board,
+    ) -> i32 {
         // Marksman: +1 when firing at the farthest 2-D band (Range::Far, the #34
         // 2-D successor of the 1-D "Long"), from the ATTACKER's fittings only.
         match &self.marksman_on {
@@ -195,13 +235,21 @@ fn m1_flak_burst_splashes_both_neighbours_including_an_ally() {
 
     apply_instant_action("a", content.action("w").unwrap(), &mut b, &content);
 
-    assert_eq!(hull_at(&b, 2), 1, "primary: 4 raw onto the armour-0 target t (5 -> 1)");
+    assert_eq!(
+        hull_at(&b, 2),
+        1,
+        "primary: 4 raw onto the armour-0 target t (5 -> 1)"
+    );
     assert_eq!(
         hull_at(&b, 1),
         4,
         "flak is faction-blind: it splashes the firing Player a@(1,0) (a neighbour of the hit cell) — friendly-fire (5 -> 4)",
     );
-    assert_eq!(hull_at(&b, 3), 4, "flak splashes the other neighbour foe@(3,0) too (5 -> 4)");
+    assert_eq!(
+        hull_at(&b, 3),
+        4,
+        "flak splashes the other neighbour foe@(3,0) too (5 -> 4)"
+    );
 }
 
 // #22 2-D + flak-2d: same row-0 layout. The splash neighbour foe@(3,0) has its
@@ -220,7 +268,10 @@ fn m1_flak_splash_is_shield_mediated() {
     let mut foe = ship("foe", Faction::Enemy, 3, 5, Facing::Bow(Dir4::W));
     // #103 Model A: a bow shield POOL of 1 (charge 1) soaks the 1-point flak
     // splash entirely (the splash routes through absorb_shield, not raw hull).
-    foe.shield_profile.bow = ShieldFace { armour: 1, charge: 1 };
+    foe.shield_profile.bow = ShieldFace {
+        armour: 1,
+        charge: 1,
+    };
     let mut b = board_2d(vec![a, t, foe]);
     let content = ModContent::new(vec![damage_action("w", 4, Some("flak_burst"), 0, 1)]);
 
@@ -252,7 +303,10 @@ fn m2_twin_linked_applies_twice_but_pays_cost_once() {
 
     assert_eq!(hull_at(&b, 2), 4, "twin_linked lands 3 twice = 6 (10 -> 4)");
     let attacker = b.cells[0].as_ref().expect("attacker alive");
-    assert_eq!(attacker.heat, 3, "heat paid ONCE (3), not per-volley (would be 6)");
+    assert_eq!(
+        attacker.heat, 3,
+        "heat paid ONCE (3), not per-volley (would be 6)"
+    );
     assert_eq!(
         attacker.cooldowns.get("w").copied(),
         Some(4),
@@ -296,13 +350,20 @@ fn m3_incendiary_rider_lands_even_when_shield_eats_all_hull_damage() {
     let a = ship("a", Faction::Player, 0, 5, Facing::Bow(Dir4::E));
     let mut t = ship("t", Faction::Enemy, 1, 5, Facing::Bow(Dir4::W));
     // #103 Model A: a FULL bow pool (charge 5) soaks the 2 raw entirely.
-    t.shield_profile.bow = ShieldFace { armour: 5, charge: 5 };
+    t.shield_profile.bow = ShieldFace {
+        armour: 5,
+        charge: 5,
+    };
     let mut b = board_2d(vec![a, t]);
     let content = ModContent::new(vec![damage_action("w", 2, Some("incendiary"), 0, 1)]);
 
     apply_instant_action("a", content.action("w").unwrap(), &mut b, &content);
 
-    assert_eq!(hull_at(&b, 1), 5, "full bow pool (5) soaks the 2 raw — no hull lost");
+    assert_eq!(
+        hull_at(&b, 1),
+        5,
+        "full bow pool (5) soaks the 2 raw — no hull lost"
+    );
     assert!(
         has_status(&b, 1, StatusKind::HullBreach),
         "incendiary rider lands on CONTACT regardless of shield absorption",
@@ -317,7 +378,10 @@ fn m3_emp_charge_rider_lands_through_shield() {
     let a = ship("a", Faction::Player, 0, 5, Facing::Bow(Dir4::E));
     let mut t = ship("t", Faction::Enemy, 1, 5, Facing::Bow(Dir4::W));
     // #103 Model A: a FULL bow pool (charge 5) soaks the 2 raw entirely.
-    t.shield_profile.bow = ShieldFace { armour: 5, charge: 5 };
+    t.shield_profile.bow = ShieldFace {
+        armour: 5,
+        charge: 5,
+    };
     let mut b = board_2d(vec![a, t]);
     let content = ModContent::new(vec![damage_action("w", 2, Some("emp_charge"), 0, 1)]);
 
@@ -350,10 +414,17 @@ fn m4_targeting_laser_lock_doubles_the_following_hit() {
 
     apply_instant_action("a", content.action("laser").unwrap(), &mut b, &content);
     assert_eq!(hull_at(&b, 1), 8, "first shot lands 2 (10 -> 8)");
-    assert!(has_status(&b, 1, StatusKind::TargetLock), "targeting_laser applies TargetLock on hit");
+    assert!(
+        has_status(&b, 1, StatusKind::TargetLock),
+        "targeting_laser applies TargetLock on hit"
+    );
 
     apply_instant_action("a", content.action("plain").unwrap(), &mut b, &content);
-    assert_eq!(hull_at(&b, 1), 4, "TargetLock doubles the next 2-dmg hit to 4 (8 -> 4)");
+    assert_eq!(
+        hull_at(&b, 1),
+        4,
+        "TargetLock doubles the next 2-dmg hit to 4 (8 -> 4)"
+    );
     assert!(
         !has_status(&b, 1, StatusKind::TargetLock),
         "TargetLock is consumed by the hit it doubled",
@@ -421,7 +492,11 @@ fn m6_enemy_fired_twin_linked_behaves_identically() {
 
     apply_instant_action("e", content.action("w").unwrap(), &mut b, &content);
 
-    assert_eq!(hull_at(&b, 2), 4, "enemy twin_linked lands 3 twice on the player (10 -> 4)");
+    assert_eq!(
+        hull_at(&b, 2),
+        4,
+        "enemy twin_linked lands 3 twice on the player (10 -> 4)"
+    );
     assert_eq!(
         b.cells[0].as_ref().unwrap().heat,
         3,
@@ -449,8 +524,8 @@ fn m7_marksman_modifier_applies_to_primary_not_flak_splash() {
     let t = ship("t", Faction::Enemy, 3, 10, Facing::Bow(Dir4::W));
     let n = ship("n", Faction::Enemy, 4, 5, Facing::Bow(Dir4::W));
     let mut b = board_2d(vec![a, t, n]);
-    let content = ModContent::new(vec![damage_action("w", 4, Some("flak_burst"), 0, 1)])
-        .with_marksman("a");
+    let content =
+        ModContent::new(vec![damage_action("w", 4, Some("flak_burst"), 0, 1)]).with_marksman("a");
 
     apply_instant_action("a", content.action("w").unwrap(), &mut b, &content);
 

@@ -1,0 +1,2 @@
+edition = "2021"
+# defaults; most knobs are nightly-gated — enforcement is the win, not tuning

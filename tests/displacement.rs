@@ -43,10 +43,22 @@ use std::collections::HashMap;
 /// the expected numbers are `remaining × 1`.
 fn bare_profile() -> ShieldProfile {
     ShieldProfile {
-        bow: ShieldFace { armour: 0, charge: 0 },
-        stern: ShieldFace { armour: 0, charge: 0 },
-        port: ShieldFace { armour: 0, charge: 0 },
-        starboard: ShieldFace { armour: 0, charge: 0 },
+        bow: ShieldFace {
+            armour: 0,
+            charge: 0,
+        },
+        stern: ShieldFace {
+            armour: 0,
+            charge: 0,
+        },
+        port: ShieldFace {
+            armour: 0,
+            charge: 0,
+        },
+        starboard: ShieldFace {
+            armour: 0,
+            charge: 0,
+        },
     }
 }
 
@@ -106,7 +118,9 @@ fn board(_size: usize, cells: Vec<Option<Ship>>) -> Board {
         size: broadside_engine::grid::COLS,
         cells: grid,
         ordnance: Vec::new(),
-        hazards: (0..broadside_engine::grid::CELLS).map(|_| Vec::new()).collect(),
+        hazards: (0..broadside_engine::grid::CELLS)
+            .map(|_| Vec::new())
+            .collect(),
         patrol: 1,
         level: 0,
         threats: Vec::new(),
@@ -138,9 +152,17 @@ fn carrier() -> Action {
         id: "_move".into(),
         name: "Move".into(),
         archetype: WeaponArchetype::Movement,
-        cost: ActionCost { heat: 0, cooldown_max: 0, advances_turn: true },
+        cost: ActionCost {
+            heat: 0,
+            cooldown_max: 0,
+            advances_turn: true,
+        },
         targeting: Targeting {
-            range_band: vec![broadside_engine::grid::Range::Adjacent, broadside_engine::grid::Range::Near, broadside_engine::grid::Range::Far],
+            range_band: vec![
+                broadside_engine::grid::Range::Adjacent,
+                broadside_engine::grid::Range::Near,
+                broadside_engine::grid::Range::Far,
+            ],
             optimal_range: broadside_engine::grid::Range::Adjacent,
             pattern: TargetingPattern::SELF,
             band: vec![RangeBand::PointBlank],
@@ -163,29 +185,64 @@ fn carrier() -> Action {
 /// direction) -> E, Aft -> W — and pass it as `direction_2d`. `None` falls back
 /// to the ship's facing (E for a Fore-bow ship, W for an Aft-bow ship), so a
 /// no-override THRUST steps along the bow exactly as the 1-D version did.
-fn self_move(board: &mut Board, source_cell: usize, mode: MovementMode, distance: i32, dir: Option<LaneEnd>) {
+fn self_move(
+    board: &mut Board,
+    source_cell: usize,
+    mode: MovementMode,
+    distance: i32,
+    dir: Option<LaneEnd>,
+) {
     use broadside_engine::grid::Dir4;
     let direction_2d = dir.map(|d| match d {
         LaneEnd::Fore => Dir4::E,
         LaneEnd::Aft => Dir4::W,
     });
-    let fx = Effect::DISPLACE_SELF { mode, distance, direction: dir, direction_2d };
+    let fx = Effect::DISPLACE_SELF {
+        mode,
+        distance,
+        direction: dir,
+        direction_2d,
+    };
     apply_effect(&fx, &carrier(), source_cell, &[], board, &NoContent);
 }
 
 /// Fire a DISPLACE_TARGET effect from `source_cell` onto `target_cells`.
-fn target_move(board: &mut Board, source_cell: usize, target_cells: &[usize], mode: DisplaceMode, distance: i32) {
+fn target_move(
+    board: &mut Board,
+    source_cell: usize,
+    target_cells: &[usize],
+    mode: DisplaceMode,
+    distance: i32,
+) {
     let fx = Effect::DISPLACE_TARGET { mode, distance };
-    apply_effect(&fx, &carrier(), source_cell, target_cells, board, &NoContent);
+    apply_effect(
+        &fx,
+        &carrier(),
+        source_cell,
+        target_cells,
+        board,
+        &NoContent,
+    );
 }
 
 /// Cell of the ship with the given id, if any.
 fn cell_of(board: &Board, id: &str) -> Option<usize> {
-    board.cells.iter().flatten().find(|s| s.id == id).map(|s| s.cell)
+    board
+        .cells
+        .iter()
+        .flatten()
+        .find(|s| s.id == id)
+        .map(|s| s.cell)
 }
 
 fn hull_of(board: &Board, id: &str) -> i32 {
-    board.cells.iter().flatten().find(|s| s.id == id).expect("ship alive").hull
+    board
+        .cells
+        .iter()
+        .flatten()
+        .find(|s| s.id == id)
+        .expect("ship alive")
+        .hull
 }
 
 /* =========================================================================
@@ -198,9 +255,16 @@ fn hull_of(board: &Board, id: &str) -> i32 {
 // Restore via board_2d/ship_2d (real positions + 2-D direction asserts) — #22.
 #[test]
 fn a1_thrust_moves_exactly_one_cell_ignoring_distance() {
-    let mut b = board(5, vec![None, Some(ship("p", 1, 5, LaneEnd::Fore)), None, None, None]);
+    let mut b = board(
+        5,
+        vec![None, Some(ship("p", 1, 5, LaneEnd::Fore)), None, None, None],
+    );
     self_move(&mut b, 1, MovementMode::THRUST, 3, None); // distance 3 is ignored
-    assert_eq!(cell_of(&b, "p"), Some(2), "THRUST is canonically one cell, distance arg ignored");
+    assert_eq!(
+        cell_of(&b, "p"),
+        Some(2),
+        "THRUST is canonically one cell, distance arg ignored"
+    );
     assert_eq!(hull_of(&b, "p"), 5, "clear move takes no collision damage");
 }
 
@@ -212,18 +276,35 @@ fn a1_thrust_moves_exactly_one_cell_ignoring_distance() {
 fn a2_thrust_into_occupant_stays_and_takes_one_collision() {
     let mut b = board(
         5,
-        vec![None, Some(ship("p", 1, 5, LaneEnd::Fore)), Some(ship("x", 2, 5, LaneEnd::Fore)), None, None],
+        vec![
+            None,
+            Some(ship("p", 1, 5, LaneEnd::Fore)),
+            Some(ship("x", 2, 5, LaneEnd::Fore)),
+            None,
+            None,
+        ],
     );
     self_move(&mut b, 1, MovementMode::THRUST, 1, None);
     assert_eq!(cell_of(&b, "p"), Some(1), "blocked THRUST stays in place");
-    assert_eq!(hull_of(&b, "p"), 4, "blocked THRUST takes exactly 1 collision (armour-0 => raw)");
+    assert_eq!(
+        hull_of(&b, "p"),
+        4,
+        "blocked THRUST takes exactly 1 collision (armour-0 => raw)"
+    );
 }
 
 #[test]
 fn a2_thrust_into_wall_stays_and_takes_one_collision() {
-    let mut b = board(5, vec![None, None, None, None, Some(ship("p", 4, 5, LaneEnd::Fore))]);
+    let mut b = board(
+        5,
+        vec![None, None, None, None, Some(ship("p", 4, 5, LaneEnd::Fore))],
+    );
     self_move(&mut b, 4, MovementMode::THRUST, 1, None);
-    assert_eq!(cell_of(&b, "p"), Some(4), "THRUST into the fore wall stays put");
+    assert_eq!(
+        cell_of(&b, "p"),
+        Some(4),
+        "THRUST into the fore wall stays put"
+    );
     assert_eq!(hull_of(&b, "p"), 4, "wall collision is 1 damage");
 }
 
@@ -237,11 +318,27 @@ fn a3_burn_stops_short_of_occupant_and_bills_remaining_collision() {
     // remaining = 4 - 2 = 2 collision damage. hull 5 - 2 = 3.
     let mut b = board(
         7,
-        vec![None, Some(ship("p", 1, 5, LaneEnd::Fore)), None, None, Some(ship("x", 4, 5, LaneEnd::Fore)), None, None],
+        vec![
+            None,
+            Some(ship("p", 1, 5, LaneEnd::Fore)),
+            None,
+            None,
+            Some(ship("x", 4, 5, LaneEnd::Fore)),
+            None,
+            None,
+        ],
     );
     self_move(&mut b, 1, MovementMode::BURN, 4, None);
-    assert_eq!(cell_of(&b, "p"), Some(3), "BURN halts one cell short of the occupant");
-    assert_eq!(hull_of(&b, "p"), 3, "remaining distance (4-2=2) bills 2 collision damage");
+    assert_eq!(
+        cell_of(&b, "p"),
+        Some(3),
+        "BURN halts one cell short of the occupant"
+    );
+    assert_eq!(
+        hull_of(&b, "p"),
+        3,
+        "remaining distance (4-2=2) bills 2 collision damage"
+    );
 }
 
 /* =========================================================================
@@ -250,9 +347,24 @@ fn a3_burn_stops_short_of_occupant_and_bills_remaining_collision() {
 
 #[test]
 fn a4_burn_clear_advances_full_distance() {
-    let mut b = board(7, vec![None, Some(ship("p", 1, 5, LaneEnd::Fore)), None, None, None, None, None]);
+    let mut b = board(
+        7,
+        vec![
+            None,
+            Some(ship("p", 1, 5, LaneEnd::Fore)),
+            None,
+            None,
+            None,
+            None,
+            None,
+        ],
+    );
     self_move(&mut b, 1, MovementMode::BURN, 3, None);
-    assert_eq!(cell_of(&b, "p"), Some(4), "clear BURN covers the full distance");
+    assert_eq!(
+        cell_of(&b, "p"),
+        Some(4),
+        "clear BURN covers the full distance"
+    );
     assert_eq!(hull_of(&b, "p"), 5, "no block => no collision");
 }
 
@@ -279,9 +391,20 @@ fn a5_slip_passes_through_occupants_to_first_free_cell() {
         ],
     );
     self_move(&mut b, 1, MovementMode::SLIP, 2, None);
-    assert_eq!(cell_of(&b, "p"), Some(4), "SLIP slides through 2,3 and lands in the first free cell (4)");
-    assert_eq!(hull_of(&b, "p"), 5, "a SLIP that finds a free cell takes no collision");
-    assert!(cell_of(&b, "a") == Some(2) && cell_of(&b, "b") == Some(3), "passed-through ships don't move");
+    assert_eq!(
+        cell_of(&b, "p"),
+        Some(4),
+        "SLIP slides through 2,3 and lands in the first free cell (4)"
+    );
+    assert_eq!(
+        hull_of(&b, "p"),
+        5,
+        "a SLIP that finds a free cell takes no collision"
+    );
+    assert!(
+        cell_of(&b, "a") == Some(2) && cell_of(&b, "b") == Some(3),
+        "passed-through ships don't move"
+    );
 }
 
 #[test]
@@ -305,8 +428,16 @@ fn a5_slip_no_free_cell_ahead_stays_put_and_bills_collision() {
         ],
     );
     self_move(&mut b, 0, MovementMode::SLIP, 2, None);
-    assert_eq!(cell_of(&b, "p"), Some(0), "no free cell ahead => the 2-D SLIP keeps p at its origin");
-    assert_eq!(hull_of(&b, "p"), 4, "the no-free-cell SLIP bills the floor-1 collision (5 -> 4)");
+    assert_eq!(
+        cell_of(&b, "p"),
+        Some(0),
+        "no free cell ahead => the 2-D SLIP keeps p at its origin"
+    );
+    assert_eq!(
+        hull_of(&b, "p"),
+        4,
+        "the no-free-cell SLIP bills the floor-1 collision (5 -> 4)"
+    );
 }
 
 /* =========================================================================
@@ -315,17 +446,51 @@ fn a5_slip_no_free_cell_ahead_stays_put_and_bills_collision() {
 
 #[test]
 fn a6_jump_onto_occupied_cell_is_a_noop() {
-    let mut b = board(7, vec![None, Some(ship("p", 1, 5, LaneEnd::Fore)), None, Some(ship("x", 3, 5, LaneEnd::Fore)), None, None, None]);
+    let mut b = board(
+        7,
+        vec![
+            None,
+            Some(ship("p", 1, 5, LaneEnd::Fore)),
+            None,
+            Some(ship("x", 3, 5, LaneEnd::Fore)),
+            None,
+            None,
+            None,
+        ],
+    );
     self_move(&mut b, 1, MovementMode::JUMP, 2, None); // target 1+2 = 3, occupied
-    assert_eq!(cell_of(&b, "p"), Some(1), "JUMP onto an occupied cell fails with no move");
-    assert_eq!(hull_of(&b, "p"), 5, "failed JUMP deals no collision (it ignores the path)");
+    assert_eq!(
+        cell_of(&b, "p"),
+        Some(1),
+        "JUMP onto an occupied cell fails with no move"
+    );
+    assert_eq!(
+        hull_of(&b, "p"),
+        5,
+        "failed JUMP deals no collision (it ignores the path)"
+    );
 }
 
 #[test]
 fn a6_jump_onto_clear_cell_blinks_directly() {
-    let mut b = board(7, vec![None, Some(ship("p", 1, 5, LaneEnd::Fore)), None, None, None, None, None]);
+    let mut b = board(
+        7,
+        vec![
+            None,
+            Some(ship("p", 1, 5, LaneEnd::Fore)),
+            None,
+            None,
+            None,
+            None,
+            None,
+        ],
+    );
     self_move(&mut b, 1, MovementMode::JUMP, 2, None); // target 3, clear
-    assert_eq!(cell_of(&b, "p"), Some(3), "JUMP blinks straight to the target cell");
+    assert_eq!(
+        cell_of(&b, "p"),
+        Some(3),
+        "JUMP blinks straight to the target cell"
+    );
     assert_eq!(hull_of(&b, "p"), 5, "clean JUMP, no collision");
 }
 
@@ -335,19 +500,47 @@ fn a6_jump_onto_clear_cell_blinks_directly() {
 
 #[test]
 fn a7_tractor_swap_trades_with_adjacent_occupant() {
-    let mut b = board(5, vec![None, Some(ship("p", 1, 5, LaneEnd::Fore)), Some(ship("x", 2, 5, LaneEnd::Fore)), None, None]);
+    let mut b = board(
+        5,
+        vec![
+            None,
+            Some(ship("p", 1, 5, LaneEnd::Fore)),
+            Some(ship("x", 2, 5, LaneEnd::Fore)),
+            None,
+            None,
+        ],
+    );
     self_move(&mut b, 1, MovementMode::TRACTOR_SWAP, 1, None);
-    assert_eq!(cell_of(&b, "p"), Some(2), "swapper takes the occupant's cell");
-    assert_eq!(cell_of(&b, "x"), Some(1), "occupant takes the swapper's cell");
-    assert_eq!(hull_of(&b, "p"), 5, "swap is a controlled trade, no collision");
+    assert_eq!(
+        cell_of(&b, "p"),
+        Some(2),
+        "swapper takes the occupant's cell"
+    );
+    assert_eq!(
+        cell_of(&b, "x"),
+        Some(1),
+        "occupant takes the swapper's cell"
+    );
+    assert_eq!(
+        hull_of(&b, "p"),
+        5,
+        "swap is a controlled trade, no collision"
+    );
     assert_eq!(hull_of(&b, "x"), 5, "swapped partner unharmed");
 }
 
 #[test]
 fn a7_tractor_swap_with_no_adjacent_occupant_is_a_noop() {
-    let mut b = board(5, vec![None, Some(ship("p", 1, 5, LaneEnd::Fore)), None, None, None]);
+    let mut b = board(
+        5,
+        vec![None, Some(ship("p", 1, 5, LaneEnd::Fore)), None, None, None],
+    );
     self_move(&mut b, 1, MovementMode::TRACTOR_SWAP, 1, None);
-    assert_eq!(cell_of(&b, "p"), Some(1), "nothing adjacent to swap with => no move");
+    assert_eq!(
+        cell_of(&b, "p"),
+        Some(1),
+        "nothing adjacent to swap with => no move"
+    );
 }
 
 /* =========================================================================
@@ -357,16 +550,30 @@ fn a7_tractor_swap_with_no_adjacent_occupant_is_a_noop() {
 #[test]
 fn a8_thrust_direction_override_moves_against_the_bow() {
     // bow=Fore would step +1, but dir:Some(Aft) forces -1.
-    let mut b = board(5, vec![None, None, Some(ship("p", 2, 5, LaneEnd::Fore)), None, None]);
+    let mut b = board(
+        5,
+        vec![None, None, Some(ship("p", 2, 5, LaneEnd::Fore)), None, None],
+    );
     self_move(&mut b, 2, MovementMode::THRUST, 1, Some(LaneEnd::Aft));
-    assert_eq!(cell_of(&b, "p"), Some(1), "explicit Aft direction overrides the Fore bow");
+    assert_eq!(
+        cell_of(&b, "p"),
+        Some(1),
+        "explicit Aft direction overrides the Fore bow"
+    );
 }
 
 #[test]
 fn a8_thrust_with_no_override_follows_aft_bow() {
-    let mut b = board(5, vec![None, None, Some(ship("p", 2, 5, LaneEnd::Aft)), None, None]);
+    let mut b = board(
+        5,
+        vec![None, None, Some(ship("p", 2, 5, LaneEnd::Aft)), None, None],
+    );
     self_move(&mut b, 2, MovementMode::THRUST, 1, None);
-    assert_eq!(cell_of(&b, "p"), Some(1), "bow=Aft with no override steps toward lower cells");
+    assert_eq!(
+        cell_of(&b, "p"),
+        Some(1),
+        "bow=Aft with no override steps toward lower cells"
+    );
 }
 
 /* =========================================================================
@@ -380,9 +587,22 @@ fn a9_swap_source_equals_target_is_a_noop() {
     // set to the source's own cell, so resolve_target_move sees
     // source_cell == target_cell and must early-return without touching the
     // board.
-    let mut b = board(5, vec![None, Some(ship("p", 1, 5, LaneEnd::Fore)), None, Some(ship("x", 3, 5, LaneEnd::Fore)), None]);
+    let mut b = board(
+        5,
+        vec![
+            None,
+            Some(ship("p", 1, 5, LaneEnd::Fore)),
+            None,
+            Some(ship("x", 3, 5, LaneEnd::Fore)),
+            None,
+        ],
+    );
     target_move(&mut b, 1, &[1], DisplaceMode::Swap, 2); // target == source (cell 1)
-    assert_eq!(cell_of(&b, "p"), Some(1), "self-Swap leaves the source where it is");
+    assert_eq!(
+        cell_of(&b, "p"),
+        Some(1),
+        "self-Swap leaves the source where it is"
+    );
     assert_eq!(cell_of(&b, "x"), Some(3), "self-Swap touches no other ship");
     assert_eq!(hull_of(&b, "p"), 5, "no damage from a degenerate swap");
 }
@@ -396,9 +616,24 @@ fn a9_swap_source_equals_target_is_a_noop() {
 fn a10_push_moves_target_away_from_source() {
     // src@1, tgt@2, clear behind. Push 2 => tgt away from src (toward higher
     // cells): 2 -> 4.
-    let mut b = board(7, vec![None, Some(ship("src", 1, 5, LaneEnd::Fore)), Some(ship("tgt", 2, 5, LaneEnd::Fore)), None, None, None, None]);
+    let mut b = board(
+        7,
+        vec![
+            None,
+            Some(ship("src", 1, 5, LaneEnd::Fore)),
+            Some(ship("tgt", 2, 5, LaneEnd::Fore)),
+            None,
+            None,
+            None,
+            None,
+        ],
+    );
     target_move(&mut b, 1, &[2], DisplaceMode::Push, 2);
-    assert_eq!(cell_of(&b, "tgt"), Some(4), "Push drives the target 2 cells away from the source");
+    assert_eq!(
+        cell_of(&b, "tgt"),
+        Some(4),
+        "Push drives the target 2 cells away from the source"
+    );
     assert_eq!(hull_of(&b, "tgt"), 5, "clear push, no collision");
 }
 
@@ -406,9 +641,24 @@ fn a10_push_moves_target_away_from_source() {
 fn a10_pull_stops_one_cell_short_of_the_source() {
     // src@1, tgt@4. Pull 2 => tgt toward src: 4 -> 3 -> 2 (2 cells). It would
     // continue toward 1 but stops because the source occupies cell 1.
-    let mut b = board(7, vec![None, Some(ship("src", 1, 5, LaneEnd::Fore)), None, None, Some(ship("tgt", 4, 5, LaneEnd::Fore)), None, None]);
+    let mut b = board(
+        7,
+        vec![
+            None,
+            Some(ship("src", 1, 5, LaneEnd::Fore)),
+            None,
+            None,
+            Some(ship("tgt", 4, 5, LaneEnd::Fore)),
+            None,
+            None,
+        ],
+    );
     target_move(&mut b, 1, &[4], DisplaceMode::Pull, 2);
-    assert_eq!(cell_of(&b, "tgt"), Some(2), "Pull draws the target toward the source by 2");
+    assert_eq!(
+        cell_of(&b, "tgt"),
+        Some(2),
+        "Pull draws the target toward the source by 2"
+    );
     assert_eq!(hull_of(&b, "tgt"), 5, "unobstructed pull, no collision");
 }
 
@@ -418,10 +668,27 @@ fn a10_push_blocked_by_wall_bills_remaining_collision() {
     // 3: 3 -> 4 (1 cell), then 4 -> col 5 is off-grid (wall). remaining = 3 - 1
     // = 2 collision. hull 5 - 2 = 3. (Shifted into the 5-wide grid; same shape
     // as the old 7-wide src@4/tgt@5 case.)
-    let mut b = board(5, vec![None, None, Some(ship("src", 2, 5, LaneEnd::Fore)), Some(ship("tgt", 3, 5, LaneEnd::Fore)), None]);
+    let mut b = board(
+        5,
+        vec![
+            None,
+            None,
+            Some(ship("src", 2, 5, LaneEnd::Fore)),
+            Some(ship("tgt", 3, 5, LaneEnd::Fore)),
+            None,
+        ],
+    );
     target_move(&mut b, 2, &[3], DisplaceMode::Push, 3);
-    assert_eq!(cell_of(&b, "tgt"), Some(4), "push reaches the last cell (4) then the wall blocks");
-    assert_eq!(hull_of(&b, "tgt"), 3, "remaining distance (3-1=2) bills 2 collision damage");
+    assert_eq!(
+        cell_of(&b, "tgt"),
+        Some(4),
+        "push reaches the last cell (4) then the wall blocks"
+    );
+    assert_eq!(
+        hull_of(&b, "tgt"),
+        3,
+        "remaining distance (3-1=2) bills 2 collision damage"
+    );
 }
 
 /* =========================================================================
@@ -434,9 +701,19 @@ fn a10_push_blocked_by_wall_bills_remaining_collision() {
 fn a11_collision_damages_only_the_moving_ship_not_the_blocker() {
     let mut b = board(
         5,
-        vec![None, Some(ship("p", 1, 5, LaneEnd::Fore)), Some(ship("blocker", 2, 5, LaneEnd::Fore)), None, None],
+        vec![
+            None,
+            Some(ship("p", 1, 5, LaneEnd::Fore)),
+            Some(ship("blocker", 2, 5, LaneEnd::Fore)),
+            None,
+            None,
+        ],
     );
     self_move(&mut b, 1, MovementMode::THRUST, 1, None);
     assert_eq!(hull_of(&b, "p"), 4, "the rammer eats the 1 collision");
-    assert_eq!(hull_of(&b, "blocker"), 5, "the blocker is untouched by the rammer's collision");
+    assert_eq!(
+        hull_of(&b, "blocker"),
+        5,
+        "the blocker is untouched by the rammer's collision"
+    );
 }

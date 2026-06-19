@@ -76,7 +76,10 @@ fn main() {
             DEMO_HALF_EXTENT,
             &path,
         ) {
-            Ok(()) => log::info!("light_sweep: frame {i:02} key-az {az:+.0}° → {}", path.display()),
+            Ok(()) => log::info!(
+                "light_sweep: frame {i:02} key-az {az:+.0}° → {}",
+                path.display()
+            ),
             Err(e) => {
                 log::error!("light_sweep: frame {i:02} failed: {e}");
                 std::process::exit(1);
@@ -145,8 +148,18 @@ fn demo_wedge() -> ImportedShip {
         }
     };
     let p = |x: f32, sy: f32, sz: f32| [x, sy * er, sz * er];
-    let (f_bl, f_br, f_tr, f_tl) = (p(ex0, -1.0, -1.0), p(ex0, -1.0, 1.0), p(ex0, 1.0, 1.0), p(ex0, 1.0, -1.0));
-    let (k_bl, k_br, k_tr, k_tl) = (p(ex1, -1.0, -1.0), p(ex1, -1.0, 1.0), p(ex1, 1.0, 1.0), p(ex1, 1.0, -1.0));
+    let (f_bl, f_br, f_tr, f_tl) = (
+        p(ex0, -1.0, -1.0),
+        p(ex0, -1.0, 1.0),
+        p(ex0, 1.0, 1.0),
+        p(ex0, 1.0, -1.0),
+    );
+    let (k_bl, k_br, k_tr, k_tl) = (
+        p(ex1, -1.0, -1.0),
+        p(ex1, -1.0, 1.0),
+        p(ex1, 1.0, 1.0),
+        p(ex1, 1.0, -1.0),
+    );
     eng(k_br, k_bl, k_tl, k_tr); // exhaust face (the glow disc, faces -X)
     eng(f_bl, f_br, f_tr, f_tl); // front
     eng(f_bl, k_bl, k_br, f_br); // belly
@@ -156,8 +169,16 @@ fn demo_wedge() -> ImportedShip {
     let eng_len = positions.len() - hull_len;
 
     let group_ranges = vec![
-        GroupRange { start: 0, len: hull_len, material: 0 },
-        GroupRange { start: hull_len, len: eng_len, material: 1 },
+        GroupRange {
+            start: 0,
+            len: hull_len,
+            material: 0,
+        },
+        GroupRange {
+            start: hull_len,
+            len: eng_len,
+            material: 1,
+        },
     ];
     let materials = vec![
         // Lit hull grey.

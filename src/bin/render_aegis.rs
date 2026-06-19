@@ -73,7 +73,14 @@ fn main() {
     // ---- at-rest lit shot (the house key light: laz -50 / lel 60) ----
     let rest = out_dir.join("rest.png");
     if let Err(e) = gfx.render_loft_to_png(
-        &ship, SHIP_YAW_DEG, -50.0, 60.0, 1.6, PITCH_DEG, HALF_EXTENT, &rest,
+        &ship,
+        SHIP_YAW_DEG,
+        -50.0,
+        60.0,
+        1.6,
+        PITCH_DEG,
+        HALF_EXTENT,
+        &rest,
     ) {
         log::error!("render_aegis: rest shot failed: {e}");
         std::process::exit(1);
@@ -82,16 +89,30 @@ fn main() {
 
     // ---- 180° key-light sweep ----
     for i in 0..FRAMES {
-        let t = if FRAMES <= 1 { 0.0 } else { i as f32 / (FRAMES - 1) as f32 };
+        let t = if FRAMES <= 1 {
+            0.0
+        } else {
+            i as f32 / (FRAMES - 1) as f32
+        };
         let az = AZ_START_DEG + (AZ_END_DEG - AZ_START_DEG) * t;
         let path = out_dir.join(format!("frame_{i:02}.png"));
         if let Err(e) = gfx.render_loft_to_png(
-            &ship, SHIP_YAW_DEG, az, KEY_EL_DEG, KEY_INTENSITY, PITCH_DEG, HALF_EXTENT, &path,
+            &ship,
+            SHIP_YAW_DEG,
+            az,
+            KEY_EL_DEG,
+            KEY_INTENSITY,
+            PITCH_DEG,
+            HALF_EXTENT,
+            &path,
         ) {
             log::error!("render_aegis: frame {i:02} failed: {e}");
             std::process::exit(1);
         }
-        log::info!("render_aegis: frame {i:02} key-az {az:+.0}° → {}", path.display());
+        log::info!(
+            "render_aegis: frame {i:02} key-az {az:+.0}° → {}",
+            path.display()
+        );
     }
     log::info!(
         "render_aegis: DONE — at-rest + {FRAMES}-frame sweep in {}",
@@ -120,22 +141,30 @@ fn verify(ship: &ImportedShip) -> Result<String, String> {
 
     // 1) Length ≈ 12 (the GLB exporter scales X-extent to TARGET_LEN = 12).
     if !(11.0..=13.0).contains(&lx) {
-        return Err(format!("X-length {lx:.2} not ≈12 (expected the exporter's TARGET_LEN scale)"));
+        return Err(format!(
+            "X-length {lx:.2} not ≈12 (expected the exporter's TARGET_LEN scale)"
+        ));
     }
     // 2) Wide-low: beam should be a healthy fraction of length (wscale 1.92),
     //    and the hull clearly wider than tall (low profile).
     let beam_len = lz / lx;
     if beam_len < 0.12 {
-        return Err(format!("beam:length {beam_len:.3} too narrow for wscale 1.92"));
+        return Err(format!(
+            "beam:length {beam_len:.3} too narrow for wscale 1.92"
+        ));
     }
     if lz <= ly {
-        return Err(format!("not wide-low: beam {lz:.2} should exceed height {ly:.2}"));
+        return Err(format!(
+            "not wide-low: beam {lz:.2} should exceed height {ly:.2}"
+        ));
     }
     // 3) Material groups: the hull + engine bells + the glow disc → ≥2 groups,
     //    with at least one UNLIT emissive (the engine exhaust = a light source).
     let groups = ship.group_ranges.len();
     if groups < 2 {
-        return Err(format!("only {groups} material group(s); expected hull + engine parts"));
+        return Err(format!(
+            "only {groups} material group(s); expected hull + engine parts"
+        ));
     }
     let has_unlit_glow = ship
         .materials

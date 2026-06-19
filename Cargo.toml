@@ -5,6 +5,10 @@ edition = "2021"
 description = "Rust port of the Broadside space-combat resolver — canonical reference: broadside-engine/engine/types.ts"
 repository = "https://github.com/kilt-er/broadside-engine"
 license = "MIT OR Apache-2.0"
+# MSRV: pinned to the toolchain in rust-toolchain.toml; informal N-2 support policy.
+rust-version = "1.95"
+keywords = ["game", "tactics", "roguelike", "naval", "wargame"]
+categories = ["games", "simulation"]
 
 [features]
 # Default build is the types/catalog/geometry/resolve slice — pure logic with

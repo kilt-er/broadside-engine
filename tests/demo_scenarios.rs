@@ -22,8 +22,7 @@ use broadside_engine::grid::{Dir4, Facing, Pos};
 use broadside_engine::resolve::{resolve_round, Content};
 use broadside_engine::types::{
     Action, ActionCost, Arc, Board, Effect, EventBus, Faction, Hook, HookContext, Mount,
-    Orientation, Projectile, RangeBand, Ship, Targeting,
-    TargetingPattern, WeaponArchetype,
+    Orientation, Projectile, RangeBand, Ship, Targeting, TargetingPattern, WeaponArchetype,
 };
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -48,7 +47,9 @@ fn ship(id: &str, faction: Faction, pos: Pos, hull: i32, facing: Facing) -> Ship
         faction,
         cell: pos.to_index(),
         pos,
-        orientation: Orientation::BowOn { bow: broadside_engine::types::LaneEnd::Fore },
+        orientation: Orientation::BowOn {
+            bow: broadside_engine::types::LaneEnd::Fore,
+        },
         facing,
         hull,
         max_hull: hull,
@@ -79,9 +80,17 @@ fn pulse_laser() -> Action {
         id: "pulse_laser".into(),
         name: "Pulse Laser".into(),
         archetype: WeaponArchetype::Beam,
-        cost: ActionCost { heat: 1, cooldown_max: 0, advances_turn: true },
+        cost: ActionCost {
+            heat: 1,
+            cooldown_max: 0,
+            advances_turn: true,
+        },
         targeting: Targeting {
-            range_band: vec![broadside_engine::grid::Range::Adjacent, broadside_engine::grid::Range::Near, broadside_engine::grid::Range::Far],
+            range_band: vec![
+                broadside_engine::grid::Range::Adjacent,
+                broadside_engine::grid::Range::Near,
+                broadside_engine::grid::Range::Far,
+            ],
             optimal_range: broadside_engine::grid::Range::Adjacent,
             pattern: TargetingPattern::BEAM,
             band: vec![RangeBand::PointBlank, RangeBand::Close, RangeBand::Mid],
@@ -90,7 +99,10 @@ fn pulse_laser() -> Action {
             facing_relative: true,
             hits_all: false,
         },
-        effects: vec![Effect::DAMAGE { amount: 4, band_falloff: None }],
+        effects: vec![Effect::DAMAGE {
+            amount: 4,
+            band_falloff: None,
+        }],
         r#mod: None,
         icon: None,
     }
@@ -119,11 +131,13 @@ fn wire_bus(board: &mut Board) -> (DamageLog, LethalLog) {
     let lethal: LethalLog = Rc::new(RefCell::new(Vec::new()));
 
     let d = Rc::clone(&damage);
-    board.bus.on(Hook::OnDamageTaken, move |ctx: &mut HookContext| {
-        if let (Some(c), Some(a)) = (ctx.target_cell, ctx.amount) {
-            d.borrow_mut().push((c, a));
-        }
-    });
+    board
+        .bus
+        .on(Hook::OnDamageTaken, move |ctx: &mut HookContext| {
+            if let (Some(c), Some(a)) = (ctx.target_cell, ctx.amount) {
+                d.borrow_mut().push((c, a));
+            }
+        });
     let l = Rc::clone(&lethal);
     board.bus.on(Hook::OnLethal, move |ctx: &mut HookContext| {
         if let Some(c) = ctx.target_cell {
@@ -147,17 +161,32 @@ fn wire_bus(board: &mut Board) -> (DamageLog, LethalLog) {
 /// Cell indices (row-major, COLS=5): player (2,3)=17, scout (2,1)=7,
 /// gunboat (4,0)=4.
 fn demo_board(scout_facing: Facing) -> Board {
-    let mut cells: Vec<Option<Ship>> =
-        (0..broadside_engine::grid::CELLS).map(|_| None).collect();
+    let mut cells: Vec<Option<Ship>> = (0..broadside_engine::grid::CELLS).map(|_| None).collect();
 
-    let mut player = ship("frigate", Faction::Player, Pos::new(2, 3), 10, Facing::Bow(Dir4::N));
+    let mut player = ship(
+        "frigate",
+        Faction::Player,
+        Pos::new(2, 3),
+        10,
+        Facing::Bow(Dir4::N),
+    );
     player.queue = vec!["pulse_laser".into()];
     let scout = ship("scout", Faction::Enemy, Pos::new(2, 1), 5, scout_facing);
-    let gunboat = ship("gunboat", Faction::Enemy, Pos::new(4, 0), 5, Facing::Bow(Dir4::S));
+    let gunboat = ship(
+        "gunboat",
+        Faction::Enemy,
+        Pos::new(4, 0),
+        5,
+        Facing::Bow(Dir4::S),
+    );
 
     // Capture each cell index before moving the ship into the slot (invariant A:
     // slot == pos.to_index()).
-    let (pi, si, gi) = (player.pos.to_index(), scout.pos.to_index(), gunboat.pos.to_index());
+    let (pi, si, gi) = (
+        player.pos.to_index(),
+        scout.pos.to_index(),
+        gunboat.pos.to_index(),
+    );
     cells[pi] = Some(player);
     cells[si] = Some(scout);
     cells[gi] = Some(gunboat);
@@ -166,7 +195,9 @@ fn demo_board(scout_facing: Facing) -> Board {
         size: broadside_engine::grid::COLS,
         cells,
         ordnance: Vec::new(),
-        hazards: (0..broadside_engine::grid::CELLS).map(|_| Vec::new()).collect(),
+        hazards: (0..broadside_engine::grid::CELLS)
+            .map(|_| Vec::new())
+            .collect(),
         patrol: 1,
         level: 0,
         threats: Vec::new(),
@@ -201,8 +232,14 @@ fn scenario_a_weak_stern_takes_post_falloff_damage() {
 
     // Scout's hull dropped by exactly the post-falloff, post-armour damage.
     let scout_idx = Pos::new(2, 1).to_index();
-    let scout_hull = board.cells[scout_idx].as_ref().expect("scout survives").hull;
-    assert_eq!(scout_hull, 3, "soft stern pool (cap 1) soaks 1 of the falloff-3 hit; 2 overflows to hull");
+    let scout_hull = board.cells[scout_idx]
+        .as_ref()
+        .expect("scout survives")
+        .hull;
+    assert_eq!(
+        scout_hull, 3,
+        "soft stern pool (cap 1) soaks 1 of the falloff-3 hit; 2 overflows to hull"
+    );
 
     // Exactly one OnDamageTaken emit for the scout (cell index 7) with amount 2.
     assert_eq!(
@@ -212,18 +249,26 @@ fn scenario_a_weak_stern_takes_post_falloff_damage() {
     );
 
     // No deaths.
-    assert!(lethal.borrow().is_empty(), "no ship should be destroyed in Scenario A");
+    assert!(
+        lethal.borrow().is_empty(),
+        "no ship should be destroyed in Scenario A"
+    );
 
     // Gunboat one column over is dressing — BEAM hits the first target on the
     // firing ray (the scout up column 2). Gunboat is untouched.
-    let gunboat_hull = board.cells[Pos::new(4, 0).to_index()].as_ref().expect("gunboat untouched").hull;
+    let gunboat_hull = board.cells[Pos::new(4, 0).to_index()]
+        .as_ref()
+        .expect("gunboat untouched")
+        .hull;
     assert_eq!(gunboat_hull, 5);
 
     // Player paid the heat and the cooldown is set. Heat dissipates by 1
     // at end-of-turn, so after resolve_round the player's heat is
     // (0 + 1) - 1 = 0. cooldown_max is 0 for pulse_laser, so the cooldown
     // entry is also 0 after end-of-turn's decrement.
-    let player = board.cells[Pos::new(2, 3).to_index()].as_ref().expect("player survives");
+    let player = board.cells[Pos::new(2, 3).to_index()]
+        .as_ref()
+        .expect("player survives");
     assert_eq!(player.heat, 0, "heat 0 + 1 fired - 1 EOT dissipation = 0");
     assert_eq!(player.cooldowns.get("pulse_laser").copied(), Some(0));
     assert!(player.queue.is_empty(), "queue cleared after resolve_round");
@@ -256,8 +301,14 @@ fn scenario_b_strong_bow_soaks_to_zero() {
 
     resolve_round(&mut board, &content);
 
-    let scout_hull = board.cells[Pos::new(2, 1).to_index()].as_ref().expect("scout survives").hull;
-    assert_eq!(scout_hull, 5, "strong bow pool (cap 4) soaks the falloff-3 hit to zero");
+    let scout_hull = board.cells[Pos::new(2, 1).to_index()]
+        .as_ref()
+        .expect("scout survives")
+        .hull;
+    assert_eq!(
+        scout_hull, 5,
+        "strong bow pool (cap 4) soaks the falloff-3 hit to zero"
+    );
 
     // Crucial: NO OnDamageTaken emit. resolve.rs:467 gates the emit on
     // `final_dmg > 0`, and the bow armour brings final_dmg to 0. A port
@@ -267,7 +318,10 @@ fn scenario_b_strong_bow_soaks_to_zero() {
         damage.borrow().is_empty(),
         "no OnDamageTaken emit when armour fully absorbs the hit (final_dmg == 0)",
     );
-    assert!(lethal.borrow().is_empty(), "no ship destroyed in Scenario B");
+    assert!(
+        lethal.borrow().is_empty(),
+        "no ship destroyed in Scenario B"
+    );
 }
 
 /* =========================================================================
@@ -297,12 +351,18 @@ fn orientation_alone_changes_the_outcome() {
     let mut board_a = demo_board(Facing::Bow(Dir4::N));
     let content = DemoContent(pulse_laser());
     resolve_round(&mut board_a, &content);
-    let hull_a = board_a.cells[scout_idx].as_ref().expect("scout A survives").hull;
+    let hull_a = board_a.cells[scout_idx]
+        .as_ref()
+        .expect("scout A survives")
+        .hull;
 
     // Scenario B: strong bow faces the attacker (scout bow S).
     let mut board_b = demo_board(Facing::Bow(Dir4::S));
     resolve_round(&mut board_b, &content);
-    let hull_b = board_b.cells[scout_idx].as_ref().expect("scout B survives").hull;
+    let hull_b = board_b.cells[scout_idx]
+        .as_ref()
+        .expect("scout B survives")
+        .hull;
 
     assert_eq!(hull_a, 3, "A: stern facing -> 2 damage lands");
     assert_eq!(hull_b, 5, "B: bow facing -> 2 damage soaked");

@@ -31,8 +31,8 @@ use std::collections::HashMap;
 
 use crate::resolve::Content;
 use crate::types::{
-    Action, ActionCost, Arc as TArc, Effect, MovementMode, Projectile, RangeBand,
-    ReorientTo, Ship, Targeting, TargetingPattern, WeaponArchetype,
+    Action, ActionCost, Arc as TArc, Effect, MovementMode, Projectile, RangeBand, ReorientTo, Ship,
+    Targeting, TargetingPattern, WeaponArchetype,
 };
 
 /* =========================================================================
@@ -286,7 +286,11 @@ fn self_targeting() -> Targeting {
 }
 
 fn zero_cost() -> ActionCost {
-    ActionCost { heat: 0, cooldown_max: 0, advances_turn: true }
+    ActionCost {
+        heat: 0,
+        cooldown_max: 0,
+        advances_turn: true,
+    }
 }
 
 /// Synthetic "move one cell left" action — **lane-relative**. Player
@@ -397,7 +401,9 @@ pub fn synthetic_reorient_flip() -> Action {
         archetype: WeaponArchetype::Movement,
         cost: zero_cost(),
         targeting: self_targeting(),
-        effects: vec![Effect::REORIENT { to: ReorientTo::Flip }],
+        effects: vec![Effect::REORIENT {
+            to: ReorientTo::Flip,
+        }],
         r#mod: None,
         icon: None,
     }
@@ -413,7 +419,9 @@ pub fn synthetic_rotate_left() -> Action {
         archetype: WeaponArchetype::Movement,
         cost: zero_cost(),
         targeting: self_targeting(),
-        effects: vec![Effect::REORIENT { to: ReorientTo::RotateLeft }],
+        effects: vec![Effect::REORIENT {
+            to: ReorientTo::RotateLeft,
+        }],
         r#mod: None,
         icon: None,
     }
@@ -427,7 +435,9 @@ pub fn synthetic_rotate_right() -> Action {
         archetype: WeaponArchetype::Movement,
         cost: zero_cost(),
         targeting: self_targeting(),
-        effects: vec![Effect::REORIENT { to: ReorientTo::RotateRight }],
+        effects: vec![Effect::REORIENT {
+            to: ReorientTo::RotateRight,
+        }],
         r#mod: None,
         icon: None,
     }
@@ -511,7 +521,9 @@ impl DemoContent {
     /// weapons without changing the player's loadout behavior.
     pub fn install_catalog_actions(&mut self, catalog: &crate::types::Catalog) {
         for action in &catalog.actions {
-            self.actions.entry(action.id.clone()).or_insert_with(|| action.clone());
+            self.actions
+                .entry(action.id.clone())
+                .or_insert_with(|| action.clone());
         }
     }
 
@@ -595,7 +607,9 @@ fn card_synthetic_action(card_id: &str) -> Action {
         archetype: WeaponArchetype::Defensive,
         cost: zero_cost(),
         targeting: self_targeting(),
-        effects: vec![Effect::BOARD { note: card_id.into() }],
+        effects: vec![Effect::BOARD {
+            note: card_id.into(),
+        }],
         r#mod: None,
         icon: None,
     }
@@ -619,7 +633,11 @@ impl Default for DemoContent {
             id: "pulse_laser".into(),
             name: "Pulse Laser".into(),
             archetype: WeaponArchetype::Beam,
-            cost: ActionCost { heat: 1, cooldown_max: 0, advances_turn: true },
+            cost: ActionCost {
+                heat: 1,
+                cooldown_max: 0,
+                advances_turn: true,
+            },
             targeting: Targeting {
                 pattern: TargetingPattern::BEAM,
                 band: vec![RangeBand::PointBlank, RangeBand::Close, RangeBand::Mid],
@@ -631,7 +649,10 @@ impl Default for DemoContent {
                 facing_relative: true,
                 hits_all: false,
             },
-            effects: vec![Effect::DAMAGE { amount: 4, band_falloff: None }],
+            effects: vec![Effect::DAMAGE {
+                amount: 4,
+                band_falloff: None,
+            }],
             r#mod: None,
             icon: None,
         });
@@ -641,19 +662,34 @@ impl Default for DemoContent {
             id: "torpedo".into(),
             name: "Torpedo".into(),
             archetype: WeaponArchetype::Ordnance,
-            cost: ActionCost { heat: 2, cooldown_max: 2, advances_turn: true },
+            cost: ActionCost {
+                heat: 2,
+                cooldown_max: 2,
+                advances_turn: true,
+            },
             targeting: Targeting {
                 pattern: TargetingPattern::ORDNANCE,
-                band: vec![RangeBand::PointBlank, RangeBand::Close, RangeBand::Mid, RangeBand::Long],
+                band: vec![
+                    RangeBand::PointBlank,
+                    RangeBand::Close,
+                    RangeBand::Mid,
+                    RangeBand::Long,
+                ],
                 optimal_band: RangeBand::Mid,
                 // v2 (A3 EXPAND): 2-D range mirror of the 1-D bands above.
-                range_band: vec![crate::grid::Range::Adjacent, crate::grid::Range::Near, crate::grid::Range::Far],
+                range_band: vec![
+                    crate::grid::Range::Adjacent,
+                    crate::grid::Range::Near,
+                    crate::grid::Range::Far,
+                ],
                 optimal_range: crate::grid::Range::Near,
                 requires_arc: Some(TArc::Forward),
                 facing_relative: true,
                 hits_all: false,
             },
-            effects: vec![Effect::SPAWN_ORDNANCE { projectile: "torpedo".into() }],
+            effects: vec![Effect::SPAWN_ORDNANCE {
+                projectile: "torpedo".into(),
+            }],
             r#mod: None,
             icon: None,
         });
@@ -672,7 +708,11 @@ impl Default for DemoContent {
             id: "broadside_battery".into(),
             name: "Broadside Battery".into(),
             archetype: WeaponArchetype::Broadside,
-            cost: ActionCost { heat: 3, cooldown_max: 4, advances_turn: true },
+            cost: ActionCost {
+                heat: 3,
+                cooldown_max: 4,
+                advances_turn: true,
+            },
             targeting: Targeting {
                 pattern: TargetingPattern::BROADSIDE,
                 band: vec![RangeBand::Close],
@@ -683,7 +723,10 @@ impl Default for DemoContent {
                 facing_relative: true,
                 hits_all: false,
             },
-            effects: vec![Effect::DAMAGE { amount: 5, band_falloff: None }],
+            effects: vec![Effect::DAMAGE {
+                amount: 5,
+                band_falloff: None,
+            }],
             r#mod: None,
             icon: None,
         });
@@ -822,7 +865,10 @@ pub fn spawn_ordnance(kind: &str, owner: &Ship) -> Projectile {
             "torp",
             1,
             1,
-            vec![Effect::DAMAGE { amount: 4, band_falloff: Some(false) }],
+            vec![Effect::DAMAGE {
+                amount: 4,
+                band_falloff: Some(false),
+            }],
         ),
         // `missile` kept as an alias of `missile_salvo` for the demo's
         // hand-built loadout / older fixtures that spawn "missile".
@@ -830,14 +876,20 @@ pub fn spawn_ordnance(kind: &str, owner: &Ship) -> Projectile {
             "msl",
             2,
             1,
-            vec![Effect::DAMAGE { amount: 2, band_falloff: Some(false) }],
+            vec![Effect::DAMAGE {
+                amount: 2,
+                band_falloff: Some(false),
+            }],
         ),
         "heavy_torpedo" => base(
             "htorp",
             1,
             2,
             vec![
-                Effect::DAMAGE { amount: 6, band_falloff: Some(false) },
+                Effect::DAMAGE {
+                    amount: 6,
+                    band_falloff: Some(false),
+                },
                 // The "systems-offline pulse" the desc calls out, as an
                 // on-impact rider (mirrors the launcher's APPLY_STATUS).
                 Effect::APPLY_STATUS {
@@ -980,8 +1032,11 @@ mod tests {
             key_to_intent(Key::D1, &p, &c),
             Some(Intent::QueueAction("weapon_0".into())),
         );
-        assert_eq!(key_to_intent(Key::D2, &p, &c), None,
-            "ship has 1 mount; D2 is out of range");
+        assert_eq!(
+            key_to_intent(Key::D2, &p, &c),
+            None,
+            "ship has 1 mount; D2 is out of range"
+        );
         assert_eq!(key_to_intent(Key::D3, &p, &c), None);
     }
 
@@ -1002,21 +1057,41 @@ mod tests {
 
     #[test]
     fn intent_to_action_id_synthetics_use_double_underscore() {
-        assert_eq!(intent_to_action_id(&Intent::MoveLeft), Some(SYNTHETIC_MOVE_LEFT));
-        assert_eq!(intent_to_action_id(&Intent::MoveRight), Some(SYNTHETIC_MOVE_RIGHT));
-        assert_eq!(intent_to_action_id(&Intent::ReorientFlip), Some(SYNTHETIC_REORIENT_FLIP));
-        assert_eq!(intent_to_action_id(&Intent::RotateLeft), Some(SYNTHETIC_ROTATE_LEFT));
-        assert_eq!(intent_to_action_id(&Intent::RotateRight), Some(SYNTHETIC_ROTATE_RIGHT));
+        assert_eq!(
+            intent_to_action_id(&Intent::MoveLeft),
+            Some(SYNTHETIC_MOVE_LEFT)
+        );
+        assert_eq!(
+            intent_to_action_id(&Intent::MoveRight),
+            Some(SYNTHETIC_MOVE_RIGHT)
+        );
+        assert_eq!(
+            intent_to_action_id(&Intent::ReorientFlip),
+            Some(SYNTHETIC_REORIENT_FLIP)
+        );
+        assert_eq!(
+            intent_to_action_id(&Intent::RotateLeft),
+            Some(SYNTHETIC_ROTATE_LEFT)
+        );
+        assert_eq!(
+            intent_to_action_id(&Intent::RotateRight),
+            Some(SYNTHETIC_ROTATE_RIGHT)
+        );
         assert_eq!(intent_to_action_id(&Intent::Vent), Some(SYNTHETIC_VENT));
         // Synthetic ids must use the `__` prefix so they cannot collide
         // with real catalog action ids (which are unprefixed snake_case).
         for id in [
-            SYNTHETIC_MOVE_LEFT, SYNTHETIC_MOVE_RIGHT,
-            SYNTHETIC_REORIENT_FLIP, SYNTHETIC_ROTATE_LEFT, SYNTHETIC_ROTATE_RIGHT,
+            SYNTHETIC_MOVE_LEFT,
+            SYNTHETIC_MOVE_RIGHT,
+            SYNTHETIC_REORIENT_FLIP,
+            SYNTHETIC_ROTATE_LEFT,
+            SYNTHETIC_ROTATE_RIGHT,
             SYNTHETIC_VENT,
         ] {
-            assert!(id.starts_with("__"),
-                "synthetic id `{id}` must start with __ to avoid catalog collisions");
+            assert!(
+                id.starts_with("__"),
+                "synthetic id `{id}` must start with __ to avoid catalog collisions"
+            );
         }
     }
 
@@ -1087,7 +1162,10 @@ mod tests {
         // wired by the bin itself before key_to_intent gets a chance).
         let lines = tutorial_lines();
         assert!(lines.iter().any(|l| l.contains("1/2/3")));
-        assert!(lines.iter().any(|l| l.contains("5/6/7")), "card binding must be advertised");
+        assert!(
+            lines.iter().any(|l| l.contains("5/6/7")),
+            "card binding must be advertised"
+        );
         assert!(lines.iter().any(|l| l.contains("Tab")));
         assert!(lines.iter().any(|l| l.contains("V")));
         assert!(lines.iter().any(|l| l.contains("R/Space")));
@@ -1166,17 +1244,27 @@ mod tests {
         target.id = "target".into();
         target.cell = 5;
         target.shield_profile = ShieldProfile {
-            bow: ShieldFace { armour: 0, charge: 0 },
-            stern: ShieldFace { armour: 0, charge: 0 },
-            port: ShieldFace { armour: 0, charge: 0 },
-            starboard: ShieldFace { armour: 0, charge: 0 },
+            bow: ShieldFace {
+                armour: 0,
+                charge: 0,
+            },
+            stern: ShieldFace {
+                armour: 0,
+                charge: 0,
+            },
+            port: ShieldFace {
+                armour: 0,
+                charge: 0,
+            },
+            starboard: ShieldFace {
+                armour: 0,
+                charge: 0,
+            },
         };
 
         let mut board = Board {
             size: 7,
-            cells: vec![
-                Some(attacker), None, None, None, None, Some(target), None,
-            ],
+            cells: vec![Some(attacker), None, None, None, None, Some(target), None],
             ordnance: vec![],
             hazards: (0..7).map(|_| vec![]).collect(),
             patrol: 1,
@@ -1191,12 +1279,19 @@ mod tests {
         // unambiguous. Distance 5 -> Long.
         let mut weapon = synthetic_vent(); // grab a free-cost shell
         weapon.id = "test_weapon".into();
-        weapon.effects = vec![Effect::DAMAGE { amount: 4, band_falloff: Some(false) }];
+        weapon.effects = vec![Effect::DAMAGE {
+            amount: 4,
+            band_falloff: Some(false),
+        }];
 
         // Baseline: no Marksman installed. Hull should drop by 4.
         let mut content = DemoContent::default();
         apply_damage(5, 4, 0, &weapon, &mut board, &content);
-        assert_eq!(board.cells[5].as_ref().unwrap().hull, 6, "no marksman: 4 lands");
+        assert_eq!(
+            board.cells[5].as_ref().unwrap().hull,
+            6,
+            "no marksman: 4 lands"
+        );
 
         // Reset hull, install Marksman on the ATTACKER, fire again. Hull
         // should drop by 5. Per audit #67, Marksman is attacker-side: the
@@ -1205,7 +1300,8 @@ mod tests {
         content.install_subsystem("p", MARKSMAN);
         apply_damage(5, 4, 0, &weapon, &mut board, &content);
         assert_eq!(
-            board.cells[5].as_ref().unwrap().hull, 5,
+            board.cells[5].as_ref().unwrap().hull,
+            5,
             "marksman on ATTACKER: 4 base + 1 attacker-side mod at Long = 5 lands"
         );
 
@@ -1217,7 +1313,8 @@ mod tests {
         content.install_subsystem("target", MARKSMAN);
         apply_damage(5, 4, 0, &weapon, &mut board, &content);
         assert_eq!(
-            board.cells[5].as_ref().unwrap().hull, 6,
+            board.cells[5].as_ref().unwrap().hull,
+            6,
             "marksman on TARGET must NOT apply (audit #67 direction pin)",
         );
     }
@@ -1250,8 +1347,11 @@ mod tests {
 
         end_of_turn(&mut board, &content);
         // Base -1 (passive) + HeatSink -1 = -2 total. 5 -> 3.
-        assert_eq!(board.cells[0].as_ref().unwrap().heat, 3,
-            "HeatSink stacks with passive dissipation");
+        assert_eq!(
+            board.cells[0].as_ref().unwrap().heat,
+            3,
+            "HeatSink stacks with passive dissipation"
+        );
     }
 
     /* ---- Phase 2 field-kit Card integration --------------------------- */
@@ -1260,7 +1360,7 @@ mod tests {
     /// id, run execute_queue, see the board-wide effect land.
     #[test]
     fn mass_lock_card_play_through_execute_queue() {
-        use crate::cards::{CARD_MASS_LOCK, PlayResult};
+        use crate::cards::{PlayResult, CARD_MASS_LOCK};
         use crate::resolve::fire_player_queue;
         use crate::types::{Board, EventBus, Faction, StatusKind};
 
@@ -1292,9 +1392,18 @@ mod tests {
         content.grant_placeholder_kit("p");
 
         // Step 1: validate + decrement charges.
-        assert_eq!(content.try_play_card("p", CARD_MASS_LOCK), PlayResult::Played);
         assert_eq!(
-            content.field_kits.for_ship("p").unwrap().find(CARD_MASS_LOCK).unwrap().charges,
+            content.try_play_card("p", CARD_MASS_LOCK),
+            PlayResult::Played
+        );
+        assert_eq!(
+            content
+                .field_kits
+                .for_ship("p")
+                .unwrap()
+                .find(CARD_MASS_LOCK)
+                .unwrap()
+                .charges,
             0,
             "charge decremented from 1 to 0",
         );
@@ -1310,12 +1419,17 @@ mod tests {
         for cell in [1, 3] {
             let s = board.cells[cell].as_ref().unwrap();
             assert!(
-                s.statuses.iter().any(|st| st.kind == StatusKind::TargetLock),
+                s.statuses
+                    .iter()
+                    .any(|st| st.kind == StatusKind::TargetLock),
                 "enemy at cell {cell} should be target-locked",
             );
         }
         let p = board.cells[0].as_ref().unwrap();
-        assert!(p.statuses.iter().all(|st| st.kind != StatusKind::TargetLock));
+        assert!(p
+            .statuses
+            .iter()
+            .all(|st| st.kind != StatusKind::TargetLock));
     }
 
     /// Replaying a depleted card returns InsufficientCharges; the
@@ -1323,10 +1437,13 @@ mod tests {
     /// documents the caller contract; the bin enforces it.)
     #[test]
     fn second_play_of_one_charge_card_rejected() {
-        use crate::cards::{CARD_MASS_BREACH, PlayResult};
+        use crate::cards::{PlayResult, CARD_MASS_BREACH};
         let mut content = DemoContent::default();
         content.grant_placeholder_kit("p");
-        assert_eq!(content.try_play_card("p", CARD_MASS_BREACH), PlayResult::Played);
+        assert_eq!(
+            content.try_play_card("p", CARD_MASS_BREACH),
+            PlayResult::Played
+        );
         assert_eq!(
             content.try_play_card("p", CARD_MASS_BREACH),
             PlayResult::InsufficientCharges,
@@ -1398,8 +1515,15 @@ mod tests {
         let torp = content.spawn_projectile("torpedo", &owner);
         assert_eq!(torp.kind, "torpedo");
         assert_eq!(torp.speed, 1, "torpedo advances one cell per turn");
-        assert_eq!(payload_damage(&torp), 4, "torpedo carries a 4-damage payload");
-        assert_eq!(torp.hull, 1, "a light torpedo breaks up on one point-defense hit");
+        assert_eq!(
+            payload_damage(&torp),
+            4,
+            "torpedo carries a 4-damage payload"
+        );
+        assert_eq!(
+            torp.hull, 1,
+            "a light torpedo breaks up on one point-defense hit"
+        );
 
         // missile_salvo — fast (2), light payload (2).
         let msl = content.spawn_projectile("missile_salvo", &owner);
@@ -1411,12 +1535,19 @@ mod tests {
         let heavy = content.spawn_projectile("heavy_torpedo", &owner);
         assert_eq!(heavy.kind, "heavy_torpedo");
         assert_eq!(heavy.speed, 1, "heavy torpedo is slow");
-        assert_eq!(payload_damage(&heavy), 6, "heavy torpedo is a heavy payload");
+        assert_eq!(
+            payload_damage(&heavy),
+            6,
+            "heavy torpedo is a heavy payload"
+        );
         assert_eq!(heavy.hull, 2, "heavy torpedo is tougher to shoot down");
         assert!(
             heavy.payload.iter().any(|e| matches!(
                 e,
-                Effect::APPLY_STATUS { status: crate::types::StatusKind::SystemsOffline, .. }
+                Effect::APPLY_STATUS {
+                    status: crate::types::StatusKind::SystemsOffline,
+                    ..
+                }
             )),
             "heavy torpedo detonates with a systems-offline pulse",
         );
@@ -1451,6 +1582,10 @@ mod tests {
             Dir8::S,
             "a bow-S enemy launches toward the player (S), not the hardcoded N",
         );
-        assert_eq!(e_torp.owner_faction, Faction::Enemy, "ownership carries through");
+        assert_eq!(
+            e_torp.owner_faction,
+            Faction::Enemy,
+            "ownership carries through"
+        );
     }
 }

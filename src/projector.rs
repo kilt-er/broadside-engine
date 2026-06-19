@@ -518,7 +518,7 @@ pub fn grid_cell_quad(pos: Pos, cfg: &ProjectorConfig) -> CellQuad {
 
         // Y stretch is shared by BOTH stretch modes (the curved & straight variants
         // differ only in the X path): rows lerp toward the uniform stacked y's.
-        let ( y_far, y_near) = (lerp(corners[0][1], uy_far), lerp(corners[3][1], uy_near));
+        let (y_far, y_near) = (lerp(corners[0][1], uy_far), lerp(corners[3][1], uy_near));
 
         // X path:
         //   * CURVED (#140): each corner's x lerps toward its own uniform x. The far
@@ -564,7 +564,13 @@ pub fn grid_cell_quad(pos: Pos, cfg: &ProjectorConfig) -> CellQuad {
             ); // back edge (smallest y)
             let span = grid_near_y - grid_far_y;
             // Screen-y fraction from the near edge: near -> 0, far -> 1.
-            let yfrac = |y: f32| if span.abs() < 1e-4 { 0.0 } else { (grid_near_y - y) / span };
+            let yfrac = |y: f32| {
+                if span.abs() < 1e-4 {
+                    0.0
+                } else {
+                    (grid_near_y - y) / span
+                }
+            };
             let fy = yfrac(y_far);
             let ny = yfrac(y_near);
             (
@@ -782,7 +788,11 @@ mod tests {
         let c = cfg();
         let vp = vanishing_point(&c);
         // On the frame-centre vertical.
-        assert!(approx(vp.x, c.frame_w * 0.5, 1e-3), "vp.x {} != center", vp.x);
+        assert!(
+            approx(vp.x, c.frame_w * 0.5, 1e-3),
+            "vp.x {} != center",
+            vp.x
+        );
         // Near the horizon line. NOT exactly equal: the VP is extrapolated from
         // cell CENTRES (mid-depth `1/z`), whose converging lines meet a few px
         // below the pure `1/z→0` horizon constant — the cell-centre convergence
@@ -807,7 +817,11 @@ mod tests {
             assert!(dx.abs() > 1e-4, "col {col} edge should slope");
             let t = (vp.x - n[0]) / dx;
             let y = n[1] + t * (f[1] - n[1]);
-            assert!(approx(y, vp.y, 1.0), "col {col} line hits y {y}, vp.y {}", vp.y);
+            assert!(
+                approx(y, vp.y, 1.0),
+                "col {col} line hits y {y}, vp.y {}",
+                vp.y
+            );
         }
     }
 
@@ -1144,10 +1158,8 @@ mod tests {
     #[test]
     fn for_scene_at_virtual_size_equals_default() {
         let d = ProjectorConfig::default();
-        let s = ProjectorConfig::for_scene(
-            crate::gfx::VIRTUAL_W as f32,
-            crate::gfx::VIRTUAL_H as f32,
-        );
+        let s =
+            ProjectorConfig::for_scene(crate::gfx::VIRTUAL_W as f32, crate::gfx::VIRTUAL_H as f32);
         assert_eq!(d.frame_w, s.frame_w);
         assert_eq!(d.frame_h, s.frame_h);
         assert_eq!(d.z_near, s.z_near);
@@ -1205,8 +1217,14 @@ mod tests {
             let near_y = grid_cell_quad(front, &p).bottom_left().y;
             let far_y = grid_cell_quad(back, &p).top_left().y;
             // Front + back screen edges (hence the depth) are unchanged across t.
-            assert!(approx(near_y, near_y0, 0.5), "near edge fixed at t={t}: {near_y} vs {near_y0}");
-            assert!(approx(near_y - far_y, depth0, 0.5), "grid depth constant at t={t}");
+            assert!(
+                approx(near_y, near_y0, 0.5),
+                "near edge fixed at t={t}: {near_y} vs {near_y0}"
+            );
+            assert!(
+                approx(near_y - far_y, depth0, 0.5),
+                "grid depth constant at t={t}"
+            );
             // The near-row size knobs are not touched — only the angle changes.
             assert_eq!(p.z_near, base.z_near);
             assert!(approx(p.near_row_y, base.near_row_y, 1e-3));
@@ -1214,7 +1232,10 @@ mod tests {
             // Higher pitch = flatter perspective = larger z_near/z_far ratio (rows
             // spread toward even = more overhead).
             if step > 0 {
-                assert!(p.z_near / p.z_far > base.z_near / base.z_far, "pitch flattens recession at t={t}");
+                assert!(
+                    p.z_near / p.z_far > base.z_near / base.z_far,
+                    "pitch flattens recession at t={t}"
+                );
             }
         }
     }
@@ -1232,9 +1253,18 @@ mod tests {
             for c in 0..COLS {
                 let a = grid_cell_quad(Pos::new(c, r), &base);
                 let b = grid_cell_quad(Pos::new(c, r), &z);
-                assert_eq!(a.corners, b.corners, "stretch(0) corners identical at ({c},{r})");
-                assert_eq!(a.center, b.center, "stretch(0) center identical at ({c},{r})");
-                assert_eq!(a.depth_scale, b.depth_scale, "stretch(0) depth_scale identical");
+                assert_eq!(
+                    a.corners, b.corners,
+                    "stretch(0) corners identical at ({c},{r})"
+                );
+                assert_eq!(
+                    a.center, b.center,
+                    "stretch(0) center identical at ({c},{r})"
+                );
+                assert_eq!(
+                    a.depth_scale, b.depth_scale,
+                    "stretch(0) depth_scale identical"
+                );
             }
         }
         // Full stretch: uniform grid. Cell heights equal across rows; columns parallel
@@ -1248,9 +1278,18 @@ mod tests {
         for r in 0..ROWS {
             let q = grid_cell_quad(Pos::new(col, r), &full);
             let h = q.bottom_left().y - q.top_left().y;
-            assert!(approx(h, h0, 0.5), "uniform cell height at row {r}: {h} vs {h0}");
-            assert!(approx(q.near_edge_width(), q.far_edge_width(), 0.5), "parallel columns at row {r}");
-            assert!(approx(q.depth_scale, 1.0, 1e-3), "uniform depth_scale==1 at row {r}");
+            assert!(
+                approx(h, h0, 0.5),
+                "uniform cell height at row {r}: {h} vs {h0}"
+            );
+            assert!(
+                approx(q.near_edge_width(), q.far_edge_width(), 0.5),
+                "parallel columns at row {r}"
+            );
+            assert!(
+                approx(q.depth_scale, 1.0, 1e-3),
+                "uniform depth_scale==1 at row {r}"
+            );
         }
     }
 
@@ -1269,7 +1308,10 @@ mod tests {
             for c in 0..COLS {
                 let a = grid_cell_quad(Pos::new(c, r), &base);
                 let b = grid_cell_quad(Pos::new(c, r), &z);
-                assert_eq!(a.corners, b.corners, "straight(0) corners identical at ({c},{r})");
+                assert_eq!(
+                    a.corners, b.corners,
+                    "straight(0) corners identical at ({c},{r})"
+                );
             }
         }
         // Full stretch: a column's left-edge x is constant across rows (straight vertical).
@@ -1280,8 +1322,14 @@ mod tests {
                 let q = grid_cell_quad(Pos::new(c, r), &full);
                 // far (top-left) and near (bottom-left) x equal => vertical edge, and the
                 // same across rows => one straight column.
-                assert!(approx(q.top_left().x, q.bottom_left().x, 0.5), "vertical col {c} edge at row {r}");
-                assert!(approx(q.top_left().x, x0, 0.5), "col {c} left-x constant across rows (row {r})");
+                assert!(
+                    approx(q.top_left().x, q.bottom_left().x, 0.5),
+                    "vertical col {c} edge at row {r}"
+                );
+                assert!(
+                    approx(q.top_left().x, x0, 0.5),
+                    "col {c} left-x constant across rows (row {r})"
+                );
             }
         }
         // Mid arc: straight columns have LESS x-spread (far vs near) than curved.
@@ -1318,7 +1366,10 @@ mod tests {
             for c in 0..COLS {
                 let a = grid_cell_quad(Pos::new(c, r), &base);
                 let b = grid_cell_quad(Pos::new(c, r), &z);
-                assert_eq!(a.corners, b.corners, "continuous(0) corners identical at ({c},{r})");
+                assert_eq!(
+                    a.corners, b.corners,
+                    "continuous(0) corners identical at ({c},{r})"
+                );
             }
         }
         // For a column boundary, gather every corner that lies on it across all rows
@@ -1328,8 +1379,8 @@ mod tests {
         for &t in &[0.5_f32, 1.0] {
             let p = base.with_stretch_continuous(t);
             let col = 0usize; // left boundary of column 0 = the leftmost depth line
-            // Endpoints: the near edge (front row's near-left) and far edge (far row's
-            // far-left) of this depth line.
+                              // Endpoints: the near edge (front row's near-left) and far edge (far row's
+                              // far-left) of this depth line.
             let near_pt = {
                 let q = grid_cell_quad(Pos::new(col, ROWS - 1), &p);
                 q.bottom_left()

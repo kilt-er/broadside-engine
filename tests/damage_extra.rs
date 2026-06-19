@@ -50,7 +50,14 @@ impl Content for NoContent {
 
 /// A ship with a per-face-configurable shield profile so D3 can route splash
 /// onto a non-zero-armour zone.
-fn ship_with_armour(id: &str, cell: usize, hull: i32, bow_armour: i32, stern_armour: i32, traits: Vec<Trait>) -> Ship {
+fn ship_with_armour(
+    id: &str,
+    cell: usize,
+    hull: i32,
+    bow_armour: i32,
+    stern_armour: i32,
+    traits: Vec<Trait>,
+) -> Ship {
     Ship {
         id: id.into(),
         faction: Faction::Enemy,
@@ -64,10 +71,22 @@ fn ship_with_armour(id: &str, cell: usize, hull: i32, bow_armour: i32, stern_arm
         heat_max: 6,
         locked_out: false,
         shield_profile: ShieldProfile {
-            bow: ShieldFace { armour: bow_armour, charge: 0 },
-            stern: ShieldFace { armour: stern_armour, charge: 0 },
-            port: ShieldFace { armour: 0, charge: 0 },
-            starboard: ShieldFace { armour: 0, charge: 0 },
+            bow: ShieldFace {
+                armour: bow_armour,
+                charge: 0,
+            },
+            stern: ShieldFace {
+                armour: stern_armour,
+                charge: 0,
+            },
+            port: ShieldFace {
+                armour: 0,
+                charge: 0,
+            },
+            starboard: ShieldFace {
+                armour: 0,
+                charge: 0,
+            },
         },
         mounts: Vec::new(),
         queue: Vec::new(),
@@ -118,9 +137,19 @@ fn d1_destroy_clears_the_cell_and_emits_one_lethal() {
 
     destroy(2, &mut b, &NoContent);
 
-    assert!(b.cells[2].is_none(), "destroyed ship's cell is cleared to None");
-    assert_eq!(*lethal.borrow(), vec![2], "exactly one OnLethal emit, for the destroyed cell");
-    assert_eq!(b.destroys_this_window, 1, "destroy increments the chain-window counter once");
+    assert!(
+        b.cells[2].is_none(),
+        "destroyed ship's cell is cleared to None"
+    );
+    assert_eq!(
+        *lethal.borrow(),
+        vec![2],
+        "exactly one OnLethal emit, for the destroyed cell"
+    );
+    assert_eq!(
+        b.destroys_this_window, 1,
+        "destroy increments the chain-window counter once"
+    );
 }
 
 #[test]
@@ -133,8 +162,16 @@ fn d1_plain_ship_death_does_not_splash_neighbours() {
 
     destroy(2, &mut b, &NoContent);
 
-    assert_eq!(b.cells[1].as_ref().expect("left alive").hull, 5, "no splash without ReactorBreach (left)");
-    assert_eq!(b.cells[3].as_ref().expect("right alive").hull, 5, "no splash without ReactorBreach (right)");
+    assert_eq!(
+        b.cells[1].as_ref().expect("left alive").hull,
+        5,
+        "no splash without ReactorBreach (left)"
+    );
+    assert_eq!(
+        b.cells[3].as_ref().expect("right alive").hull,
+        5,
+        "no splash without ReactorBreach (right)"
+    );
 }
 
 /* =========================================================================
@@ -184,9 +221,17 @@ fn inert_action() -> Action {
         id: "_inert".into(),
         name: "Inert".into(),
         archetype: WeaponArchetype::Defensive,
-        cost: ActionCost { heat: 0, cooldown_max: 0, advances_turn: true },
+        cost: ActionCost {
+            heat: 0,
+            cooldown_max: 0,
+            advances_turn: true,
+        },
         targeting: Targeting {
-            range_band: vec![broadside_engine::grid::Range::Adjacent, broadside_engine::grid::Range::Near, broadside_engine::grid::Range::Far],
+            range_band: vec![
+                broadside_engine::grid::Range::Adjacent,
+                broadside_engine::grid::Range::Near,
+                broadside_engine::grid::Range::Far,
+            ],
             optimal_range: broadside_engine::grid::Range::Adjacent,
             pattern: TargetingPattern::SELF,
             band: vec![RangeBand::PointBlank],
@@ -195,7 +240,10 @@ fn inert_action() -> Action {
             facing_relative: false,
             hits_all: false,
         },
-        effects: vec![Effect::VENT_HEAT { amount: 0, recharge_cooldowns: None }],
+        effects: vec![Effect::VENT_HEAT {
+            amount: 0,
+            recharge_cooldowns: None,
+        }],
         r#mod: None,
         icon: None,
     }
@@ -205,7 +253,11 @@ fn inert_action() -> Action {
 fn c2_chain_window_resets_on_instant_action_entry() {
     let mut actor = ship_with_armour("p", 0, 10, 0, 0, vec![]);
     actor.faction = Faction::Player;
-    actor.mounts = vec![Mount { id: "m1".into(), arc: Arc::Forward, weapon: "_inert".into() }];
+    actor.mounts = vec![Mount {
+        id: "m1".into(),
+        arc: Arc::Forward,
+        weapon: "_inert".into(),
+    }];
     let mut b = board(5, vec![Some(actor), None, None, None, None]);
 
     // Simulate a stale count left over from a prior window.

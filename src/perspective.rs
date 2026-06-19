@@ -115,7 +115,11 @@ pub struct ShipDims {
 /// the top sprite reads more distinctly at high view angles; height at
 /// 33% of length gives a flatter side silhouette suited to the
 /// space-frigate aesthetic.
-pub const FRIGATE_DIMS: ShipDims = ShipDims { length: 120.0, beam: 60.0, height: 40.0 };
+pub const FRIGATE_DIMS: ShipDims = ShipDims {
+    length: 120.0,
+    beam: 60.0,
+    height: 40.0,
+};
 
 /// Which way the hull is turned. `BowOn` runs along the lane axis (length
 /// along x); `Broadside` runs perpendicular (length along the depth axis,
@@ -162,7 +166,10 @@ mod tests {
     #[test]
     fn cell_to_screen_single_cell_lane_is_safe() {
         // cell_count = 1 means n = 0; division-by-zero guard must hold.
-        let geom = LaneGeometry { cell_count: 1, ..DEFAULT_LANE };
+        let geom = LaneGeometry {
+            cell_count: 1,
+            ..DEFAULT_LANE
+        };
         let only = cell_to_screen(0, &geom);
         assert!(approx_eq(only.x, geom.x_left, 1e-3));
     }
@@ -200,7 +207,9 @@ mod tests {
                 assert_eq!(
                     band_between_cells(s, t),
                     range_band(s as usize, t as usize),
-                    "drift at ({}, {})", s, t
+                    "drift at ({}, {})",
+                    s,
+                    t
                 );
             }
         }

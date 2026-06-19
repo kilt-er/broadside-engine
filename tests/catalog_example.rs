@@ -20,8 +20,11 @@ fn empty_skeleton_catalog_parses() {
     // Meta is required and must be non-empty.
     assert_eq!(cat.meta.schema, "broadside.v0.example");
     assert_eq!(cat.meta.lane, vec![0, 1, 2, 3, 4, 5, 6]);
-    assert_eq!(cat.meta.bands.len(), 5,
-        "all five range bands must round-trip the camelCase mapping");
+    assert_eq!(
+        cat.meta.bands.len(),
+        5,
+        "all five range bands must round-trip the camelCase mapping"
+    );
 
     // All collection fields parse and are empty.
     assert!(cat.actions.is_empty());

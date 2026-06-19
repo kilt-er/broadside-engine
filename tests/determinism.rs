@@ -65,9 +65,17 @@ fn pulse_laser() -> Action {
         id: "pulse_laser".into(),
         name: "Pulse Laser".into(),
         archetype: WeaponArchetype::Beam,
-        cost: ActionCost { heat: 1, cooldown_max: 1, advances_turn: true },
+        cost: ActionCost {
+            heat: 1,
+            cooldown_max: 1,
+            advances_turn: true,
+        },
         targeting: Targeting {
-            range_band: vec![broadside_engine::grid::Range::Adjacent, broadside_engine::grid::Range::Near, broadside_engine::grid::Range::Far],
+            range_band: vec![
+                broadside_engine::grid::Range::Adjacent,
+                broadside_engine::grid::Range::Near,
+                broadside_engine::grid::Range::Far,
+            ],
             optimal_range: broadside_engine::grid::Range::Adjacent,
             pattern: TargetingPattern::BEAM,
             band: vec![RangeBand::PointBlank, RangeBand::Close, RangeBand::Mid],
@@ -76,7 +84,10 @@ fn pulse_laser() -> Action {
             facing_relative: true,
             hits_all: false,
         },
-        effects: vec![Effect::DAMAGE { amount: 4, band_falloff: None }],
+        effects: vec![Effect::DAMAGE {
+            amount: 4,
+            band_falloff: None,
+        }],
         r#mod: None,
         icon: None,
     }
@@ -89,9 +100,17 @@ fn launch_torpedo() -> Action {
         id: "launch_torpedo".into(),
         name: "Launch Torpedo".into(),
         archetype: WeaponArchetype::Ordnance,
-        cost: ActionCost { heat: 2, cooldown_max: 2, advances_turn: true },
+        cost: ActionCost {
+            heat: 2,
+            cooldown_max: 2,
+            advances_turn: true,
+        },
         targeting: Targeting {
-            range_band: vec![broadside_engine::grid::Range::Adjacent, broadside_engine::grid::Range::Near, broadside_engine::grid::Range::Far],
+            range_band: vec![
+                broadside_engine::grid::Range::Adjacent,
+                broadside_engine::grid::Range::Near,
+                broadside_engine::grid::Range::Far,
+            ],
             optimal_range: broadside_engine::grid::Range::Adjacent,
             pattern: TargetingPattern::ORDNANCE,
             band: vec![RangeBand::Close, RangeBand::Mid, RangeBand::Long],
@@ -100,7 +119,9 @@ fn launch_torpedo() -> Action {
             facing_relative: true,
             hits_all: false,
         },
-        effects: vec![Effect::SPAWN_ORDNANCE { projectile: "torpedo".into() }],
+        effects: vec![Effect::SPAWN_ORDNANCE {
+            projectile: "torpedo".into(),
+        }],
         r#mod: None,
         icon: None,
     }
@@ -113,18 +134,34 @@ fn ion_lance() -> Action {
         id: "ion_lance".into(),
         name: "Ion Lance".into(),
         archetype: WeaponArchetype::Beam,
-        cost: ActionCost { heat: 1, cooldown_max: 1, advances_turn: true },
+        cost: ActionCost {
+            heat: 1,
+            cooldown_max: 1,
+            advances_turn: true,
+        },
         targeting: Targeting {
-            range_band: vec![broadside_engine::grid::Range::Adjacent, broadside_engine::grid::Range::Near, broadside_engine::grid::Range::Far],
+            range_band: vec![
+                broadside_engine::grid::Range::Adjacent,
+                broadside_engine::grid::Range::Near,
+                broadside_engine::grid::Range::Far,
+            ],
             optimal_range: broadside_engine::grid::Range::Adjacent,
             pattern: TargetingPattern::BEAM,
-            band: vec![RangeBand::PointBlank, RangeBand::Close, RangeBand::Mid, RangeBand::Long],
+            band: vec![
+                RangeBand::PointBlank,
+                RangeBand::Close,
+                RangeBand::Mid,
+                RangeBand::Long,
+            ],
             optimal_band: RangeBand::Mid,
             requires_arc: Some(Arc::Forward),
             facing_relative: true,
             hits_all: false,
         },
-        effects: vec![Effect::APPLY_STATUS { status: StatusKind::HullBreach, duration: 3 }],
+        effects: vec![Effect::APPLY_STATUS {
+            status: StatusKind::HullBreach,
+            duration: 3,
+        }],
         r#mod: None,
         icon: None,
     }
@@ -150,7 +187,10 @@ impl Content for DetContent {
             heading8: broadside_engine::grid::Dir8::N,
             speed: 1,
             hull: 2,
-            payload: vec![Effect::DAMAGE { amount: 3, band_falloff: Some(false) }],
+            payload: vec![Effect::DAMAGE {
+                amount: 3,
+                band_falloff: Some(false),
+            }],
             owner_faction: owner.faction,
         }
     }
@@ -195,10 +235,22 @@ fn ship(
         heat_max: 8,
         locked_out: false,
         shield_profile: ShieldProfile {
-            bow: ShieldFace { armour: 2, charge: 0 },
-            stern: ShieldFace { armour: 0, charge: 0 },
-            port: ShieldFace { armour: 1, charge: 0 },
-            starboard: ShieldFace { armour: 1, charge: 0 },
+            bow: ShieldFace {
+                armour: 2,
+                charge: 0,
+            },
+            stern: ShieldFace {
+                armour: 0,
+                charge: 0,
+            },
+            port: ShieldFace {
+                armour: 1,
+                charge: 0,
+            },
+            starboard: ShieldFace {
+                armour: 1,
+                charge: 0,
+            },
         },
         mounts,
         queue: Vec::new(),
@@ -210,7 +262,11 @@ fn ship(
 }
 
 fn mount(id: &str, weapon: &str) -> Mount {
-    Mount { id: id.into(), arc: Arc::Forward, weapon: weapon.into() }
+    Mount {
+        id: id.into(),
+        arc: Arc::Forward,
+        weapon: weapon.into(),
+    }
 }
 
 /// A 7-cell board exercising every HashMap-bearing path:
@@ -246,7 +302,11 @@ fn busy_board() -> Board {
         LaneEnd::Fore,
         vec![mount("e1", "ion_lance")],
         &[("ion_lance", 0)],
-        vec![Status { kind: StatusKind::HullBreach, duration: 2, face: None }],
+        vec![Status {
+            kind: StatusKind::HullBreach,
+            duration: 2,
+            face: None,
+        }],
     );
     let enemy_b = ship(
         "enemy-b",
@@ -269,7 +329,10 @@ fn busy_board() -> Board {
         heading8: broadside_engine::grid::Dir8::N,
         speed: 1,
         hull: 2,
-        payload: vec![Effect::DAMAGE { amount: 2, band_falloff: Some(false) }],
+        payload: vec![Effect::DAMAGE {
+            amount: 2,
+            band_falloff: Some(false),
+        }],
         owner_faction: Faction::Enemy,
     };
 
@@ -348,7 +411,8 @@ fn two_runs_from_identical_inputs_match_structurally_each_round() {
 
     for (i, (a, b)) in run1.iter().zip(run2.iter()).enumerate() {
         assert_eq!(
-            a, b,
+            a,
+            b,
             "board state diverged at round {} — two runs from identical \
              inputs produced different state. The engine has no RNG, so a \
              divergence means an unordered iteration (e.g. a HashMap) leaked \
@@ -388,8 +452,7 @@ fn the_board_actually_evolves_so_the_determinism_claim_is_meaningful() {
     let prints = play(ROUNDS);
 
     assert_ne!(
-        initial,
-        prints[0],
+        initial, prints[0],
         "round 1 must mutate the board (damage, ordnance advance, status \
          tick, cooldown decrement) — otherwise the determinism claim is \
          vacuous",

@@ -61,7 +61,8 @@ pub fn decide_enemy_action(enemy_cell: usize, board: &mut Board, content: &dyn C
 
     // 1. Locate the player's 2-D position.
     let Some(player_pos) = board.cells.iter().find_map(|c| {
-        c.as_ref().and_then(|s| (s.faction == Faction::Player).then_some(s.pos))
+        c.as_ref()
+            .and_then(|s| (s.faction == Faction::Player).then_some(s.pos))
     }) else {
         return;
     };
@@ -122,7 +123,10 @@ pub fn decide_enemy_action(enemy_cell: usize, board: &mut Board, content: &dyn C
         }
         // Friendly-fire filter (#49): the target set must contain >=1 non-enemy.
         let any_hostile = cells.iter().any(|&p| {
-            board.ship_at(p).map(|s| s.faction != Faction::Enemy).unwrap_or(false)
+            board
+                .ship_at(p)
+                .map(|s| s.faction != Faction::Enemy)
+                .unwrap_or(false)
         });
         if !any_hostile {
             continue;
@@ -142,7 +146,11 @@ pub fn decide_enemy_action(enemy_cell: usize, board: &mut Board, content: &dyn C
             score += 10;
         }
         score += raw_damage;
-        score -= if burn_hard { action.cost.heat / 2 } else { action.cost.heat };
+        score -= if burn_hard {
+            action.cost.heat / 2
+        } else {
+            action.cost.heat
+        };
         if pursuit && hits_player {
             score += 2;
         }
@@ -195,7 +203,11 @@ pub fn decide_enemy_action(enemy_cell: usize, board: &mut Board, content: &dyn C
         if locked_out && action.cost.heat > 0 {
             continue;
         }
-        if action.effects.iter().any(|e| matches!(e, Effect::REORIENT { .. })) {
+        if action
+            .effects
+            .iter()
+            .any(|e| matches!(e, Effect::REORIENT { .. }))
+        {
             if let Some(s) = board.ship_at_mut(enemy_pos) {
                 s.queue.push(weapon_id.clone());
             }
@@ -254,7 +266,11 @@ pub fn decide_enemy_action(enemy_cell: usize, board: &mut Board, content: &dyn C
         let Some(action) = content.action(weapon_id) else {
             continue;
         };
-        if action.effects.iter().any(|e| matches!(e, Effect::VENT_HEAT { .. })) {
+        if action
+            .effects
+            .iter()
+            .any(|e| matches!(e, Effect::VENT_HEAT { .. }))
+        {
             if let Some(s) = board.ship_at_mut(enemy_pos) {
                 s.queue.push(weapon_id.clone());
             }
@@ -300,12 +316,18 @@ fn allies_threatened_cells(self_pos: Pos, board: &Board, content: &dyn Content) 
     };
     let mut out: Vec<Pos> = Vec::new();
     for &cell in &order[..self_idx] {
-        let Some(ally_pos) = Pos::from_index(cell) else { continue };
-        let Some(ally) = board.ship_at(ally_pos) else { continue };
+        let Some(ally_pos) = Pos::from_index(cell) else {
+            continue;
+        };
+        let Some(ally) = board.ship_at(ally_pos) else {
+            continue;
+        };
         // The ally's queued (this-pass) action ids. Usually one.
         let queued: Vec<String> = ally.queue.clone();
         for action_id in &queued {
-            let Some(action) = content.action(action_id) else { continue };
+            let Some(action) = content.action(action_id) else {
+                continue;
+            };
             // Only damaging actions threaten cells (move/reorient/vent don't).
             let deals_damage = action
                 .effects
@@ -383,8 +405,16 @@ fn choose_maneuver_dir(
     // Out of band: open if the player is nearer than the nearest firing band,
     // else close.
     let cur_o = band_ordinal(cur);
-    let min_allowed = bands.iter().map(|b| band_ordinal(*b)).min().unwrap_or(cur_o);
-    let max_allowed = bands.iter().map(|b| band_ordinal(*b)).max().unwrap_or(cur_o);
+    let min_allowed = bands
+        .iter()
+        .map(|b| band_ordinal(*b))
+        .min()
+        .unwrap_or(cur_o);
+    let max_allowed = bands
+        .iter()
+        .map(|b| band_ordinal(*b))
+        .max()
+        .unwrap_or(cur_o);
     if cur_o < min_allowed {
         Some(away) // player too close -> back off
     } else if cur_o > max_allowed {

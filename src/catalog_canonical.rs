@@ -101,10 +101,7 @@ pub fn from_canonical_value(root: Value) -> Result<Catalog, serde_json::Error> {
         obj.insert("actions".into(), Value::Array(transformed));
     }
     if let Some(Value::Array(subsystems)) = obj.remove("subsystems") {
-        let transformed: Vec<Value> = subsystems
-            .into_iter()
-            .map(transform_subsystem)
-            .collect();
+        let transformed: Vec<Value> = subsystems.into_iter().map(transform_subsystem).collect();
         obj.insert("subsystems".into(), Value::Array(transformed));
     }
     if let Some(Value::Array(classes)) = obj.remove("classes") {
@@ -138,22 +135,44 @@ fn transform_action(v: Value) -> Result<Value, &'static str> {
 
     // Required fields. If any are missing we punt (the canonical export
     // always has them).
-    let heat = a.remove("heat").and_then(|v| v.as_i64()).ok_or("missing heat")?;
-    let cd = a.remove("cd").and_then(|v| v.as_i64()).ok_or("missing cd")?;
-    let freeplay = a.remove("freeplay").and_then(|v| v.as_bool()).unwrap_or(false);
-    let band = a.remove("band").and_then(|v| v.as_str().map(String::from))
+    let heat = a
+        .remove("heat")
+        .and_then(|v| v.as_i64())
+        .ok_or("missing heat")?;
+    let cd = a
+        .remove("cd")
+        .and_then(|v| v.as_i64())
+        .ok_or("missing cd")?;
+    let freeplay = a
+        .remove("freeplay")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let band = a
+        .remove("band")
+        .and_then(|v| v.as_str().map(String::from))
         .ok_or("missing band")?;
-    let pattern = a.remove("pattern").and_then(|v| v.as_str().map(String::from))
+    let pattern = a
+        .remove("pattern")
+        .and_then(|v| v.as_str().map(String::from))
         .ok_or("missing pattern")?;
     let arc = a.remove("arc"); // may be null / absent for arc-less actions
-    let hits_all = a.remove("hits_all")
+    let hits_all = a
+        .remove("hits_all")
         .or_else(|| a.remove("hitsAll"))
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
 
     // Inflate `effects: [<string>]` into Effect records.
-    let archetype = a.get("archetype").and_then(|v| v.as_str()).unwrap_or("beam").to_string();
-    let action_id = a.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let archetype = a
+        .get("archetype")
+        .and_then(|v| v.as_str())
+        .unwrap_or("beam")
+        .to_string();
+    let action_id = a
+        .get("id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
     let loose_effects = a.remove("effects").unwrap_or(Value::Array(vec![]));
     // The four self-relative class signatures (slip / swap_toss / ram /
     // throw) are exported with `pattern: SELF` + a `DISPLACE_TARGET`
@@ -302,7 +321,11 @@ fn transform_subsystem(v: Value) -> Value {
 fn transform_class(v: Value, action_name_to_id: &HashMap<String, String>) -> Value {
     let Value::Object(mut c) = v else { return v };
 
-    let class_id = c.get("id").and_then(|v| v.as_str()).unwrap_or("?").to_string();
+    let class_id = c
+        .get("id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("?")
+        .to_string();
 
     if let Some(Value::String(s)) = c.remove("affinity") {
         let camel = match s.as_str() {
@@ -353,7 +376,10 @@ fn normalize_action_ref(
         return v; // already an id (or some other type) — pass through
     };
     // Skip if it already looks like a snake_case id (no spaces, all lowercase + underscores).
-    if name.chars().all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_') {
+    if name
+        .chars()
+        .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_')
+    {
         return v;
     }
     match action_name_to_id.get(&name.to_lowercase()) {
@@ -728,8 +754,10 @@ mod tests {
             "enemies": [], "patrols": [],
         });
         let cat: Catalog = from_canonical_value(json).expect("parses");
-        assert!(!cat.actions[0].cost.advances_turn,
-            "freeplay=true should map to advancesTurn=false");
+        assert!(
+            !cat.actions[0].cost.advances_turn,
+            "freeplay=true should map to advancesTurn=false"
+        );
     }
 
     #[test]
@@ -1021,7 +1049,10 @@ mod tests {
         let t = mk("mid");
         assert_eq!(t.range_band, vec![Range::Near, Range::Far]);
         assert_eq!(t.optimal_range, Range::Near);
-        assert!(!t.range_band.contains(&Range::Adjacent), "mid has an adjacent deadzone");
+        assert!(
+            !t.range_band.contains(&Range::Adjacent),
+            "mid has an adjacent deadzone"
+        );
 
         // long / extreme stay Far-only — the full over-extension deadzone
         // (decision #7): inert when the player closes onto them.
@@ -1029,7 +1060,10 @@ mod tests {
             let t = mk(far);
             assert_eq!(t.range_band, vec![Range::Far], "{far} → [Far]");
             assert_eq!(t.optimal_range, Range::Far);
-            assert!(!t.range_band.contains(&Range::Adjacent), "{far} has a deadzone");
+            assert!(
+                !t.range_band.contains(&Range::Adjacent),
+                "{far} has a deadzone"
+            );
             assert!(!t.range_band.contains(&Range::Near), "{far} is far-only");
         }
     }
@@ -1065,16 +1099,22 @@ mod tests {
     fn signature_id_from_prose_handles_canonical_em_dash() {
         // Canonical: "<Title> — <description>" (U+2014 em-dash).
         assert_eq!(
-            signature_id_from_prose("Slip — move forward to trade places with the ship directly ahead."),
+            signature_id_from_prose(
+                "Slip — move forward to trade places with the ship directly ahead."
+            ),
             "slip",
         );
         assert_eq!(
-            signature_id_from_prose("Swap Toss — move into a ship to swap the cells directly fore and aft."),
+            signature_id_from_prose(
+                "Swap Toss — move into a ship to swap the cells directly fore and aft."
+            ),
             "swap_toss",
         );
         // ASCII " - " fallback shape.
         assert_eq!(
-            signature_id_from_prose("Phase - move forward to pass through the ship directly ahead."),
+            signature_id_from_prose(
+                "Phase - move forward to pass through the ship directly ahead."
+            ),
             "phase",
         );
     }
@@ -1178,8 +1218,10 @@ mod tests {
         let cls = &cat.classes[0];
         // Pulse Laser maps; Ghost Weapon doesn't and stays verbatim.
         assert_eq!(cls.set1[0], "pulse_laser");
-        assert_eq!(cls.set1[1], "Ghost Weapon",
-            "unmapped display name passes through unchanged");
+        assert_eq!(
+            cls.set1[1], "Ghost Weapon",
+            "unmapped display name passes through unchanged"
+        );
     }
 
     /// A set-ref that's already an action id (snake_case form) skips the
@@ -1220,45 +1262,85 @@ mod tests {
     /// gap that let these ship mechanically dead.
     #[test]
     fn self_relative_signatures_inflate_to_displace_self() {
-        use crate::types::{Effect, MovementMode, LaneEnd};
+        use crate::types::{Effect, LaneEnd, MovementMode};
         let cat = canonical_signature_catalog();
-        let by_id = |id: &str| cat.actions.iter().find(|a| a.id == id).expect("action present");
+        let by_id = |id: &str| {
+            cat.actions
+                .iter()
+                .find(|a| a.id == id)
+                .expect("action present")
+        };
 
         // slip / swap_toss -> TRACTOR_SWAP, no trailing DISPLACE_TARGET / DAMAGE.
         for id in ["slip", "swap_toss"] {
             let a = by_id(id);
             assert_eq!(a.effects.len(), 1, "{id} should have exactly one effect");
             assert!(
-                matches!(a.effects[0], Effect::DISPLACE_SELF { mode: MovementMode::TRACTOR_SWAP, .. }),
-                "{id} should be DISPLACE_SELF TRACTOR_SWAP, got {:?}", a.effects[0],
+                matches!(
+                    a.effects[0],
+                    Effect::DISPLACE_SELF {
+                        mode: MovementMode::TRACTOR_SWAP,
+                        ..
+                    }
+                ),
+                "{id} should be DISPLACE_SELF TRACTOR_SWAP, got {:?}",
+                a.effects[0],
             );
         }
 
         // ram -> DISPLACE_SELF BURN, fore (direction None = bow-relative), no
         // separate DAMAGE (collision billing owns it).
         let ram = by_id("ram");
-        assert_eq!(ram.effects.len(), 1, "ram's redundant DAMAGE should be dropped");
+        assert_eq!(
+            ram.effects.len(),
+            1,
+            "ram's redundant DAMAGE should be dropped"
+        );
         assert!(
-            matches!(ram.effects[0], Effect::DISPLACE_SELF { mode: MovementMode::BURN, direction: None, .. }),
-            "ram should be DISPLACE_SELF BURN bow-relative, got {:?}", ram.effects[0],
+            matches!(
+                ram.effects[0],
+                Effect::DISPLACE_SELF {
+                    mode: MovementMode::BURN,
+                    direction: None,
+                    ..
+                }
+            ),
+            "ram should be DISPLACE_SELF BURN bow-relative, got {:?}",
+            ram.effects[0],
         );
 
         // throw -> DISPLACE_SELF BURN, direction aft ("hurl behind you").
         let throw = by_id("throw");
-        assert_eq!(throw.effects.len(), 1, "throw's redundant DAMAGE should be dropped");
+        assert_eq!(
+            throw.effects.len(),
+            1,
+            "throw's redundant DAMAGE should be dropped"
+        );
         assert!(
             matches!(
                 throw.effects[0],
-                Effect::DISPLACE_SELF { mode: MovementMode::BURN, direction: Some(LaneEnd::Aft), .. }
+                Effect::DISPLACE_SELF {
+                    mode: MovementMode::BURN,
+                    direction: Some(LaneEnd::Aft),
+                    ..
+                }
             ),
-            "throw should be DISPLACE_SELF BURN aft, got {:?}", throw.effects[0],
+            "throw should be DISPLACE_SELF BURN aft, got {:?}",
+            throw.effects[0],
         );
 
         // phase stays DISPLACE_SELF SLIP (the one that was always correct).
         let phase = by_id("phase");
         assert!(
-            matches!(phase.effects[0], Effect::DISPLACE_SELF { mode: MovementMode::SLIP, .. }),
-            "phase should stay DISPLACE_SELF SLIP, got {:?}", phase.effects[0],
+            matches!(
+                phase.effects[0],
+                Effect::DISPLACE_SELF {
+                    mode: MovementMode::SLIP,
+                    ..
+                }
+            ),
+            "phase should stay DISPLACE_SELF SLIP, got {:?}",
+            phase.effects[0],
         );
     }
 
@@ -1280,7 +1362,9 @@ mod tests {
         use crate::grid::{Dir4, Facing};
 
         let cat = canonical_signature_catalog();
-        let content = SigContent { actions: cat.actions.clone() };
+        let content = SigContent {
+            actions: cat.actions.clone(),
+        };
         let east = Facing::Bow(Dir4::E);
 
         // slip: op at col 2 (bow E) TRACTOR_SWAPs with the bow-adjacent foe at
@@ -1288,16 +1372,37 @@ mod tests {
         {
             let mut board = two_ship_board(2, 3, east);
             crate::resolve::apply_instant_action("op", action(&cat, "slip"), &mut board, &content);
-            assert_eq!(cell_id(&board, 3), Some("op"), "slip: operator slipped forward into the foe's cell");
-            assert_eq!(cell_id(&board, 2), Some("foe"), "slip: foe took the operator's old cell");
+            assert_eq!(
+                cell_id(&board, 3),
+                Some("op"),
+                "slip: operator slipped forward into the foe's cell"
+            );
+            assert_eq!(
+                cell_id(&board, 2),
+                Some("foe"),
+                "slip: foe took the operator's old cell"
+            );
         }
 
         // swap_toss: same TRACTOR_SWAP semantics — operator and bow-adjacent foe trade.
         {
             let mut board = two_ship_board(2, 3, east);
-            crate::resolve::apply_instant_action("op", action(&cat, "swap_toss"), &mut board, &content);
-            assert_eq!(cell_id(&board, 3), Some("op"), "swap_toss: operator ended at the foe's old cell");
-            assert_eq!(cell_id(&board, 2), Some("foe"), "swap_toss: foe ended at the operator's old cell");
+            crate::resolve::apply_instant_action(
+                "op",
+                action(&cat, "swap_toss"),
+                &mut board,
+                &content,
+            );
+            assert_eq!(
+                cell_id(&board, 3),
+                Some("op"),
+                "swap_toss: operator ended at the foe's old cell"
+            );
+            assert_eq!(
+                cell_id(&board, 2),
+                Some("foe"),
+                "swap_toss: foe ended at the operator's old cell"
+            );
         }
 
         // ram: operator BURNs forward (E) into the adjacent foe — blocked
@@ -1306,7 +1411,11 @@ mod tests {
             let mut board = two_ship_board(2, 3, east);
             let foe_hull_before = ship_hull(&board, "foe");
             crate::resolve::apply_instant_action("op", action(&cat, "ram"), &mut board, &content);
-            assert_eq!(cell_id(&board, 2), Some("op"), "ram: operator blocked by the adjacent foe, stays at col 2");
+            assert_eq!(
+                cell_id(&board, 2),
+                Some("op"),
+                "ram: operator blocked by the adjacent foe, stays at col 2"
+            );
             assert!(
                 ship_hull(&board, "foe").unwrap_or(0) < foe_hull_before.unwrap_or(0)
                     || ship_hull(&board, "op").is_some(),
@@ -1324,9 +1433,18 @@ mod tests {
         {
             let mut board = two_ship_board(2, 3, east);
             crate::resolve::apply_instant_action("op", action(&cat, "throw"), &mut board, &content);
-            let op_cell = (0..crate::grid::CELLS).find(|&c| cell_id(&board, c) == Some("op")).unwrap();
-            assert_eq!(op_cell, 0, "throw-2d: operator hurls AFT (opposite bow E = W) to col 0");
-            assert_eq!(cell_id(&board, 3), Some("foe"), "the foe (to the east) is untouched by an aft throw");
+            let op_cell = (0..crate::grid::CELLS)
+                .find(|&c| cell_id(&board, c) == Some("op"))
+                .unwrap();
+            assert_eq!(
+                op_cell, 0,
+                "throw-2d: operator hurls AFT (opposite bow E = W) to col 0"
+            );
+            assert_eq!(
+                cell_id(&board, 3),
+                Some("foe"),
+                "the foe (to the east) is untouched by an aft throw"
+            );
         }
 
         // phase: operator SLIPs forward (E) past the adjacent foe at col 3,
@@ -1334,8 +1452,13 @@ mod tests {
         {
             let mut board = two_ship_board(2, 3, east);
             crate::resolve::apply_instant_action("op", action(&cat, "phase"), &mut board, &content);
-            let op_cell = (0..crate::grid::CELLS).find(|&c| cell_id(&board, c) == Some("op")).unwrap();
-            assert!(op_cell > 3, "phase: operator slipped past the foe to col {op_cell}");
+            let op_cell = (0..crate::grid::CELLS)
+                .find(|&c| cell_id(&board, c) == Some("op"))
+                .unwrap();
+            assert!(
+                op_cell > 3,
+                "phase: operator slipped past the foe to col {op_cell}"
+            );
         }
     }
 
@@ -1374,16 +1497,25 @@ mod tests {
     }
 
     fn action<'c>(cat: &'c Catalog, id: &str) -> &'c crate::types::Action {
-        cat.actions.iter().find(|a| a.id == id).expect("action present")
+        cat.actions
+            .iter()
+            .find(|a| a.id == id)
+            .expect("action present")
     }
 
     /// Minimal `Content` that resolves the transformed signatures by id.
-    struct SigContent { actions: Vec<crate::types::Action> }
+    struct SigContent {
+        actions: Vec<crate::types::Action>,
+    }
     impl crate::resolve::Content for SigContent {
         fn action(&self, id: &str) -> Option<&crate::types::Action> {
             self.actions.iter().find(|a| a.id == id)
         }
-        fn spawn_projectile(&self, _kind: &str, _owner: &crate::types::Ship) -> crate::types::Projectile {
+        fn spawn_projectile(
+            &self,
+            _kind: &str,
+            _owner: &crate::types::Ship,
+        ) -> crate::types::Projectile {
             unreachable!("signatures under test never spawn ordnance")
         }
     }
@@ -1398,7 +1530,11 @@ mod tests {
     /// W (back toward the op) — inert for these self-moves. Both hull 5 so
     /// collision damage is observable. Upholds invariant A
     /// (`ship.cell == pos.to_index()`).
-    fn two_ship_board(op_col: usize, foe_col: usize, op_facing: crate::grid::Facing) -> crate::types::Board {
+    fn two_ship_board(
+        op_col: usize,
+        foe_col: usize,
+        op_facing: crate::grid::Facing,
+    ) -> crate::types::Board {
         use crate::grid::{Dir4, Facing, Pos};
         use crate::types::{Board, EventBus, Faction};
         let mut cells: Vec<Option<crate::types::Ship>> =
@@ -1406,7 +1542,12 @@ mod tests {
         let op_pos = Pos::new(op_col, 0);
         let foe_pos = Pos::new(foe_col, 0);
         cells[op_pos.to_index()] = Some(sig_ship("op", Faction::Player, op_pos, op_facing));
-        cells[foe_pos.to_index()] = Some(sig_ship("foe", Faction::Enemy, foe_pos, Facing::Bow(Dir4::W)));
+        cells[foe_pos.to_index()] = Some(sig_ship(
+            "foe",
+            Faction::Enemy,
+            foe_pos,
+            Facing::Bow(Dir4::W),
+        ));
         Board {
             size: crate::grid::COLS,
             cells,
@@ -1434,7 +1575,9 @@ mod tests {
             pos,
             // The live DISPLACE_SELF path reads `facing`, not `orientation`; the
             // legacy 1-D `orientation` is an inert shadow for these self-moves.
-            orientation: crate::types::Orientation::BowOn { bow: crate::types::LaneEnd::Fore },
+            orientation: crate::types::Orientation::BowOn {
+                bow: crate::types::LaneEnd::Fore,
+            },
             facing,
             hull: 5,
             max_hull: 5,
@@ -1453,11 +1596,20 @@ mod tests {
 
     /// Id of the ship at `cell`, if any.
     fn cell_id(board: &crate::types::Board, cell: usize) -> Option<&str> {
-        board.cells.get(cell).and_then(|c| c.as_ref()).map(|s| s.id.as_str())
+        board
+            .cells
+            .get(cell)
+            .and_then(|c| c.as_ref())
+            .map(|s| s.id.as_str())
     }
 
     /// Current hull of the ship with the given id, if it's still on the board.
     fn ship_hull(board: &crate::types::Board, id: &str) -> Option<i32> {
-        board.cells.iter().flatten().find(|s| s.id == id).map(|s| s.hull)
+        board
+            .cells
+            .iter()
+            .flatten()
+            .find(|s| s.id == id)
+            .map(|s| s.hull)
     }
 }

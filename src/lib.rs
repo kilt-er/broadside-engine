@@ -87,7 +87,6 @@
 //! Content effect bodies and AI live in sibling modules added by other
 //! teammates.
 
-pub mod types;
 pub mod ai;
 pub mod cards;
 pub mod catalog;
@@ -107,11 +106,16 @@ pub mod save;
 pub mod ship_asset;
 pub mod ship_design;
 pub mod subsystems;
+pub mod types;
 
 #[cfg(feature = "render")]
 pub mod atlas;
+#[cfg(feature = "audio")]
+pub mod audio;
 #[cfg(feature = "render")]
 pub mod background;
+#[cfg(feature = "render")]
+pub mod facing_wheel;
 #[cfg(feature = "render")]
 pub mod gfx;
 #[cfg(feature = "render")]
@@ -119,12 +123,8 @@ pub mod hud;
 #[cfg(feature = "render")]
 pub mod loft_gpu;
 #[cfg(feature = "render")]
-pub mod facing_wheel;
-#[cfg(feature = "render")]
 pub mod projector;
-#[cfg(feature = "render")]
-pub mod vfx;
 #[cfg(all(feature = "render", feature = "runtime"))]
 pub mod sprites;
-#[cfg(feature = "audio")]
-pub mod audio;
+#[cfg(feature = "render")]
+pub mod vfx;

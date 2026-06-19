@@ -410,7 +410,11 @@ mod tests {
         let mut view_i = 0usize;
         let mut acc_i = 0usize;
 
-        let align4 = |b: &mut Vec<u8>| while !b.len().is_multiple_of(4) { b.push(0) };
+        let align4 = |b: &mut Vec<u8>| {
+            while !b.len().is_multiple_of(4) {
+                b.push(0)
+            }
+        };
 
         for (pi, (positions, indices, color, emissive)) in prims.iter().enumerate() {
             // The fixture writes DELIBERATELY BOGUS normals (constant +Y on
@@ -421,7 +425,11 @@ mod tests {
             let bogus = [0.0f32, 1.0, 0.0];
             let mut normals = vec![bogus; positions.len()];
             for tri in indices.chunks_exact(3) {
-                let (a, b, c) = (positions[tri[0] as usize], positions[tri[1] as usize], positions[tri[2] as usize]);
+                let (a, b, c) = (
+                    positions[tri[0] as usize],
+                    positions[tri[1] as usize],
+                    positions[tri[2] as usize],
+                );
                 let _ = (a, b, c); // positions are read for the loader's recompute, not here
                 for &vi in tri {
                     normals[vi as usize] = bogus;
@@ -438,13 +446,18 @@ mod tests {
             let pos_len = bin.len() - pos_off;
             align4(&mut bin);
             let (pmin, pmax) = bounds(positions);
-            buffer_views += &format!(
-                r#"{{"buffer":0,"byteOffset":{pos_off},"byteLength":{pos_len}}},"#,
-            );
+            buffer_views +=
+                &format!(r#"{{"buffer":0,"byteOffset":{pos_off},"byteLength":{pos_len}}},"#,);
             let pos_acc = acc_i;
             accessors += &format!(
                 r#"{{"bufferView":{view_i},"componentType":5126,"count":{},"type":"VEC3","min":[{},{},{}],"max":[{},{},{}]}},"#,
-                positions.len(), pmin[0], pmin[1], pmin[2], pmax[0], pmax[1], pmax[2],
+                positions.len(),
+                pmin[0],
+                pmin[1],
+                pmin[2],
+                pmax[0],
+                pmax[1],
+                pmax[2],
             );
             view_i += 1;
             acc_i += 1;
@@ -458,9 +471,8 @@ mod tests {
             }
             let nrm_len = bin.len() - nrm_off;
             align4(&mut bin);
-            buffer_views += &format!(
-                r#"{{"buffer":0,"byteOffset":{nrm_off},"byteLength":{nrm_len}}},"#,
-            );
+            buffer_views +=
+                &format!(r#"{{"buffer":0,"byteOffset":{nrm_off},"byteLength":{nrm_len}}},"#,);
             let nrm_acc = acc_i;
             accessors += &format!(
                 r#"{{"bufferView":{view_i},"componentType":5126,"count":{},"type":"VEC3"}},"#,
@@ -476,9 +488,8 @@ mod tests {
             }
             let idx_len = bin.len() - idx_off;
             align4(&mut bin);
-            buffer_views += &format!(
-                r#"{{"buffer":0,"byteOffset":{idx_off},"byteLength":{idx_len}}},"#,
-            );
+            buffer_views +=
+                &format!(r#"{{"buffer":0,"byteOffset":{idx_off},"byteLength":{idx_len}}},"#,);
             let idx_acc = acc_i;
             accessors += &format!(
                 r#"{{"bufferView":{view_i},"componentType":5125,"count":{},"type":"SCALAR"}},"#,
@@ -524,7 +535,7 @@ mod tests {
         glb.extend_from_slice(b"glTF"); // magic
         glb.extend_from_slice(&2u32.to_le_bytes()); // version
         glb.extend_from_slice(&(total as u32).to_le_bytes()); // total length
-        // JSON chunk
+                                                              // JSON chunk
         glb.extend_from_slice(&(json_bytes.len() as u32).to_le_bytes());
         glb.extend_from_slice(b"JSON");
         glb.extend_from_slice(&json_bytes);
@@ -574,7 +585,14 @@ mod tests {
         // One material, one group spanning all 6 verts.
         assert_eq!(ship.materials.len(), 1);
         assert_eq!(ship.group_ranges.len(), 1);
-        assert_eq!(ship.group_ranges[0], GroupRange { start: 0, len: 6, material: 0 });
+        assert_eq!(
+            ship.group_ranges[0],
+            GroupRange {
+                start: 0,
+                len: 6,
+                material: 0
+            }
+        );
         assert_eq!(ship.materials[0].color, [0.7, 0.78, 0.88, 1.0]);
         assert!(!ship.materials[0].unlit);
     }
@@ -585,7 +603,11 @@ mod tests {
         // import the mesh must be a flat soup of 6 distinct vertices.
         let glb = one_quad_glb([0.5, 0.5, 0.5, 1.0], [0.0, 0.0, 0.0], None);
         let ship = load_glb(&glb).unwrap();
-        assert_eq!(ship.mesh.positions.len(), 6, "indexed quad expands to 6 verts");
+        assert_eq!(
+            ship.mesh.positions.len(),
+            6,
+            "indexed quad expands to 6 verts"
+        );
         // Every normal unit-length (flat shading on the XZ quad -> +/- Y).
         for n in &ship.mesh.normals {
             let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
@@ -606,14 +628,19 @@ mod tests {
             [0.0, 1.0, 1.0], // lifts + tilts the tri out of the XZ plane
         ];
         let indices: &[u32] = &[0, 1, 2];
-        let glb = build_glb(&[(positions, indices, [0.5, 0.5, 0.5, 1.0], [0.0, 0.0, 0.0])], None);
+        let glb = build_glb(
+            &[(positions, indices, [0.5, 0.5, 0.5, 1.0], [0.0, 0.0, 0.0])],
+            None,
+        );
         let ship = load_glb(&glb).unwrap();
 
         let expected = face_normal(positions[0], positions[1], positions[2]);
         // The true normal is NOT the bogus +Y the fixture stored — proves the
         // glb normal was discarded, not passed through.
         assert!(
-            (expected[1] - 1.0).abs() > 1e-3 || expected[0].abs() > 1e-3 || expected[2].abs() > 1e-3,
+            (expected[1] - 1.0).abs() > 1e-3
+                || expected[0].abs() > 1e-3
+                || expected[2].abs() > 1e-3,
             "test setup: tilted tri normal should differ from bogus +Y, got {expected:?}",
         );
         for n in &ship.mesh.normals {
@@ -628,11 +655,7 @@ mod tests {
 
     #[test]
     fn two_primitives_yield_two_groups_and_materials() {
-        let positions: &[[f32; 3]] = &[
-            [-1.0, 0.0, -1.0],
-            [1.0, 0.0, -1.0],
-            [1.0, 0.0, 1.0],
-        ];
+        let positions: &[[f32; 3]] = &[[-1.0, 0.0, -1.0], [1.0, 0.0, -1.0], [1.0, 0.0, 1.0]];
         let indices: &[u32] = &[0, 1, 2];
         let glb = build_glb(
             &[
@@ -644,8 +667,22 @@ mod tests {
         let ship = load_glb(&glb).unwrap();
         assert_eq!(ship.materials.len(), 2);
         assert_eq!(ship.group_ranges.len(), 2);
-        assert_eq!(ship.group_ranges[0], GroupRange { start: 0, len: 3, material: 0 });
-        assert_eq!(ship.group_ranges[1], GroupRange { start: 3, len: 3, material: 1 });
+        assert_eq!(
+            ship.group_ranges[0],
+            GroupRange {
+                start: 0,
+                len: 3,
+                material: 0
+            }
+        );
+        assert_eq!(
+            ship.group_ranges[1],
+            GroupRange {
+                start: 3,
+                len: 3,
+                material: 1
+            }
+        );
         // Second material carries emissive (a glow part).
         assert_eq!(ship.materials[1].emissive, [0.2, 0.07, 0.0, 1.0]);
     }
@@ -654,11 +691,7 @@ mod tests {
     fn vertex_colors_flatten_groups_to_per_vertex_slice() {
         // Two single-tri primitives with distinct colours -> 6 tri-soup verts,
         // first 3 the first colour, last 3 the second.
-        let positions: &[[f32; 3]] = &[
-            [-1.0, 0.0, -1.0],
-            [1.0, 0.0, -1.0],
-            [1.0, 0.0, 1.0],
-        ];
+        let positions: &[[f32; 3]] = &[[-1.0, 0.0, -1.0], [1.0, 0.0, -1.0], [1.0, 0.0, 1.0]];
         let indices: &[u32] = &[0, 1, 2];
         let c0 = [0.7, 0.78, 0.88, 1.0];
         let c1 = [1.0, 0.54, 0.28, 1.0];

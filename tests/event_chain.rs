@@ -35,7 +35,9 @@ use std::rc::Rc;
 /// these tests' arithmetic is unchanged.
 struct NoContent;
 impl Content for NoContent {
-    fn action(&self, _id: &str) -> Option<&Action> { None }
+    fn action(&self, _id: &str) -> Option<&Action> {
+        None
+    }
     fn spawn_projectile(&self, _: &str, _: &Ship) -> Projectile {
         unreachable!("spawn_projectile not used in event_chain tests");
     }
@@ -61,10 +63,22 @@ fn naked_ship_with_traits(
         heat_max: 6,
         locked_out: false,
         shield_profile: ShieldProfile {
-            bow: ShieldFace { armour: 0, charge: 0 },
-            stern: ShieldFace { armour: 0, charge: 0 },
-            port: ShieldFace { armour: 0, charge: 0 },
-            starboard: ShieldFace { armour: 0, charge: 0 },
+            bow: ShieldFace {
+                armour: 0,
+                charge: 0,
+            },
+            stern: ShieldFace {
+                armour: 0,
+                charge: 0,
+            },
+            port: ShieldFace {
+                armour: 0,
+                charge: 0,
+            },
+            starboard: ShieldFace {
+                armour: 0,
+                charge: 0,
+            },
         },
         mounts: vec![Mount {
             id: "m1".into(),
@@ -130,7 +144,15 @@ fn reactor_breach_splashes_neighbour_then_emits_lethal() {
     let neighbour = naked_ship_with_traits("neighbour", Faction::Enemy, 2, 10, vec![]);
     let mut board = empty_board(
         7,
-        vec![None, Some(breacher), Some(neighbour), None, None, None, None],
+        vec![
+            None,
+            Some(breacher),
+            Some(neighbour),
+            None,
+            None,
+            None,
+            None,
+        ],
     );
 
     // Recording subscribers.
@@ -140,12 +162,14 @@ fn reactor_breach_splashes_neighbour_then_emits_lethal() {
 
     let damage_log_inner = Rc::clone(&damage_log);
     let order_inner_d = Rc::clone(&event_order);
-    board.bus.on(Hook::OnDamageTaken, move |ctx: &mut HookContext| {
-        if let (Some(c), Some(a)) = (ctx.target_cell, ctx.amount) {
-            damage_log_inner.borrow_mut().push((c, a));
-        }
-        order_inner_d.borrow_mut().push("damage");
-    });
+    board
+        .bus
+        .on(Hook::OnDamageTaken, move |ctx: &mut HookContext| {
+            if let (Some(c), Some(a)) = (ctx.target_cell, ctx.amount) {
+                damage_log_inner.borrow_mut().push((c, a));
+            }
+            order_inner_d.borrow_mut().push("damage");
+        });
 
     let lethal_log_inner = Rc::clone(&lethal_log);
     let order_inner_l = Rc::clone(&event_order);
@@ -168,7 +192,10 @@ fn reactor_breach_splashes_neighbour_then_emits_lethal() {
     );
 
     // Neighbour hull dropped by exactly the splash amount.
-    let neighbour_hull = board.cells[2].as_ref().expect("neighbour survives 2 splash").hull;
+    let neighbour_hull = board.cells[2]
+        .as_ref()
+        .expect("neighbour survives 2 splash")
+        .hull;
     assert_eq!(neighbour_hull, 8);
 
     // OnLethal fired for the breacher's original cell.
@@ -188,7 +215,10 @@ fn reactor_breach_splashes_neighbour_then_emits_lethal() {
     );
 
     // The breacher's cell is cleared.
-    assert!(board.cells[1].is_none(), "breacher should be removed from the lane");
+    assert!(
+        board.cells[1].is_none(),
+        "breacher should be removed from the lane"
+    );
 
     // destroys_this_window incremented by exactly one — destroy()
     // increments BEFORE the splash, and the neighbour survives, so no
@@ -210,24 +240,21 @@ fn cascading_reactor_breaches_chain_correctly() {
     // tiny's destroy() runs, tiny splashes 2 -> breacher(1) is already
     // None so no hit there; tiny splashes 2 -> neighbour(3) takes 2,
     // survives at hp 8.
-    let breacher = naked_ship_with_traits(
-        "breacher",
-        Faction::Enemy,
-        1,
-        2,
-        vec![Trait::ReactorBreach],
-    );
-    let tiny = naked_ship_with_traits(
-        "tiny",
-        Faction::Enemy,
-        2,
-        2,
-        vec![Trait::ReactorBreach],
-    );
+    let breacher =
+        naked_ship_with_traits("breacher", Faction::Enemy, 1, 2, vec![Trait::ReactorBreach]);
+    let tiny = naked_ship_with_traits("tiny", Faction::Enemy, 2, 2, vec![Trait::ReactorBreach]);
     let neighbour = naked_ship_with_traits("neighbour", Faction::Enemy, 3, 10, vec![]);
     let mut board = empty_board(
         7,
-        vec![None, Some(breacher), Some(tiny), Some(neighbour), None, None, None],
+        vec![
+            None,
+            Some(breacher),
+            Some(tiny),
+            Some(neighbour),
+            None,
+            None,
+            None,
+        ],
     );
 
     let lethal_log: Rc<RefCell<Vec<usize>>> = Rc::new(RefCell::new(Vec::new()));
@@ -247,11 +274,13 @@ fn cascading_reactor_breaches_chain_correctly() {
     // `[damage(2), lethal(2), damage(3), lethal(1)]` — caught here.
     let event_order: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
     let order_d = Rc::clone(&event_order);
-    board.bus.on(Hook::OnDamageTaken, move |ctx: &mut HookContext| {
-        if let Some(c) = ctx.target_cell {
-            order_d.borrow_mut().push(format!("damage({c})"));
-        }
-    });
+    board
+        .bus
+        .on(Hook::OnDamageTaken, move |ctx: &mut HookContext| {
+            if let Some(c) = ctx.target_cell {
+                order_d.borrow_mut().push(format!("damage({c})"));
+            }
+        });
     let order_l = Rc::clone(&event_order);
     board.bus.on(Hook::OnLethal, move |ctx: &mut HookContext| {
         if let Some(c) = ctx.target_cell {

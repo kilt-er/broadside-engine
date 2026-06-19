@@ -388,7 +388,10 @@ pub fn absorb_shield(face: &mut ShieldFace, dmg: i32) -> i32 {
 /// are global consts in `crate::resolve` (#103 Model A: per-face regen is a later
 /// refinement).
 pub fn default_shield_profile() -> ShieldProfile {
-    let face = |cap: i32| ShieldFace { armour: cap, charge: cap };
+    let face = |cap: i32| ShieldFace {
+        armour: cap,
+        charge: cap,
+    };
     ShieldProfile {
         bow: face(4),
         stern: face(1),
@@ -456,7 +459,7 @@ mod tests {
         let b = p(3, 1);
         assert_eq!(direction_to(a, b), Some(Dir8::E));
         assert_eq!(grid::from_to(a, b), Some(Dir8::SE)); // contrast
-        // Steep mirror: (1, 3) ~18° off South -> S.
+                                                         // Steep mirror: (1, 3) ~18° off South -> S.
         assert_eq!(direction_to(p(0, 0), p(1, 3)), Some(Dir8::S));
     }
 
@@ -492,7 +495,7 @@ mod tests {
         // raw 1 at Far -> (1-2).max(1) = 1, not -1.
         assert_eq!(band_falloff(1, Range::Far), 1);
         assert_eq!(band_falloff(2, Range::Far), 1); // (2-2).max(1) = 1
-        // But 0-raw / negative stays 0 (no phantom damage): min(raw.max(0)).
+                                                    // But 0-raw / negative stays 0 (no phantom damage): min(raw.max(0)).
         assert_eq!(band_falloff(0, Range::Far), 0);
         assert_eq!(band_falloff(-5, Range::Adjacent), 0);
     }
@@ -505,7 +508,7 @@ mod tests {
         assert!(!in_band(&far_only, p(0, 0), p(1, 0))); // Adjacent
         assert!(!in_band(&far_only, p(0, 0), p(2, 0))); // Near
         assert!(in_band(&far_only, p(0, 0), p(3, 0))); // Far
-        // A short weapon allowed Adjacent+Near.
+                                                       // A short weapon allowed Adjacent+Near.
         let close = [Range::Adjacent, Range::Near];
         assert!(in_band(&close, p(0, 0), p(1, 1))); // Adjacent (diag)
         assert!(in_band(&close, p(0, 0), p(2, 0))); // Near
@@ -648,7 +651,11 @@ mod tests {
         for d in Dir8::ALL {
             assert!(arc_bears(f, Arc::Turret, d));
         }
-        assert!(arc_bears(Facing::Broadside(Axis::EastWest), Arc::Turret, Dir8::S));
+        assert!(arc_bears(
+            Facing::Broadside(Axis::EastWest),
+            Arc::Turret,
+            Dir8::S
+        ));
     }
 
     #[test]
@@ -664,7 +671,11 @@ mod tests {
         assert!(!arc_bears(f, Arc::Forward, Dir8::E));
         assert!(!arc_bears(f, Arc::Forward, Dir8::S));
         // never when broadside
-        assert!(!arc_bears(Facing::Broadside(Axis::EastWest), Arc::Forward, Dir8::N));
+        assert!(!arc_bears(
+            Facing::Broadside(Axis::EastWest),
+            Arc::Forward,
+            Dir8::N
+        ));
     }
 
     #[test]
@@ -677,7 +688,11 @@ mod tests {
         assert!(!arc_bears(f, Arc::Rear, Dir8::SW));
         assert!(!arc_bears(f, Arc::Rear, Dir8::N));
         assert!(!arc_bears(f, Arc::Rear, Dir8::W));
-        assert!(!arc_bears(Facing::Broadside(Axis::EastWest), Arc::Rear, Dir8::S));
+        assert!(!arc_bears(
+            Facing::Broadside(Axis::EastWest),
+            Arc::Rear,
+            Dir8::S
+        ));
     }
 
     #[test]
@@ -705,13 +720,25 @@ mod tests {
         // Bow N/S (NorthSouth axis) -> flanks E/W bear; the bow axis N/S does NOT.
         assert!(arc_bears(Facing::Bow(Dir4::N), Arc::BroadsideArc, Dir8::E));
         assert!(arc_bears(Facing::Bow(Dir4::N), Arc::BroadsideArc, Dir8::W));
-        assert!(!arc_bears(Facing::Bow(Dir4::N), Arc::BroadsideArc, Dir8::N), "on-axis (bow) does not bear");
-        assert!(!arc_bears(Facing::Bow(Dir4::N), Arc::BroadsideArc, Dir8::S), "on-axis (stern) does not bear");
-        assert!(!arc_bears(Facing::Bow(Dir4::N), Arc::BroadsideArc, Dir8::NE), "diagonal does not bear");
+        assert!(
+            !arc_bears(Facing::Bow(Dir4::N), Arc::BroadsideArc, Dir8::N),
+            "on-axis (bow) does not bear"
+        );
+        assert!(
+            !arc_bears(Facing::Bow(Dir4::N), Arc::BroadsideArc, Dir8::S),
+            "on-axis (stern) does not bear"
+        );
+        assert!(
+            !arc_bears(Facing::Bow(Dir4::N), Arc::BroadsideArc, Dir8::NE),
+            "diagonal does not bear"
+        );
         // Bow E/W (EastWest axis) -> flanks N/S bear.
         assert!(arc_bears(Facing::Bow(Dir4::E), Arc::BroadsideArc, Dir8::N));
         assert!(arc_bears(Facing::Bow(Dir4::E), Arc::BroadsideArc, Dir8::S));
-        assert!(!arc_bears(Facing::Bow(Dir4::E), Arc::BroadsideArc, Dir8::E), "on-axis (bow) does not bear");
+        assert!(
+            !arc_bears(Facing::Bow(Dir4::E), Arc::BroadsideArc, Dir8::E),
+            "on-axis (bow) does not bear"
+        );
 
         // NorthSouth forward axis (vestigial Broadside stance): flanks E/W; SE
         // (the tester's old case) is off-axis and must NOT bear.
@@ -729,7 +756,10 @@ mod tests {
     #[test]
     fn absorb_shield_pool_soaks_down_to_zero_overflow_to_hull() {
         // Pool 1 vs a 10 hit: soaks 1, 9 overflows to hull; pool now 0.
-        let mut face = ShieldFace { armour: 5, charge: 1 };
+        let mut face = ShieldFace {
+            armour: 5,
+            charge: 1,
+        };
         assert_eq!(absorb_shield(&mut face, 10), 9);
         assert_eq!(face.charge, 0);
     }
@@ -737,7 +767,10 @@ mod tests {
     #[test]
     fn absorb_shield_empty_pool_passes_full_to_hull() {
         // Empty pool (armour/capacity no longer subtracts): full dmg reaches hull.
-        let mut face = ShieldFace { armour: 2, charge: 0 };
+        let mut face = ShieldFace {
+            armour: 2,
+            charge: 0,
+        };
         assert_eq!(absorb_shield(&mut face, 5), 5);
         assert_eq!(face.armour, 2); // capacity untouched by a hit
     }
@@ -745,11 +778,17 @@ mod tests {
     #[test]
     fn absorb_shield_partial_soak_and_ignores_nonpositive() {
         // Pool 3 vs a 2 hit: fully soaked, pool drops to 1, 0 to hull.
-        let mut face = ShieldFace { armour: 5, charge: 3 };
+        let mut face = ShieldFace {
+            armour: 5,
+            charge: 3,
+        };
         assert_eq!(absorb_shield(&mut face, 2), 0);
         assert_eq!(face.charge, 1);
         // No-op hit consumes nothing.
-        let mut other = ShieldFace { armour: 5, charge: 3 };
+        let mut other = ShieldFace {
+            armour: 5,
+            charge: 3,
+        };
         assert_eq!(absorb_shield(&mut other, 0), 0);
         assert_eq!(other.charge, 3);
     }
@@ -759,9 +798,33 @@ mod tests {
         // #103 Model A caps (Bruce-tunable): bow 4 / flanks 3 / stern 1, pools
         // start FULL (charge == capacity == `armour`).
         let p = default_shield_profile();
-        assert_eq!(*p.face(HullZone::Bow), ShieldFace { armour: 4, charge: 4 });
-        assert_eq!(*p.face(HullZone::Stern), ShieldFace { armour: 1, charge: 1 });
-        assert_eq!(*p.face(HullZone::Port), ShieldFace { armour: 3, charge: 3 });
-        assert_eq!(*p.face(HullZone::Starboard), ShieldFace { armour: 3, charge: 3 });
+        assert_eq!(
+            *p.face(HullZone::Bow),
+            ShieldFace {
+                armour: 4,
+                charge: 4
+            }
+        );
+        assert_eq!(
+            *p.face(HullZone::Stern),
+            ShieldFace {
+                armour: 1,
+                charge: 1
+            }
+        );
+        assert_eq!(
+            *p.face(HullZone::Port),
+            ShieldFace {
+                armour: 3,
+                charge: 3
+            }
+        );
+        assert_eq!(
+            *p.face(HullZone::Starboard),
+            ShieldFace {
+                armour: 3,
+                charge: 3
+            }
+        );
     }
 }

@@ -4,3 +4,5 @@
 *.log
 # base64 decode scratch
 assets/sprites/.staging/
+# render/debug capture scratch (PNG dumps, clippy/fmt logs)
+_caps/

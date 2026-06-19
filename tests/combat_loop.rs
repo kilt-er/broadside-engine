@@ -34,8 +34,8 @@ use broadside_engine::grid::{Dir4, Facing, Pos};
 use broadside_engine::resolve::{find_player_id, resolve_round, run_world_phase, Content};
 use broadside_engine::types::{
     Action, ActionCost, Arc, Board, Effect, EventBus, Faction, LaneEnd, Mount, Orientation,
-    Projectile, RangeBand, ShieldFace, ShieldProfile, Ship, Targeting, TargetingPattern,
-    Trait, WeaponArchetype,
+    Projectile, RangeBand, ShieldFace, ShieldProfile, Ship, Targeting, TargetingPattern, Trait,
+    WeaponArchetype,
 };
 use std::collections::HashMap;
 
@@ -51,19 +51,43 @@ mod common;
 
 fn frigate_shields() -> ShieldProfile {
     ShieldProfile {
-        bow: ShieldFace { armour: 2, charge: 0 },
-        stern: ShieldFace { armour: 0, charge: 0 },
-        port: ShieldFace { armour: 1, charge: 0 },
-        starboard: ShieldFace { armour: 1, charge: 0 },
+        bow: ShieldFace {
+            armour: 2,
+            charge: 0,
+        },
+        stern: ShieldFace {
+            armour: 0,
+            charge: 0,
+        },
+        port: ShieldFace {
+            armour: 1,
+            charge: 0,
+        },
+        starboard: ShieldFace {
+            armour: 1,
+            charge: 0,
+        },
     }
 }
 
 fn naked_shields() -> ShieldProfile {
     ShieldProfile {
-        bow: ShieldFace { armour: 0, charge: 0 },
-        stern: ShieldFace { armour: 0, charge: 0 },
-        port: ShieldFace { armour: 0, charge: 0 },
-        starboard: ShieldFace { armour: 0, charge: 0 },
+        bow: ShieldFace {
+            armour: 0,
+            charge: 0,
+        },
+        stern: ShieldFace {
+            armour: 0,
+            charge: 0,
+        },
+        port: ShieldFace {
+            armour: 0,
+            charge: 0,
+        },
+        starboard: ShieldFace {
+            armour: 0,
+            charge: 0,
+        },
     }
 }
 
@@ -82,7 +106,11 @@ fn ship(id: &str, faction: Faction, cell: usize, hull: i32, bow: LaneEnd, weapon
         heat_max: 12,
         locked_out: false,
         shield_profile: frigate_shields(),
-        mounts: vec![Mount { id: format!("{id}-m1"), arc: Arc::Forward, weapon: weapon.into() }],
+        mounts: vec![Mount {
+            id: format!("{id}-m1"),
+            arc: Arc::Forward,
+            weapon: weapon.into(),
+        }],
         queue: Vec::new(),
         cooldowns: HashMap::new(),
         statuses: Vec::new(),
@@ -98,18 +126,35 @@ fn beam(id: &str, amount: i32) -> Action {
         id: id.into(),
         name: id.into(),
         archetype: WeaponArchetype::Beam,
-        cost: ActionCost { heat: 1, cooldown_max: 0, advances_turn: true },
+        cost: ActionCost {
+            heat: 1,
+            cooldown_max: 0,
+            advances_turn: true,
+        },
         targeting: Targeting {
-            range_band: vec![broadside_engine::grid::Range::Adjacent, broadside_engine::grid::Range::Near, broadside_engine::grid::Range::Far],
+            range_band: vec![
+                broadside_engine::grid::Range::Adjacent,
+                broadside_engine::grid::Range::Near,
+                broadside_engine::grid::Range::Far,
+            ],
             optimal_range: broadside_engine::grid::Range::Adjacent,
             pattern: TargetingPattern::BEAM,
-            band: vec![RangeBand::PointBlank, RangeBand::Close, RangeBand::Mid, RangeBand::Long, RangeBand::Extreme],
+            band: vec![
+                RangeBand::PointBlank,
+                RangeBand::Close,
+                RangeBand::Mid,
+                RangeBand::Long,
+                RangeBand::Extreme,
+            ],
             optimal_band: RangeBand::PointBlank,
             requires_arc: Some(Arc::Forward),
             facing_relative: true,
             hits_all: false,
         },
-        effects: vec![Effect::DAMAGE { amount, band_falloff: Some(false) }],
+        effects: vec![Effect::DAMAGE {
+            amount,
+            band_falloff: Some(false),
+        }],
         r#mod: None,
         icon: None,
     }
@@ -150,7 +195,11 @@ fn board(size: usize, cells: Vec<Option<Ship>>) -> Board {
 }
 
 fn enemies_left(b: &Board) -> usize {
-    b.cells.iter().flatten().filter(|s| s.faction == Faction::Enemy).count()
+    b.cells
+        .iter()
+        .flatten()
+        .filter(|s| s.faction == Faction::Enemy)
+        .count()
 }
 
 /* =========================================================================
@@ -164,14 +213,41 @@ fn enemies_left(b: &Board) -> usize {
 // (1 raw) so the player out-trades them and the loop ends in a win.
 #[test]
 fn combat_loop_player_clears_two_armed_enemies() {
-    let player = common::ship_2d("player", Faction::Player, Pos::new(2, 3), 30, Facing::Bow(Dir4::N), Arc::Forward, "pc_beam");
-    let mut e1 = common::ship_2d("e1", Faction::Enemy, Pos::new(2, 2), 4, Facing::Bow(Dir4::S), Arc::Forward, "ai_beam");
-    let mut e2 = common::ship_2d("e2", Faction::Enemy, Pos::new(2, 1), 4, Facing::Bow(Dir4::S), Arc::Forward, "ai_beam");
+    let player = common::ship_2d(
+        "player",
+        Faction::Player,
+        Pos::new(2, 3),
+        30,
+        Facing::Bow(Dir4::N),
+        Arc::Forward,
+        "pc_beam",
+    );
+    let mut e1 = common::ship_2d(
+        "e1",
+        Faction::Enemy,
+        Pos::new(2, 2),
+        4,
+        Facing::Bow(Dir4::S),
+        Arc::Forward,
+        "ai_beam",
+    );
+    let mut e2 = common::ship_2d(
+        "e2",
+        Faction::Enemy,
+        Pos::new(2, 1),
+        4,
+        Facing::Bow(Dir4::S),
+        Arc::Forward,
+        "ai_beam",
+    );
     e1.shield_profile = naked_shields();
     e2.shield_profile = naked_shields();
 
     let mut b = common::board_2d(vec![player, e1, e2]);
-    let content = CombatContent { player_beam: beam("pc_beam", 8), ai_beam: beam("ai_beam", 1) };
+    let content = CombatContent {
+        player_beam: beam("pc_beam", 8),
+        ai_beam: beam("ai_beam", 1),
+    };
 
     // Drive rounds: each round the player queues its beam, then resolve_round
     // fires the queue + runs the world phase (AI + end-of-turn). Bounded.
@@ -179,7 +255,11 @@ fn combat_loop_player_clears_two_armed_enemies() {
     while enemies_left(&b) > 0 && find_player_id(&b).is_some() && rounds < 32 {
         if let Some(pid) = find_player_id(&b) {
             // Queue the player's beam for this round.
-            if let Some(cell) = b.cells.iter().position(|c| c.as_ref().map(|s| s.id == pid).unwrap_or(false)) {
+            if let Some(cell) = b
+                .cells
+                .iter()
+                .position(|c| c.as_ref().map(|s| s.id == pid).unwrap_or(false))
+            {
                 if let Some(s) = b.cells[cell].as_mut() {
                     s.queue.push("pc_beam".into());
                 }
@@ -204,13 +284,40 @@ fn combat_loop_player_clears_two_armed_enemies() {
 // empty and find_player_id returns None — the bin's lose signal.
 #[test]
 fn combat_loop_player_death_clears_cell_and_is_detectable() {
-    let player = common::ship_2d("player", Faction::Player, Pos::new(2, 3), 2, Facing::Bow(Dir4::N), Arc::Forward, "pc_beam");
-    let e1 = common::ship_2d("e1", Faction::Enemy, Pos::new(2, 2), 20, Facing::Bow(Dir4::S), Arc::Forward, "ai_beam");
-    let e2 = common::ship_2d("e2", Faction::Enemy, Pos::new(2, 1), 20, Facing::Bow(Dir4::S), Arc::Forward, "ai_beam");
+    let player = common::ship_2d(
+        "player",
+        Faction::Player,
+        Pos::new(2, 3),
+        2,
+        Facing::Bow(Dir4::N),
+        Arc::Forward,
+        "pc_beam",
+    );
+    let e1 = common::ship_2d(
+        "e1",
+        Faction::Enemy,
+        Pos::new(2, 2),
+        20,
+        Facing::Bow(Dir4::S),
+        Arc::Forward,
+        "ai_beam",
+    );
+    let e2 = common::ship_2d(
+        "e2",
+        Faction::Enemy,
+        Pos::new(2, 1),
+        20,
+        Facing::Bow(Dir4::S),
+        Arc::Forward,
+        "ai_beam",
+    );
     let player_idx = Pos::new(2, 3).to_index();
     let mut b = common::board_2d(vec![player, e1, e2]);
     // AI beam hits hard enough to punch through the bow (armour 2) — 6 raw.
-    let content = CombatContent { player_beam: beam("pc_beam", 8), ai_beam: beam("ai_beam", 6) };
+    let content = CombatContent {
+        player_beam: beam("pc_beam", 8),
+        ai_beam: beam("ai_beam", 6),
+    };
 
     let mut rounds = 0;
     while find_player_id(&b).is_some() && rounds < 32 {
@@ -219,9 +326,18 @@ fn combat_loop_player_death_clears_cell_and_is_detectable() {
         rounds += 1;
     }
 
-    assert!(rounds < 32, "the board should kill the idle player within the bound");
-    assert!(find_player_id(&b).is_none(), "dead player is detectable via find_player_id == None");
-    assert!(b.cells[player_idx].is_none(), "the player's cell is cleared on death");
+    assert!(
+        rounds < 32,
+        "the board should kill the idle player within the bound"
+    );
+    assert!(
+        find_player_id(&b).is_none(),
+        "dead player is detectable via find_player_id == None"
+    );
+    assert!(
+        b.cells[player_idx].is_none(),
+        "the player's cell is cleared on death"
+    );
 }
 
 /* =========================================================================
@@ -230,7 +346,10 @@ fn combat_loop_player_death_clears_cell_and_is_detectable() {
 
 #[test]
 fn combat_loop_edge_boards_do_not_panic() {
-    let content = CombatContent { player_beam: beam("pc_beam", 8), ai_beam: beam("ai_beam", 3) };
+    let content = CombatContent {
+        player_beam: beam("pc_beam", 8),
+        ai_beam: beam("ai_beam", 3),
+    };
 
     // (a) Player at the AFT edge (cell 0) firing aft-bearing nothing, enemy
     //     at the FORE edge. Exercises cell-0 aft probes + fore-edge stepping.
@@ -238,9 +357,7 @@ fn combat_loop_edge_boards_do_not_panic() {
         let mut player = ship("player", Faction::Player, 0, 20, LaneEnd::Aft, "pc_beam");
         player.queue.push("pc_beam".into());
         let e = ship("e", Faction::Enemy, 6, 6, LaneEnd::Aft, "ai_beam");
-        let mut b = board(7, vec![
-            Some(player), None, None, None, None, None, Some(e),
-        ]);
+        let mut b = board(7, vec![Some(player), None, None, None, None, None, Some(e)]);
         // Must not panic regardless of who can bear.
         resolve_round(&mut b, &content);
     }
@@ -249,12 +366,28 @@ fn combat_loop_edge_boards_do_not_panic() {
     //     targeting / movement / splash bounds with no free cells.
     {
         let mut cells: Vec<Option<Ship>> = Vec::new();
-        cells.push(Some(ship("player", Faction::Player, 0, 20, LaneEnd::Fore, "pc_beam")));
+        cells.push(Some(ship(
+            "player",
+            Faction::Player,
+            0,
+            20,
+            LaneEnd::Fore,
+            "pc_beam",
+        )));
         for i in 1..7 {
-            cells.push(Some(ship(&format!("e{i}"), Faction::Enemy, i, 6, LaneEnd::Aft, "ai_beam")));
+            cells.push(Some(ship(
+                &format!("e{i}"),
+                Faction::Enemy,
+                i,
+                6,
+                LaneEnd::Aft,
+                "ai_beam",
+            )));
         }
         let mut b = board(7, cells);
-        if let Some(s) = b.cells[0].as_mut() { s.queue.push("pc_beam".into()); }
+        if let Some(s) = b.cells[0].as_mut() {
+            s.queue.push("pc_beam".into());
+        }
         resolve_round(&mut b, &content);
     }
 
@@ -263,9 +396,7 @@ fn combat_loop_edge_boards_do_not_panic() {
     {
         let player = ship("player", Faction::Player, 3, 20, LaneEnd::Fore, "pc_beam");
         let e = ship("e", Faction::Enemy, 4, 6, LaneEnd::Aft, "ai_beam");
-        let mut b = board(7, vec![
-            None, None, None, Some(player), Some(e), None, None,
-        ]);
+        let mut b = board(7, vec![None, None, None, Some(player), Some(e), None, None]);
         // No queue pushed. resolve_round fires an empty player queue, then
         // the world phase. Must not panic.
         resolve_round(&mut b, &content);
@@ -275,10 +406,15 @@ fn combat_loop_edge_boards_do_not_panic() {
     {
         let player = ship("player", Faction::Player, 0, 10, LaneEnd::Fore, "pc_beam");
         let mut b = board(1, vec![Some(player)]);
-        if let Some(s) = b.cells[0].as_mut() { s.queue.push("pc_beam".into()); }
+        if let Some(s) = b.cells[0].as_mut() {
+            s.queue.push("pc_beam".into());
+        }
         resolve_round(&mut b, &content);
         // Lone player with no enemies: still on the board, nothing to hit.
-        assert!(find_player_id(&b).is_some(), "lone player survives a no-target round");
+        assert!(
+            find_player_id(&b).is_some(),
+            "lone player survives a no-target round"
+        );
     }
 }
 
@@ -295,15 +431,22 @@ fn combat_loop_keeps_board_consistent_across_rounds() {
     let mut player = ship("player", Faction::Player, 0, 40, LaneEnd::Fore, "pc_beam");
     player.shield_profile = naked_shields();
     let e = ship("e", Faction::Enemy, 3, 40, LaneEnd::Aft, "ai_beam");
-    let mut b = board(7, vec![
-        Some(player), None, None, Some(e), None, None, None,
-    ]);
-    let content = CombatContent { player_beam: beam("pc_beam", 2), ai_beam: beam("ai_beam", 2) };
+    let mut b = board(7, vec![Some(player), None, None, Some(e), None, None, None]);
+    let content = CombatContent {
+        player_beam: beam("pc_beam", 2),
+        ai_beam: beam("ai_beam", 2),
+    };
 
     for _ in 0..10 {
         if let Some(pid) = find_player_id(&b) {
-            if let Some(cell) = b.cells.iter().position(|c| c.as_ref().map(|s| s.id == pid).unwrap_or(false)) {
-                if let Some(s) = b.cells[cell].as_mut() { s.queue.push("pc_beam".into()); }
+            if let Some(cell) = b
+                .cells
+                .iter()
+                .position(|c| c.as_ref().map(|s| s.id == pid).unwrap_or(false))
+            {
+                if let Some(s) = b.cells[cell].as_mut() {
+                    s.queue.push("pc_beam".into());
+                }
             }
         }
         resolve_round(&mut b, &content);
@@ -311,12 +454,21 @@ fn combat_loop_keeps_board_consistent_across_rounds() {
         // Invariant: every occupant's self-cell equals its slot index.
         for (idx, slot) in b.cells.iter().enumerate() {
             if let Some(s) = slot {
-                assert_eq!(s.cell, idx, "ship {} reports cell {} but sits at slot {}", s.id, s.cell, idx);
+                assert_eq!(
+                    s.cell, idx,
+                    "ship {} reports cell {} but sits at slot {}",
+                    s.id, s.cell, idx
+                );
             }
         }
         // Invariant: ordnance never references an out-of-range cell.
         for p in &b.ordnance {
-            assert!(p.cell < b.size, "ordnance {} at out-of-range cell {}", p.id, p.cell);
+            assert!(
+                p.cell < b.size,
+                "ordnance {} at out-of-range cell {}",
+                p.id,
+                p.cell
+            );
         }
     }
 }
@@ -333,13 +485,32 @@ fn combat_loop_keeps_board_consistent_across_rounds() {
 fn telegraph_persists_in_enemy_queue_between_world_phases() {
     use broadside_engine::resolve::run_world_phase;
 
-    let mut player = common::ship_2d("player", Faction::Player, Pos::new(2, 3), 99, Facing::Bow(Dir4::N), Arc::Forward, "pc_beam");
+    let mut player = common::ship_2d(
+        "player",
+        Faction::Player,
+        Pos::new(2, 3),
+        99,
+        Facing::Bow(Dir4::N),
+        Arc::Forward,
+        "pc_beam",
+    );
     player.shield_profile = naked_shields(); // so the 3-dmg telegraph lands on hull, not armour
-    let e = common::ship_2d("e", Faction::Enemy, Pos::new(2, 1), 99, Facing::Bow(Dir4::S), Arc::Forward, "ai_beam");
+    let e = common::ship_2d(
+        "e",
+        Faction::Enemy,
+        Pos::new(2, 1),
+        99,
+        Facing::Bow(Dir4::S),
+        Arc::Forward,
+        "ai_beam",
+    );
     let e_idx = Pos::new(2, 1).to_index();
     let player_idx = Pos::new(2, 3).to_index();
     let mut b = common::board_2d(vec![player, e]);
-    let content = CombatContent { player_beam: beam("pc_beam", 1), ai_beam: beam("ai_beam", 3) };
+    let content = CombatContent {
+        player_beam: beam("pc_beam", 1),
+        ai_beam: beam("ai_beam", 3),
+    };
 
     // Before any phase, the enemy has telegraphed nothing.
     assert!(
@@ -397,24 +568,69 @@ fn enemy_fires_and_holds_when_in_band_does_not_march() {
     let mut narrow = beam("ai_beam", 2);
     narrow.targeting.band = vec![RangeBand::PointBlank, RangeBand::Close, RangeBand::Mid];
     narrow.targeting.optimal_band = RangeBand::Close;
-    let mut player = common::ship_2d("player", Faction::Player, Pos::new(2, 3), 99, Facing::Bow(Dir4::N), Arc::Forward, "pc_beam");
+    let mut player = common::ship_2d(
+        "player",
+        Faction::Player,
+        Pos::new(2, 3),
+        99,
+        Facing::Bow(Dir4::N),
+        Arc::Forward,
+        "pc_beam",
+    );
     player.shield_profile = naked_shields(); // so hits land on hull (observable)
-    let e1 = common::ship_2d("e1", Faction::Enemy, Pos::new(2, 1), 99, Facing::Bow(Dir4::S), Arc::Forward, "ai_beam");
-    let e2 = common::ship_2d("e2", Faction::Enemy, Pos::new(2, 0), 99, Facing::Bow(Dir4::S), Arc::Forward, "ai_beam");
+    let e1 = common::ship_2d(
+        "e1",
+        Faction::Enemy,
+        Pos::new(2, 1),
+        99,
+        Facing::Bow(Dir4::S),
+        Arc::Forward,
+        "ai_beam",
+    );
+    let e2 = common::ship_2d(
+        "e2",
+        Faction::Enemy,
+        Pos::new(2, 0),
+        99,
+        Facing::Bow(Dir4::S),
+        Arc::Forward,
+        "ai_beam",
+    );
     let e1_start = Pos::new(2, 1).to_index();
     let mut b = common::board_2d(vec![player, e1, e2]);
-    let content = CombatContent { player_beam: beam("pc_beam", 1), ai_beam: narrow };
+    let content = CombatContent {
+        player_beam: beam("pc_beam", 1),
+        ai_beam: narrow,
+    };
 
-    let hull_before = b.cells.iter().flatten().find(|s| s.id == "player").unwrap().hull;
+    let hull_before = b
+        .cells
+        .iter()
+        .flatten()
+        .find(|s| s.id == "player")
+        .unwrap()
+        .hull;
     for _ in 0..6 {
         run_world_phase(&mut b, &content);
     }
-    let e1_cell = b.cells.iter().position(|c| c.as_ref().map(|s| s.id == "e1").unwrap_or(false));
-    let hull_after = b.cells.iter().flatten().find(|s| s.id == "player").map(|s| s.hull);
+    let e1_cell = b
+        .cells
+        .iter()
+        .position(|c| c.as_ref().map(|s| s.id == "e1").unwrap_or(false));
+    let hull_after = b
+        .cells
+        .iter()
+        .flatten()
+        .find(|s| s.id == "player")
+        .map(|s| s.hull);
 
     // e1 was in band at (2,1) from the start: it must HOLD there and FIRE,
     // not march toward/into the player.
-    assert_eq!(e1_cell, Some(e1_start), "an in-band enemy holds its firing position, it does not march");
+    assert_eq!(
+        e1_cell,
+        Some(e1_start),
+        "an in-band enemy holds its firing position, it does not march"
+    );
     assert!(
         hull_after.unwrap() < hull_before,
         "#71: an in-band bearing enemy actually FIRES (player hull drops); got {hull_after:?} from {hull_before}",
@@ -474,21 +690,39 @@ fn live_pulse_laser() -> Option<Action> {
 /// the target stationary isolates the heat curve, which is what we're verifying.
 fn fire_once_then_cool(b: &mut Board, content: &dyn OneWeaponLike) -> (i32, bool) {
     let pid = find_player_id(b).expect("player present");
-    let pcell = b.cells.iter().position(|c| c.as_ref().map(|s| s.id == pid).unwrap_or(false)).unwrap();
+    let pcell = b
+        .cells
+        .iter()
+        .position(|c| c.as_ref().map(|s| s.id == pid).unwrap_or(false))
+        .unwrap();
     // Queue the shot only if not locked out (a locked ship can't fire — the
     // resolver's lockout gate at resolve.rs:407 would no-op it anyway).
     if !b.cells[pcell].as_ref().unwrap().locked_out {
-        b.cells[pcell].as_mut().unwrap().queue.push("pulse_laser".into());
+        b.cells[pcell]
+            .as_mut()
+            .unwrap()
+            .queue
+            .push("pulse_laser".into());
     }
     broadside_engine::resolve::fire_player_queue(&pid, b, content.as_content());
     // Capture lockout at PEAK (post-fire, pre-dissipation): firing is what
     // trips it, and the canonical -1 EOT cooling immediately drops heat back
     // below heat_max and clears the flag (resolve.rs:611-613). The peak is the
     // "did this shot overheat me" signal the test cares about.
-    let locked_at_peak = b.cells.iter().flatten().find(|s| s.id == pid).map(|s| s.locked_out).unwrap_or(false);
+    let locked_at_peak = b
+        .cells
+        .iter()
+        .flatten()
+        .find(|s| s.id == pid)
+        .map(|s| s.locked_out)
+        .unwrap_or(false);
     // Canonical end-of-turn dissipation, applied only to the player (no world
     // phase → the target never maneuvers out of band).
-    if let Some(c) = b.cells.iter().position(|c| c.as_ref().map(|s| s.id == pid).unwrap_or(false)) {
+    if let Some(c) = b
+        .cells
+        .iter()
+        .position(|c| c.as_ref().map(|s| s.id == pid).unwrap_or(false))
+    {
         if let Some(s) = b.cells[c].as_mut() {
             s.heat = (s.heat - 1).max(0);
             if s.heat < s.heat_max {
@@ -496,7 +730,13 @@ fn fire_once_then_cool(b: &mut Board, content: &dyn OneWeaponLike) -> (i32, bool
             }
         }
     }
-    let heat = b.cells.iter().flatten().find(|s| s.id == pid).map(|s| s.heat).unwrap_or(0);
+    let heat = b
+        .cells
+        .iter()
+        .flatten()
+        .find(|s| s.id == pid)
+        .map(|s| s.heat)
+        .unwrap_or(0);
     (heat, locked_at_peak)
 }
 
@@ -519,8 +759,14 @@ fn pulse_laser_sustained_fire_overheats_into_lockout() {
     };
     // Sanity: the catalog value the spam-fix depends on. If a future export
     // drops this back to 1, THIS is the assertion that catches it.
-    assert_eq!(pulse.cost.heat, 2, "#73: pulse_laser heat must be 2 (the spam-gate value)");
-    assert_eq!(pulse.cost.cooldown_max, 0, "#73: pulse_laser stays cd 0 (bruce's baseline-shot constraint)");
+    assert_eq!(
+        pulse.cost.heat, 2,
+        "#73: pulse_laser heat must be 2 (the spam-gate value)"
+    );
+    assert_eq!(
+        pulse.cost.cooldown_max, 0,
+        "#73: pulse_laser stays cd 0 (bruce's baseline-shot constraint)"
+    );
 
     // v2 (#22 restore, unblocked by #28): REAL 2-D fixture. #28 derives the 2-D
     // band from the 1-D catalog band — pulse_laser is "close" → Near → fires at
@@ -529,15 +775,32 @@ fn pulse_laser_sustained_fire_overheats_into_lockout() {
     // heat. heat_max 6 (the canonical default the curve is tuned to). Same #73
     // heat-gate assertion, now on an invariant-A board (the stale pos-(0,0)
     // fixture couldn't target).
-    let mut player = common::ship_2d("p", Faction::Player, Pos::new(0, 0), 99, Facing::Bow(Dir4::E), Arc::Forward, "pulse_laser");
+    let mut player = common::ship_2d(
+        "p",
+        Faction::Player,
+        Pos::new(0, 0),
+        99,
+        Facing::Bow(Dir4::E),
+        Arc::Forward,
+        "pulse_laser",
+    );
     player.heat_max = 6;
     player.heat = 0;
     // Anchored + weaponless dummy: can't fire, won't maneuver → holds (2,0)
     // (Near band) every turn, a stable firing target.
-    let mut dummy = common::dummy_2d("d", Faction::Enemy, Pos::new(2, 0), 99, Facing::Bow(Dir4::W));
+    let mut dummy = common::dummy_2d(
+        "d",
+        Faction::Enemy,
+        Pos::new(2, 0),
+        99,
+        Facing::Bow(Dir4::W),
+    );
     dummy.traits = vec![Trait::Anchored];
     let mut b = common::board_2d(vec![player, dummy]);
-    let content = OneWeapon { id: "pulse_laser".into(), action: pulse };
+    let content = OneWeapon {
+        id: "pulse_laser".into(),
+        action: pulse,
+    };
 
     // Per-turn: +2 heat on fire, -1 on EOT → net +1/turn. Heat after turn N:
     // T1=1, T2=2, T3=3, T4=4, T5 fires at 4→6 = LOCKOUT (then EOT →5).
@@ -564,7 +827,10 @@ fn pulse_laser_sustained_fire_overheats_into_lockout() {
         run_world_phase(&mut b, content.as_content());
     }
     let p = b.cells.iter().flatten().find(|s| s.id == "p").unwrap();
-    assert!(!p.locked_out, "#73: passive cooling clears the lockout so the ship can fire again");
+    assert!(
+        !p.locked_out,
+        "#73: passive cooling clears the lockout so the ship can fire again"
+    );
     assert_eq!(p.heat, 0, "idle cooling drains heat back to 0");
 }
 
@@ -580,17 +846,46 @@ fn pulse_laser_three_shot_alpha_locks_out_instantly() {
     // v2 (#22 restore, unblocked by #28): REAL 2-D fixture — player (0,0) Bow(E),
     // dummy (2,0) = Near band (pulse_laser "close" → Near, dist 2), so each shot
     // bears and spends heat.
-    let mut player = common::ship_2d("p", Faction::Player, Pos::new(0, 0), 99, Facing::Bow(Dir4::E), Arc::Forward, "pulse_laser");
+    let mut player = common::ship_2d(
+        "p",
+        Faction::Player,
+        Pos::new(0, 0),
+        99,
+        Facing::Bow(Dir4::E),
+        Arc::Forward,
+        "pulse_laser",
+    );
     player.heat_max = 6;
     player.heat = 0;
-    player.queue = vec!["pulse_laser".into(), "pulse_laser".into(), "pulse_laser".into()];
-    let dummy = common::dummy_2d("d", Faction::Enemy, Pos::new(2, 0), 99, Facing::Bow(Dir4::W));
+    player.queue = vec![
+        "pulse_laser".into(),
+        "pulse_laser".into(),
+        "pulse_laser".into(),
+    ];
+    let dummy = common::dummy_2d(
+        "d",
+        Faction::Enemy,
+        Pos::new(2, 0),
+        99,
+        Facing::Bow(Dir4::W),
+    );
     let mut b = common::board_2d(vec![player, dummy]);
-    let content = OneWeapon { id: "pulse_laser".into(), action: pulse };
+    let content = OneWeapon {
+        id: "pulse_laser".into(),
+        action: pulse,
+    };
 
     broadside_engine::resolve::fire_player_queue("p", &mut b, &content);
 
     let p = b.cells.iter().flatten().find(|s| s.id == "p").unwrap();
-    assert!(p.heat >= p.heat_max, "3 × heat-2 alpha reaches heat_max ({} >= {})", p.heat, p.heat_max);
-    assert!(p.locked_out, "#73: a 3-laser alpha (+6) locks out instantly");
+    assert!(
+        p.heat >= p.heat_max,
+        "3 × heat-2 alpha reaches heat_max ({} >= {})",
+        p.heat,
+        p.heat_max
+    );
+    assert!(
+        p.locked_out,
+        "#73: a 3-laser alpha (+6) locks out instantly"
+    );
 }

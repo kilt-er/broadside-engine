@@ -72,7 +72,10 @@ impl std::fmt::Display for AssetError {
             AssetError::Design(e) => write!(f, "ship-asset design load: {e}"),
             AssetError::Mesh(e) => write!(f, "ship-asset mesh load: {e}"),
             AssetError::UnknownExtension => {
-                write!(f, "ship-asset: unrecognized file extension (expected .json / .glb / .gltf)")
+                write!(
+                    f,
+                    "ship-asset: unrecognized file extension (expected .json / .glb / .gltf)"
+                )
             }
         }
     }
@@ -120,7 +123,10 @@ pub fn load_bytes(kind: ShipAssetKind, bytes: &[u8]) -> Result<ShipGeometry, Ass
         ShipAssetKind::CadMesh => {
             let ship = mesh_import::load_glb(bytes).map_err(AssetError::Mesh)?;
             let colors = ship.vertex_colors();
-            Ok(ShipGeometry { mesh: ship.mesh, colors })
+            Ok(ShipGeometry {
+                mesh: ship.mesh,
+                colors,
+            })
         }
     }
 }
@@ -144,7 +150,10 @@ pub fn load_path(path: impl AsRef<Path>) -> Result<ShipGeometry, AssetError> {
                 .map_err(|e| AssetError::Mesh(mesh_import::ImportError::Gltf(e.into())))?;
             let ship = mesh_import::load_glb(&bytes).map_err(AssetError::Mesh)?;
             let colors = ship.vertex_colors();
-            Ok(ShipGeometry { mesh: ship.mesh, colors })
+            Ok(ShipGeometry {
+                mesh: ship.mesh,
+                colors,
+            })
         }
     }
 }
@@ -236,11 +245,26 @@ mod tests {
 
     #[test]
     fn extension_dispatch_is_case_insensitive() {
-        assert_eq!(kind_from_extension(Path::new("a/b/ship.json")), Some(ShipAssetKind::LoftDesign));
-        assert_eq!(kind_from_extension(Path::new("ship.JSON")), Some(ShipAssetKind::LoftDesign));
-        assert_eq!(kind_from_extension(Path::new("ship.glb")), Some(ShipAssetKind::CadMesh));
-        assert_eq!(kind_from_extension(Path::new("ship.GLB")), Some(ShipAssetKind::CadMesh));
-        assert_eq!(kind_from_extension(Path::new("ship.gltf")), Some(ShipAssetKind::CadMesh));
+        assert_eq!(
+            kind_from_extension(Path::new("a/b/ship.json")),
+            Some(ShipAssetKind::LoftDesign)
+        );
+        assert_eq!(
+            kind_from_extension(Path::new("ship.JSON")),
+            Some(ShipAssetKind::LoftDesign)
+        );
+        assert_eq!(
+            kind_from_extension(Path::new("ship.glb")),
+            Some(ShipAssetKind::CadMesh)
+        );
+        assert_eq!(
+            kind_from_extension(Path::new("ship.GLB")),
+            Some(ShipAssetKind::CadMesh)
+        );
+        assert_eq!(
+            kind_from_extension(Path::new("ship.gltf")),
+            Some(ShipAssetKind::CadMesh)
+        );
         assert_eq!(kind_from_extension(Path::new("ship.png")), None);
         assert_eq!(kind_from_extension(Path::new("noext")), None);
     }

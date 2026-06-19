@@ -171,7 +171,7 @@ pub fn player_facing15(facing: crate::grid::Facing, column: usize) -> Facing15 {
         Facing::Bow(Dir4::W) => Fan::Left,
         Facing::Bow(Dir4::S) => Fan::Forward, // no backward facing; shouldn't occur
         Facing::Broadside(Axis::NorthSouth) => Fan::Forward, // hull aligned with the lane
-        Facing::Broadside(Axis::EastWest) => Fan::Right,     // turned across the lane
+        Facing::Broadside(Axis::EastWest) => Fan::Right, // turned across the lane
     };
     Facing15::new(fan, column)
 }
@@ -262,7 +262,10 @@ mod tests {
 
     #[test]
     fn facing_slug_is_zero_padded_indexed() {
-        assert_eq!(facing_slug("aegis", Facing15::new(Fan::Left, 0)), "aegis_f00");
+        assert_eq!(
+            facing_slug("aegis", Facing15::new(Fan::Left, 0)),
+            "aegis_f00"
+        );
         assert_eq!(
             facing_slug("aegis", Facing15::new(Fan::Forward, SHIP_CENTER)),
             "aegis_f07"

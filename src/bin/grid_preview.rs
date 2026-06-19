@@ -45,7 +45,9 @@ use winit::window::{Window, WindowId};
 
 use broadside_engine::atlas;
 use broadside_engine::background::{visible_layers, ParallaxParams};
-use broadside_engine::gfx::{DrawCommand, Gfx, PolygonInstance, SpriteInstance, VIRTUAL_H, VIRTUAL_W};
+use broadside_engine::gfx::{
+    DrawCommand, Gfx, PolygonInstance, SpriteInstance, VIRTUAL_H, VIRTUAL_W,
+};
 use broadside_engine::grid::{Axis, Dir4, Facing, Pos, COLS, ROWS};
 use broadside_engine::projector::{grid_cell_quad, CellQuad, ProjectorConfig};
 
@@ -170,9 +172,18 @@ fn demo_board() -> (Vec<MockShip>, Vec<MockThreat>) {
     // Threats: the two cells flanking the player (so the "dodge" read is obvious)
     // plus a lethal one directly ahead.
     let threats = vec![
-        MockThreat { pos: Pos::new(1, ROWS - 1), lethal: false },
-        MockThreat { pos: Pos::new(3, ROWS - 1), lethal: false },
-        MockThreat { pos: Pos::new(2, ROWS - 2), lethal: true },
+        MockThreat {
+            pos: Pos::new(1, ROWS - 1),
+            lethal: false,
+        },
+        MockThreat {
+            pos: Pos::new(3, ROWS - 1),
+            lethal: false,
+        },
+        MockThreat {
+            pos: Pos::new(2, ROWS - 2),
+            lethal: true,
+        },
     ];
     (ships, threats)
 }
@@ -277,7 +288,11 @@ fn push_grid(out: &mut Vec<DrawCommand>, cfg: &ProjectorConfig) {
 fn threat_draw_commands(out: &mut Vec<DrawCommand>, threats: &[MockThreat], cfg: &ProjectorConfig) {
     for t in threats {
         let q = grid_cell_quad(t.pos, cfg);
-        let color = if t.lethal { THREAT_FILL_LETHAL } else { THREAT_FILL };
+        let color = if t.lethal {
+            THREAT_FILL_LETHAL
+        } else {
+            THREAT_FILL
+        };
         fill_quad(out, q.corners, color);
     }
 }

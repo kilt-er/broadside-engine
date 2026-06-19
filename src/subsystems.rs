@@ -75,20 +75,28 @@ pub struct Installations {
 
 impl Installations {
     pub fn new() -> Self {
-        Self { by_ship: HashMap::new() }
+        Self {
+            by_ship: HashMap::new(),
+        }
     }
 
     /// Install `subsystem_id` on the ship with the given id. Order within
     /// the vec doesn't matter for the current three subsystems; future
     /// stacking-with-priority rules would extend this.
     pub fn install(&mut self, ship_id: impl Into<String>, subsystem_id: impl Into<SubsystemId>) {
-        self.by_ship.entry(ship_id.into()).or_default().push(subsystem_id.into());
+        self.by_ship
+            .entry(ship_id.into())
+            .or_default()
+            .push(subsystem_id.into());
     }
 
     /// Slice of installed subsystem ids for the named ship. Empty if the
     /// ship has none.
     pub fn for_ship(&self, ship_id: &str) -> &[SubsystemId] {
-        self.by_ship.get(ship_id).map(|v| v.as_slice()).unwrap_or(&[])
+        self.by_ship
+            .get(ship_id)
+            .map(|v| v.as_slice())
+            .unwrap_or(&[])
     }
 }
 
@@ -209,9 +217,7 @@ pub fn on_turn_end_for(installations: &Installations, board: &mut Board) {
 mod tests {
     use super::*;
     use crate::geometry::default_shield_profile;
-    use crate::types::{
-        EventBus, Faction, LaneEnd, Orientation, Ship,
-    };
+    use crate::types::{EventBus, Faction, LaneEnd, Orientation, Ship};
     use std::collections::HashMap as Map;
 
     fn naked_ship(id: &str, cell: usize, heat: i32, heat_max: i32) -> Ship {
@@ -264,7 +270,10 @@ mod tests {
         reg.install("p", MARKSMAN);
         reg.install("p", HEAT_SINK);
         reg.install("enemy", MARKSMAN);
-        assert_eq!(reg.for_ship("p"), &[MARKSMAN.to_string(), HEAT_SINK.to_string()]);
+        assert_eq!(
+            reg.for_ship("p"),
+            &[MARKSMAN.to_string(), HEAT_SINK.to_string()]
+        );
         assert_eq!(reg.for_ship("enemy"), &[MARKSMAN.to_string()]);
         assert!(reg.for_ship("unknown").is_empty());
     }
@@ -275,9 +284,18 @@ mod tests {
         let attacker = naked_ship("p", 0, 0, 6);
         let board = empty_board(vec![attacker.clone()]);
         let installed = vec![MARKSMAN.to_string()];
-        assert_eq!(damage_modifier_for(&installed, &attacker, Range::Adjacent, &board), 0);
-        assert_eq!(damage_modifier_for(&installed, &attacker, Range::Near, &board), 0);
-        assert_eq!(damage_modifier_for(&installed, &attacker, Range::Far, &board), 1);
+        assert_eq!(
+            damage_modifier_for(&installed, &attacker, Range::Adjacent, &board),
+            0
+        );
+        assert_eq!(
+            damage_modifier_for(&installed, &attacker, Range::Near, &board),
+            0
+        );
+        assert_eq!(
+            damage_modifier_for(&installed, &attacker, Range::Far, &board),
+            1
+        );
     }
 
     #[test]
@@ -286,9 +304,18 @@ mod tests {
         let attacker = naked_ship("p", 0, 0, 6);
         let board = empty_board(vec![attacker.clone()]);
         let installed = vec![POINT_BLANK_DOCTRINE.to_string()];
-        assert_eq!(damage_modifier_for(&installed, &attacker, Range::Adjacent, &board), 2);
-        assert_eq!(damage_modifier_for(&installed, &attacker, Range::Near, &board), 0);
-        assert_eq!(damage_modifier_for(&installed, &attacker, Range::Far, &board), 0);
+        assert_eq!(
+            damage_modifier_for(&installed, &attacker, Range::Adjacent, &board),
+            2
+        );
+        assert_eq!(
+            damage_modifier_for(&installed, &attacker, Range::Near, &board),
+            0
+        );
+        assert_eq!(
+            damage_modifier_for(&installed, &attacker, Range::Far, &board),
+            0
+        );
     }
 
     #[test]
@@ -299,13 +326,21 @@ mod tests {
         // happen — they're maxLevel-bounded — but the runtime layer must
         // sum without surprise).
         let installed = vec![
-            MARKSMAN.to_string(), MARKSMAN.to_string(),
-            POINT_BLANK_DOCTRINE.to_string(), POINT_BLANK_DOCTRINE.to_string(),
+            MARKSMAN.to_string(),
+            MARKSMAN.to_string(),
+            POINT_BLANK_DOCTRINE.to_string(),
+            POINT_BLANK_DOCTRINE.to_string(),
         ];
         // At Adjacent: only PBD applies, 2×2 = 4 bonus.
-        assert_eq!(damage_modifier_for(&installed, &attacker, Range::Adjacent, &board), 4);
+        assert_eq!(
+            damage_modifier_for(&installed, &attacker, Range::Adjacent, &board),
+            4
+        );
         // At Far: only Marksman applies, 2×1 = 2 bonus.
-        assert_eq!(damage_modifier_for(&installed, &attacker, Range::Far, &board), 2);
+        assert_eq!(
+            damage_modifier_for(&installed, &attacker, Range::Far, &board),
+            2
+        );
     }
 
     #[test]
@@ -315,7 +350,11 @@ mod tests {
         let mut reg = Installations::new();
         reg.install("p", HEAT_SINK);
         on_turn_end_for(&reg, &mut board);
-        assert_eq!(board.cells[0].as_ref().unwrap().heat, 3, "heat 4 -> 3 via one HeatSink");
+        assert_eq!(
+            board.cells[0].as_ref().unwrap().heat,
+            3,
+            "heat 4 -> 3 via one HeatSink"
+        );
     }
 
     #[test]
@@ -338,7 +377,11 @@ mod tests {
         let mut reg = Installations::new();
         reg.install("p", HEAT_SINK);
         on_turn_end_for(&reg, &mut board);
-        assert_eq!(board.cells[0].as_ref().unwrap().heat, 0, "must not go negative");
+        assert_eq!(
+            board.cells[0].as_ref().unwrap().heat,
+            0,
+            "must not go negative"
+        );
     }
 
     #[test]
@@ -349,7 +392,11 @@ mod tests {
         reg.install("p", HEAT_SINK);
         reg.install("p", HEAT_SINK);
         on_turn_end_for(&reg, &mut board);
-        assert_eq!(board.cells[0].as_ref().unwrap().heat, 3, "two HeatSinks -> -2 extra");
+        assert_eq!(
+            board.cells[0].as_ref().unwrap().heat,
+            3,
+            "two HeatSinks -> -2 extra"
+        );
     }
 
     #[test]

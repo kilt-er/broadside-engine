@@ -47,10 +47,22 @@ fn naked_ship(id: &str, faction: Faction, cell: usize, hull: i32) -> Ship {
         heat_max: 6,
         locked_out: false,
         shield_profile: ShieldProfile {
-            bow: ShieldFace { armour: 0, charge: 0 },
-            stern: ShieldFace { armour: 0, charge: 0 },
-            port: ShieldFace { armour: 0, charge: 0 },
-            starboard: ShieldFace { armour: 0, charge: 0 },
+            bow: ShieldFace {
+                armour: 0,
+                charge: 0,
+            },
+            stern: ShieldFace {
+                armour: 0,
+                charge: 0,
+            },
+            port: ShieldFace {
+                armour: 0,
+                charge: 0,
+            },
+            starboard: ShieldFace {
+                armour: 0,
+                charge: 0,
+            },
         },
         mounts: vec![Mount {
             id: "m1".into(),
@@ -94,9 +106,17 @@ fn dual_damage_weapon(
         id: "dual".into(),
         name: "Dual Damage".into(),
         archetype: WeaponArchetype::Beam,
-        cost: ActionCost { heat: 0, cooldown_max: 0, advances_turn: true },
+        cost: ActionCost {
+            heat: 0,
+            cooldown_max: 0,
+            advances_turn: true,
+        },
         targeting: Targeting {
-            range_band: vec![broadside_engine::grid::Range::Adjacent, broadside_engine::grid::Range::Near, broadside_engine::grid::Range::Far],
+            range_band: vec![
+                broadside_engine::grid::Range::Adjacent,
+                broadside_engine::grid::Range::Near,
+                broadside_engine::grid::Range::Far,
+            ],
             optimal_range: broadside_engine::grid::Range::Adjacent,
             pattern: TargetingPattern::BEAM,
             band: vec![
@@ -112,8 +132,14 @@ fn dual_damage_weapon(
             hits_all: false,
         },
         effects: vec![
-            Effect::DAMAGE { amount, band_falloff: band_falloff_flags[0] },
-            Effect::DAMAGE { amount, band_falloff: band_falloff_flags[1] },
+            Effect::DAMAGE {
+                amount,
+                band_falloff: band_falloff_flags[0],
+            },
+            Effect::DAMAGE {
+                amount,
+                band_falloff: band_falloff_flags[1],
+            },
         ],
         r#mod: None,
         icon: None,
@@ -125,7 +151,9 @@ fn dual_damage_weapon(
 /// that later upgrades to `apply_effect`.
 struct NoContent;
 impl Content for NoContent {
-    fn action(&self, _id: &str) -> Option<&Action> { None }
+    fn action(&self, _id: &str) -> Option<&Action> {
+        None
+    }
     fn spawn_projectile(&self, _: &str, _: &Ship) -> Projectile {
         panic!("spawn_projectile not used in these tests");
     }
@@ -230,7 +258,10 @@ fn dual_damage_mixed_predicate_order_independent() {
     apply_damage(5, 4, 0, &weapon, &mut board, &NoContent);
 
     let hull = board.cells[5].as_ref().unwrap().hull;
-    assert_eq!(hull, 2, "order of bandFalloff:Some(false) in effects must not matter");
+    assert_eq!(
+        hull, 2,
+        "order of bandFalloff:Some(false) in effects must not matter"
+    );
 }
 
 /// `Some(true)` is NOT the same as `Some(false)`: only `Some(false)`
@@ -250,7 +281,10 @@ fn dual_damage_mixed_none_and_some_true_keeps_falloff_on() {
     apply_damage(5, 4, 0, &weapon, &mut board, &NoContent);
 
     let hull = board.cells[5].as_ref().unwrap().hull;
-    assert_eq!(hull, 6, "Some(true) is the default-on form, not the bypass form");
+    assert_eq!(
+        hull, 6,
+        "Some(true) is the default-on form, not the bypass form"
+    );
 }
 
 /// Boundary check: drive the load-bearing mixed-predicate scenario through

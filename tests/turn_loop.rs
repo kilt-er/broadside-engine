@@ -45,7 +45,12 @@ fn set_cd(b: &mut Board, id: &str, weapon: &str, v: i32) {
 
 /// Read a cooldown entry (0 if absent).
 fn cd(b: &Board, id: &str, weapon: &str) -> i32 {
-    b.cells.iter().flatten().find(|s| s.id == id).and_then(|s| s.cooldowns.get(weapon).copied()).unwrap_or(0)
+    b.cells
+        .iter()
+        .flatten()
+        .find(|s| s.id == id)
+        .and_then(|s| s.cooldowns.get(weapon).copied())
+        .unwrap_or(0)
 }
 
 /// ONE `run_world_phase` ticks EVERY ship's positive cooldowns down by exactly
@@ -57,11 +62,35 @@ fn cd(b: &Board, id: &str, weapon: &str) -> i32 {
 fn one_world_phase_ticks_every_ship_cooldown_by_exactly_one() {
     // Bow-away, mountless ships: nobody can fire, so the phase is pure
     // bookkeeping and the cooldown deltas are unconfounded by combat.
-    let mut player = ship_2d("p", Faction::Player, Pos::new(2, 3), 30, Facing::Bow(Dir4::N), broadside_engine::types::Arc::Forward, "noop");
+    let mut player = ship_2d(
+        "p",
+        Faction::Player,
+        Pos::new(2, 3),
+        30,
+        Facing::Bow(Dir4::N),
+        broadside_engine::types::Arc::Forward,
+        "noop",
+    );
     player.mounts.clear();
-    let mut e1 = ship_2d("e1", Faction::Enemy, Pos::new(0, 0), 30, Facing::Bow(Dir4::N), broadside_engine::types::Arc::Forward, "noop");
+    let mut e1 = ship_2d(
+        "e1",
+        Faction::Enemy,
+        Pos::new(0, 0),
+        30,
+        Facing::Bow(Dir4::N),
+        broadside_engine::types::Arc::Forward,
+        "noop",
+    );
     e1.mounts.clear();
-    let mut e2 = ship_2d("e2", Faction::Enemy, Pos::new(4, 0), 30, Facing::Bow(Dir4::N), broadside_engine::types::Arc::Forward, "noop");
+    let mut e2 = ship_2d(
+        "e2",
+        Faction::Enemy,
+        Pos::new(4, 0),
+        30,
+        Facing::Bow(Dir4::N),
+        broadside_engine::types::Arc::Forward,
+        "noop",
+    );
     e2.mounts.clear();
     let mut board = board_2d(vec![player, e1, e2]);
 
@@ -71,9 +100,21 @@ fn one_world_phase_ticks_every_ship_cooldown_by_exactly_one() {
 
     run_world_phase(&mut board, &Quiet);
 
-    assert_eq!(cd(&board, "p", "w"), 2, "player cooldown 3 -> 2 after exactly one world phase");
-    assert_eq!(cd(&board, "e1", "w"), 1, "enemy1 cooldown 2 -> 1 after exactly one world phase");
-    assert_eq!(cd(&board, "e2", "w"), 0, "enemy2 cooldown 1 -> 0 after exactly one world phase");
+    assert_eq!(
+        cd(&board, "p", "w"),
+        2,
+        "player cooldown 3 -> 2 after exactly one world phase"
+    );
+    assert_eq!(
+        cd(&board, "e1", "w"),
+        1,
+        "enemy1 cooldown 2 -> 1 after exactly one world phase"
+    );
+    assert_eq!(
+        cd(&board, "e2", "w"),
+        0,
+        "enemy2 cooldown 1 -> 0 after exactly one world phase"
+    );
 }
 
 /// A cooldown already at 0 does NOT go negative on a world phase (the tick is
@@ -81,14 +122,26 @@ fn one_world_phase_ticks_every_ship_cooldown_by_exactly_one() {
 /// ready weapon into a negative cooldown.
 #[test]
 fn a_zero_cooldown_does_not_go_negative() {
-    let mut player = ship_2d("p", Faction::Player, Pos::new(2, 3), 30, Facing::Bow(Dir4::N), broadside_engine::types::Arc::Forward, "noop");
+    let mut player = ship_2d(
+        "p",
+        Faction::Player,
+        Pos::new(2, 3),
+        30,
+        Facing::Bow(Dir4::N),
+        broadside_engine::types::Arc::Forward,
+        "noop",
+    );
     player.mounts.clear();
     let mut board = board_2d(vec![player]);
     set_cd(&mut board, "p", "w", 0);
 
     run_world_phase(&mut board, &Quiet);
 
-    assert_eq!(cd(&board, "p", "w"), 0, "a ready (0) cooldown stays 0, never underflows to -1");
+    assert_eq!(
+        cd(&board, "p", "w"),
+        0,
+        "a ready (0) cooldown stays 0, never underflows to -1"
+    );
 }
 
 /// N world phases tick a cooldown down by N (until it floors at 0), then it
@@ -97,7 +150,15 @@ fn a_zero_cooldown_does_not_go_negative() {
 /// chess loop depends on.
 #[test]
 fn cooldown_reaches_zero_after_exactly_n_phases_then_holds() {
-    let mut player = ship_2d("p", Faction::Player, Pos::new(2, 3), 30, Facing::Bow(Dir4::N), broadside_engine::types::Arc::Forward, "noop");
+    let mut player = ship_2d(
+        "p",
+        Faction::Player,
+        Pos::new(2, 3),
+        30,
+        Facing::Bow(Dir4::N),
+        broadside_engine::types::Arc::Forward,
+        "noop",
+    );
     player.mounts.clear();
     let mut board = board_2d(vec![player]);
     set_cd(&mut board, "p", "w", 2);
@@ -105,7 +166,15 @@ fn cooldown_reaches_zero_after_exactly_n_phases_then_holds() {
     run_world_phase(&mut board, &Quiet);
     assert_eq!(cd(&board, "p", "w"), 1, "after 1 phase: 2 -> 1");
     run_world_phase(&mut board, &Quiet);
-    assert_eq!(cd(&board, "p", "w"), 0, "after 2 phases: 1 -> 0 (recharge complete in exactly cd turns)");
+    assert_eq!(
+        cd(&board, "p", "w"),
+        0,
+        "after 2 phases: 1 -> 0 (recharge complete in exactly cd turns)"
+    );
     run_world_phase(&mut board, &Quiet);
-    assert_eq!(cd(&board, "p", "w"), 0, "after 3 phases: holds at 0, does not go negative");
+    assert_eq!(
+        cd(&board, "p", "w"),
+        0,
+        "after 3 phases: holds at 0, does not go negative"
+    );
 }

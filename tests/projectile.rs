@@ -65,10 +65,22 @@ fn target_ship(id: &str, cell: usize, hull: i32, bow: LaneEnd) -> Ship {
         heat_max: 6,
         locked_out: false,
         shield_profile: ShieldProfile {
-            bow: ShieldFace { armour: 2, charge: 0 },
-            stern: ShieldFace { armour: 0, charge: 0 },
-            port: ShieldFace { armour: 1, charge: 0 },
-            starboard: ShieldFace { armour: 1, charge: 0 },
+            bow: ShieldFace {
+                armour: 2,
+                charge: 0,
+            },
+            stern: ShieldFace {
+                armour: 0,
+                charge: 0,
+            },
+            port: ShieldFace {
+                armour: 1,
+                charge: 0,
+            },
+            starboard: ShieldFace {
+                armour: 1,
+                charge: 0,
+            },
         },
         mounts: Vec::new(),
         queue: Vec::new(),
@@ -82,7 +94,14 @@ fn target_ship(id: &str, cell: usize, hull: i32, bow: LaneEnd) -> Ship {
 /// A bare projectile heading `heading` from `cell`, dealing `dmg` raw on
 /// impact (falloff bypassed by the impact path), `speed` cells/round, owned
 /// by `owner`.
-fn projectile(id: &str, cell: usize, heading: LaneEnd, speed: u32, dmg: i32, owner: Faction) -> Projectile {
+fn projectile(
+    id: &str,
+    cell: usize,
+    heading: LaneEnd,
+    speed: u32,
+    dmg: i32,
+    owner: Faction,
+) -> Projectile {
     Projectile {
         id: id.into(),
         kind: "torpedo".into(),
@@ -92,7 +111,10 @@ fn projectile(id: &str, cell: usize, heading: LaneEnd, speed: u32, dmg: i32, own
         heading8: broadside_engine::grid::Dir8::N,
         speed,
         hull: 2,
-        payload: vec![Effect::DAMAGE { amount: dmg, band_falloff: Some(false) }],
+        payload: vec![Effect::DAMAGE {
+            amount: dmg,
+            band_falloff: Some(false),
+        }],
         owner_faction: owner,
     }
 }
@@ -120,7 +142,10 @@ fn projectile_2d(
         heading8,
         speed,
         hull: 2,
-        payload: vec![Effect::DAMAGE { amount: dmg, band_falloff: Some(false) }],
+        payload: vec![Effect::DAMAGE {
+            amount: dmg,
+            band_falloff: Some(false),
+        }],
         owner_faction: owner,
     }
 }
@@ -167,7 +192,10 @@ impl Content for OrdContent {
             heading8,
             speed: 1,
             hull: 2,
-            payload: vec![Effect::DAMAGE { amount: 3, band_falloff: Some(false) }],
+            payload: vec![Effect::DAMAGE {
+                amount: 3,
+                band_falloff: Some(false),
+            }],
             owner_faction: owner.faction,
         }
     }
@@ -192,7 +220,11 @@ impl Content for NoContent {
 #[test]
 fn projectile_advances_one_cell_per_speed_when_lane_is_clear() {
     // Speed-1 torpedo at cell 1 heading Fore on an empty 7-cell lane.
-    let mut b = board(7, vec![None; 7], vec![projectile("t", 1, LaneEnd::Fore, 1, 3, Faction::Player)]);
+    let mut b = board(
+        7,
+        vec![None; 7],
+        vec![projectile("t", 1, LaneEnd::Fore, 1, 3, Faction::Player)],
+    );
     advance_projectile("t", &mut b, &NoContent);
     assert_eq!(b.ordnance.len(), 1, "still in flight over empty cells");
     assert_eq!(b.ordnance[0].cell, 2, "stepped exactly one cell Fore");
@@ -200,14 +232,22 @@ fn projectile_advances_one_cell_per_speed_when_lane_is_clear() {
 
 #[test]
 fn speed_two_projectile_advances_two_cells_in_one_pass() {
-    let mut b = board(7, vec![None; 7], vec![projectile("t", 1, LaneEnd::Fore, 2, 3, Faction::Player)]);
+    let mut b = board(
+        7,
+        vec![None; 7],
+        vec![projectile("t", 1, LaneEnd::Fore, 2, 3, Faction::Player)],
+    );
     advance_projectile("t", &mut b, &NoContent);
     assert_eq!(b.ordnance[0].cell, 3, "speed 2 = two cells per advance");
 }
 
 #[test]
 fn aft_heading_projectile_steps_toward_lower_cells() {
-    let mut b = board(7, vec![None; 7], vec![projectile("t", 5, LaneEnd::Aft, 1, 3, Faction::Enemy)]);
+    let mut b = board(
+        7,
+        vec![None; 7],
+        vec![projectile("t", 5, LaneEnd::Aft, 1, 3, Faction::Enemy)],
+    );
     advance_projectile("t", &mut b, &NoContent);
     assert_eq!(b.ordnance[0].cell, 4, "Aft heading decrements the cell");
 }
@@ -219,15 +259,26 @@ fn aft_heading_projectile_steps_toward_lower_cells() {
 #[test]
 fn projectile_stepping_past_the_fore_end_is_removed() {
     // At the last cell heading Fore: the next step overflows the lane.
-    let mut b = board(7, vec![None; 7], vec![projectile("t", 6, LaneEnd::Fore, 1, 3, Faction::Player)]);
+    let mut b = board(
+        7,
+        vec![None; 7],
+        vec![projectile("t", 6, LaneEnd::Fore, 1, 3, Faction::Player)],
+    );
     advance_projectile("t", &mut b, &NoContent);
-    assert!(b.ordnance.is_empty(), "ran off the fore end and was removed");
+    assert!(
+        b.ordnance.is_empty(),
+        "ran off the fore end and was removed"
+    );
 }
 
 #[test]
 fn projectile_stepping_past_the_aft_end_is_removed() {
     // At cell 0 heading Aft: the next step underflows (checked_sub -> None).
-    let mut b = board(7, vec![None; 7], vec![projectile("t", 0, LaneEnd::Aft, 1, 3, Faction::Enemy)]);
+    let mut b = board(
+        7,
+        vec![None; 7],
+        vec![projectile("t", 0, LaneEnd::Aft, 1, 3, Faction::Enemy)],
+    );
     advance_projectile("t", &mut b, &NoContent);
     assert!(b.ordnance.is_empty(), "ran off the aft end and was removed");
 }
@@ -250,7 +301,10 @@ fn projectile_impacts_enemy_occupant_and_applies_damage() {
 
     assert!(b.ordnance.is_empty(), "projectile consumed on impact");
     assert_eq!(
-        b.cells[2].as_ref().expect("enemy survives 3 dmg of 6 hull").hull,
+        b.cells[2]
+            .as_ref()
+            .expect("enemy survives 3 dmg of 6 hull")
+            .hull,
         3,
         "3 raw payload damage onto the armour-0 stern: 6 - 3 = 3",
     );
@@ -279,7 +333,10 @@ fn impact_on_strong_bow_is_reduced_by_armour() {
 fn projectile_applies_status_payload_on_impact() {
     let enemy = target_ship("e", 2, 6, LaneEnd::Aft);
     let mut proj = projectile("t", 1, LaneEnd::Fore, 1, 0, Faction::Player);
-    proj.payload = vec![Effect::APPLY_STATUS { status: StatusKind::HullBreach, duration: 3 }];
+    proj.payload = vec![Effect::APPLY_STATUS {
+        status: StatusKind::HullBreach,
+        duration: 3,
+    }];
     let mut b = board(
         7,
         vec![None, None, Some(enemy), None, None, None, None],
@@ -291,7 +348,11 @@ fn projectile_applies_status_payload_on_impact() {
     let statuses = &b.cells[2].as_ref().expect("enemy alive").statuses;
     assert_eq!(
         statuses,
-        &vec![Status { kind: StatusKind::HullBreach, duration: 3, face: None }],
+        &vec![Status {
+            kind: StatusKind::HullBreach,
+            duration: 3,
+            face: None
+        }],
         "the APPLY_STATUS payload landed as a HullBreach(3) on the target",
     );
 }
@@ -306,7 +367,10 @@ fn projectile_passes_over_its_own_faction_without_impacting() {
     // Same-faction => no impact; the torpedo keeps flying to cell 2 and
     // remains live.
     let ally = target_ship("ally", 2, 6, LaneEnd::Aft);
-    let ally = Ship { faction: Faction::Player, ..ally };
+    let ally = Ship {
+        faction: Faction::Player,
+        ..ally
+    };
     let mut b = board(
         7,
         vec![None, None, Some(ally), None, None, None, None],
@@ -315,7 +379,10 @@ fn projectile_passes_over_its_own_faction_without_impacting() {
     advance_projectile("t", &mut b, &NoContent);
 
     assert_eq!(b.ordnance.len(), 1, "owner-faction ship is not impacted");
-    assert_eq!(b.ordnance[0].cell, 2, "torpedo flew onto the ally's cell, still live");
+    assert_eq!(
+        b.ordnance[0].cell, 2,
+        "torpedo flew onto the ally's cell, still live"
+    );
     assert_eq!(
         b.cells[2].as_ref().expect("ally untouched").hull,
         6,
@@ -363,9 +430,17 @@ fn launcher_action() -> Action {
         id: "launch_torpedo".into(),
         name: "Launch Torpedo".into(),
         archetype: WeaponArchetype::Ordnance,
-        cost: ActionCost { heat: 1, cooldown_max: 0, advances_turn: true },
+        cost: ActionCost {
+            heat: 1,
+            cooldown_max: 0,
+            advances_turn: true,
+        },
         targeting: Targeting {
-            range_band: vec![broadside_engine::grid::Range::Adjacent, broadside_engine::grid::Range::Near, broadside_engine::grid::Range::Far],
+            range_band: vec![
+                broadside_engine::grid::Range::Adjacent,
+                broadside_engine::grid::Range::Near,
+                broadside_engine::grid::Range::Far,
+            ],
             optimal_range: broadside_engine::grid::Range::Adjacent,
             pattern: TargetingPattern::ORDNANCE,
             band: vec![RangeBand::Close, RangeBand::Mid, RangeBand::Long],
@@ -374,7 +449,9 @@ fn launcher_action() -> Action {
             facing_relative: true,
             hits_all: false,
         },
-        effects: vec![Effect::SPAWN_ORDNANCE { projectile: "torpedo".into() }],
+        effects: vec![Effect::SPAWN_ORDNANCE {
+            projectile: "torpedo".into(),
+        }],
         r#mod: None,
         icon: None,
     }
@@ -395,7 +472,11 @@ fn firing_a_launcher_spawns_a_projectile_on_the_board() {
         p.faction = Faction::Player;
         p.pos = Pos::new(2, 3);
         p.facing = Facing::Bow(Dir4::N);
-        p.mounts = vec![Mount { id: "m1".into(), arc: Arc::Forward, weapon: "launch_torpedo".into() }];
+        p.mounts = vec![Mount {
+            id: "m1".into(),
+            arc: Arc::Forward,
+            weapon: "launch_torpedo".into(),
+        }];
         p.queue = vec!["launch_torpedo".into()];
         p
     };
@@ -410,7 +491,9 @@ fn firing_a_launcher_spawns_a_projectile_on_the_board() {
     cells[pi] = Some(player);
     cells[ei] = Some(enemy);
     let mut b = board(broadside_engine::grid::COLS, cells, vec![]);
-    let content = OrdContent { launcher: launcher_action() };
+    let content = OrdContent {
+        launcher: launcher_action(),
+    };
 
     // Snapshot ordnance count before firing.
     assert_eq!(b.ordnance.len(), 0, "no ordnance before the launch");
@@ -420,7 +503,11 @@ fn firing_a_launcher_spawns_a_projectile_on_the_board() {
     // The spawned torpedo started at the player's cell (2,3) heading N at speed
     // 1; one ordnance-phase advance steps it N to (2,2). So after the round it
     // exists and has moved.
-    assert_eq!(b.ordnance.len(), 1, "the launcher spawned exactly one projectile");
+    assert_eq!(
+        b.ordnance.len(),
+        1,
+        "the launcher spawned exactly one projectile"
+    );
     assert_eq!(b.ordnance[0].kind, "torpedo");
     assert_eq!(b.ordnance[0].owner_faction, Faction::Player);
     assert_eq!(
@@ -452,6 +539,14 @@ fn world_phase_advances_all_live_projectiles() {
     run_world_phase(&mut b, &NoContent);
 
     let pos_of = |id: &str| b.ordnance.iter().find(|p| p.id == id).map(|p| p.pos);
-    assert_eq!(pos_of("a"), Some(Pos::new(2, 0)), "E-heading projectile advanced one cell E");
-    assert_eq!(pos_of("z"), Some(Pos::new(2, 2)), "W-heading projectile advanced one cell W");
+    assert_eq!(
+        pos_of("a"),
+        Some(Pos::new(2, 0)),
+        "E-heading projectile advanced one cell E"
+    );
+    assert_eq!(
+        pos_of("z"),
+        Some(Pos::new(2, 2)),
+        "W-heading projectile advanced one cell W"
+    );
 }

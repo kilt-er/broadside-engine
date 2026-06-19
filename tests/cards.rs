@@ -11,9 +11,7 @@
 //!
 //! Reference: cards.rs:191-250, input.rs:362-411, resolve.rs (Effect::BOARD).
 
-use broadside_engine::cards::{
-    PlayResult, CARD_MASS_BREACH, CARD_MASS_LOCK, CARD_SENSOR_PULSE,
-};
+use broadside_engine::cards::{PlayResult, CARD_MASS_BREACH, CARD_MASS_LOCK, CARD_SENSOR_PULSE};
 use broadside_engine::input::{synthetic_card_action_id, DemoContent};
 use broadside_engine::resolve::{fire_player_queue, Content};
 use broadside_engine::types::{
@@ -40,10 +38,22 @@ fn naked_ship(id: &str, faction: Faction, cell: usize) -> Ship {
         heat_max: 6,
         locked_out: false,
         shield_profile: ShieldProfile {
-            bow: ShieldFace { armour: 0, charge: 0 },
-            stern: ShieldFace { armour: 0, charge: 0 },
-            port: ShieldFace { armour: 0, charge: 0 },
-            starboard: ShieldFace { armour: 0, charge: 0 },
+            bow: ShieldFace {
+                armour: 0,
+                charge: 0,
+            },
+            stern: ShieldFace {
+                armour: 0,
+                charge: 0,
+            },
+            port: ShieldFace {
+                armour: 0,
+                charge: 0,
+            },
+            starboard: ShieldFace {
+                armour: 0,
+                charge: 0,
+            },
         },
         mounts: vec![Mount {
             id: "m1".into(),
@@ -121,13 +131,32 @@ fn mass_lock_applies_target_lock_to_every_enemy_ship() {
     let mut content = DemoContent::default();
     content.field_kits.grant("p", CARD_MASS_LOCK, 1);
 
-    assert_eq!(play_card(&mut board, &mut content, "p", CARD_MASS_LOCK), PlayResult::Played);
+    assert_eq!(
+        play_card(&mut board, &mut content, "p", CARD_MASS_LOCK),
+        PlayResult::Played
+    );
 
-    let locked = |s: &Ship| s.statuses.iter().any(|st| st.kind == StatusKind::TargetLock);
-    assert!(locked(board.cells[2].as_ref().unwrap()), "e1 must be locked");
-    assert!(locked(board.cells[4].as_ref().unwrap()), "e2 must be locked");
-    assert!(!locked(board.cells[6].as_ref().unwrap()), "ally must NOT be locked");
-    assert!(!locked(board.cells[0].as_ref().unwrap()), "source player must NOT lock itself");
+    let locked = |s: &Ship| {
+        s.statuses
+            .iter()
+            .any(|st| st.kind == StatusKind::TargetLock)
+    };
+    assert!(
+        locked(board.cells[2].as_ref().unwrap()),
+        "e1 must be locked"
+    );
+    assert!(
+        locked(board.cells[4].as_ref().unwrap()),
+        "e2 must be locked"
+    );
+    assert!(
+        !locked(board.cells[6].as_ref().unwrap()),
+        "ally must NOT be locked"
+    );
+    assert!(
+        !locked(board.cells[0].as_ref().unwrap()),
+        "source player must NOT lock itself"
+    );
 }
 
 /* =========================================================================
@@ -147,15 +176,24 @@ fn mass_breach_applies_hull_breach_to_every_enemy_ship() {
     let mut content = DemoContent::default();
     content.field_kits.grant("p", CARD_MASS_BREACH, 1);
 
-    assert_eq!(play_card(&mut board, &mut content, "p", CARD_MASS_BREACH), PlayResult::Played);
+    assert_eq!(
+        play_card(&mut board, &mut content, "p", CARD_MASS_BREACH),
+        PlayResult::Played
+    );
 
     let breached = |s: &Ship| {
         s.statuses
             .iter()
             .any(|st| st.kind == StatusKind::HullBreach && st.duration == 3)
     };
-    assert!(breached(board.cells[2].as_ref().unwrap()), "e1 must have HullBreach(3)");
-    assert!(breached(board.cells[4].as_ref().unwrap()), "e2 must have HullBreach(3)");
+    assert!(
+        breached(board.cells[2].as_ref().unwrap()),
+        "e1 must have HullBreach(3)"
+    );
+    assert!(
+        breached(board.cells[4].as_ref().unwrap()),
+        "e2 must have HullBreach(3)"
+    );
     assert!(
         !breached(board.cells[0].as_ref().unwrap()),
         "source player must NOT breach itself",
@@ -179,10 +217,19 @@ fn sensor_pulse_clears_every_enemy_queue() {
     let mut content = DemoContent::default();
     content.field_kits.grant("p", CARD_SENSOR_PULSE, 1);
 
-    assert_eq!(play_card(&mut board, &mut content, "p", CARD_SENSOR_PULSE), PlayResult::Played);
+    assert_eq!(
+        play_card(&mut board, &mut content, "p", CARD_SENSOR_PULSE),
+        PlayResult::Played
+    );
 
-    assert!(board.cells[2].as_ref().unwrap().queue.is_empty(), "e1 queue cleared");
-    assert!(board.cells[4].as_ref().unwrap().queue.is_empty(), "e2 queue cleared");
+    assert!(
+        board.cells[2].as_ref().unwrap().queue.is_empty(),
+        "e1 queue cleared"
+    );
+    assert!(
+        board.cells[4].as_ref().unwrap().queue.is_empty(),
+        "e2 queue cleared"
+    );
     // Player queue: after execute_queue runs the card synthetic, the
     // player's queue is drained by the resolver's normal "clear queue at
     // end of execute_queue" path — every queued action including the
@@ -242,8 +289,14 @@ fn card_charges_decrement_per_play_and_block_when_depleted() {
     let mut content = DemoContent::default();
     content.field_kits.grant("p", CARD_MASS_LOCK, 2);
 
-    assert_eq!(play_card(&mut board, &mut content, "p", CARD_MASS_LOCK), PlayResult::Played);
-    assert_eq!(play_card(&mut board, &mut content, "p", CARD_MASS_LOCK), PlayResult::Played);
+    assert_eq!(
+        play_card(&mut board, &mut content, "p", CARD_MASS_LOCK),
+        PlayResult::Played
+    );
+    assert_eq!(
+        play_card(&mut board, &mut content, "p", CARD_MASS_LOCK),
+        PlayResult::Played
+    );
     // Third play: insufficient charges. PlayResult tells us, and no
     // synthetic was queued (play_card only queues on Played).
     assert_eq!(
@@ -261,7 +314,10 @@ fn card_charges_decrement_per_play_and_block_when_depleted() {
         .iter()
         .filter(|s| s.kind == StatusKind::TargetLock)
         .count();
-    assert_eq!(lock_count, 1, "duplicate plays don't create duplicate status entries");
+    assert_eq!(
+        lock_count, 1,
+        "duplicate plays don't create duplicate status entries"
+    );
 }
 
 /// Playing a card the ship doesn't carry returns NotCarried; no board
@@ -309,7 +365,10 @@ fn enemy_playing_mass_lock_targets_the_player() {
     let mut content = DemoContent::default();
     content.field_kits.grant("e1", CARD_MASS_LOCK, 1);
 
-    assert_eq!(play_card(&mut board, &mut content, "e1", CARD_MASS_LOCK), PlayResult::Played);
+    assert_eq!(
+        play_card(&mut board, &mut content, "e1", CARD_MASS_LOCK),
+        PlayResult::Played
+    );
 
     let p = board.cells[0].as_ref().unwrap();
     assert!(

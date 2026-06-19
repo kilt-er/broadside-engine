@@ -101,10 +101,10 @@ impl AudioState {
             }
         };
         let samples = [
-            load_or_fallback(asset_dir, SLUGS[HIT],        procedural_hit),
-            load_or_fallback(asset_dir, SLUGS[EXPLOSION],  procedural_explosion),
-            load_or_fallback(asset_dir, SLUGS[VENT],       procedural_vent),
-            load_or_fallback(asset_dir, SLUGS[REORIENT],   procedural_reorient),
+            load_or_fallback(asset_dir, SLUGS[HIT], procedural_hit),
+            load_or_fallback(asset_dir, SLUGS[EXPLOSION], procedural_explosion),
+            load_or_fallback(asset_dir, SLUGS[VENT], procedural_vent),
+            load_or_fallback(asset_dir, SLUGS[REORIENT], procedural_reorient),
             load_or_fallback(asset_dir, SLUGS[CHAIN_KILL], procedural_chain_kill),
         ];
         Some(Self { manager, samples })
@@ -127,9 +127,11 @@ impl AudioState {
 pub fn install_on_bus(board: &mut Board, audio: Rc<RefCell<AudioState>>) {
     {
         let a = Rc::clone(&audio);
-        board.bus.on(Hook::OnDamageDealt, move |_ctx: &mut HookContext| {
-            a.borrow_mut().play(HIT);
-        });
+        board
+            .bus
+            .on(Hook::OnDamageDealt, move |_ctx: &mut HookContext| {
+                a.borrow_mut().play(HIT);
+            });
     }
     {
         let a = Rc::clone(&audio);
@@ -145,15 +147,19 @@ pub fn install_on_bus(board: &mut Board, audio: Rc<RefCell<AudioState>>) {
     }
     {
         let a = Rc::clone(&audio);
-        board.bus.on(Hook::OnReorient, move |_ctx: &mut HookContext| {
-            a.borrow_mut().play(REORIENT);
-        });
+        board
+            .bus
+            .on(Hook::OnReorient, move |_ctx: &mut HookContext| {
+                a.borrow_mut().play(REORIENT);
+            });
     }
     {
         let a = Rc::clone(&audio);
-        board.bus.on(Hook::OnChainKill, move |_ctx: &mut HookContext| {
-            a.borrow_mut().play(CHAIN_KILL);
-        });
+        board
+            .bus
+            .on(Hook::OnChainKill, move |_ctx: &mut HookContext| {
+                a.borrow_mut().play(CHAIN_KILL);
+            });
     }
 }
 
@@ -177,7 +183,10 @@ fn load_or_fallback(
             data
         }
         Err(FromFileError::IoError(e)) if e.kind() == std::io::ErrorKind::NotFound => {
-            log::debug!("audio: no asset at {}, using procedural fallback", path.display());
+            log::debug!(
+                "audio: no asset at {}, using procedural fallback",
+                path.display()
+            );
             fallback()
         }
         Err(e) => {
@@ -269,9 +278,13 @@ fn procedural_vent() -> StaticSoundData {
     for i in 0..n {
         let t = i as f32 / n as f32;
         // Attack 30ms, sustain, decay last 200ms.
-        let env = if t < 0.075 { t / 0.075 }
-                  else if t > 0.5 { (1.0 - t) / 0.5 }
-                  else { 1.0 };
+        let env = if t < 0.075 {
+            t / 0.075
+        } else if t > 0.5 {
+            (1.0 - t) / 0.5
+        } else {
+            1.0
+        };
         let noise = (rng.next_f32() - 0.5) * 2.0;
         let sweep = (2.0 * std::f32::consts::PI * 4.0 * t).sin() * 0.3 + 0.7;
         out.push(noise * env * sweep * 0.35);

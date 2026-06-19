@@ -30,6 +30,7 @@
 //! `resolve_round` must not panic. That is the logic-layer guard for the
 //! class of failure the wgpu render path hit — it runs in CI with no GPU.
 
+use broadside_engine::grid::{Dir4, Facing, Pos};
 use broadside_engine::meta::{
     accumulate_into_meta, award_run_salvage, award_run_salvage_with_catalog,
     salvage_for_encounter_win, MetaProgression, SUBSYSTEM_UNLOCK_THRESHOLDS,
@@ -40,11 +41,10 @@ use broadside_engine::runs::{
     generate_campaign, mark_defeated, AdvanceResult, EncounterOutcome,
 };
 use broadside_engine::types::{
-    Action, ActionCost, Arc, Board, EncounterDef, Effect, Faction, LaneEnd, Mount, MovementMode,
+    Action, ActionCost, Arc, Board, Effect, EncounterDef, Faction, LaneEnd, Mount, MovementMode,
     Orientation, Projectile, RangeBand, ReorientTo, Run, Sector, ShieldFace, ShieldProfile, Ship,
     ShipSpawn, Targeting, TargetingPattern, WeaponArchetype,
 };
-use broadside_engine::grid::{Dir4, Facing, Pos};
 use std::collections::HashMap;
 
 /// Shared 2-D invariant-A fixture builders (used by the #25 2-D kill probe; the
@@ -72,10 +72,22 @@ fn player_frigate(cell: usize, hull: i32) -> Ship {
         heat_max: 12,
         locked_out: false,
         shield_profile: ShieldProfile {
-            bow: ShieldFace { armour: 2, charge: 0 },
-            stern: ShieldFace { armour: 0, charge: 0 },
-            port: ShieldFace { armour: 1, charge: 0 },
-            starboard: ShieldFace { armour: 1, charge: 0 },
+            bow: ShieldFace {
+                armour: 2,
+                charge: 0,
+            },
+            stern: ShieldFace {
+                armour: 0,
+                charge: 0,
+            },
+            port: ShieldFace {
+                armour: 1,
+                charge: 0,
+            },
+            starboard: ShieldFace {
+                armour: 1,
+                charge: 0,
+            },
         },
         mounts: vec![Mount {
             id: "m1".into(),
@@ -109,10 +121,22 @@ fn weak_enemy(id: &str, cell: usize, hull: i32) -> Ship {
         heat_max: 6,
         locked_out: false,
         shield_profile: ShieldProfile {
-            bow: ShieldFace { armour: 2, charge: 0 },
-            stern: ShieldFace { armour: 0, charge: 0 },
-            port: ShieldFace { armour: 1, charge: 0 },
-            starboard: ShieldFace { armour: 1, charge: 0 },
+            bow: ShieldFace {
+                armour: 2,
+                charge: 0,
+            },
+            stern: ShieldFace {
+                armour: 0,
+                charge: 0,
+            },
+            port: ShieldFace {
+                armour: 1,
+                charge: 0,
+            },
+            starboard: ShieldFace {
+                armour: 1,
+                charge: 0,
+            },
         },
         mounts: Vec::new(),
         queue: Vec::new(),
@@ -149,9 +173,17 @@ fn siege_beam() -> Action {
         id: "siege_beam".into(),
         name: "Siege Beam".into(),
         archetype: WeaponArchetype::Beam,
-        cost: ActionCost { heat: 1, cooldown_max: 0, advances_turn: true },
+        cost: ActionCost {
+            heat: 1,
+            cooldown_max: 0,
+            advances_turn: true,
+        },
         targeting: Targeting {
-            range_band: vec![broadside_engine::grid::Range::Adjacent, broadside_engine::grid::Range::Near, broadside_engine::grid::Range::Far],
+            range_band: vec![
+                broadside_engine::grid::Range::Adjacent,
+                broadside_engine::grid::Range::Near,
+                broadside_engine::grid::Range::Far,
+            ],
             optimal_range: broadside_engine::grid::Range::Adjacent,
             pattern: TargetingPattern::BEAM,
             band: vec![RangeBand::PointBlank, RangeBand::Close, RangeBand::Mid],
@@ -160,7 +192,10 @@ fn siege_beam() -> Action {
             facing_relative: true,
             hits_all: false,
         },
-        effects: vec![Effect::DAMAGE { amount: 6, band_falloff: None }],
+        effects: vec![Effect::DAMAGE {
+            amount: 6,
+            band_falloff: None,
+        }],
         r#mod: None,
         icon: None,
     }
@@ -174,9 +209,17 @@ fn flip_facing() -> Action {
         id: "flip".into(),
         name: "Flip".into(),
         archetype: WeaponArchetype::Movement,
-        cost: ActionCost { heat: 0, cooldown_max: 0, advances_turn: true },
+        cost: ActionCost {
+            heat: 0,
+            cooldown_max: 0,
+            advances_turn: true,
+        },
         targeting: Targeting {
-            range_band: vec![broadside_engine::grid::Range::Adjacent, broadside_engine::grid::Range::Near, broadside_engine::grid::Range::Far],
+            range_band: vec![
+                broadside_engine::grid::Range::Adjacent,
+                broadside_engine::grid::Range::Near,
+                broadside_engine::grid::Range::Far,
+            ],
             optimal_range: broadside_engine::grid::Range::Adjacent,
             pattern: TargetingPattern::SELF,
             band: vec![RangeBand::PointBlank],
@@ -185,7 +228,9 @@ fn flip_facing() -> Action {
             facing_relative: false,
             hits_all: false,
         },
-        effects: vec![Effect::REORIENT { to: ReorientTo::Flip }],
+        effects: vec![Effect::REORIENT {
+            to: ReorientTo::Flip,
+        }],
         r#mod: None,
         icon: None,
     }
@@ -198,9 +243,17 @@ fn step_forward() -> Action {
         id: "step".into(),
         name: "Step".into(),
         archetype: WeaponArchetype::Movement,
-        cost: ActionCost { heat: 0, cooldown_max: 0, advances_turn: true },
+        cost: ActionCost {
+            heat: 0,
+            cooldown_max: 0,
+            advances_turn: true,
+        },
         targeting: Targeting {
-            range_band: vec![broadside_engine::grid::Range::Adjacent, broadside_engine::grid::Range::Near, broadside_engine::grid::Range::Far],
+            range_band: vec![
+                broadside_engine::grid::Range::Adjacent,
+                broadside_engine::grid::Range::Near,
+                broadside_engine::grid::Range::Far,
+            ],
             optimal_range: broadside_engine::grid::Range::Adjacent,
             pattern: TargetingPattern::SELF,
             band: vec![RangeBand::PointBlank],
@@ -275,14 +328,27 @@ fn spawn(class_id: &str, pos: Pos, hull: i32) -> ShipSpawn {
 /// the builder's skip path is exercised by real data.
 fn build_ship(spawn: &ShipSpawn) -> Option<Ship> {
     match spawn.class_id.as_str() {
-        "target" => Some(weak_enemy(&format!("{}@{}", spawn.class_id, spawn.cell), spawn.cell, 3)),
-        "brute" => Some(armed_enemy(&format!("{}@{}", spawn.class_id, spawn.cell), spawn.cell, 20)),
+        "target" => Some(weak_enemy(
+            &format!("{}@{}", spawn.class_id, spawn.cell),
+            spawn.cell,
+            3,
+        )),
+        "brute" => Some(armed_enemy(
+            &format!("{}@{}", spawn.class_id, spawn.cell),
+            spawn.cell,
+            20,
+        )),
         _ => None,
     }
 }
 
 fn encounter(id: &str, spawns: Vec<ShipSpawn>, is_boss: bool) -> EncounterDef {
-    EncounterDef { id: id.into(), enemy_ships: spawns, hazards: Vec::new(), is_boss }
+    EncounterDef {
+        id: id.into(),
+        enemy_ships: spawns,
+        hazards: Vec::new(),
+        is_boss,
+    }
 }
 
 /// Materialize a capital-boss spawn (class_id = the capital's display name)
@@ -316,7 +382,11 @@ fn two_sector_campaign() -> Vec<Sector> {
             id: "s1".into(),
             name: "Citadel".into(),
             patrol_tier: 2,
-            encounters: vec![encounter("s1boss", vec![spawn("target", Pos::new(2, 0), 3)], true)],
+            encounters: vec![encounter(
+                "s1boss",
+                vec![spawn("target", Pos::new(2, 0), 3)],
+                true,
+            )],
         },
     ]
 }
@@ -423,7 +493,12 @@ fn queue_player_combat_action(board: &mut Board) {
             // Wrong column but already row-adjacent to the enemy's rank → strafe
             // laterally to line up its column. (Only strafe once close: see the
             // close-first branch below.)
-            if epos.col < ppos.col { SYNTHETIC_MOVE_LEFT } else { SYNTHETIC_MOVE_RIGHT }.to_string()
+            if epos.col < ppos.col {
+                SYNTHETIC_MOVE_LEFT
+            } else {
+                SYNTHETIC_MOVE_RIGHT
+            }
+            .to_string()
         } else if epos.row < ppos.row {
             // Enemy ahead (lower row) and out of band — close N. This runs BEFORE
             // a far-column strafe so the player drives up onto the enemy's rank
@@ -436,7 +511,12 @@ fn queue_player_combat_action(board: &mut Board) {
             SYNTHETIC_MOVE_UP.to_string()
         } else if epos.col != ppos.col {
             // Same row as the enemy, wrong column → strafe to line up.
-            if epos.col < ppos.col { SYNTHETIC_MOVE_LEFT } else { SYNTHETIC_MOVE_RIGHT }.to_string()
+            if epos.col < ppos.col {
+                SYNTHETIC_MOVE_LEFT
+            } else {
+                SYNTHETIC_MOVE_RIGHT
+            }
+            .to_string()
         } else {
             // Same column, enemy BEHIND (higher row) — face it. (Defensive: the
             // spawn layout keeps enemies in the back rows, so this is unreached.)
@@ -471,9 +551,25 @@ fn player_fires_and_kills_one_enemy_in_2d_ends_the_encounter() {
     // hull-3 enemy. Drive resolve_round re-arming the shot; the encounter resolves
     // Won within a couple of rounds. This is the literal "2D campaign-terminating
     // kill works" proof (#41).
-    let player = common::ship_2d("p", Faction::Player, Pos::new(0, 0), 30, Facing::Bow(Dir4::E), Arc::Forward, "siege_beam");
+    let player = common::ship_2d(
+        "p",
+        Faction::Player,
+        Pos::new(0, 0),
+        30,
+        Facing::Bow(Dir4::E),
+        Arc::Forward,
+        "siege_beam",
+    );
     // Weak naked enemy, bow West (weak stern toward the incoming East shot).
-    let mut enemy = common::ship_2d("e", Faction::Enemy, Pos::new(2, 0), 3, Facing::Bow(Dir4::W), Arc::Forward, "siege_beam");
+    let mut enemy = common::ship_2d(
+        "e",
+        Faction::Enemy,
+        Pos::new(2, 0),
+        3,
+        Facing::Bow(Dir4::W),
+        Arc::Forward,
+        "siege_beam",
+    );
     enemy.shield_profile = common::naked_shields();
     let mut board = common::board_2d(vec![player, enemy]);
     let content = LoopContent::new();
@@ -483,7 +579,11 @@ fn player_fires_and_kills_one_enemy_in_2d_ends_the_encounter() {
     while outcome == EncounterOutcome::InProgress && rounds < 8 {
         // Re-arm the player's siege_beam each round (the bin re-arms each turn),
         // finding it by id wherever it sits.
-        if let Some(slot) = board.cells.iter().position(|c| c.as_ref().map(|s| s.id == "p").unwrap_or(false)) {
+        if let Some(slot) = board
+            .cells
+            .iter()
+            .position(|c| c.as_ref().map(|s| s.id == "p").unwrap_or(false))
+        {
             if let Some(p) = board.cells[slot].as_mut() {
                 p.queue = vec!["siege_beam".into()];
             }
@@ -499,11 +599,19 @@ fn player_fires_and_kills_one_enemy_in_2d_ends_the_encounter() {
         "#41: a 2D-aimed player fires + kills the enemy end-to-end → encounter Won (got {outcome:?} after {rounds} rounds)",
     );
     assert!(
-        !board.cells.iter().flatten().any(|s| s.faction == Faction::Enemy),
+        !board
+            .cells
+            .iter()
+            .flatten()
+            .any(|s| s.faction == Faction::Enemy),
         "the enemy is destroyed",
     );
     assert!(
-        board.cells.iter().flatten().any(|s| s.faction == Faction::Player),
+        board
+            .cells
+            .iter()
+            .flatten()
+            .any(|s| s.faction == Faction::Player),
         "the player survives the kill",
     );
 }
@@ -556,7 +664,10 @@ fn full_campaign_played_to_victory_sets_victorious() {
         advances.push(advance_after_win(&mut run, &sectors));
     }
 
-    assert!(run.victorious, "a fully-played-through campaign sets victorious");
+    assert!(
+        run.victorious,
+        "a fully-played-through campaign sets victorious"
+    );
     assert!(!run.defeated, "a won run is not also defeated");
     assert_eq!(
         advances,
@@ -633,7 +744,10 @@ fn winning_an_encounter_accrues_salvage_into_the_run() {
 
     let mut board = build_encounter_board(&enc, run.player.clone(), build_ship);
     let result = fight_to_completion(&mut board, &content, true, 48);
-    assert!(matches!(result, FightResult::Won { .. }), "player clears the haul — got {result:?}");
+    assert!(
+        matches!(result, FightResult::Won { .. }),
+        "player clears the haul — got {result:?}"
+    );
 
     // The bin awards salvage off the encounter's spawn list once the
     // board is Won. Three tier-1 kills → 3 salvage.
@@ -742,7 +856,10 @@ fn capital_boss_win_accrues_tier_scaled_salvage_into_the_run() {
     };
     assert_eq!(award_at(1), 2, "tier 1 → salvage_p1");
     assert_eq!(award_at(7), 7, "tier 7 → salvage_p7");
-    assert!(award_at(1) < award_at(4) && award_at(4) < award_at(7), "salvage rises with tier");
+    assert!(
+        award_at(1) < award_at(4) && award_at(4) < award_at(7),
+        "salvage rises with tier"
+    );
 }
 
 #[test]
@@ -750,7 +867,10 @@ fn run_salvage_crossing_threshold_unlocks_subsystem_in_meta() {
     // The first unlock threshold is rear_gunner @ 10 salvage. Bank a run
     // worth exactly that and confirm the rollover unlocks it.
     let (first_id, first_threshold) = SUBSYSTEM_UNLOCK_THRESHOLDS[0];
-    assert_eq!(first_id, "rear_gunner", "test pins the first-tier unlock id");
+    assert_eq!(
+        first_id, "rear_gunner",
+        "test pins the first-tier unlock id"
+    );
 
     let mut meta = MetaProgression::default();
     assert!(
@@ -763,8 +883,15 @@ fn run_salvage_crossing_threshold_unlocks_subsystem_in_meta() {
 
     let newly = accumulate_into_meta(&mut meta, &run);
 
-    assert_eq!(newly, vec![first_id.to_string()], "crossing the threshold reports the unlock");
-    assert_eq!(meta.total_salvage_earned, first_threshold, "salvage rolled into the meta total");
+    assert_eq!(
+        newly,
+        vec![first_id.to_string()],
+        "crossing the threshold reports the unlock"
+    );
+    assert_eq!(
+        meta.total_salvage_earned, first_threshold,
+        "salvage rolled into the meta total"
+    );
     assert!(
         meta.unlocked_subsystems.contains(&first_id.to_string()),
         "the unlocked subsystem persists in meta",
@@ -803,7 +930,11 @@ fn build_board_and_first_resolve_round_does_not_panic() {
         "board cell vector is the fixed 5×4 grid (len CELLS)",
     );
     assert!(
-        board.cells.iter().flatten().any(|s| s.faction == Faction::Player),
+        board
+            .cells
+            .iter()
+            .flatten()
+            .any(|s| s.faction == Faction::Player),
         "player ship still on the board after one round",
     );
 }
@@ -950,9 +1081,15 @@ fn generated_spawn_pool_campaign_plays_through_to_victory() {
         advance_after_win(&mut run, &sectors);
     }
 
-    assert!(run.victorious, "a fully-played generated campaign reaches Victorious");
+    assert!(
+        run.victorious,
+        "a fully-played generated campaign reaches Victorious"
+    );
     assert!(!run.defeated, "a won generated run is not also defeated");
-    assert_eq!(bosses_beaten, 2, "both capital bosses (The Dasher, The Impaler) were beaten");
+    assert_eq!(
+        bosses_beaten, 2,
+        "both capital bosses (The Dasher, The Impaler) were beaten"
+    );
     // ENCOUNTERS_PER_SECTOR (2) pool encounters + 1 boss in each of the two
     // combat sectors = 6; Staging contributes none.
     assert_eq!(

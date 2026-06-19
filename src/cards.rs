@@ -82,7 +82,10 @@ impl FieldKit {
                 return;
             }
         }
-        self.cards.push(CardCharge { card_id: id, charges });
+        self.cards.push(CardCharge {
+            card_id: id,
+            charges,
+        });
     }
 
     /// Find an inventory entry by id.
@@ -104,7 +107,9 @@ pub struct FieldKitRegistry {
 
 impl FieldKitRegistry {
     pub fn new() -> Self {
-        Self { by_ship: HashMap::new() }
+        Self {
+            by_ship: HashMap::new(),
+        }
     }
 
     /// Convenience: grant a card to a ship; creates the FieldKit if absent.
@@ -133,7 +138,9 @@ pub struct CardCatalog {
 
 impl CardCatalog {
     pub fn new() -> Self {
-        Self { by_id: HashMap::new() }
+        Self {
+            by_id: HashMap::new(),
+        }
     }
 
     pub fn insert(&mut self, card: Card) {
@@ -154,18 +161,26 @@ pub const CARD_MASS_BREACH: &str = "mass_breach";
 pub const CARD_SENSOR_PULSE: &str = "sensor_pulse";
 
 /// Catalog ids of the three placeholder cards used by the demo.
-pub const PLACEHOLDER_CARD_IDS: &[&str] = &[
-    CARD_MASS_LOCK,
-    CARD_MASS_BREACH,
-    CARD_SENSOR_PULSE,
-];
+pub const PLACEHOLDER_CARD_IDS: &[&str] = &[CARD_MASS_LOCK, CARD_MASS_BREACH, CARD_SENSOR_PULSE];
 
 /// Build the three placeholder cards. Cost = 1 charge per play.
 pub fn placeholder_catalog() -> CardCatalog {
     let mut cat = CardCatalog::new();
-    cat.insert(Card { id: CARD_MASS_LOCK.into(),    name: "Mass Lock".into(),    cost: 1 });
-    cat.insert(Card { id: CARD_MASS_BREACH.into(),  name: "Mass Breach".into(),  cost: 1 });
-    cat.insert(Card { id: CARD_SENSOR_PULSE.into(), name: "Sensor Pulse".into(), cost: 1 });
+    cat.insert(Card {
+        id: CARD_MASS_LOCK.into(),
+        name: "Mass Lock".into(),
+        cost: 1,
+    });
+    cat.insert(Card {
+        id: CARD_MASS_BREACH.into(),
+        name: "Mass Breach".into(),
+        cost: 1,
+    });
+    cat.insert(Card {
+        id: CARD_SENSOR_PULSE.into(),
+        name: "Sensor Pulse".into(),
+        cost: 1,
+    });
     cat
 }
 
@@ -209,7 +224,9 @@ pub fn apply_card_effect(note: &str, source_cell: usize, board: &mut Board) {
         // matters if the player doesn't follow up.
         CARD_MASS_LOCK => {
             for cell in 0..board.cells.len() {
-                let Some(s) = board.cells[cell].as_mut() else { continue };
+                let Some(s) = board.cells[cell].as_mut() else {
+                    continue;
+                };
                 if s.faction != target_faction {
                     continue;
                 }
@@ -222,7 +239,9 @@ pub fn apply_card_effect(note: &str, source_cell: usize, board: &mut Board) {
         // the analysis HTML's status semantics.
         CARD_MASS_BREACH => {
             for cell in 0..board.cells.len() {
-                let Some(s) = board.cells[cell].as_mut() else { continue };
+                let Some(s) = board.cells[cell].as_mut() else {
+                    continue;
+                };
                 if s.faction != target_faction {
                     continue;
                 }
@@ -236,7 +255,9 @@ pub fn apply_card_effect(note: &str, source_cell: usize, board: &mut Board) {
         // queues, so this is one-turn relief, not a permanent silence.
         CARD_SENSOR_PULSE => {
             for cell in 0..board.cells.len() {
-                let Some(s) = board.cells[cell].as_mut() else { continue };
+                let Some(s) = board.cells[cell].as_mut() else {
+                    continue;
+                };
                 if s.faction != target_faction {
                     continue;
                 }
@@ -253,7 +274,11 @@ fn add_or_extend(ship: &mut crate::types::Ship, kind: StatusKind, duration: i32)
     if let Some(existing) = ship.statuses.iter_mut().find(|s| s.kind == kind) {
         existing.duration = existing.duration.max(duration);
     } else {
-        ship.statuses.push(crate::types::Status { kind, duration, face: None });
+        ship.statuses.push(crate::types::Status {
+            kind,
+            duration,
+            face: None,
+        });
     }
 }
 
@@ -311,9 +336,7 @@ pub fn try_play_card(
 mod tests {
     use super::*;
     use crate::geometry::default_shield_profile;
-    use crate::types::{
-        EventBus, LaneEnd, Orientation, Ship,
-    };
+    use crate::types::{EventBus, LaneEnd, Orientation, Ship};
     use std::collections::HashMap as Map;
 
     fn make_ship(id: &str, faction: Faction, cell: usize) -> Ship {
@@ -452,14 +475,18 @@ mod tests {
         for cell in [1, 4] {
             let s = board.cells[cell].as_ref().unwrap();
             assert!(
-                s.statuses.iter().any(|st| st.kind == StatusKind::TargetLock),
+                s.statuses
+                    .iter()
+                    .any(|st| st.kind == StatusKind::TargetLock),
                 "enemy at cell {cell} should be target-locked",
             );
         }
         // Player is NOT.
         let p = board.cells[0].as_ref().unwrap();
         assert!(
-            p.statuses.iter().all(|st| st.kind != StatusKind::TargetLock),
+            p.statuses
+                .iter()
+                .all(|st| st.kind != StatusKind::TargetLock),
             "player must NOT be locked by their own card",
         );
     }
@@ -471,7 +498,10 @@ mod tests {
         let mut board = empty_board(vec![player, scout]);
         apply_card_effect(CARD_MASS_BREACH, 0, &mut board);
         let s = board.cells[1].as_ref().unwrap();
-        let breach = s.statuses.iter().find(|st| st.kind == StatusKind::HullBreach);
+        let breach = s
+            .statuses
+            .iter()
+            .find(|st| st.kind == StatusKind::HullBreach);
         assert!(breach.is_some(), "scout should be breached");
         assert_eq!(breach.unwrap().duration, 3);
     }
@@ -513,12 +543,16 @@ mod tests {
         apply_card_effect(CARD_MASS_BREACH, 1, &mut board); // source = enemy
         let p = board.cells[0].as_ref().unwrap();
         assert!(
-            p.statuses.iter().any(|st| st.kind == StatusKind::HullBreach),
+            p.statuses
+                .iter()
+                .any(|st| st.kind == StatusKind::HullBreach),
             "player should be breached by enemy-played mass_breach",
         );
         let s = board.cells[1].as_ref().unwrap();
         assert!(
-            s.statuses.iter().all(|st| st.kind != StatusKind::HullBreach),
+            s.statuses
+                .iter()
+                .all(|st| st.kind != StatusKind::HullBreach),
             "enemy who played the card must NOT breach themselves",
         );
     }
