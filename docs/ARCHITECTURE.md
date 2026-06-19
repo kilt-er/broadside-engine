@@ -26,21 +26,53 @@ hazard list, the global `patrol` tier, and an `EventBus`. (HTML Part I.)
 
 ---
 
-## The four-phase round
+## The turn (chess model) and its four phases
 
-`resolveRound(board, content)` runs every turn. The same execution path serves player,
-enemy, and ordnance — that is the engine's first principle.
+> **Canonical spec:** [`docs/design/CORE_GAMEPLAY_LOOP.md`](design/CORE_GAMEPLAY_LOOP.md).
+> If anything here disagrees with it, that doc wins.
 
-1. **Player phase.** The player's queued actions fire bottom → top through
-   `executeQueue`.
-2. **Ordnance step.** Every live `Projectile` advances by its `speed` and resolves any
-   impact through `advanceProjectile`. Telegraphed order — the player sees the path
-   before committing.
-3. **Enemy phase.** Enemies act in a *visible* initiative order (lane order today,
-   explicit initiative later). For each enemy: AI fills the queue (`decideEnemyAction`,
-   stubbed), then the same `executeQueue` runs.
-4. **End of turn.** Cooldowns tick down, heat dissipates by 1, lockout clears if heat
-   has fallen below `heatMax`, statuses tick and decay, `onTurnEnd` fires on the bus.
+Broadside is **turn-based, like chess. There is no real-time clock.** A turn happens when
+the player takes exactly **one** action. The four player turn-actions, **each of which
+costs a turn:**
+
+1. **Move** one cell.
+2. **Queue** one ability (loads one ability into the player's queue; the shot fires later).
+3. **Dequeue-all / fire** (`CommitTurn`, Space) — fire the whole queue in order against the
+   updating board.
+4. **Wait** (`W`) — pass.
+
+The instant the player takes any one of those, **every enemy also takes one action** (its
+own independently-decided move / queue / fire / wait, respecting its own cooldowns) and
+**every cooldown — player and all enemies — ticks down 1.** Enemies **queue before they
+fire**: an enemy cannot fire on the turn it first decides; it telegraphs one turn, then
+fires the next (the #67 telegraph-one-turn-ahead contract). The **one exception** is the
+field-kit cards (slots 5/6/7, `PlayCard`): they are **free** — they apply their effect but
+cost no turn, tick no cooldown, and give enemies no action.
+
+> **NOTE — a real-time loop was built and reverted.** #124 built a per-enemy real-time
+> clock; #126 reverted it and rebuilt the turn-based model above. Do not re-introduce a
+> timer. Some `resolve.rs` source comments (`run_world_phase`, `tick_enemy`, `tick_world`)
+> still narrate the reverted real-time bin — treat that prose as historical.
+
+**Internally, one turn runs four phases.** `resolve_round(board, content)` is the **headless
+/ test** entry point; the **live bin** calls `fire_player_queue` (only on Space) plus
+`run_world_phase` (phases 2-4) once per turn-action — the same phases, just split so each
+player input can drive them. The same execution path serves player, enemy, and ordnance —
+that is the engine's first principle.
+
+1. **Player phase** (`fire_player_queue`, on `CommitTurn` only). The player's queued
+   actions fire head → tail through the arc/heat/cooldown gate.
+2. **Ordnance step** (`advance_ordnance`). Every live `Projectile` advances by its `speed`
+   and resolves any impact (`advance_projectile_2d`). Telegraphed — the player sees the
+   path before it lands.
+3. **Enemy phase** (`tick_enemy` per enemy, in `enemy_initiative` order). **Fire-then-
+   decide** (#67): each enemy first *fires* the action it telegraphed last turn, then
+   *decides + telegraphs* its next action without firing it. That telegraph is the readable
+   shot-coming-next-turn the design wants. `paint_threats` keeps `board.threats` in sync.
+4. **End of turn** (`end_of_turn`). Cooldowns tick down 1, heat dissipates by 1, lockout
+   clears if heat fell below `heatMax`, **per-face shields regenerate** (under-fire-pause —
+   a face shot this turn does not regen; #103/#104), statuses tick and decay, `onTurnEnd`
+   fires on the bus.
 
 The interleave is what makes ordnance positional: the player commits to a torpedo on
 turn N, the projectile then moves on turn N+1, N+2, … and either is shot down, dodged,
@@ -48,14 +80,18 @@ or eats hull. This is the slot Shogun Showdown's instant-hit model could never f
 (HTML Part I.)
 
 ```
-resolveRound
-  ├─ executeQueue(player, ...)
-  ├─ for p in board.ordnance: advanceProjectile(p, ...)
-  ├─ for e in enemyInitiative(board):
-  │     if not skipsTurn(e):
-  │         decideEnemyAction(e, ...)   // AI, currently stubbed
-  │         executeQueue(e, ...)
-  └─ endOfTurn(board, ...)
+// one player turn-action (move / queue / dequeue-fire / wait):
+fire_player_queue(player, ...)   // CommitTurn (Space) only
+run_world_phase(board, content)
+  ├─ advance_ordnance: for p in board.ordnance: advance_projectile_2d(p, ...)
+  ├─ for e in live_enemy_ids(board):       // enemy_initiative order
+  │     tick_enemy(e, ...)
+  │       ├─ if not skips_turn(e): fire_player_queue(e, ...)   // fire last turn's telegraph
+  │       └─ decide_enemy_action(e, ...)                       // queue next, un-fired
+  ├─ paint_threats(board, content)
+  └─ end_of_turn(board, content)   // cooldowns/heat/shields/statuses tick
+
+// field-kit card (5/6/7): apply_instant_action only — NO run_world_phase (free).
 ```
 
 ---
@@ -114,32 +150,50 @@ The arc gate is what makes orientation a turn-by-turn decision. (HTML Part III, 
 
 ## The damage pipeline
 
-`applyDamage(target, raw, atkCell, weapon, board)` runs every hit through the same five
-ordered steps. Every numeric modifier in the game plugs into this list at a fixed slot;
-new content cannot reorder it.
+The live 2-D path is **`apply_damage_2d(target, raw, atkPos, weapon, board, content)`**
+(`resolve.rs:1431`). Every hit runs through the same five ordered steps; every numeric
+modifier plugs into a fixed slot and new content cannot reorder it. **All math is
+INTEGER** since #104 — no float anywhere in the damage path (Bruce ruling).
 
-1. **Band falloff.** `bandFalloff(raw, actualBand, optimalBand)` reduces damage based on
-   how far the actual band sits from the weapon's optimal. Tunable factor table —
-   currently `[1, 0.66, 0.5, 0.33, 0.2]` indexed by band distance. Effects with
-   `bandFalloff: false` skip this step (impact damage from collisions, fixed-payload
-   ordnance, etc.).
-2. **Subsystem modifiers.** `applyModifiers(dmg, target, band, board)` — currently a
-   stub. Subsystems like Marksman or Point-Blank Doctrine add bonuses here. *Additive*,
-   so target-lock doubling lands on top.
-3. **Target-lock doubling.** If the target carries `targetLock` status, `dmg *= 2` and
-   the status is consumed. The curse analog. (HTML Part VII.)
-4. **Directional shield.** Compute the incoming direction
-   (`directionTo(target.cell, atkCell)`), look up the hull zone that faces it
-   (`facingZone`), and run damage through that zone's `ShieldFace` via `absorbShield`.
-   A held `charge` negates the hit entirely and is consumed; otherwise the zone's fixed
-   `armour` is subtracted. Strong bow soaks; weak stern bleeds.
-5. **Hull.** What survives reaches `target.hull`. If hull drops to zero, `destroy`
-   removes the ship from the board and fires `onLethal`; ships with `ReactorBreach`
-   splash 2 damage to adjacent cells before dying.
+1. **Band falloff (integer, absolute).** `geometry2d::band_falloff(raw, actualBand)`
+   applies a flat integer **penalty** per band: `Adjacent -0, Near -1, Far -2`, then floors
+   the result at **≥ 1** (a legal in-band shot never whiffs to 0 from falloff alone) and
+   caps it at `raw`. This is an *absolute* falloff curve keyed on the band the shot actually
+   crosses — closer = more damage — **not** the old distance-from-optimal model. (`optimal_band`
+   is now ignored; #44/#95.) Effects with `band_falloff: false` skip this step (collision
+   impact, fixed-payload ordnance). A weapon's *allowed* bands — the over-extension deadzone,
+   e.g. a Far weapon barred from Adjacent — are enforced earlier by `in_band` at targeting,
+   not here.
+2. **Subsystem modifiers.** `apply_modifiers(dmg, atkPos, band, board, content)` routes the
+   bonus through `Content::damage_modifier` (the **attacker's** subsystems — Marksman keys
+   Far, Point-Blank Doctrine keys Adjacent; #34/#67). *Additive*, so target-lock doubling
+   lands on top.
+3. **Target-lock doubling.** If the target carries `TargetLock` status, `dmg *= 2` and the
+   status is consumed. The curse analog. (HTML Part VII.)
+4. **Directional shield (per-face depleting pool).** Compute `incoming_from =
+   direction_to(target, attacker)` (it points back at the gun; may be cardinal for a direct
+   shot or diagonal for splash/ordnance), look up the `HullZone` that faces it via
+   `geometry2d::facing_zone(target.facing, incoming_from)`, and run the damage through that
+   zone's `ShieldFace` via **`geometry2d::absorb_shield`**. Since #103 the face holds a
+   **depleting shield POOL**: `charge` is the live pool, `armour` is repurposed as its
+   **capacity**. The pool soaks the hit down to 0; **overflow** reaches hull. (Flat `armour`
+   subtraction is gone.) The pool regenerates over turns in `end_of_turn` — see the
+   under-fire-pause note in the turn loop above. Strong bow pool soaks chip fire; the soft
+   stern cracks fast.
+5. **Hull.** What survives reaches `target.hull`. If hull drops to zero, `destroy` removes
+   the ship and fires `onLethal`; ships with `ReactorBreach` splash 2 damage to adjacent
+   cells before dying.
 
-This is the most important table in the engine: every balance lever — armour values,
-falloff factor, target-lock ratio, subsystem stacking — is one slot in this pipeline.
-(TS source: `resolve.ts:139`; HTML Part XIII implementation order #3.)
+This is the most important table in the engine: every balance lever — shield capacities,
+the per-band falloff penalties, `SHIELD_REGEN_PER_TURN`, the target-lock ratio, subsystem
+stacking — is one slot in this pipeline. The pipeline **order** and the
+`direction_to → incoming_from` wiring are guarded by reviewer V5 (`a61db55`).
+
+> **Drift — legacy 1-D `apply_damage`.** The original `apply_damage` (`resolve.rs:1332`,
+> using `geometry::band_falloff`/`facing_zone` over the 1-D lane) still exists but is the
+> pre-2-D path; the live combat path is `apply_damage_2d`. The 1-D `band_falloff` was a
+> distance-from-optimal float curve; the 2-D one is the integer absolute penalty above.
+> (TS source for the original five-step order: `resolve.ts:139`; HTML Part XIII impl #3.)
 
 ---
 

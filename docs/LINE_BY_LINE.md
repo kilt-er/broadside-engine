@@ -5466,14 +5466,18 @@ Rust plumbing.
 content. Flow: bin translates winit keycode → `Key`; `key_to_intent` → `Intent`;
 `intent_to_action_id` → action id pushed to the queue; the resolver fires it.
 
-### `enum Key` / `enum Intent` (src/input.rs:47, 80)
+### `enum Key` / `enum Intent` (src/input.rs:47, 92)
 
 `Key` is one variant per advertised binding (`Left`/`Right`/`Tab`/`V`, **`Q`/`E`** rotation
-(#75), `D1`-`D3` mounts, `D5`-`D7` cards, `R`/`Space`/`Enter`) — the bin maps `winit::KeyCode`
-onto it (`KeyQ → Key::Q`, `KeyE → Key::E`) so the lib never imports winit. `Intent` is what the
-player meant: `QueueAction(id)` (a real mount weapon), the synthetics
+(#75), **`W`** wait (#126), `D1`-`D3` mounts, `D5`-`D7` cards, `R`/`Space`/`Enter`) — the bin
+maps `winit::KeyCode` onto it (`KeyQ → Key::Q`, `KeyW → Key::W`) so the lib never imports
+winit. `Intent` is what the player meant: `QueueAction(id)` (a real mount weapon), the
+synthetics
 (`MoveLeft`/`MoveRight`/`MoveUp`/`MoveDown`/`ReorientFlip`/`Vent`/**`RotateLeft`/`RotateRight`**),
-`PlayCard(id)`, `CommitTurn`, `Restart`.
+**`Wait`** (#126 — pass the turn), `PlayCard(id)`, `CommitTurn`, `Restart`. `key_to_intent`
+maps `W → Intent::Wait` (src/input.rs:171); `intent_to_action_id` returns `None` for `Wait`
+(like `CommitTurn`/`Restart`/`PlayCard` — it is not a queued action, the bin handles it as a
+bare `run_world_phase`).
 
 ### `fn key_to_intent(key, ship, content) -> Option<Intent>` (src/input.rs:127)
 
@@ -5590,38 +5594,68 @@ interactive front end the Rust port grew. Initial scene mirrors `render-example.
 the engine what each key means, apply the `Intent`, run the `DemoState` machine, drive
 tweens, compose + render. All combat/movement/AI math is in the library.
 
-### `fn keycode_to_key(code) -> Option<Key>` (src/bin/broadside.rs:75)
+### `fn keycode_to_key(code) -> Option<Key>` (src/bin/broadside.rs:82)
 
 Translate `winit::KeyCode` → engine `input::Key`. Lives in the bin so **the library never
-imports winit**. One arm per advertised binding; everything else `None`. Pinned by
-`keycode_translation_covers_every_binding` (src/bin/broadside.rs:861).
+imports winit**. One arm per advertised binding (including `KeyW → Key::W`, the #126 Wait);
+everything else `None`. Pinned by `keycode_translation_covers_every_binding` (in the bin's
+test module). **Renderer-only keys bypass this map** — `Esc`, `[`/`]` (ship-loft res), `;`/`'`
+(scene res), **`G`** (grid-pitch step, #139), and **`T`** (stretch-mode toggle, #140) are
+handled directly in `window_event` *before* the key→intent lookup, so they stay
+renderer-owned and never become an `Intent`. See the render-mode entries under
+[`gfx.rs`](#srcgfxrs) and [`grid.rs`](#srcgridrs).
 
-### `fn apply_intent(intent, board, content, initial_board) -> bool` (src/bin/broadside.rs:112)
+### `fn apply_intent(intent, board, content, initial_board) -> bool` (src/bin/broadside.rs:145)
 
-**Intent:** Apply one `Intent` under **Shogun-Showdown turn semantics** — every input
-advances time (`run_world_phase`). Returns `true` if the visible state changed.
+**Canonical spec:** [`docs/design/CORE_GAMEPLAY_LOOP.md`](design/CORE_GAMEPLAY_LOOP.md) —
+the turn-based (chess) model. This function is the live implementation of it.
+**Intent:** Apply one `Intent` under the **turn-based (chess) model** — each of the four
+player turn-actions advances the world exactly **one turn** (`run_world_phase`), while the
+field-kit cards (5/6/7) are **free**. Returns `true` if the visible state changed.
 
-Line 119-122: `Restart` short-circuits (never advances time; rebuilds from
-`initial_board()`). Line 127-135: **turn-start clear of `board.fire_events` (#59)** — the
+Line 152-155: `Restart` short-circuits (never advances time; rebuilds from
+`initial_board()`). Line 165: **turn-start clear of `board.fire_events` (#59)** — the
 resolver clears it at the top of `resolve_round`, but the bin drives combat directly via
 `apply_instant_action`/`fire_player_queue`/`run_world_phase` and never calls
 `resolve_round`, so without this the in-game beams would ACCUMULATE across every turn
 forever. Safe to drop here because `CombatVfx` has already latched the previous turn's
 events into its own fading copy ([`vfx.rs`](#srcvfxrs)) — the fade keeps playing on the
 renderer's side. This is the in-game counterpart to the `resolve_round` clear. Then every
-other intent needs the player; gone → only Restart legal. The `match`: **instant**
-moves/reorient/vent apply via `apply_instant_action` then `run_world_phase`; **PlayCard**
-validates via `try_play_card`, runs the synthetic `__card_<id>` instantly; **QueueAction**
-pushes to `player.queue` (not fired here); **CommitTurn** fires the queue via
-`fire_player_queue`.
+other intent needs the player; gone → only Restart legal.
 
-**Drift — SS turn model.** Moves/cards are now *instant* (not queued); only `QueueAction`
-weapon ids sit in the queue. `move_intent_advances_ship_instantly` (src/bin/broadside.rs:898)
-pins that the queue stays empty after a move. **Cross-references:** calls
+**The `match` — exactly which inputs cost a turn (#126):**
+
+- **ReorientFlip (Tab, line 184-202)** — a 180° about-face (two `RotateRight` quarter-turns,
+  N↔S / E↔W); `apply_instant_action` then **`run_world_phase`** (one turn).
+- **MoveLeft/Right/Up/Down, RotateLeft/Right (Q/E), Vent (line 215-236)** — the instant
+  synthetic action via `apply_instant_action`, then **`run_world_phase`** (one turn).
+- **PlayCard (5/6/7, line 245-261)** — **FREE.** Validate + decrement charges via
+  `try_play_card`, run the synthetic `__card_<id>` instantly, and **do NOT** call
+  `run_world_phase`. The single exception to "every action is a turn": a card costs no turn,
+  ticks no cooldowns, gives enemies no action.
+- **QueueAction (1/2/3, line 269-279)** — push the weapon id to the player's queue, then
+  **`run_world_phase`** (one turn). Loading a weapon costs a turn (this reverts #97's "queue
+  is free"); the shot fires on a later `CommitTurn`. A failed queue (no such mount) advances
+  nothing.
+- **Wait (W, line 284-287)** — **`run_world_phase`** alone. Pass the turn: the player acts
+  not, the world advances one turn (ordnance steps, every enemy takes its one action,
+  cooldowns/shield-regen tick).
+- **CommitTurn (Space, line 296-299)** — `fire_player_queue` (fire the lined-up shots),
+  THEN **`run_world_phase`** (one turn). An empty queue still spends the turn (identical to
+  Wait when nothing is queued). Crucially, Space fires **only the player's queue** — the
+  enemies act because the *turn advanced*, not because the player "committed."
+
+**Drift — the turn-based revert (#124 → #126).** A real-time per-enemy clock was built in
+#124 and **reverted in #126**. The model is now turn-based: moves/cards are *instant* (not
+queued), only `QueueAction` weapon ids sit in the queue, and `Wait` (W) is a first-class
+turn. `move_intent_advances_ship_instantly` (src/bin/broadside.rs:2398, approx) pins that
+the queue stays empty after a move. **Cross-references:** calls
 [`resolve.rs`](#srcresolvers) `apply_instant_action`/`fire_player_queue`/`run_world_phase`
-and [`input`](#srcinputrs). **Worked examples:** `queue_action_intent_appends_to_player_queue`
-(885), `commit_turn_runs_resolve_round` (917), `play_card_intent_fires_instantly_and_decrements_charges`
-(972), `play_card_intent_rejected_when_card_absent` (1019).
+and [`input`](#srcinputrs). **Worked examples** (test module at the bottom of the bin):
+`commit_turn_runs_resolve_round` (src/bin/broadside.rs:2433),
+`play_card_intent_fires_instantly_and_decrements_charges`,
+`play_card_intent_rejected_when_card_absent`. *(The exact worked-example line numbers drift
+as the test module grows; anchor on the test names.)*
 
 ### Initial scene + ships (src/bin/broadside.rs:221–323)
 
