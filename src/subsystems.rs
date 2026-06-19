@@ -4,9 +4,9 @@
 //! module is the **behavioral** layer that turns "this ship has Marksman
 //! installed" into actual damage / heat / status modifications.
 //!
-//! ## Why a content-side registry, not the EventBus
+//! ## Why a content-side registry, not the `EventBus`
 //!
-//! The EventBus exists and has subsystem-shaped hooks
+//! The `EventBus` exists and has subsystem-shaped hooks
 //! ([`crate::types::Hook::OnDamageDealt`], [`crate::types::Hook::OnTurnEnd`],
 //! …). The natural-looking design would be: each subsystem registers an
 //! `FnMut(&mut HookContext)` closure on the bus at install time, and
@@ -43,12 +43,12 @@
 //! [`Installations`] is `HashMap<ship_id -> Vec<SubsystemId>>`. The Content
 //! impl owns one. Look up a ship's installed subsystems by id; the order
 //! within the Vec doesn't matter (subsystem effects are commutative —
-//! Marksman + Point-Blank Doctrine commute, HeatSink + HeatSink would
+//! Marksman + Point-Blank Doctrine commute, `HeatSink` + `HeatSink` would
 //! stack additively if they could collide).
 //!
 //! ## Catalog-vs-runtime split
 //!
-//! [`SubsystemId`] is the catalog id ("marksman", "point_blank_doctrine"
+//! [`SubsystemId`] is the catalog id ("marksman", "`point_blank_doctrine`"
 //! …). The runtime behavior is keyed by the same id in
 //! [`damage_modifier_for`] / [`on_turn_end_for`] — these are the two
 //! dispatch points. If a future subsystem needs a hook we haven't wired
@@ -95,8 +95,7 @@ impl Installations {
     pub fn for_ship(&self, ship_id: &str) -> &[SubsystemId] {
         self.by_ship
             .get(ship_id)
-            .map(|v| v.as_slice())
-            .unwrap_or(&[])
+            .map_or(&[], std::vec::Vec::as_slice)
     }
 }
 
@@ -123,14 +122,14 @@ pub const MARKSMAN: &str = "marksman";
 /// band). Synergizes with bow-on stance.
 pub const POINT_BLANK_DOCTRINE: &str = "point_blank_doctrine";
 
-/// HeatSink's end-of-turn effect: subtract one extra heat from the
+/// `HeatSink`'s end-of-turn effect: subtract one extra heat from the
 /// owning ship beyond the base passive dissipation. Stacks with itself
-/// (two HeatSinks => `-2` extra). Stacks with the base `-1` dissipation
-/// applied by [`crate::resolve::end_of_turn`] (so a ship with HeatSink
+/// (two `HeatSinks` => `-2` extra). Stacks with the base `-1` dissipation
+/// applied by [`crate::resolve::end_of_turn`] (so a ship with `HeatSink`
 /// dissipates 2 heat per turn instead of 1).
 pub const HEAT_SINK: &str = "heat_sink";
 
-/// Canonical list of subsystem ids the placeholder DemoContent knows
+/// Canonical list of subsystem ids the placeholder `DemoContent` knows
 /// about. Adding a new subsystem: add the const above, the entry here,
 /// and an arm in both dispatch fns.
 pub const SUBSYSTEM_IDS: &[&str] = &[MARKSMAN, POINT_BLANK_DOCTRINE, HEAT_SINK];
@@ -175,13 +174,13 @@ pub fn damage_modifier_for(
 }
 
 /// End-of-turn pass. Walks every ship's installed subsystems and applies
-/// the OnTurnEnd-shaped effects (today: HeatSink). Called by
+/// the OnTurnEnd-shaped effects (today: `HeatSink`). Called by
 /// [`crate::resolve::end_of_turn`] AFTER the base passive heat dissipation
 /// and BEFORE the `OnTurnEnd` event-bus emit — so subscribers see the
 /// already-cooled heat, matching the TS pipeline.
 ///
-/// Currently the only OnTurnEnd subsystem is HeatSink. Future variants
-/// (e.g. an EliteHeatSink that subtracts 2) would extend the dispatch
+/// Currently the only `OnTurnEnd` subsystem is `HeatSink`. Future variants
+/// (e.g. an `EliteHeatSink` that subtracts 2) would extend the dispatch
 /// match inside the per-ship loop below.
 pub fn on_turn_end_for(installations: &Installations, board: &mut Board) {
     for cell in 0..board.cells.len() {
@@ -191,7 +190,7 @@ pub fn on_turn_end_for(installations: &Installations, board: &mut Board) {
         let extra_dissipation: i32 = installations
             .for_ship(&ship_id)
             .iter()
-            .map(|id| if id == HEAT_SINK { 1 } else { 0 })
+            .map(|id| i32::from(id == HEAT_SINK))
             .sum();
         if extra_dissipation == 0 {
             continue;

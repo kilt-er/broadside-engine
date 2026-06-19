@@ -84,26 +84,26 @@ use crate::grid::{Axis, Dir4, Dir8, Facing, Pos, Range};
 /// Transitional serde default for an additive [`Pos`] field: the grid origin
 /// (`col 0, row 0`). Removed at CONTRACT when the 1-D `cell` fields are deleted
 /// and the 2-D fields become required.
-fn default_pos() -> Pos {
+const fn default_pos() -> Pos {
     Pos::new(0, 0)
 }
 
 /// Transitional serde default for an additive [`Dir8`] field: `N` (away from
 /// the player; see [`crate::grid`] frame). Removed at CONTRACT.
-fn default_dir8() -> Dir8 {
+const fn default_dir8() -> Dir8 {
     Dir8::N
 }
 
 /// Transitional serde default for an additive [`Facing`] field: bow pointed at
 /// the player (`Bow(Dir4::S)`), the most common spawn stance. Removed at
 /// CONTRACT when `facing` becomes required.
-fn default_facing() -> Facing {
+const fn default_facing() -> Facing {
     Facing::Bow(Dir4::S)
 }
 
 /// Transitional serde default for an additive single-[`Range`] field
 /// (`optimal_range`): `Adjacent`. Removed at CONTRACT.
-fn default_range() -> Range {
+const fn default_range() -> Range {
     Range::Adjacent
 }
 
@@ -136,7 +136,7 @@ fn default_range() -> Range {
 /// position — don't assume one orientation value yields "toward player" for all
 /// spawns. This helper is the faithful per-orientation map + the
 /// [`default_facing`] fallback; native 2-D spawn facing is C4's to author.
-pub fn facing_from_orientation(o: Orientation) -> Facing {
+pub const fn facing_from_orientation(o: Orientation) -> Facing {
     match o {
         Orientation::BowOn { bow: LaneEnd::Fore } => Facing::Bow(Dir4::S),
         Orientation::BowOn { bow: LaneEnd::Aft } => Facing::Bow(Dir4::N),
@@ -217,6 +217,7 @@ pub enum Faction {
 /// `executeQueue` and start of the ordnance phase). Two or more destroys in
 /// the same window triggers `onChainKill`. Per the team coordination
 /// decision, reset semantics live in the resolver, not here.
+#[derive(Debug)]
 pub struct Board {
     /// Lane length. The TS uses 5, 7, or 9.
     pub size: usize,
@@ -327,7 +328,7 @@ pub struct FireEvent {
 
 /// A cell-resident hazard: mine, drone, or debris field. Applies `payload`
 /// to anything that enters the cell.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Hazard {
     pub id: String,
     pub kind: HazardKind,
@@ -367,7 +368,7 @@ pub enum HazardKind {
 
 /// What a telegraphed [`Threat`] will do to its cell next turn — drives the
 /// renderer's threat-fill styling (blueprint: "red fill under a ship = positional
-/// threat ... by ThreatKind + lethal flash"). Mirrors the effect families the
+/// threat ... by `ThreatKind` + lethal flash"). Mirrors the effect families the
 /// AI can queue; `Damage` is the common case and carries the projected amount
 /// so the renderer can flag a lethal hit.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -387,7 +388,7 @@ pub enum ThreatKind {
 }
 
 /// One telegraphed threatened cell for the next turn (see the module section
-/// comment above [`ThreatKind`]). Produced by the resolver's R8 ThreatMap pass
+/// comment above [`ThreatKind`]). Produced by the resolver's R8 `ThreatMap` pass
 /// from the enemy's queued action; consumed by the renderer (D6) and the
 /// dodge-whiff emission (R7).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -408,7 +409,7 @@ pub struct Threat {
 
 /// Player and enemy ships share this shape; `faction` distinguishes them.
 /// Mirrors the TS `Ship` interface verbatim.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Ship {
     pub id: String,
     pub faction: Faction,
@@ -479,7 +480,7 @@ pub struct ShieldProfile {
 
 impl ShieldProfile {
     /// Borrow a face by zone. Mirrors TS `shieldProfile[zone]`.
-    pub fn face(&self, zone: HullZone) -> &ShieldFace {
+    pub const fn face(&self, zone: HullZone) -> &ShieldFace {
         match zone {
             HullZone::Bow => &self.bow,
             HullZone::Stern => &self.stern,
@@ -490,7 +491,7 @@ impl ShieldProfile {
 
     /// Mutably borrow a face by zone. Used by `absorbShield` to decrement
     /// `charge` after a hit.
-    pub fn face_mut(&mut self, zone: HullZone) -> &mut ShieldFace {
+    pub const fn face_mut(&mut self, zone: HullZone) -> &mut ShieldFace {
         match zone {
             HullZone::Bow => &mut self.bow,
             HullZone::Stern => &mut self.stern,
@@ -501,7 +502,7 @@ impl ShieldProfile {
 
     /// Mutable refs to all four faces (any order) — for the per-turn shield-regen
     /// pass (#103 Model A) in `crate::resolve::end_of_turn`.
-    pub fn faces_mut(&mut self) -> [&mut ShieldFace; 4] {
+    pub const fn faces_mut(&mut self) -> [&mut ShieldFace; 4] {
         [
             &mut self.bow,
             &mut self.stern,
@@ -559,7 +560,7 @@ pub enum StatusKind {
     ShieldsUp,
 }
 
-/// Ship traits. Spelled in TitleCase in the TS string union, so we keep that
+/// Ship traits. Spelled in `TitleCase` in the TS string union, so we keep that
 /// on the wire and let Rust variant names match 1:1.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Trait {
@@ -581,7 +582,7 @@ pub enum Trait {
 
 /// The universal Action — weapon, system, maneuver, or ordnance launcher.
 /// Lookups happen by id through the catalog.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Action {
     pub id: String,
     pub name: String,
@@ -628,12 +629,12 @@ pub struct Targeting {
     #[serde(rename = "optimalRange", default = "default_range")]
     pub optimal_range: Range,
     /// Mount must bear this arc given the firing ship's orientation. `None`
-    /// = arc-less action (SELF, DEPLOYED_CELL).
+    /// = arc-less action (SELF, `DEPLOYED_CELL`).
     #[serde(rename = "requiresArc")]
     pub requires_arc: Option<Arc>,
     #[serde(rename = "facingRelative")]
     pub facing_relative: bool,
-    /// SPINAL_LINE pierce vs first-only.
+    /// `SPINAL_LINE` pierce vs first-only.
     #[serde(rename = "hitsAll")]
     pub hits_all: bool,
 }
@@ -676,7 +677,7 @@ pub enum TargetingPattern {
 /// Variant names preserved in `SCREAMING_SNAKE_CASE` to match the TS literals
 /// — keeps `grep Effect::DAMAGE` working uniformly across both ports.
 #[allow(non_camel_case_types)]
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind")]
 pub enum Effect {
     DAMAGE {
@@ -824,7 +825,7 @@ pub enum MovementMode {
 
 /// A torpedo or missile travelling the lane. Spawned by `SPAWN_ORDNANCE`
 /// effects; advanced by the ordnance phase; can be shot down by point-defense.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Projectile {
     pub id: String,
     pub kind: String,
@@ -857,7 +858,7 @@ pub struct Projectile {
 /// The runtime `Subsystem` type — which binds this definition to a Rust
 /// callback — lives next to the content slice; for now the resolver and the
 /// catalog only need the data side.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SubsystemDef {
     pub id: String,
     pub name: String,
@@ -936,9 +937,10 @@ pub enum Hook {
 /// restored, and the next `emit` call goes through the live bus.
 ///
 /// This matches the TS engine: in `resolve.ts:337-344`, `destroy` runs
-/// `applyDamage` for the ReactorBreach splash via a **direct function
+/// `applyDamage` for the `ReactorBreach` splash via a **direct function
 /// call**, then emits `onLethal` — no callback ever re-emits through the
 /// bus from inside another emit.
+#[derive(Debug)]
 pub struct HookContext<'b> {
     pub board: &'b mut Board,
     pub source_cell: Option<usize>,
@@ -1016,6 +1018,18 @@ pub struct EventBus {
     subscribers: [Vec<HookSlot>; HOOK_COUNT],
 }
 
+// Manual `Debug`: the subscribers are boxed `FnMut` closures, which don't
+// implement `Debug`. Report the per-hook subscriber counts instead of the
+// closures — enough to inspect the bus's wiring without an unprintable field.
+impl std::fmt::Debug for EventBus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let counts: [usize; HOOK_COUNT] = std::array::from_fn(|i| self.subscribers[i].len());
+        f.debug_struct("EventBus")
+            .field("subscriber_counts", &counts)
+            .finish()
+    }
+}
+
 /// One registered hook callback slot. The `Option` lets [`EventBus::emit`]
 /// move a callback out for the duration of its call (leaving `None`) and
 /// restore it afterward — see [`EventBus`]'s re-entrancy contract. Aliased so
@@ -1044,7 +1058,7 @@ impl EventBus {
     /// Order is the declaration order of the [`Hook`] enum. The exhaustive
     /// match here is the actual drift guard — adding a `Hook` variant without
     /// extending this function fails to compile.
-    fn slot(hook: Hook) -> usize {
+    const fn slot(hook: Hook) -> usize {
         match hook {
             Hook::Passive => 0,
             Hook::OnChainKill => 1,
@@ -1113,7 +1127,7 @@ impl EventBus {
 /// Mirrors the TS `Catalog` interface field for field. Fields that the TS
 /// types as `unknown[]` are mapped to `Vec<serde_json::Value>` so they parse
 /// today and can be tightened to real types later without breaking consumers.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Catalog {
     pub meta: CatalogMeta,
     pub actions: Vec<Action>,
@@ -1137,7 +1151,7 @@ pub struct Catalog {
     pub commendations: Vec<serde_json::Value>,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CatalogMeta {
     pub schema: String,
     pub lane: Vec<u32>,
@@ -1356,7 +1370,7 @@ pub struct ClassDef {
 /// A campaign-map node: one named sector with a list of encounters the player
 /// works through. `patrol_tier` mirrors [`Board::patrol`] (u8 because the
 /// design caps it at 7).
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Sector {
     pub id: String,
     pub name: String,
@@ -1366,7 +1380,7 @@ pub struct Sector {
 
 /// A single battle within a [`Sector`] — spawn templates for the enemy
 /// fleet and the hazards already on the board when the encounter opens.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EncounterDef {
     pub id: String,
     pub enemy_ships: Vec<ShipSpawn>,
@@ -1422,10 +1436,10 @@ pub struct ShipSpawn {
 /// (both `false` while the run is live).
 ///
 /// **`Run` is no longer `Copy`/`Eq`/`Hash`** — `player: Ship` brings
-/// heap-allocated fields (Vec, HashMap) that don't satisfy those bounds.
+/// heap-allocated fields (Vec, `HashMap`) that don't satisfy those bounds.
 /// Pre-#79 code passing `Run` by value still works (Clone is derived);
 /// callers that want sharing should hold `&Run` or clone explicitly.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Run {
     pub current_sector_idx: usize,
     pub salvage: u32,
@@ -1442,10 +1456,10 @@ impl Run {
     /// initialize to the start-of-campaign state (sector 0, encounter 0,
     /// zero salvage, neither defeated nor victorious).
     ///
-    /// Callers build `player` from whichever ClassDef the player picked
+    /// Callers build `player` from whichever `ClassDef` the player picked
     /// at the class-select screen; constructing the Ship is content's
     /// job, not types.rs's, so `new` takes a fully-formed Ship.
-    pub fn new(player: Ship) -> Self {
+    pub const fn new(player: Ship) -> Self {
         Self {
             current_sector_idx: 0,
             salvage: 0,
@@ -1462,7 +1476,7 @@ impl Run {
 /// `destroys_this_window` counter — see Board's docstring). This snapshot
 /// captures the persistable subset; the resolver re-subscribes subsystems
 /// to a fresh [`EventBus`] on load via [`BoardSnapshot::into_board`].
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BoardSnapshot {
     pub size: usize,
     pub cells: Vec<Option<Ship>>,
@@ -1520,7 +1534,7 @@ impl BoardSnapshot {
 /// What the save file holds: cross-encounter [`Run`] state plus the live
 /// [`BoardSnapshot`] of the current encounter. Future fields (meta-progression
 /// unlocks, run-seed for replay, etc.) land here as Phase 3 grows.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SaveState {
     pub run: Run,
     pub board: BoardSnapshot,
@@ -2364,7 +2378,7 @@ mod tests {
         // And the placeholder `Catalog.classes` path: an empty array still
         // parses, and a populated one preserves order through the catalog
         // boundary.
-        let json_catalog_classes_empty = r#"[]"#;
+        let json_catalog_classes_empty = r"[]";
         let parsed: Vec<ClassDef> = serde_json::from_str(json_catalog_classes_empty).unwrap();
         assert!(parsed.is_empty());
     }

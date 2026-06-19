@@ -1,4 +1,4 @@
-//! EventBus contract tests.
+//! `EventBus` contract tests.
 //!
 //! Two distinct surfaces live here:
 //!

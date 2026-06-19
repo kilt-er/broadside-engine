@@ -6,7 +6,7 @@
 //! range bands a real decision, ported onto the 2-D [`crate::grid`] type surface
 //! (blueprint decision #2, the 5×4 board). No randomness, no content lookups,
 //! no rendering — just geometry. Every function here is pure and deterministic,
-//! which is load-bearing for the telegraph: the renderer's ThreatMap is painted
+//! which is load-bearing for the telegraph: the renderer's `ThreatMap` is painted
 //! by running the *same* targeting/geometry the real shot uses, so a
 //! non-deterministic helper here would let the telegraph and the actual hit
 //! disagree (blueprint "single best idea").
@@ -65,7 +65,7 @@ use crate::types::{Arc, HullZone, ShieldFace, ShieldProfile};
 /// The 180°-opposite direction. The 2-D analog of the 1-D `opposite(LaneEnd)`;
 /// delegates to [`Dir8::opposite`] (the single source of the `+4 mod 8`
 /// arithmetic) so there is no second copy of the rule.
-pub fn opposite(dir: Dir8) -> Dir8 {
+pub const fn opposite(dir: Dir8) -> Dir8 {
     dir.opposite()
 }
 
@@ -104,15 +104,15 @@ pub fn direction_to(a: Pos, b: Pos) -> Option<Dir8> {
     if dc == 0 && dr == 0 {
         return None;
     }
-    let (vc, vr) = (dc as f64, dr as f64);
+    let (vc, vr) = (f64::from(dc), f64::from(dr));
     let mut best = Dir8::N;
     let mut best_score = f64::NEG_INFINITY;
     for d in Dir8::ALL {
         let (sc, sr) = d.delta();
-        let mag = ((sc * sc + sr * sr) as f64).sqrt();
+        let mag = f64::from(sc * sc + sr * sr).sqrt();
         // cosine similarity (up to the constant |v|, which is common to all
         // candidates and so does not affect the argmax): dot(v, step) / |step|.
-        let score = (vc * sc as f64 + vr * sr as f64) / mag;
+        let score = (vc * f64::from(sc) + vr * f64::from(sr)) / mag;
         if score > best_score {
             best_score = score;
             best = d;
@@ -128,7 +128,7 @@ pub fn direction_to(a: Pos, b: Pos) -> Option<Dir8> {
 /// Index of a [`Range`] band in near→far order, for [`band_falloff`]'s table
 /// lookup. The exhaustive match is the drift guard: adding a [`Range`] variant
 /// without extending this (and the falloff table) fails to compile.
-fn band_index(b: Range) -> usize {
+const fn band_index(b: Range) -> usize {
     match b {
         Range::Adjacent => 0,
         Range::Near => 1,
@@ -247,8 +247,8 @@ fn bow_zone(dir: Dir4, incoming_from: Dir8) -> HullZone {
 /// A Broadside hull runs along `axis`, so its ends (Bow/Stern) point *along* the
 /// axis and its flanks (Port/Starboard) face *perpendicular* to it. We anchor
 /// the table on a deterministic "pseudo-forward" — the increasing-coordinate
-/// direction of the hull axis (`Axis::dirs().0`: `S` for NorthSouth, `E` for
-/// EastWest) — and assign by clockwise offset from it:
+/// direction of the hull axis (`Axis::dirs().0`: `S` for `NorthSouth`, `E` for
+/// `EastWest`) — and assign by clockwise offset from it:
 /// - pseudo-forward (the +on-axis end) → `Bow`, its opposite → `Stern`,
 /// - the clockwise (right) perpendicular flank → `Starboard`, the
 ///   counter-clockwise (left) → `Port`.

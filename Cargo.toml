@@ -150,3 +150,41 @@ required-features = ["render", "runtime"]
 # and the absorb_shield (dmg, armour, charge) state machine. Avoid using
 # proptest elsewhere — enumerated tables are clearer for finite domains.
 proptest = "1"
+
+# Raise-the-bar lint gate (review #148). pedantic + nursery run at `warn`;
+# CI promotes them to `deny` via `cargo clippy --all-targets -- -D warnings`.
+# The allow-list silences the high-noise / false-positive-prone lints that the
+# review judged not worth the churn; everything else stays enabled, including
+# the high-value ones that found real wins (map_unwrap_or, uninlined_format_args,
+# items the auto-fixer cleared, match_same_arms, unreadable_literal,
+# format_push_string, manual_let_else, missing_const_for_fn). doc_markdown was
+# fully cleared by `clippy --fix` (the auto-fixer can backtick prose).
+[lints.rust]
+unsafe_op_in_unsafe_fn = "warn"
+missing_debug_implementations = "warn"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+nursery  = { level = "warn", priority = -1 }
+# ALLOW the noisy / false-positive-prone ones (curated by review #148):
+module_name_repetitions  = "allow"  # intentional (types::TypeKind etc.)
+must_use_candidate       = "allow"  # opt in case-by-case
+cast_precision_loss      = "allow"  # render math, knowingly lossy f32
+cast_possible_truncation = "allow"  # pixel/index casts, bounded
+cast_sign_loss           = "allow"
+cast_possible_wrap       = "allow"
+similar_names            = "allow"
+too_many_lines           = "allow"  # tackle structurally, not by lint
+missing_errors_doc       = "allow"  # error types already self-documenting
+missing_panics_doc       = "allow"
+struct_excessive_bools   = "allow"
+suboptimal_flops         = "allow"  # mul_add alters bit-exact FP; render has visual oracles
+option_if_let_else       = "allow"  # readability-subjective
+# PATH-A additions (lead-approved post-measurement, review #150): these fired
+# heavily after `--fix` in categories the curated list did not anticipate.
+too_long_first_doc_paragraph = "allow"  # nursery; penalizes the rich module docs the review rated a STRENGTH
+float_cmp                = "allow"  # render-only (loft_gpu/projector/mesh_import/...); ZERO in geometry2d/resolve; determinism-safe
+items_after_statements   = "allow"  # deliberate local consts in long fns; --fix already hoisted the safe ones
+default_trait_access     = "allow"  # `Default::default()` is idiomatic
+return_self_not_must_use = "allow"  # builder-style ergonomics
+many_single_char_names   = "allow"  # conventional math/layout vars (x/y/w/h/i/n/t in matrix·vec, lerp, UI layout) — lead-approved

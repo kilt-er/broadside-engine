@@ -40,7 +40,7 @@ use std::rc::Rc;
  * ====================================================================== */
 
 /// A demo ship at a real 2-D `pos` with bearing `facing`. Default Frigate shield
-/// profile, one forward-arc pulse_laser mount. Upholds invariant A.
+/// profile, one forward-arc `pulse_laser` mount. Upholds invariant A.
 fn ship(id: &str, faction: Faction, pos: Pos, hull: i32, facing: Facing) -> Ship {
     Ship {
         id: id.into(),
@@ -108,7 +108,7 @@ fn pulse_laser() -> Action {
     }
 }
 
-/// Content holding the pulse_laser action. spawn_projectile panics
+/// Content holding the `pulse_laser` action. `spawn_projectile` panics
 /// because the demo scenarios don't fire ordnance.
 struct DemoContent(Action);
 impl Content for DemoContent {
@@ -121,7 +121,7 @@ impl Content for DemoContent {
 }
 
 /// Wire a recording bus that captures (cell, amount) pairs for
-/// OnDamageTaken and just cells for OnLethal. Returns Rc handles the
+/// `OnDamageTaken` and just cells for `OnLethal`. Returns Rc handles the
 /// caller can read after `resolve_round` returns.
 type DamageLog = Rc<RefCell<Vec<(usize, i32)>>>;
 type LethalLog = Rc<RefCell<Vec<usize>>>;

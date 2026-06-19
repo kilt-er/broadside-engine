@@ -30,7 +30,7 @@
 //! ## Why placeholder sectors live here, not in `DemoContent`
 //!
 //! Subsystems and cards live on `DemoContent` because the resolver
-//! queries them every frame (damage_modifier on every shot, card_at on
+//! queries them every frame (`damage_modifier` on every shot, `card_at` on
 //! every key press). Sectors are consulted ONCE per encounter
 //! transition, so there's no perf reason to bake them into Content.
 //! Keeping them in a standalone `placeholder_sectors()` function makes
@@ -38,13 +38,13 @@
 //! either source at startup, the rest of the code only sees
 //! `&[Sector]`.
 //!
-//! ## Why ShipSpawn::class_id, not a direct Ship?
+//! ## Why `ShipSpawn::class_id`, not a direct Ship?
 //!
 //! The architect's foundation has spawns reference a [`crate::types::ClassDef::id`]
 //! rather than embedding a full `Ship`. That's the canonical pattern —
-//! one ClassDef defines the loadout, the encounter just says "spawn
+//! one `ClassDef` defines the loadout, the encounter just says "spawn
 //! three of THIS class at THESE cells." [`spawn_to_ship`] materializes a
-//! Ship from a spawn + the catalog's ClassDef lookup; if a future
+//! Ship from a spawn + the catalog's `ClassDef` lookup; if a future
 //! encounter needs ad-hoc enemy stats we'd grow `ShipSpawn`'s field set
 //! rather than embedding a Ship.
 
@@ -173,7 +173,7 @@ pub fn advance_after_win(run: &mut Run, sectors: &[Sector]) -> AdvanceResult {
 /// Flip `run.defeated`. Called when [`encounter_outcome`] returns
 /// [`EncounterOutcome::Lost`]. Idempotent — calling twice has no
 /// additional effect beyond `defeated = true`.
-pub fn mark_defeated(run: &mut Run) {
+pub const fn mark_defeated(run: &mut Run) {
     run.defeated = true;
 }
 
@@ -223,9 +223,9 @@ pub fn current_encounter<'s>(run: &Run, sectors: &'s [Sector]) -> Option<&'s Enc
 /// keeping it a parameter lets the same encounter builder work with placeholder
 /// data and real catalog data.
 ///
-/// **INVARIANT (A) — slot == pos.to_index().** Every ship is stored at
+/// **INVARIANT (A) — slot == `pos.to_index()`.** Every ship is stored at
 /// `cells[ship.pos.to_index()]` with `ship.pos` set to its real grid [`Pos`], so
-/// [`Board::ship_at`]`(pos) == cells[pos.to_index()]` finds it. The resolver's
+/// [`Board::ship_at`] called with `pos` returns `cells[pos.to_index()]`. The resolver's
 /// R3 ray-walk and R4 `apply_damage` depend on this; a ship whose slot and
 /// `pos` disagree is invisible to `ship_at`. A spawn whose `pos` collides with
 /// an already-placed ship (or the player) is skipped — placeholder/generated
@@ -311,7 +311,7 @@ where
 /// Canonical lane size for a given maximum spawn cell. The analysis doc
 /// uses 5 / 7 / 9 for early / mid / late sectors. Picks the smallest
 /// size that fits.
-pub fn canonical_lane_size(max_cell: usize) -> usize {
+pub const fn canonical_lane_size(max_cell: usize) -> usize {
     match max_cell {
         0..=4 => 5,
         5..=6 => 7,
@@ -325,7 +325,7 @@ pub fn canonical_lane_size(max_cell: usize) -> usize {
 /// side is closing — bruce's "start in the middle, much more challenging."
 /// Used by [`build_encounter_board`] (placement) and [`sample_encounter_spawns`]
 /// (pincer distribution + facing) so both agree on where the player is.
-pub fn player_start_cell(size: usize) -> usize {
+pub const fn player_start_cell(size: usize) -> usize {
     size / 2
 }
 
@@ -350,8 +350,8 @@ pub fn player_start_cell(size: usize) -> usize {
 /// - Hull 14 (vs the cap of 7 for regular enemies in the canonical
 ///   `enemies[]`) — communicates "this fight is different." If
 ///   `spawn.hp_override` is set, it wins (lets the encounter tier-scale).
-/// - Three mounts (Forward pulse_laser, Forward missile_salvo,
-///   broadside beam_cannon) so the AI's telegraph queue surfaces
+/// - Three mounts (Forward `pulse_laser`, Forward `missile_salvo`,
+///   broadside `beam_cannon`) so the AI's telegraph queue surfaces
 ///   serious moves a turn ahead. The player sees the threat and has
 ///   to respond.
 /// - `Trait::ReactorBreach` — the resolver consumes this in
@@ -443,18 +443,18 @@ pub fn is_capital_spawn(class_id: &str, catalog: &Catalog) -> bool {
 /// Synthesize an ARMED boss [`Ship`] for a sector-end capital spawn (#69).
 ///
 /// Before this, every named capital except the Citadel `warlord` degraded to
-/// [`fallback_ship_for_spawn`] (hull 3, one pulse_laser) because
+/// [`fallback_ship_for_spawn`] (hull 3, one `pulse_laser`) because
 /// [`capital_spawn`] writes the capital's DISPLAY name into `class_id` — which
 /// isn't in `enemies[]`, so catalog synthesis missed, and only `class_id ==
 /// "warlord"` routed to a boss. Result: trivial sector bosses. This routes any
 /// capital to the same hand-tuned boss baseline the warlord uses — a real
 /// fight, not a popgun.
 ///
-/// **Flat armed-boss baseline — deliberately NOT scaled off the CapitalDef's
+/// **Flat armed-boss baseline — deliberately NOT scaled off the `CapitalDef`'s
 /// salvage fields.** `salvage_p1`/`salvage_p7` are the meta-currency REWARD for
 /// the kill (architect's #63 ruling, 4622de8), not combat stats; coupling hull
 /// to them would bake in a wrong reward↔toughness correlation. So every capital
-/// gets the warlord's hull-14 / ReactorBreach / three-mount shell here, just
+/// gets the warlord's hull-14 / `ReactorBreach` / three-mount shell here, just
 /// re-labelled with its own name. Per-capital DISTINCT mechanics (Twins = two
 /// ships, Coward flees, Stagemaster flips you — see
 /// `docs/design/capital_distinctiveness.md`) stay DEFERRED per bruce; this is
@@ -475,7 +475,7 @@ pub fn capital_boss_ship_for_spawn(spawn: &ShipSpawn, _catalog: &Catalog) -> Shi
 
 /// Minimal default `Ship` shape used for spawns whose `class_id` isn't
 /// known to the caller's class registry. Bow-on facing the player, low
-/// hull, one Forward pulse_laser mount so the AI has something to fire.
+/// hull, one Forward `pulse_laser` mount so the AI has something to fire.
 /// This is the "any enemy" fallback — real class-specific stats come
 /// from the bin's class table.
 pub fn fallback_ship_for_spawn(spawn: &ShipSpawn) -> Ship {
@@ -577,20 +577,20 @@ pub fn placeholder_sectors() -> Vec<Sector> {
 /// The player's fixed 2-D start cell: front-center (`col = COLS/2`, the front
 /// row `ROWS-1`). Blueprint decision #8 — the player anchors at the front and
 /// the rows ahead are pure dodge space.
-pub fn player_start_pos() -> crate::grid::Pos {
+pub const fn player_start_pos() -> crate::grid::Pos {
     crate::grid::Pos::new(crate::grid::COLS / 2, crate::grid::ROWS - 1)
 }
 
 /// The player's spawn stance: bow pointed N (toward row 0 / the enemies). The
 /// player faces INTO the board, so its strong bow meets the incoming threat.
-pub fn player_spawn_facing() -> crate::grid::Facing {
+pub const fn player_spawn_facing() -> crate::grid::Facing {
     crate::grid::Facing::Bow(crate::grid::Dir4::N)
 }
 
 /// Every enemy's spawn stance: bow pointed S (toward the player). Combined with
 /// the resolver's close-move (which steps toward the player), the approach is
 /// bow-first from the back rows.
-pub fn enemy_spawn_facing() -> crate::grid::Facing {
+pub const fn enemy_spawn_facing() -> crate::grid::Facing {
     crate::grid::Facing::Bow(crate::grid::Dir4::S)
 }
 
@@ -738,7 +738,7 @@ fn sector_ion_reefs() -> Sector {
 }
 
 /// Patrol 3: two encounters + boss. The boss has `is_boss: true` and a
-/// healthy hull_override so the run-end victory only fires after a
+/// healthy `hull_override` so the run-end victory only fires after a
 /// meaningful fight.
 fn sector_citadel_approach() -> Sector {
     Sector {
@@ -871,8 +871,8 @@ pub const ENCOUNTERS_PER_SECTOR: u32 = 2;
 /// Deterministic hash PRNG (mirrors the `wang_hash` used render-side in
 /// hud.rs; kept local so runs.rs doesn't reach across the render boundary).
 /// Pure: same seed → same value, so generation is reproducible (#111).
-fn wang_hash(mut x: u32) -> u32 {
-    x = (x ^ 61).wrapping_mul(0x27D4_EB2D);
+const fn wang_hash(mut x: u32) -> u32 {
+    x = (x ^ 0x3D).wrapping_mul(0x27D4_EB2D);
     x ^= x >> 16;
     x = x.wrapping_mul(0x85EB_CA6B);
     x ^= x >> 13;
@@ -894,7 +894,7 @@ pub struct SpawnPool {
 
 impl SpawnPool {
     /// Build the pool visible AT sector index `up_to_idx` (inclusive):
-    /// union of `intro[]` from sectors[0..=up_to_idx], display-name →
+    /// union of `intro[]` from sectors[`0..=up_to_idx`], display-name →
     /// enemy-id via the catalog's `enemies[]`. Unknown intro names are
     /// skipped (logged) rather than poisoning the pool with a dangling id.
     pub fn accumulate(sectors: &[SectorDef], up_to_idx: usize, catalog: &Catalog) -> Self {
@@ -920,16 +920,16 @@ impl SpawnPool {
                 }
             }
         }
-        SpawnPool { class_ids }
+        Self { class_ids }
     }
 
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.class_ids.is_empty()
     }
 }
 
 /// Resolve an intro/capital display name to a catalog enemy id. Already-id
-/// (snake_case) forms pass through; otherwise looked up by lowercased
+/// (`snake_case`) forms pass through; otherwise looked up by lowercased
 /// display name.
 fn resolve_enemy_id(name: &str, name_to_id: &HashMap<String, String>) -> Option<String> {
     if name
@@ -944,7 +944,7 @@ fn resolve_enemy_id(name: &str, name_to_id: &HashMap<String, String>) -> Option<
 /// Enemies in a generated non-boss encounter, scaled by lane size. Doc-silent
 /// balance knob — wider lanes hold more ships. 5→2, 7→3, 9→4. Flagged for
 /// bruce.
-fn encounter_enemy_count(lane: u8) -> usize {
+const fn encounter_enemy_count(lane: u8) -> usize {
     match lane {
         0..=5 => 2,
         6..=7 => 3,
@@ -974,10 +974,10 @@ pub fn generate_sector(
     let node_seed = sector_def
         .node
         .bytes()
-        .fold(0u32, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u32));
+        .fold(0u32, |acc, b| acc.wrapping_mul(31).wrapping_add(u32::from(b)));
     let base_seed = node_seed
         .wrapping_mul(0x9E37_79B9)
-        .wrapping_add(patrol_tier as u32);
+        .wrapping_add(u32::from(patrol_tier));
 
     let mut encounters: Vec<EncounterDef> = Vec::new();
 
@@ -1082,7 +1082,7 @@ fn sample_encounter_spawns(pool: &SpawnPool, lane: u8, count: usize, seed: u32) 
 /// roster's per-boss stats aren't a typed catalog section yet — that's a
 /// future `CapitalDef` from architect). For now the capital spawns as a
 /// boss-class ship at mid-lane, carrying the capital's display name as its
-/// class_id so the bin/renderer can label it.
+/// `class_id` so the bin/renderer can label it.
 ///
 /// Returns `None` if the capital name isn't in the catalog (defensive — a
 /// typo'd capital just yields a boss-less sector rather than crashing).
@@ -1670,7 +1670,7 @@ mod tests {
     /// Minimal catalog with 3 sectors (Staging→Drift Belt→Ion Reefs), the
     /// enemies they introduce, and the two capitals — enough to exercise
     /// pool accumulation + generation. Uses the canonical transformer so
-    /// the SectorDef capital deserializer + enemies shape are real.
+    /// the `SectorDef` capital deserializer + enemies shape are real.
     fn gen_catalog() -> crate::types::Catalog {
         let json = serde_json::json!({
             "meta": { "schema": "x", "lane": [5,7,9], "newAxes": [], "bands": ["close"] },
@@ -2047,7 +2047,7 @@ mod tests {
         // Identity preserved so the HUD label + salvage-by-name lookup still work.
         assert_eq!(boss.klass.as_deref(), Some("The Dasher"));
         // hp_override still wins (lets an encounter tier-scale a capital).
-        let mut sp2 = sp.clone();
+        let mut sp2 = sp;
         sp2.hp_override = Some(25);
         assert_eq!(capital_boss_ship_for_spawn(&sp2, &cat).hull, 25);
     }

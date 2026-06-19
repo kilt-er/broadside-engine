@@ -70,11 +70,11 @@ pub enum SaveError {
     /// Couldn't read/write/remove the save file (disk full, permissions,
     /// etc.). Wraps the underlying `io::Error`.
     Io(io::Error),
-    /// serde_json rejected our in-memory `Run`. Should not happen in
+    /// `serde_json` rejected our in-memory `Run`. Should not happen in
     /// practice — serde derives don't fail unless the type itself is
     /// malformed, which is a compile error first.
     Encode(serde_json::Error),
-    /// serde_json rejected the bytes on disk. Either the file is from a
+    /// `serde_json` rejected the bytes on disk. Either the file is from a
     /// newer schema (no migration story yet — Phase 3 is pre-1.0), the
     /// file is partially written (atomic rename failed somehow), or
     /// the bytes were corrupted by something outside our control.
@@ -84,9 +84,9 @@ pub enum SaveError {
 impl std::fmt::Display for SaveError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            SaveError::Io(e) => write!(f, "save io error: {e}"),
-            SaveError::Encode(e) => write!(f, "save encode error: {e}"),
-            SaveError::Decode(e) => write!(f, "save decode error: {e}"),
+            Self::Io(e) => write!(f, "save io error: {e}"),
+            Self::Encode(e) => write!(f, "save encode error: {e}"),
+            Self::Decode(e) => write!(f, "save decode error: {e}"),
         }
     }
 }
@@ -94,16 +94,15 @@ impl std::fmt::Display for SaveError {
 impl std::error::Error for SaveError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            SaveError::Io(e) => Some(e),
-            SaveError::Encode(e) => Some(e),
-            SaveError::Decode(e) => Some(e),
+            Self::Io(e) => Some(e),
+            Self::Encode(e) | Self::Decode(e) => Some(e),
         }
     }
 }
 
 impl From<io::Error> for SaveError {
     fn from(e: io::Error) -> Self {
-        SaveError::Io(e)
+        Self::Io(e)
     }
 }
 
@@ -131,13 +130,13 @@ impl Run {
     /// - `Ok(None)` if the file doesn't exist (first-run case),
     /// - `Err(SaveError::Decode)` if the file is unreadable as a `Run`
     ///   (corrupt or from an incompatible schema version).
-    pub fn load_from_disk(path: impl AsRef<Path>) -> Result<Option<Run>, SaveError> {
+    pub fn load_from_disk(path: impl AsRef<Path>) -> Result<Option<Self>, SaveError> {
         let path = path.as_ref();
         if !path.exists() {
             return Ok(None);
         }
         let bytes = fs::read(path)?;
-        let run: Run = serde_json::from_slice(&bytes).map_err(SaveError::Decode)?;
+        let run: Self = serde_json::from_slice(&bytes).map_err(SaveError::Decode)?;
         Ok(Some(run))
     }
 

@@ -115,7 +115,7 @@ const STANCE_YAW_BROADSIDE: f32 = 90.0;
 
 /// Base stance yaw (degrees) a ship at `orientation` rests at. The reorient
 /// tween interpolates between two of these; the idle roll is added on top.
-pub fn orientation_yaw_deg(orientation: Orientation) -> f32 {
+pub const fn orientation_yaw_deg(orientation: Orientation) -> f32 {
     match orientation {
         Orientation::BowOn { bow: LaneEnd::Fore } => STANCE_YAW_FORE,
         Orientation::BowOn { bow: LaneEnd::Aft } => STANCE_YAW_AFT,
@@ -152,7 +152,7 @@ const IDLE_ROLL_HZ: f32 = 0.18;
 const IDLE_BOB_HZ: f32 = 0.13;
 
 impl ShipPose {
-    pub fn new(orientation: Orientation) -> Self {
+    pub const fn new(orientation: Orientation) -> Self {
         Self {
             orientation,
             tween: None,
@@ -216,7 +216,7 @@ impl ShipPose {
 
     /// True while a reorient tween is in flight (the caller keeps requesting
     /// redraws while any ship is mid-reorient).
-    pub fn is_animating(&self) -> bool {
+    pub const fn is_animating(&self) -> bool {
         self.tween.is_some()
     }
 }
@@ -288,7 +288,7 @@ const _: () = assert!(std::mem::size_of::<Vertex>() == 64);
 const _: () = assert!(std::mem::size_of::<SceneUniform>() == 176);
 const _: () = assert!(std::mem::size_of::<PostUniform>() == 16);
 
-const HULL_SHADER: &str = r#"
+const HULL_SHADER: &str = r"
 struct Scene {
     view_proj: mat4x4<f32>,
     model:     mat4x4<f32>,
@@ -341,9 +341,9 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let out = clamp(lit + in.emissive.rgb, vec3<f32>(0.0), vec3<f32>(1.0));
     return vec4<f32>(out, 1.0);
 }
-"#;
+";
 
-const POST_SHADER: &str = r#"
+const POST_SHADER: &str = r"
 @group(0) @binding(0) var tex: texture_2d<f32>;
 @group(0) @binding(1) var samp: sampler;
 // Scalar pads, NOT vec3<f32> (16-byte struct; see the Rust-side note).
@@ -376,13 +376,14 @@ fn fs_post(in: VsOut) -> @location(0) vec4<f32> {
     let q = floor(c.rgb * post.bands + 0.5) / post.bands;
     return vec4<f32>(q, 1.0);
 }
-"#;
+";
 
 /// A hull uploaded to the GPU: its vertex buffer + count, plus the vertical
 /// centre of its bounding box (`center_y`, world units). `center_y` is the Y the
 /// loft camera should look at so the hull renders CENTRED in its texture (see
 /// [`LoftGpu::upload_hull`]); the caller stores it and passes it to
 /// [`LoftGpu::render_ship`].
+#[derive(Debug)]
 pub struct UploadedHull {
     pub vbuf: wgpu::Buffer,
     pub vcount: u32,
@@ -392,6 +393,7 @@ pub struct UploadedHull {
 /// The loft GPU pipeline + offscreen targets. Owns the depth path; produces a
 /// posterized RGBA texture view per render. The caller (`gfx`) takes that view
 /// and feeds it to the existing `TexturedShip` blit.
+#[derive(Debug)]
 pub struct LoftGpu {
     hull_pipeline: wgpu::RenderPipeline,
     post_pipeline: wgpu::RenderPipeline,
@@ -401,7 +403,7 @@ pub struct LoftGpu {
     /// Low-res color target the 3D pass draws into.
     scene_view: wgpu::TextureView,
     depth_view: wgpu::TextureView,
-    /// Final posterized RGBA target (TEXTURE_BINDING so gfx can sample it).
+    /// Final posterized RGBA target (`TEXTURE_BINDING` so gfx can sample it).
     out_tex: wgpu::Texture,
     out_view: wgpu::TextureView,
     post_bg: wgpu::BindGroup,
@@ -697,15 +699,15 @@ impl LoftGpu {
         self.low_h = h;
     }
 
-    /// The posterized RGBA output texture view (TEXTURE_BINDING) for the gfx
+    /// The posterized RGBA output texture view (`TEXTURE_BINDING`) for the gfx
     /// compositor to sample into the lane.
-    pub fn output_view(&self) -> &wgpu::TextureView {
+    pub const fn output_view(&self) -> &wgpu::TextureView {
         &self.out_view
     }
 
     /// Output dimensions (for the gfx side's UV / dest-rect math). Runtime now
     /// (#76 ship-res cycle), not the const.
-    pub fn output_size(&self) -> (u32, u32) {
+    pub const fn output_size(&self) -> (u32, u32) {
         (self.low_w, self.low_h)
     }
 
@@ -726,7 +728,7 @@ impl LoftGpu {
         let unpadded = low_w * 4;
         let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT; // 256
         let padded = unpadded.div_ceil(align) * align;
-        let buf_size = (padded * low_h) as u64;
+        let buf_size = u64::from(padded * low_h);
         let readback = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("loft readback"),
             size: buf_size,
@@ -842,7 +844,7 @@ impl LoftGpu {
         }
     }
 
-    /// Upload an [`ImportedShip`] (the architect's mesh_import / CAD-glb output,
+    /// Upload an [`ImportedShip`] (the architect's `mesh_import` / CAD-glb output,
     /// and the shape the loft path also targets): expands the per-group
     /// materials onto per-vertex albedo + emissive (with the unlit flag) and
     /// delegates to [`Self::upload_hull`]. Both geometry sources reach the GPU
@@ -1269,7 +1271,7 @@ fn normalize3(v: [f32; 3]) -> [f32; 3] {
 
 /// Column-major identity. The hull is rendered un-transformed (model = identity)
 /// — stance comes from the camera yaw, exactly as the POC does it.
-fn identity4() -> [f32; 16] {
+const fn identity4() -> [f32; 16] {
     [
         1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
     ]
@@ -1614,7 +1616,7 @@ mod tests {
     /// computed the lane-aim vanishing point from `ProjectorConfig::default()`
     /// (480x270) while `aim_at` came from the resized `for_scene(w,h)` projector, so
     /// at a non-default scene res `alpha`/`psi` were nonzero even for a centred ship
-    /// and the hull yawed ~20deg on a `;`/`'` toggle. With aim_at AND the VP both
+    /// and the hull yawed ~20deg on a `;`/`'` toggle. With `aim_at` AND the VP both
     /// from the same `for_scene` cfg, the yaw is invariant across presets (all
     /// presets are 16:9, so the scaled screen geometry is similar → identical
     /// angles). Covers the centred column (must be exactly the base yaw, psi=0) and

@@ -1,6 +1,6 @@
 //! Field-kit Cards integration tests — drive cards through the full
-//! resolver dispatch (queue -> execute_queue -> BOARD effect ->
-//! Content::apply_board_effect).
+//! resolver dispatch (queue -> `execute_queue` -> BOARD effect ->
+//! `Content::apply_board_effect`).
 //!
 //! `src/cards.rs` has unit tests for `apply_card_effect` called
 //! directly. This file pins that the SAME behaviours are observable
@@ -9,7 +9,7 @@
 //! changes `Effect::BOARD` dispatch or the synthetic-action wiring,
 //! these integration tests catch it where unit tests wouldn't.
 //!
-//! Reference: cards.rs:191-250, input.rs:362-411, resolve.rs (Effect::BOARD).
+//! Reference: cards.rs:191-250, input.rs:362-411, resolve.rs (`Effect::BOARD`).
 
 use broadside_engine::cards::{PlayResult, CARD_MASS_BREACH, CARD_MASS_LOCK, CARD_SENSOR_PULSE};
 use broadside_engine::input::{synthetic_card_action_id, DemoContent};
@@ -88,9 +88,9 @@ fn board_with(size: usize, ships: Vec<Ship>) -> Board {
     }
 }
 
-/// The canonical play flow: validate + decrement via try_play_card, push
-/// the synthetic action id onto the ship's queue, then execute_queue
-/// runs the BOARD effect dispatch through Content::apply_board_effect.
+/// The canonical play flow: validate + decrement via `try_play_card`, push
+/// the synthetic action id onto the ship's queue, then `execute_queue`
+/// runs the BOARD effect dispatch through `Content::apply_board_effect`.
 fn play_card(
     board: &mut Board,
     content: &mut DemoContent,
@@ -100,7 +100,7 @@ fn play_card(
     let result = content.try_play_card(ship_id, card_id);
     if result == PlayResult::Played {
         // Push the synthetic onto the ship's queue. Find ship by id.
-        for slot in board.cells.iter_mut() {
+        for slot in &mut board.cells {
             if let Some(s) = slot.as_mut() {
                 if s.id == ship_id {
                     s.queue.push(synthetic_card_action_id(card_id));
@@ -243,9 +243,9 @@ fn sensor_pulse_clears_every_enemy_queue() {
     // sensor_pulse_does_not_clear_source_queue below.
 }
 
-/// Carve out the "source faction NOT affected" property of sensor_pulse.
-/// Setup: player has a queue, plays sensor_pulse, then a SECOND player
-/// ship is added. execute_queue runs ONLY the source player; the
+/// Carve out the "source faction NOT affected" property of `sensor_pulse`.
+/// Setup: player has a queue, plays `sensor_pulse`, then a SECOND player
+/// ship is added. `execute_queue` runs ONLY the source player; the
 /// second player's queue must survive.
 #[test]
 fn sensor_pulse_does_not_clear_other_player_ships_queues() {
@@ -275,8 +275,8 @@ fn sensor_pulse_does_not_clear_other_player_ships_queues() {
  * Charge bookkeeping — one play decrements; depleted cards can't be replayed
  * ====================================================================== */
 
-/// Granting two charges of mass_lock lets the player play it twice; a
-/// third play returns InsufficientCharges with no effect on the board.
+/// Granting two charges of `mass_lock` lets the player play it twice; a
+/// third play returns `InsufficientCharges` with no effect on the board.
 #[test]
 fn card_charges_decrement_per_play_and_block_when_depleted() {
     let mut board = board_with(
@@ -320,7 +320,7 @@ fn card_charges_decrement_per_play_and_block_when_depleted() {
     );
 }
 
-/// Playing a card the ship doesn't carry returns NotCarried; no board
+/// Playing a card the ship doesn't carry returns `NotCarried`; no board
 /// mutation.
 #[test]
 fn playing_a_card_not_in_inventory_returns_not_carried() {
@@ -349,10 +349,10 @@ fn playing_a_card_not_in_inventory_returns_not_carried() {
  * Reverse-faction sanity — enemy can play cards against the player
  * ====================================================================== */
 
-/// If an enemy ship plays mass_lock, the player gets the TargetLock —
+/// If an enemy ship plays `mass_lock`, the player gets the `TargetLock` —
 /// the "every ship of the OPPOSITE faction" logic in
 /// `apply_card_effect` is symmetric. Catches a hardcoded "always target
-/// Faction::Enemy" bug.
+/// `Faction::Enemy`" bug.
 #[test]
 fn enemy_playing_mass_lock_targets_the_player() {
     let mut board = board_with(

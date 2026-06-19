@@ -18,7 +18,7 @@
 //! end-of-turn) on a 2-D invariant-A board where the enemies are **armed and
 //! AI-driven**, and asserts the player clears them and survives within a bound.
 //!
-//! ## The stalemate diagnosis this confirms (memory: the generated_spawn_pool
+//! ## The stalemate diagnosis this confirms (memory: the `generated_spawn_pool`
 //! "stalemate" was a 1-D test-driver artifact, NOT the engine)
 //!
 //! The earlier cap-timeout came from the 1-D test player-driver, which read
@@ -81,8 +81,8 @@ fn beam(id: &str, raw: i32) -> Action {
     }
 }
 
-/// Serves the player's heavy beam ("pc_beam") and the enemies' lighter beam
-/// ("ai_beam"). The enemy AI (`decide_enemy_action`) reaches for the mount's
+/// Serves the player's heavy beam ("`pc_beam`") and the enemies' lighter beam
+/// ("`ai_beam`"). The enemy AI (`decide_enemy_action`) reaches for the mount's
 /// weapon id and fire-gates it through `resolve_targeting_2d`, so the enemies
 /// genuinely shoot back when they bear.
 struct CanaryContent {
@@ -91,7 +91,7 @@ struct CanaryContent {
 }
 impl CanaryContent {
     fn new(pc_raw: i32, ai_raw: i32) -> Self {
-        CanaryContent {
+        Self {
             pc_beam: beam("pc_beam", pc_raw),
             ai_beam: beam("ai_beam", ai_raw),
         }
@@ -115,7 +115,7 @@ impl Content for CanaryContent {
  * ====================================================================== */
 
 /// Choose + queue the player's action for one round in 2-D. Mirrors the
-/// run_loop harness driver (#25): FIRE when the gun already bears on a hostile
+/// `run_loop` harness driver (#25): FIRE when the gun already bears on a hostile
 /// (gated by the SAME `resolve_targeting_2d` the shot fires through, so "decided
 /// to fire" == "connects"), else strafe to line up the nearest enemy's column,
 /// else close toward the back rows. A mountless/idle player is left alone.
@@ -145,17 +145,15 @@ fn queue_player_action(board: &mut broadside_engine::types::Board, content: &dyn
     // FIRE-GATE (single source): does the weapon already bear on a hostile?
     let bears_on_hostile = content
         .action(&weapon_id)
-        .map(|w| {
+        .is_some_and(|w| {
             resolve_targeting_2d(w, board, ppos).iter().any(|&p| {
                 board
                     .cells
                     .get(p.to_index())
                     .and_then(|c| c.as_ref())
-                    .map(|s| s.faction != Faction::Player)
-                    .unwrap_or(false)
+                    .is_some_and(|s| s.faction != Faction::Player)
             })
-        })
-        .unwrap_or(false);
+        });
 
     let action = if bears_on_hostile {
         weapon_id
@@ -385,8 +383,7 @@ fn q3_misfacing_enemy_rotates_to_bear_then_fires() {
             .iter()
             .flatten()
             .find(|s| s.id == "p")
-            .map(|s| s.hull)
-            .unwrap_or(0);
+            .map_or(0, |s| s.hull);
         if p_hull < player_hull_0 {
             break;
         }
@@ -401,8 +398,7 @@ fn q3_misfacing_enemy_rotates_to_bear_then_fires() {
         .iter()
         .flatten()
         .find(|s| s.id == "p")
-        .map(|s| s.hull)
-        .unwrap_or(0);
+        .map_or(0, |s| s.hull);
     assert!(
         p_hull < player_hull_0,
         "#86: after rotating to bear, the enemy must FIRE + connect (player hull {p_hull} < {player_hull_0}); it must not spin/mash forever",
@@ -421,7 +417,7 @@ fn q3_misfacing_enemy_rotates_to_bear_then_fires() {
  * player at bow-E fires a broadside up-lane.
  * ====================================================================== */
 
-/// A BroadsideArc beam. `raw` damage, all 2-D bands (range never gates), no
+/// A `BroadsideArc` beam. `raw` damage, all 2-D bands (range never gates), no
 /// falloff. Bears out the flanks perpendicular to the bow (Model D).
 fn broadside_beam(id: &str, raw: i32) -> Action {
     Action {
@@ -505,7 +501,7 @@ fn q92_broadside_enemy_orients_flank_to_player_then_fires() {
         rounds += 1;
         if let Some(e) = board.cells.iter().flatten().find(|s| s.id == "e") {
             // SIDE-on to an east player = bow turned off the E/W axis, i.e. N or S.
-            if matches!(e.facing, Facing::Bow(Dir4::N) | Facing::Bow(Dir4::S)) {
+            if matches!(e.facing, Facing::Bow(Dir4::N | Dir4::S)) {
                 side_on_seen = true;
             }
         }
@@ -514,8 +510,7 @@ fn q92_broadside_enemy_orients_flank_to_player_then_fires() {
             .iter()
             .flatten()
             .find(|s| s.id == "p")
-            .map(|s| s.hull)
-            .unwrap_or(0)
+            .map_or(0, |s| s.hull)
             < player_hull_0
         {
             break;
@@ -531,8 +526,7 @@ fn q92_broadside_enemy_orients_flank_to_player_then_fires() {
         .iter()
         .flatten()
         .find(|s| s.id == "p")
-        .map(|s| s.hull)
-        .unwrap_or(0);
+        .map_or(0, |s| s.hull);
     assert!(
         p_hull < player_hull_0,
         "#92: after going side-on, the broadside enemy FIRES + connects (player hull {p_hull} < {player_hull_0}); not spin/bow-rush",
@@ -591,7 +585,7 @@ fn q92_player_bow_ew_fires_broadside_up_lane() {
 
 /// A bow shield pool with `cap` capacity, full; the other faces empty. Lets a
 /// southward shot land on a Bow(S) ship's bow pool and watch it deplete.
-fn bow_pool(cap: i32) -> broadside_engine::types::ShieldProfile {
+const fn bow_pool(cap: i32) -> broadside_engine::types::ShieldProfile {
     use broadside_engine::types::{ShieldFace, ShieldProfile};
     ShieldProfile {
         bow: ShieldFace {
@@ -947,16 +941,14 @@ fn tick_enemy_fires_only_that_enemy_and_leaves_the_player_alone() {
             .iter()
             .flatten()
             .find(|s| s.id == id)
-            .map(|s| s.hull)
-            .unwrap_or(-1)
+            .map_or(-1, |s| s.hull)
     };
     let queue_len = |b: &broadside_engine::types::Board, id: &str| -> usize {
         b.cells
             .iter()
             .flatten()
             .find(|s| s.id == id)
-            .map(|s| s.queue.len())
-            .unwrap_or(0)
+            .map_or(0, |s| s.queue.len())
     };
 
     // First tick e1: telegraph-one-turn-ahead means tick 1 only DECIDES (its
@@ -1172,8 +1164,7 @@ fn turn_based_enemy_moves_then_telegraphs_then_fires() {
             .iter()
             .flatten()
             .find(|s| s.id == "p")
-            .map(|s| s.hull)
-            .unwrap_or(-1)
+            .map_or(-1, |s| s.hull)
     };
 
     let spawn_row = epos(&board).unwrap().row;
@@ -1181,7 +1172,7 @@ fn turn_based_enemy_moves_then_telegraphs_then_fires() {
     let mut first_hit_turn: Option<usize> = None;
     for turn in 1..=8 {
         resolve_round(&mut board, &content); // ONE turn
-        if epos(&board).map(|p| p.row != spawn_row).unwrap_or(false) {
+        if epos(&board).is_some_and(|p| p.row != spawn_row) {
             moved = true; // repositioned off its spawn row
         }
         if phull(&board) < 60 && first_hit_turn.is_none() {
@@ -1204,9 +1195,9 @@ fn turn_based_enemy_moves_then_telegraphs_then_fires() {
 
 /// CORE COOLDOWN RULE (Bruce's loop): an enemy must NOT queue/telegraph a weapon
 /// that is ON cooldown — the cooldown starts on FIRE, so it can re-fire only once
-/// per (cd_max + 1) turns. (Bruce hit a re-queue-on-cooldown bug on the PLAYER
+/// per (`cd_max` + 1) turns. (Bruce hit a re-queue-on-cooldown bug on the PLAYER
 /// side; this confirms the ENEMY AI is correctly gated.) Traced + verified: a
-/// beam_cannon (cd 3) enemy in range fires at turns 2, 7, 12 — gap 5 (>= cd+1),
+/// `beam_cannon` (cd 3) enemy in range fires at turns 2, 7, 12 — gap 5 (>= cd+1),
 /// and during recharge it maneuvers instead of re-queuing the on-cd weapon.
 #[test]
 fn enemy_does_not_queue_an_on_cooldown_weapon() {
@@ -1258,8 +1249,7 @@ fn enemy_does_not_queue_an_on_cooldown_weapon() {
             .iter()
             .flatten()
             .find(|s| s.id == "p")
-            .map(|s| s.hull)
-            .unwrap_or(-1)
+            .map_or(-1, |s| s.hull)
     };
     let ecd = |b: &broadside_engine::types::Board| {
         b.cells
@@ -1274,8 +1264,7 @@ fn enemy_does_not_queue_an_on_cooldown_weapon() {
             .iter()
             .flatten()
             .find(|s| s.id == "e")
-            .map(|s| s.queue.iter().any(|a| a == "beam_cannon"))
-            .unwrap_or(false)
+            .is_some_and(|s| s.queue.iter().any(|a| a == "beam_cannon"))
     };
 
     let mut prev = 200;

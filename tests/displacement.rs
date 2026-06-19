@@ -4,7 +4,7 @@
 //! TS `resolveSelfMove` / `resolveTargetMove` were stubs — so these tests are
 //! the canonical behavior spec, not a parity check. They pin the exact
 //! mechanics of `resolve_self_move` / `resolve_target_move` (THRUST / BURN /
-//! SLIP / JUMP / TRACTOR_SWAP self-moves; Push / Pull / Swap target-moves).
+//! SLIP / JUMP / `TRACTOR_SWAP` self-moves; Push / Pull / Swap target-moves).
 //!
 //! ## How these drive the (private) movement functions
 //!
@@ -41,7 +41,7 @@ use std::collections::HashMap;
 
 /// All-zero shield faces, so collision / push damage lands raw on hull and
 /// the expected numbers are `remaining × 1`.
-fn bare_profile() -> ShieldProfile {
+const fn bare_profile() -> ShieldProfile {
     ShieldProfile {
         bow: ShieldFace {
             armour: 0,
@@ -66,10 +66,10 @@ fn bare_profile() -> ShieldProfile {
 /// cell-delta asserts read as +/-1 columns), facing **E** (`bow`'s lane end maps
 /// to the E-W axis: Fore->Bow(E), Aft->Bow(W)). Invariant A holds.
 ///
-/// #22 2-D migration: displacement's DISPLACE_SELF moves run along `facing` (the
+/// #22 2-D migration: displacement's `DISPLACE_SELF` moves run along `facing` (the
 /// 2-D mover reads it), so a row-0 + Bow(E) layout makes a "forward" THRUST step
-/// E = `+1` cell, matching every 1-D delta assertion. DISPLACE_TARGET is
-/// geometry-derived (direction_to over pos) and also resolves cleanly on row 0.
+/// E = `+1` cell, matching every 1-D delta assertion. `DISPLACE_TARGET` is
+/// geometry-derived (`direction_to` over pos) and also resolves cleanly on row 0.
 fn ship(id: &str, cell: usize, hull: i32, bow: LaneEnd) -> Ship {
     use broadside_engine::grid::{Dir4, Facing, Pos};
     let pos = Pos::new(cell, 0);
@@ -177,9 +177,9 @@ fn carrier() -> Action {
     }
 }
 
-/// Fire a DISPLACE_SELF effect at `source_cell`.
+/// Fire a `DISPLACE_SELF` effect at `source_cell`.
 ///
-/// #22 2-D: the live 2-D mover (resolve_self_move_2d) reads `direction_2d` (else
+/// #22 2-D: the live 2-D mover (`resolve_self_move_2d`) reads `direction_2d` (else
 /// the ship's `facing`), NOT the legacy 1-D `direction`. So translate the 1-D
 /// `dir` override into its row-0 2-D cardinal — Fore (the +lane / +column
 /// direction) -> E, Aft -> W — and pass it as `direction_2d`. `None` falls back
@@ -206,7 +206,7 @@ fn self_move(
     apply_effect(&fx, &carrier(), source_cell, &[], board, &NoContent);
 }
 
-/// Fire a DISPLACE_TARGET effect from `source_cell` onto `target_cells`.
+/// Fire a `DISPLACE_TARGET` effect from `source_cell` onto `target_cells`.
 fn target_move(
     board: &mut Board,
     source_cell: usize,

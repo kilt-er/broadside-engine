@@ -49,7 +49,7 @@ mod common;
  * Fixtures.
  * ====================================================================== */
 
-fn frigate_shields() -> ShieldProfile {
+const fn frigate_shields() -> ShieldProfile {
     ShieldProfile {
         bow: ShieldFace {
             armour: 2,
@@ -70,7 +70,7 @@ fn frigate_shields() -> ShieldProfile {
     }
 }
 
-fn naked_shields() -> ShieldProfile {
+const fn naked_shields() -> ShieldProfile {
     ShieldProfile {
         bow: ShieldFace {
             armour: 0,
@@ -119,7 +119,7 @@ fn ship(id: &str, faction: Faction, cell: usize, hull: i32, bow: LaneEnd, weapon
     }
 }
 
-/// A forward beam: `amount` raw, optimal PointBlank, fires PB/Close/Mid,
+/// A forward beam: `amount` raw, optimal `PointBlank`, fires PB/Close/Mid,
 /// Forward-arc only. No falloff so adjacent shots land full.
 fn beam(id: &str, amount: i32) -> Action {
     Action {
@@ -160,8 +160,8 @@ fn beam(id: &str, amount: i32) -> Action {
     }
 }
 
-/// Content serving two beams by id ("pc_beam" for the player, "ai_beam" for
-/// enemies). spawn_projectile is unused (these scenarios fire beams).
+/// Content serving two beams by id ("`pc_beam`" for the player, "`ai_beam`" for
+/// enemies). `spawn_projectile` is unused (these scenarios fire beams).
 struct CombatContent {
     player_beam: Action,
     ai_beam: Action,
@@ -258,7 +258,7 @@ fn combat_loop_player_clears_two_armed_enemies() {
             if let Some(cell) = b
                 .cells
                 .iter()
-                .position(|c| c.as_ref().map(|s| s.id == pid).unwrap_or(false))
+                .position(|c| c.as_ref().is_some_and(|s| s.id == pid))
             {
                 if let Some(s) = b.cells[cell].as_mut() {
                     s.queue.push("pc_beam".into());
@@ -442,7 +442,7 @@ fn combat_loop_keeps_board_consistent_across_rounds() {
             if let Some(cell) = b
                 .cells
                 .iter()
-                .position(|c| c.as_ref().map(|s| s.id == pid).unwrap_or(false))
+                .position(|c| c.as_ref().is_some_and(|s| s.id == pid))
             {
                 if let Some(s) = b.cells[cell].as_mut() {
                     s.queue.push("pc_beam".into());
@@ -616,7 +616,7 @@ fn enemy_fires_and_holds_when_in_band_does_not_march() {
     let e1_cell = b
         .cells
         .iter()
-        .position(|c| c.as_ref().map(|s| s.id == "e1").unwrap_or(false));
+        .position(|c| c.as_ref().is_some_and(|s| s.id == "e1"));
     let hull_after = b
         .cells
         .iter()
@@ -649,7 +649,7 @@ fn enemy_fires_and_holds_when_in_band_does_not_march() {
  * catalog asset + the playability of the value it sets.
  * ====================================================================== */
 
-/// Content serving exactly one weapon by id (the real catalog pulse_laser).
+/// Content serving exactly one weapon by id (the real catalog `pulse_laser`).
 struct OneWeapon {
     id: String,
     action: Action,
@@ -675,17 +675,17 @@ fn live_pulse_laser() -> Option<Action> {
     cat.actions.into_iter().find(|a| a.id == "pulse_laser")
 }
 
-/// Fire the player's pulse_laser once, then apply end-of-turn heat dissipation
-/// — the player's per-turn heat cycle. Returns the player's (heat, locked_out)
+/// Fire the player's `pulse_laser` once, then apply end-of-turn heat dissipation
+/// — the player's per-turn heat cycle. Returns the player's (heat, `locked_out`)
 /// after the turn.
 ///
-/// We fire via the REAL resolver (`fire_player_queue` → run_action does the
+/// We fire via the REAL resolver (`fire_player_queue` → `run_action` does the
 /// heat += cost.heat + lockout-at-heat_max bookkeeping) so the accumulate side
 /// is genuine, then apply the canonical -1/turn dissipation DIRECTLY to the
 /// player (mirroring resolve.rs:611 `heat = (heat-1).max(0)` + unlock when
 /// `heat < heat_max`). We deliberately do NOT call `run_world_phase`: that
 /// would also run the dummy's enemy AI, whose close-move slides the target out
-/// of the pulse_laser's [Close] band (distance 2) so the player can no longer
+/// of the `pulse_laser`'s [Close] band (distance 2) so the player can no longer
 /// bear — which would silently stop the fire and defeat the heat test. Pinning
 /// the target stationary isolates the heat curve, which is what we're verifying.
 fn fire_once_then_cool(b: &mut Board, content: &dyn OneWeaponLike) -> (i32, bool) {
@@ -693,7 +693,7 @@ fn fire_once_then_cool(b: &mut Board, content: &dyn OneWeaponLike) -> (i32, bool
     let pcell = b
         .cells
         .iter()
-        .position(|c| c.as_ref().map(|s| s.id == pid).unwrap_or(false))
+        .position(|c| c.as_ref().is_some_and(|s| s.id == pid))
         .unwrap();
     // Queue the shot only if not locked out (a locked ship can't fire — the
     // resolver's lockout gate at resolve.rs:407 would no-op it anyway).
@@ -714,14 +714,13 @@ fn fire_once_then_cool(b: &mut Board, content: &dyn OneWeaponLike) -> (i32, bool
         .iter()
         .flatten()
         .find(|s| s.id == pid)
-        .map(|s| s.locked_out)
-        .unwrap_or(false);
+        .is_some_and(|s| s.locked_out);
     // Canonical end-of-turn dissipation, applied only to the player (no world
     // phase → the target never maneuvers out of band).
     if let Some(c) = b
         .cells
         .iter()
-        .position(|c| c.as_ref().map(|s| s.id == pid).unwrap_or(false))
+        .position(|c| c.as_ref().is_some_and(|s| s.id == pid))
     {
         if let Some(s) = b.cells[c].as_mut() {
             s.heat = (s.heat - 1).max(0);
@@ -735,12 +734,11 @@ fn fire_once_then_cool(b: &mut Board, content: &dyn OneWeaponLike) -> (i32, bool
         .iter()
         .flatten()
         .find(|s| s.id == pid)
-        .map(|s| s.heat)
-        .unwrap_or(0);
+        .map_or(0, |s| s.heat);
     (heat, locked_at_peak)
 }
 
-/// Tiny trait so the helper can take the concrete OneWeapon by reference while
+/// Tiny trait so the helper can take the concrete `OneWeapon` by reference while
 /// still handing the resolver a `&dyn Content`.
 trait OneWeaponLike {
     fn as_content(&self) -> &dyn Content;

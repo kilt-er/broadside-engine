@@ -1,6 +1,6 @@
 //! THE FAITHFUL AEGIS (headless) — imports the REAL `assets/ships/Aegis.glb`
 //! (Bruce's tool export, per `docs/BROADSIDE_RENDER_CONTRACT.md` v5 = our
-//! BROADSIDE_REALTIME_RENDER_SPEC.md), VERIFIES the imported mesh matches the
+//! `BROADSIDE_REALTIME_RENDER_SPEC.md`), VERIFIES the imported mesh matches the
 //! design, then renders it: an at-rest lit shot + a 180° key-light sweep,
 //! through the SAME `loft_gpu` pipeline the game uses. No Rust loft rebuild —
 //! the geometry comes entirely from the GLB.
@@ -27,14 +27,14 @@ use std::path::PathBuf;
 
 const AEGIS_GLB: &[u8] = include_bytes!("../../assets/ships/Aegis.glb");
 
-/// Sweep config (same as the light_sweep proof).
+/// Sweep config (same as the `light_sweep` proof).
 const FRAMES: usize = 14;
 const AZ_START_DEG: f32 = -90.0;
 const AZ_END_DEG: f32 = 90.0;
 const KEY_EL_DEG: f32 = 40.0;
 const KEY_INTENSITY: f32 = 1.8;
 /// Camera: a ¾ that shows the deck + a flank so the hull's mass + the stern
-/// nacelles read. The Aegis is X-length 12 → the gameplay HALF_EXTENT (7 → 14u
+/// nacelles read. The Aegis is X-length 12 → the gameplay `HALF_EXTENT` (7 → 14u
 /// box) already frames it; nudge the zoom in a touch for the hero shot.
 const SHIP_YAW_DEG: f32 = 35.0;
 const PITCH_DEG: f32 = 28.0;
@@ -122,7 +122,7 @@ fn main() {
 
 /// Numeric verification against the Aegis design (the wrong-ship guard). Returns
 /// Ok(report) when the imported mesh matches the v2-json's shape, Err(reason)
-/// otherwise. Checks: scaled length ≈ 12 (the build script's TARGET_LEN), a
+/// otherwise. Checks: scaled length ≈ 12 (the build script's `TARGET_LEN`), a
 /// wide-low beam:length (wscale 1.92 → the hull is broad, not a needle), the
 /// stern nacelle geometry is present (the 6 engines → multiple material groups
 /// incl. an unlit glow), and there ARE distinct material groups.

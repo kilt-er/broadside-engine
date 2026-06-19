@@ -79,7 +79,7 @@ fn every_cell() -> Vec<Pos> {
     v
 }
 
-fn p(col: usize, row: usize) -> Pos {
+const fn p(col: usize, row: usize) -> Pos {
     Pos::new(col, row)
 }
 
@@ -795,13 +795,10 @@ proptest! {
         let d1 = direction_to(a, b);
         let d2 = direction_to(a, b);
         prop_assert_eq!(d1, d2);
-        match d1 {
-            Some(d) => {
-                prop_assert!(a != b);
-                prop_assert!(ALL_DIR8.contains(&d));
-            }
-            None => prop_assert_eq!(a, b),
-        }
+        if let Some(d) = d1 {
+            prop_assert!(a != b);
+            prop_assert!(ALL_DIR8.contains(&d));
+        } else { prop_assert_eq!(a, b) }
     }
 
     /// The snapped direction is the BEST of the eight: its unit step has cosine
@@ -812,11 +809,11 @@ proptest! {
     fn direction_to_maximises_cosine_similarity(a in any_pos(), b in any_pos()) {
         prop_assume!(a != b);
         let chosen = direction_to(a, b).unwrap();
-        let (vc, vr) = ((b.col as i32 - a.col as i32) as f64, (b.row as i32 - a.row as i32) as f64);
+        let (vc, vr) = (f64::from(b.col as i32 - a.col as i32), f64::from(b.row as i32 - a.row as i32));
         let score = |d: Dir8| {
             let (sc, sr) = d.delta();
-            let mag = ((sc * sc + sr * sr) as f64).sqrt();
-            (vc * sc as f64 + vr * sr as f64) / mag
+            let mag = f64::from(sc * sc + sr * sr).sqrt();
+            (vc * f64::from(sc) + vr * f64::from(sr)) / mag
         };
         let best = score(chosen);
         for d in ALL_DIR8 {

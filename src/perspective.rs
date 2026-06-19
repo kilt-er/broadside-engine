@@ -58,7 +58,7 @@ pub const DEFAULT_LANE: LaneGeometry = LaneGeometry {
     cell_count: 7,
 };
 
-/// Map a cell index (0 .. cell_count−1) to its screen position. Linear
+/// Map a cell index (0 .. `cell_count−1`) to its screen position. Linear
 /// interpolation from `x_left` to `x_right` at constant `center_y`.
 pub fn cell_to_screen(cell_index: u32, geom: &LaneGeometry) -> Point2 {
     let n = geom.cell_count.saturating_sub(1) as f32;
@@ -110,7 +110,7 @@ pub struct ShipDims {
 /// Default Frigate hull. Sized on a **6:3:2 length:beam:height ratio at
 /// N=20** = 120×60×40. The lane cell width on `DEFAULT_LANE` is ~177
 /// design px, so a bow-on Frigate spans ~68% of one cell — leaves room
-/// for adjacent ships at PointBlank without silhouettes overlapping.
+/// for adjacent ships at `PointBlank` without silhouettes overlapping.
 /// Beam at 50% of length (was 25%) gives a chunkier top-down profile so
 /// the top sprite reads more distinctly at high view angles; height at
 /// 33% of length gives a flatter side silhouette suited to the
@@ -133,7 +133,7 @@ pub enum Stance {
 /// Range band a target sits in relative to a source cell. Thin convenience
 /// wrapper over `geometry::range_band` so renderer code can stay
 /// single-module; both paths MUST agree.
-pub fn band_between_cells(source: u32, target: u32) -> RangeBand {
+pub const fn band_between_cells(source: u32, target: u32) -> RangeBand {
     range_band(source as usize, target as usize)
 }
 
@@ -159,7 +159,7 @@ mod tests {
     fn cell_to_screen_midpoint_is_halfway() {
         // 7 cells = 6 spans; cell 3 is at t = 3/6 = 0.5.
         let mid = cell_to_screen(3, &DEFAULT_LANE);
-        let halfway = (DEFAULT_LANE.x_left + DEFAULT_LANE.x_right) / 2.0;
+        let halfway = f32::midpoint(DEFAULT_LANE.x_left, DEFAULT_LANE.x_right);
         assert!(approx_eq(mid.x, halfway, 1e-3));
     }
 
@@ -207,9 +207,7 @@ mod tests {
                 assert_eq!(
                     band_between_cells(s, t),
                     range_band(s as usize, t as usize),
-                    "drift at ({}, {})",
-                    s,
-                    t
+                    "drift at ({s}, {t})"
                 );
             }
         }

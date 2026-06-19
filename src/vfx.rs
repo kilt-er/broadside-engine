@@ -11,7 +11,7 @@
 //! This module NEVER subscribes to the [`crate::types::EventBus`] and never
 //! calls a resolver function. The reviewer's hard constraint is that VFX must
 //! read combat events **read-only** and **not re-enter the resolver in a
-//! callback** (the EventBus "no chained emit" invariant). We satisfy that *by
+//! callback** (the `EventBus` "no chained emit" invariant). We satisfy that *by
 //! construction*: there is no callback at all. Instead [`CombatVfx::observe`]
 //! diffs the current [`Board`] against the previous frame's snapshot and infers
 //! what happened:
@@ -49,7 +49,7 @@ struct Effect {
 
 #[derive(Clone, Copy, Debug)]
 enum EffectKind {
-    /// EXACT fired shot (#59): the resolver's per-round FireEvent, drawn as a
+    /// EXACT fired shot (#59): the resolver's per-round `FireEvent`, drawn as a
     /// styled beam attacker→target. `thickness` + `dur` come from the weapon
     /// archetype, `color` from the firing faction; a miss (`dim`) renders
     /// fainter. Replaces the old guessed nearest-opponent beam.
@@ -137,7 +137,7 @@ impl Snapshot {
 
 /// Live combat VFX state: the active transient effects + the previous frame's
 /// snapshot for diffing. Render-owned; the bin advances it each frame.
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct CombatVfx {
     effects: Vec<Effect>,
     prev: Option<Snapshot>,
@@ -159,7 +159,7 @@ impl CombatVfx {
     pub fn observe(&mut self, board: &Board) {
         let cur = Snapshot::of(board);
         // Capture the previous frame's fire signature BEFORE `take()` empties it.
-        let prev_sig = self.prev.as_ref().map(|p| p.fire_sig).unwrap_or(0);
+        let prev_sig = self.prev.as_ref().map_or(0, |p| p.fire_sig);
         if let Some(prev) = self.prev.take() {
             self.diff(&prev, &cur);
         }
@@ -269,12 +269,12 @@ impl CombatVfx {
         for e in &mut self.effects {
             e.age += dt;
         }
-        self.effects.retain(|e| e.alive());
+        self.effects.retain(Effect::alive);
         !self.effects.is_empty()
     }
 
     /// True while any transient effect is active (redraw-keepalive helper).
-    pub fn is_active(&self) -> bool {
+    pub const fn is_active(&self) -> bool {
         !self.effects.is_empty()
     }
 
@@ -286,10 +286,10 @@ impl CombatVfx {
         for e in &self.effects {
             match e.kind {
                 EffectKind::HitFlash { cell } => {
-                    emit_flash(out, lane, cell, HIT_COLOR, e.t(), 16.0)
+                    emit_flash(out, lane, cell, HIT_COLOR, e.t(), 16.0);
                 }
                 EffectKind::Explosion { cell } => {
-                    emit_flash(out, lane, cell, EXPLOSION_COLOR, e.t(), 30.0)
+                    emit_flash(out, lane, cell, EXPLOSION_COLOR, e.t(), 30.0);
                 }
                 EffectKind::Trail {
                     from_cell,
@@ -322,17 +322,17 @@ impl CombatVfx {
 /// would look the same anyway); the realistic case (different cells/weapons each
 /// round) changes the hash so the beams re-fire.
 fn fire_events_sig(board: &Board) -> u64 {
-    let mut h: u64 = 1469598103934665603; // FNV-1a offset
+    let mut h: u64 = 1_469_598_103_934_665_603; // FNV-1a offset
     let mut fold = |v: u64| {
         h ^= v;
-        h = h.wrapping_mul(1099511628211);
+        h = h.wrapping_mul(1_099_511_628_211);
     };
     for fe in &board.fire_events {
         fold(fe.from_cell as u64);
         fold(fe.to_cell as u64);
         fold(fe.archetype as u64);
         fold(fe.attacker_faction as u64);
-        fold(fe.hit as u64);
+        fold(u64::from(fe.hit));
     }
     fold(0xFF00 ^ board.fire_events.len() as u64);
     h
@@ -341,7 +341,7 @@ fn fire_events_sig(board: &Board) -> u64 {
 /* ---- draw helpers (flat-colour quads via SOLID_WHITE) --------------------- */
 
 /// A beam / trail: a thin rectangle from `from`→`to` along the lane, fading out
-/// over its lifetime. Rendered as a rotated SpriteInstance.
+/// over its lifetime. Rendered as a rotated `SpriteInstance`.
 fn emit_beam(
     out: &mut Vec<DrawCommand>,
     lane: &LaneGeometry,
@@ -354,9 +354,9 @@ fn emit_beam(
     let b = fractional_cell_to_screen(to_cell, lane);
     let dx = b.x - a.x;
     let dy = b.y - a.y;
-    let len = (dx * dx + dy * dy).sqrt().max(1.0);
-    let cx = (a.x + b.x) / 2.0;
-    let cy = (a.y + b.y) / 2.0;
+    let len = dx.hypot(dy).max(1.0);
+    let cx = f32::midpoint(a.x, b.x);
+    let cy = f32::midpoint(a.y, b.y);
     let alpha = (1.0 - t) * 0.9; // fade out
     let thickness = 3.0 * (1.0 - t * 0.5); // thins slightly as it fades
     out.push(DrawCommand::Sprite(SpriteInstance {
@@ -386,7 +386,7 @@ fn emit_beam(
 /// a broadside short-and-wide, etc. Colour comes from the firing faction.
 /// `pub(crate)` so the 2-D scene compositor ([`crate::hud::push_fire_2d`]) styles
 /// its fire beams from the SAME archetype table (single source).
-pub(crate) fn archetype_beam_style(a: crate::types::WeaponArchetype) -> (f32, f32) {
+pub(crate) const fn archetype_beam_style(a: crate::types::WeaponArchetype) -> (f32, f32) {
     use crate::types::WeaponArchetype as W;
     match a {
         W::Beam => (2.5, 0.20),      // instant thin bolt
@@ -394,14 +394,13 @@ pub(crate) fn archetype_beam_style(a: crate::types::WeaponArchetype) -> (f32, f3
         W::Broadside => (5.5, 0.26), // wide volley
         W::Control => (2.0, 0.30),   // thin, lingering tractor/lock
         W::Displacement => (3.0, 0.24),
-        W::Movement => (2.0, 0.20),
-        W::Defensive => (2.0, 0.20),
+        W::Movement | W::Defensive => (2.0, 0.20),
     }
 }
 
 /// Beam tint by the FIRING faction: enemy shots red, player shots cyan, so the
 /// player can read at a glance who is shooting whom.
-pub(crate) fn faction_beam_tint(f: Faction) -> [f32; 3] {
+pub(crate) const fn faction_beam_tint(f: Faction) -> [f32; 3] {
     match f {
         Faction::Enemy => [0.98, 0.34, 0.30], // hostile red
         Faction::Player => [0.40, 0.86, 1.0], // friendly cyan
@@ -426,9 +425,9 @@ fn emit_shot_beam(
     let b = fractional_cell_to_screen(to_cell, lane);
     let dx = b.x - a.x;
     let dy = b.y - a.y;
-    let len = (dx * dx + dy * dy).sqrt().max(1.0);
-    let cx = (a.x + b.x) / 2.0;
-    let cy = (a.y + b.y) / 2.0;
+    let len = dx.hypot(dy).max(1.0);
+    let cx = f32::midpoint(a.x, b.x);
+    let cy = f32::midpoint(a.y, b.y);
     // Bright at birth, fading out; a connecting hit reads fuller than a miss.
     let base_alpha = if dim { 0.45 } else { 0.95 };
     let alpha = (1.0 - t) * base_alpha;
@@ -546,7 +545,7 @@ pub struct ParticlePool {
 }
 
 impl ParticlePool {
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             particles: Vec::new(),
             seed: 0x9E37_79B9_7F4A_7C15,
@@ -561,15 +560,15 @@ impl ParticlePool {
     pub fn spawn_burst(&mut self, center: [f32; 2], n: u32, color: [f32; 4], dur: f32) {
         for i in 0..n {
             // FNV-1a fold of (seed, i) → three independent-ish [0,1) values.
-            let mut h: u64 = 1469598103934665603;
+            let mut h: u64 = 1_469_598_103_934_665_603;
             let mut fold = |v: u64| {
                 h ^= v;
-                h = h.wrapping_mul(1099511628211);
+                h = h.wrapping_mul(1_099_511_628_211);
                 ((h >> 11) & 0xFFFF) as f32 / 65535.0
             };
-            let a01 = fold(self.seed ^ i as u64);
-            let spd01 = fold(0xA1 ^ i as u64);
-            let sz01 = fold(0xB2 ^ i as u64);
+            let a01 = fold(self.seed ^ u64::from(i));
+            let spd01 = fold(0xA1 ^ u64::from(i));
+            let sz01 = fold(0xB2 ^ u64::from(i));
             let angle = a01 * std::f32::consts::TAU;
             let speed = 24.0 + spd01 * 70.0; // px/sec, radial
             self.particles.push(Particle {
@@ -582,7 +581,7 @@ impl ParticlePool {
             });
         }
         // Advance the seed so successive bursts differ.
-        self.seed = self.seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+        self.seed = self.seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
     }
 
     /// Integrate `pos += vel*dt`, age every particle by `dt`, drop the expired.
@@ -597,7 +596,7 @@ impl ParticlePool {
             p.vel[1] *= drag;
             p.age += dt;
         }
-        self.particles.retain(|p| p.alive());
+        self.particles.retain(Particle::alive);
         !self.particles.is_empty()
     }
 
@@ -627,12 +626,12 @@ impl ParticlePool {
     }
 
     /// Live particle count — for tests / debug.
-    pub fn len(&self) -> usize {
+    pub const fn len(&self) -> usize {
         self.particles.len()
     }
 
     /// True when no particles are live.
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.particles.is_empty()
     }
 }

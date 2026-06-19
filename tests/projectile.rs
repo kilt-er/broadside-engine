@@ -15,7 +15,7 @@
 //! 5. **Mid-flight impact within one multi-speed advance** — a speed-2
 //!    projectile that reaches a target on its first sub-step impacts there and
 //!    does not over-travel.
-//! 6. **SPAWN_ORDNANCE launch** — firing a launcher action through the full
+//! 6. **`SPAWN_ORDNANCE` launch** — firing a launcher action through the full
 //!    `resolve_round` spawns a projectile via `Content::spawn_projectile` and
 //!    puts it on `board.ordnance`.
 //!
@@ -167,7 +167,7 @@ fn board(size: usize, cells: Vec<Option<Ship>>, ordnance: Vec<Projectile>) -> Bo
 }
 
 /// Content that returns no actions and spawns a fixed torpedo on demand —
-/// for the SPAWN_ORDNANCE launch test.
+/// for the `SPAWN_ORDNANCE` launch test.
 struct OrdContent {
     launcher: Action,
 }
@@ -201,7 +201,7 @@ impl Content for OrdContent {
     }
 }
 
-/// Content with nothing — for the pure advance_projectile tests that never
+/// Content with nothing — for the pure `advance_projectile` tests that never
 /// look up an action or spawn ordnance.
 struct NoContent;
 impl Content for NoContent {

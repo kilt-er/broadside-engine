@@ -12,7 +12,7 @@
 //!   emitted by the analysis doc's "Copy JSON" button).
 //! - [`grid`] — v2 2D spatial type surface for the 5×4 grid: `Pos`,
 //!   `Dir8`, `Facing{Bow(Dir4)/Broadside(Axis)}`, `Range`, plus index /
-//!   offset / from_to / neighbors helpers. Lands standalone ahead of the
+//!   offset / `from_to` / neighbors helpers. Lands standalone ahead of the
 //!   atomic `cell:usize→Pos` migration (blueprint lane task A2). Pure data.
 //! - [`geometry`] — spatial primitives: orientation, arcs, range bands,
 //!   directional shield absorption (mirrors `engine/geometry.ts`). The 1-D
@@ -24,7 +24,7 @@
 //!   Lands additively alongside the 1-D `geometry` (expand-contract); the
 //!   architect `git mv`s it onto `geometry.rs` once A3 removes the 1-D world
 //!   (blueprint resolver task R1). Pure + deterministic — the single source the
-//!   firing path and the ThreatMap telegraph both run.
+//!   firing path and the `ThreatMap` telegraph both run.
 //! - [`resolve`] — the combat resolver: four-phase round, arc/heat/cooldown
 //!   gate, damage pipeline, ordnance advance (mirrors `engine/resolve.ts`).
 //!   Content / AI effect bodies are stubbed pending the content slice.
@@ -57,10 +57,10 @@
 //! - [`classes`] — three placeholder [`types::ClassDef`]s + their
 //!   Signature actions (Vanguard/Overcharge, Wraith/Phase Drift,
 //!   Bulwark/Broadside Volley). `DemoContent::default` registers the
-//!   three Signature actions; the ClassDefs are exposed via
+//!   three Signature actions; the `ClassDefs` are exposed via
 //!   `placeholder_classes()` for catalog seeding. Input wiring deferred
 //!   per task #62's "just have the Action defs in place."
-//! - [`save`] — JSON (serde_json) save/load for the per-run state
+//! - [`save`] — JSON (`serde_json`) save/load for the per-run state
 //!   ([`types::Run`]). Methods on `Run`: `save_to_disk(path)`,
 //!   `load_from_disk(path)`, `delete_save(path)`. Path is the caller's
 //!   choice — bin decides where; meta-progression lives at a separate

@@ -115,14 +115,14 @@ fn catalog_asset_loads_and_ids_are_unique() {
 /// Every action id referenced by a class's `set1` / `set2` / `signature`
 /// must resolve to a real action id in `catalog.actions`. Catches
 /// display-name vs action-id drift (the classic "Pulse Laser" string
-/// where "pulse_laser" was meant).
+/// where "`pulse_laser`" was meant).
 ///
 /// Task #82 normalized set1/set2 references to action ids. Task #84
 /// added the five class-signature Action records (slip/ram/phase/throw/
-/// swap_toss) to canonical `actions[]`, normalized the `signature`
-/// fields in `classes[]` to the matching snake_case ids, and extended
+/// `swap_toss`) to canonical `actions[]`, normalized the `signature`
+/// fields in `classes[]` to the matching `snake_case` ids, and extended
 /// the canonical transformer's id-keyword inference for slip/phase/
-/// swap_toss so the inflated Effects use the right `mode`. With both
+/// `swap_toss` so the inflated Effects use the right `mode`. With both
 /// landed, this regression test runs in the regular suite.
 #[test]
 fn class_loadout_action_ids_all_resolve() {

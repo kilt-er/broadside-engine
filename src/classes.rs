@@ -13,9 +13,9 @@
 //! broadside-native Aegis:
 //!
 //! - **corvette** Corvette "Slipstream" (Flexible)     — Slip
-//! - **prowship** Ram "Ironprow" (BowOn)               — Ram
+//! - **prowship** Ram "Ironprow" (`BowOn`)               — Ram
 //! - **runner**   Blockade Runner "Wraith" (Broadside) — Phase (+passive)
-//! - **tug**      Salvage Tug "Capstan" (BowOn)        — Throw
+//! - **tug**      Salvage Tug "Capstan" (`BowOn`)        — Throw
 //! - **carrier**  Carrier "Broadside Bay" (Broadside)  — Swap Toss
 //! - **aegis**    Battleship "Aegis" (Broadside)       — Broadside Sweep
 //!
@@ -33,7 +33,7 @@
 //! offensive inverse of the enemy AI's "maximise threatened lane-ends"
 //! directive (fire both flanks, then come about and present them again).
 //!
-//! The signature-ability ids (slip/ram/phase/throw/swap_toss/broadside_sweep)
+//! The signature-ability ids (`slip/ram/phase/throw/swap_toss/broadside_sweep`)
 //! were deliberately LEFT as-is: they name maneuvers, not heroes, and the
 //! resolver dispatches by them.
 //!
@@ -55,16 +55,16 @@
 //!
 //! The doc's five signatures are self-relative maneuvers (see the #84/#97
 //! fix in `catalog_canonical.rs` — the canonical export tags them
-//! `pattern: SELF` and they resolve as DISPLACE_SELF, NOT DISPLACE_TARGET):
+//! `pattern: SELF` and they resolve as `DISPLACE_SELF`, NOT `DISPLACE_TARGET)`:
 //!
-//! - **slip** — trade places with the ship directly ahead → DISPLACE_SELF
-//!   TRACTOR_SWAP.
-//! - **ram** — shove the ship ahead, collision damage → DISPLACE_SELF BURN
+//! - **slip** — trade places with the ship directly ahead → `DISPLACE_SELF`
+//!   `TRACTOR_SWAP`.
+//! - **ram** — shove the ship ahead, collision damage → `DISPLACE_SELF` BURN
 //!   forward (collision billed by `resolve_self_move`).
-//! - **phase** — pass through the ship ahead → DISPLACE_SELF SLIP.
-//! - **throw** — hurl the ship behind you → DISPLACE_SELF BURN aft.
-//! - **swap_toss** — swap the cells fore and aft → DISPLACE_SELF
-//!   TRACTOR_SWAP (the faithful single-swap subset; the doc's two-sided
+//! - **phase** — pass through the ship ahead → `DISPLACE_SELF` SLIP.
+//! - **throw** — hurl the ship behind you → `DISPLACE_SELF` BURN aft.
+//! - **`swap_toss`** — swap the cells fore and aft → `DISPLACE_SELF`
+//!   `TRACTOR_SWAP` (the faithful single-swap subset; the doc's two-sided
 //!   fore-AND-aft swap has no single-effect representation today).
 //!
 //! These mirror the catalog-canonical inflation exactly so the demo
@@ -152,7 +152,7 @@ pub fn corvette() -> ClassDef {
     }
 }
 
-/// Ram "Ironprow" (`prowship`) — BowOn, Ram. A reinforced bow-on hull built to
+/// Ram "Ironprow" (`prowship`) — `BowOn`, Ram. A reinforced bow-on hull built to
 /// collide; its strong front IS the weapon. Doc line 1148-1151 (reflavored #66
 /// from Destroyer "Ronin" / `ronin`).
 pub fn prowship() -> ClassDef {
@@ -197,7 +197,7 @@ pub fn runner() -> ClassDef {
     }
 }
 
-/// Salvage Tug "Capstan" (`tug`) — BowOn, Throw. A reversed-stance brawler that
+/// Salvage Tug "Capstan" (`tug`) — `BowOn`, Throw. A reversed-stance brawler that
 /// fights over its stern, hauling and heaving mass into kills. Doc line
 /// 1157-1160 (reflavored #66 from Monitor "Anvil" / `jujitsuka`).
 pub fn tug() -> ClassDef {
@@ -279,9 +279,9 @@ pub fn aegis() -> ClassDef {
  * ====================================================================== */
 
 /// Build a free-fire SELF-pattern displacement action shell (the shared
-/// shape of slip / ram / phase / throw / swap_toss): pattern SELF, no arc,
+/// shape of slip / ram / phase / throw / `swap_toss)`: pattern SELF, no arc,
 /// point-blank band, free-fire (does not advance the turn). The caller
-/// supplies the id, name, cost, and the DISPLACE_SELF effect.
+/// supplies the id, name, cost, and the `DISPLACE_SELF` effect.
 fn self_move_signature(
     id: &str,
     name: &str,
@@ -316,7 +316,7 @@ fn self_move_signature(
 }
 
 /// Slip (corvette) — trade places with the ship directly ahead.
-/// DISPLACE_SELF TRACTOR_SWAP. Doc heat 1 / cd 5, free-fire.
+/// `DISPLACE_SELF` `TRACTOR_SWAP`. Doc heat 1 / cd 5, free-fire.
 pub fn synthetic_slip() -> Action {
     self_move_signature(
         SIG_SLIP,
@@ -333,7 +333,7 @@ pub fn synthetic_slip() -> Action {
 }
 
 /// Ram (prowship) — shove the ship ahead, collision damage on impact.
-/// DISPLACE_SELF BURN forward; `resolve_self_move` bills the collision when
+/// `DISPLACE_SELF` BURN forward; `resolve_self_move` bills the collision when
 /// the burn is blocked by the ship ahead. Doc heat 2 / cd 6.
 pub fn synthetic_ram() -> Action {
     self_move_signature(
@@ -350,7 +350,7 @@ pub fn synthetic_ram() -> Action {
     )
 }
 
-/// Phase (runner) — pass through the ship directly ahead. DISPLACE_SELF
+/// Phase (runner) — pass through the ship directly ahead. `DISPLACE_SELF`
 /// SLIP (skip occupants, land in the first free cell beyond). Doc heat 1 /
 /// cd 5.
 pub fn synthetic_phase() -> Action {
@@ -369,7 +369,7 @@ pub fn synthetic_phase() -> Action {
 }
 
 /// Throw (tug) — hurl the ship behind you, collision damage.
-/// DISPLACE_SELF BURN toward the stern (`direction: Aft` overrides the
+/// `DISPLACE_SELF` BURN toward the stern (`direction: Aft` overrides the
 /// bow-relative step). Doc heat 2 / cd 6.
 pub fn synthetic_throw() -> Action {
     self_move_signature(
@@ -387,7 +387,7 @@ pub fn synthetic_throw() -> Action {
 }
 
 /// Swap Toss (carrier) — swap the cells directly fore and aft.
-/// DISPLACE_SELF TRACTOR_SWAP (the faithful single bow-side swap subset; the
+/// `DISPLACE_SELF` `TRACTOR_SWAP` (the faithful single bow-side swap subset; the
 /// two-sided fore-AND-aft swap has no single-effect representation today).
 /// Doc heat 2 / cd 7.
 pub fn synthetic_swap_toss() -> Action {
@@ -417,7 +417,7 @@ pub fn synthetic_swap_toss() -> Action {
 ///    is the visible telegraph distinguishing it from a plain both-ends
 ///    battery.
 ///
-/// Heat 4 / cooldown 5 — a heavy commit. Requires the BroadsideArc to bear.
+/// Heat 4 / cooldown 5 — a heavy commit. Requires the `BroadsideArc` to bear.
 /// DAMAGE resolves BEFORE the reorient (lands on who's in the line at fire
 /// time, then the flip happens).
 pub fn synthetic_broadside_sweep() -> Action {
@@ -489,7 +489,7 @@ mod tests {
         assert_eq!(placeholder_classes().len(), canonical_classes().len());
     }
 
-    /// Every ClassDef's `signature` must point at a Signature id this module
+    /// Every `ClassDef`'s `signature` must point at a Signature id this module
     /// synthesizes — otherwise the resolver silently no-ops the press.
     #[test]
     fn every_signature_id_is_synthesized() {

@@ -144,9 +144,9 @@ const IDLE_BOB_HZ: f32 = 0.16;
 /// (#118) A deterministic per-ship bob phase offset (radians) from the ship id, so
 /// ships idle out of sync. A tiny FNV-ish fold of the id bytes mapped into [0,TAU).
 fn ship_phase_offset(id: &str) -> f32 {
-    let mut h: u32 = 2166136261;
+    let mut h: u32 = 2_166_136_261;
     for b in id.bytes() {
-        h = (h ^ b as u32).wrapping_mul(16777619);
+        h = (h ^ u32::from(b)).wrapping_mul(16_777_619);
     }
     (h % 1000) as f32 / 1000.0 * std::f32::consts::TAU
 }
@@ -168,11 +168,11 @@ const VICTORY_TINT: [f32; 4] = [1.00, 0.80, 0.20, 0.45];
 /// so the silhouette grows while ships stay on their lane slots.
 ///
 /// At 2.0× a bow-on Frigate draws ~240 px wide vs the ~177 px cell pitch, so
-/// adjacent ships **overlap by design at PointBlank** — that reads as
+/// adjacent ships **overlap by design at `PointBlank`** — that reads as
 /// close-quarters crowding, not breakage (bruce's call: point-blank ships
 /// *should* look jammed together). Broadside ships (beam-on, 60 px base)
 /// stay ~120 px and never overlap. Vertically the worst case (broadside at
-/// 45°, total_h ≈ 113 px unscaled → ~226 px) still fits inside the 480 px
+/// 45°, `total_h` ≈ 113 px unscaled → ~226 px) still fits inside the 480 px
 /// canvas centered on `center_y = 240`.
 ///
 /// Renderer-side knob only — does NOT touch the `FRIGATE_DIMS` game-design
@@ -280,7 +280,7 @@ pub fn compose_scene_with(
 }
 
 /// Per-ship visual cell-position overrides, keyed by `Ship::id`. Each
-/// entry is a fractional cell index (0.0 .. lane.cell_count - 1.0) used
+/// entry is a fractional cell index (0.0 .. `lane.cell_count` - 1.0) used
 /// in place of the ship's logical `ship.cell`. Empty map (or the
 /// default constructed value) makes the function behave identically to
 /// [`compose_scene_with`] — every ship snaps to its logical cell.
@@ -441,7 +441,7 @@ pub struct Tween2d {
 }
 
 /// Linear-interpolate two [`crate::projector::CellQuad`]s corner-for-corner (+
-/// centre + depth_scale) by `t∈[0,1]`. Used to slide a ship between its previous
+/// centre + `depth_scale`) by `t∈[0,1]`. Used to slide a ship between its previous
 /// and current cell along the perspective grid (#79). At `t=0` returns `a`, at
 /// `t=1` returns `b`. `pub` so the bin builds a [`VisualShip2d`] (it owns the
 /// per-move timer + the from/to cells).
@@ -573,10 +573,10 @@ pub fn compose_scene_2d_tweened(
 
 /// Screen-space FIXED bottom HUD band (#56): the player's health bar + a row of
 /// large weapon tiles, pinned to the bottom of the 480×270 frame (NOT projected
-/// on the board), Shogun-Showdown style. Reads the player ship: hull/max_hull for
+/// on the board), Shogun-Showdown style. Reads the player ship: `hull/max_hull` for
 /// the bar; `mounts` for the tiles (one per weapon, hotkey 1.. in mount order),
 /// each tinted by state — ready (player accent), heated (amber, scaled by
-/// heat/heat_max), locked-out (red), on-cooldown (dim) — with the hotkey digit +
+/// `heat/heat_max`), locked-out (red), on-cooldown (dim) — with the hotkey digit +
 /// a weapon-archetype glyph. No-op if there's no player ship.
 fn push_bottom_hud_2d(out: &mut Vec<DrawCommand>, board: &Board) {
     let Some(player) = board
@@ -706,7 +706,7 @@ fn push_bottom_hud_2d(out: &mut Vec<DrawCommand>, board: &Board) {
 
 /// (#98 Bruce) The player's ability-tile row in the bottom HUD band — Shogun-
 /// Showdown style, drawn from the bin's [`AbilityTile`]s (the only place carrying
-/// per-weapon damage / range / cooldown_max; the Board doesn't). Per tile: the
+/// per-weapon damage / range / `cooldown_max`; the Board doesn't). Per tile: the
 /// weapon ICON centred; a LARGE DAMAGE number top-left (blank if 0); a smaller
 /// RANGE number (cells) top-right (blank if 0); the KEY (slot char) bottom-right;
 /// and COOLDOWN as TICKS along the bottom edge, one per `cooldown_max`, GREY by
@@ -1093,7 +1093,7 @@ pub fn push_damage_number_2d(
 }
 
 /// D4: render the enemy-intent telegraph from `board.threats` (the resolver's
-/// ThreatMap — single source, populated by R8 from each enemy's queued action).
+/// `ThreatMap` — single source, populated by R8 from each enemy's queued action).
 /// Per threat:
 ///   1. a bright cell OUTLINE — colour by [`ThreatKind`] (red = damage, brighter
 ///      red = lethal, blue = displace, violet = status) — so "this cell is
@@ -1288,7 +1288,7 @@ fn push_fire_2d(out: &mut Vec<DrawCommand>, board: &Board, cfg: &ProjectorConfig
             let reach = (q.near_edge_width() * 0.22).clamp(4.0, 10.0);
             let dirs = [(1.0_f32, 0.4_f32), (-0.8, 0.9), (0.3, -1.0), (-0.6, -0.5)];
             for (dx, dy) in dirs {
-                let n = (dx * dx + dy * dy).sqrt().max(1e-3);
+                let n = dx.hypot(dy).max(1e-3);
                 let end = [c[0] + dx / n * reach, c[1] + dy / n * reach];
                 push_line(out, pt(c), pt(end), 1.5, IMPACT_FLASH);
             }
@@ -1470,7 +1470,7 @@ fn outline_cell_2d(out: &mut Vec<DrawCommand>, q: &CellQuad, color: [f32; 4]) {
 
 /// `[f32; 2]` → the `perspective::Point2` the existing `push_line` takes.
 #[inline]
-fn pt(p: [f32; 2]) -> Point2 {
+const fn pt(p: [f32; 2]) -> Point2 {
     Point2 { x: p[0], y: p[1] }
 }
 
@@ -1493,7 +1493,8 @@ fn pt(p: [f32; 2]) -> Point2 {
 ///
 /// All FLAT (a Y-axis ground yaw). The exact ± signs are CALIBRATED by capture
 /// (all 4 cardinals must be DISTINCT + correct: N→VP, S→camera, E/W→perpendicular).
-fn loft_facing_ground_yaw(facing: Facing) -> f32 {
+#[allow(clippy::match_same_arms)] // deliberate facing->yaw mapping table; arms kept explicit
+const fn loft_facing_ground_yaw(facing: Facing) -> f32 {
     match facing {
         Facing::Bow(Dir4::N) => 0.0,
         Facing::Bow(Dir4::E) => 90.0,
@@ -1540,10 +1541,8 @@ fn push_ship_2d(
     };
     // (#79) Mid-move/turn: use the bin's interpolated render position/facing so
     // the ship SLIDES + ROTATES; absent ⇒ snap to the logical cell.
-    let mut center = vis.map(|v| v.center).unwrap_or(q.center);
-    let near_edge_width = vis
-        .map(|v| v.near_edge_width)
-        .unwrap_or_else(|| q.near_edge_width());
+    let mut center = vis.map_or(q.center, |v| v.center);
+    let near_edge_width = vis.map_or_else(|| q.near_edge_width(), |v| v.near_edge_width);
     // (#118) Gentle IDLE BOB so a resting ship reads as alive (Bruce). A small
     // vertical sine on a per-ship phase offset (so the fleet doesn't bob in
     // lockstep), scaled by the cell's depth so a far ship bobs less — keeps it
@@ -1552,14 +1551,12 @@ fn push_ship_2d(
     // frame clock. Tiny amplitude — it "breathes", it doesn't drift.
     let phase = time_s * IDLE_BOB_HZ * std::f32::consts::TAU + ship_phase_offset(&ship.id);
     center[1] += phase.sin() * IDLE_BOB_PX * q.depth_scale;
-    let facing_yaw_deg = vis
-        .map(|v| v.facing_yaw_deg)
-        .unwrap_or_else(|| loft_facing_ground_yaw(ship.facing));
+    let facing_yaw_deg = vis.map_or_else(|| loft_facing_ground_yaw(ship.facing), |v| v.facing_yaw_deg);
     // (#80) The cell's NEAR (bottom) edge screen-y — the loft hero hull seats its
     // base here so it FOLLOWS the cell up-lane on a move (was pinned to the HUD
     // band, which made the hull "drop off the grid" on any forward step).
     // `q.corners[3]` is the bottom-left (near edge); interpolated mid-slide.
-    let near_edge_y = vis.map(|v| v.near_edge_y).unwrap_or(q.corners[3][1]);
+    let near_edge_y = vis.map_or(q.corners[3][1], |v| v.near_edge_y);
 
     let is_player = ship.faction == Faction::Player;
 
@@ -1898,6 +1895,10 @@ fn push_polygon(out: &mut Vec<DrawCommand>, p: PolygonInstance) {
  * lane line as the camera tilts.
  * ============================================================================= */
 
+// The star/greeble scatter builds `[x, y]` arrays from `(x, y)` tuples returned
+// by the `lcg_canvas_pos` helper; the array literals read clearly and clippy's
+// tuple_array_conversions rewrite would only obscure them.
+#[allow(clippy::tuple_array_conversions)]
 fn push_parallax(out: &mut Vec<DrawCommand>, lane: &LaneGeometry, view_angle_rad: f32) {
     use crate::gfx::{VIRTUAL_H, VIRTUAL_W};
     let w = VIRTUAL_W as f32;
@@ -2040,8 +2041,8 @@ fn lcg_unit(seed: u32) -> f32 {
     (wang_hash(seed) as f32) / (u32::MAX as f32)
 }
 
-fn wang_hash(mut x: u32) -> u32 {
-    x = (x ^ 61).wrapping_mul(0x27D4_EB2D);
+const fn wang_hash(mut x: u32) -> u32 {
+    x = (x ^ 0x3D).wrapping_mul(0x27D4_EB2D);
     x ^= x >> 16;
     x = x.wrapping_mul(0x85EB_CA6B);
     x ^= x >> 13;
@@ -2180,7 +2181,7 @@ fn push_hazards(out: &mut Vec<DrawCommand>, board: &Board, lane: &LaneGeometry) 
 /// feedback on commit 2caa712). The silhouette is anchored at its BASE
 /// on the lane line and extends upward.
 ///
-/// **Bow morph** for BowOn:
+/// **Bow morph** for `BowOn`:
 /// - Bow-end taper width = `(length * 0.25) * cos(θ)`. At 0° full bow
 ///   triangle; at 90° taper width is zero -> pure rectangle.
 /// - Chevron is overlaid near the bow end with alpha `sin(θ)` — invisible
@@ -2304,10 +2305,10 @@ fn push_ship(
 
     match stance {
         Stance::BowOn => {
-            push_bow_on_silhouette(out, cx, base_y, top_y, width, cos_a, bow_fore, fill, stroke)
+            push_bow_on_silhouette(out, cx, base_y, top_y, width, cos_a, bow_fore, fill, stroke);
         }
         Stance::Broadside => {
-            push_broadside_silhouette(out, cx, base_y, top_y, width, cos_a, fill, stroke)
+            push_broadside_silhouette(out, cx, base_y, top_y, width, cos_a, fill, stroke);
         }
     }
 
@@ -2374,7 +2375,7 @@ fn push_bow_on_silhouette(
     let full_bow_w = width * 0.25;
     let bow_w = full_bow_w * cos_a;
     let body_w = width - bow_w;
-    let mid_y = (top_y + base_y) / 2.0;
+    let mid_y = f32::midpoint(top_y, base_y);
     let sign = if bow_fore { 1.0 } else { -1.0 };
     // Stern edge x: the far end from the bow.
     let stern_edge_x = cx - sign * width / 2.0;
@@ -2637,9 +2638,9 @@ fn push_view_angle_overlay(out: &mut Vec<DrawCommand>, view_angle_rad: f32) {
 fn push_line(out: &mut Vec<DrawCommand>, a: Point2, b: Point2, thickness: f32, color: [f32; 4]) {
     let dx = b.x - a.x;
     let dy = b.y - a.y;
-    let len = (dx * dx + dy * dy).sqrt();
-    let cx = (a.x + b.x) / 2.0;
-    let cy = (a.y + b.y) / 2.0;
+    let len = dx.hypot(dy);
+    let cx = f32::midpoint(a.x, b.x);
+    let cy = f32::midpoint(a.y, b.y);
     push_sprite(
         out,
         SpriteInstance {
@@ -2870,7 +2871,7 @@ fn archetype_of_mount(ship: &Ship, action_id: &str) -> Option<WeaponArchetype> {
     Some(WeaponArchetype::Beam)
 }
 
-fn archetype_to_glyph(a: WeaponArchetype) -> (u32, u32) {
+const fn archetype_to_glyph(a: WeaponArchetype) -> (u32, u32) {
     match a {
         WeaponArchetype::Beam => atlas::GLYPH_BEAM,
         WeaponArchetype::Ordnance => atlas::GLYPH_ORDNANCE,
@@ -2913,7 +2914,11 @@ fn push_status_badges(
     }
 }
 
-fn status_to_badge(s: &Status) -> (u32, u32) {
+// `&Status` is kept (rather than by-value `Status`) to match the sibling
+// `*_to_*` badge/glyph helpers' borrow signatures; the trivially_copy nit isn't
+// worth diverging this small family's call sites.
+#[allow(clippy::trivially_copy_pass_by_ref)]
+const fn status_to_badge(s: &Status) -> (u32, u32) {
     match s.kind {
         StatusKind::HullBreach => atlas::STATUS_HULL_BREACH,
         StatusKind::SystemsOffline => atlas::STATUS_SYSTEMS_OFFLINE,
@@ -3073,7 +3078,7 @@ pub fn push_player_hit_flash(out: &mut Vec<DrawCommand>, intensity: f32) {
 /// also surfaces the run's earned-salvage total so the player sees
 /// what their meta-progression contribution was before dying.
 pub fn push_run_defeated_overlay(out: &mut Vec<DrawCommand>, salvage: u32) {
-    push_run_defeated_overlay_with_cause(out, salvage, None)
+    push_run_defeated_overlay_with_cause(out, salvage, None);
 }
 
 /// Like [`push_run_defeated_overlay`] but surfaces WHAT killed the player —
@@ -3104,7 +3109,7 @@ pub fn push_run_defeated_overlay_with_cause(
     }
     push_centered_banner(
         out,
-        &format!("TOTAL SALVAGE: {}", salvage),
+        &format!("TOTAL SALVAGE: {salvage}"),
         center_y + 10.0,
         3.0,
     );
@@ -3116,7 +3121,7 @@ pub fn push_run_defeated_overlay_with_cause(
 /// counter ticks up on each encounter win. Pushes a single row of
 /// 5×7 glyphs ~16px from the top-right canvas edge.
 pub fn push_salvage_hud(out: &mut Vec<DrawCommand>, salvage: u32) {
-    let banner = format!("SALVAGE: {}", salvage);
+    let banner = format!("SALVAGE: {salvage}");
     // (#127 Bruce) Moved from top-right to the BOTTOM-LEFT, tucked UNDER the
     // HULL/SHLD bars in the bottom HUD band. Left-aligned to the same x as the
     // bars (hp_x = 10 in push_bottom_hud_2d) and sat just below the shield bar
@@ -3254,8 +3259,7 @@ pub fn enemy_badge_number(board: &Board, id: &str) -> u32 {
     ids.sort_unstable();
     ids.iter()
         .position(|x| *x == id)
-        .map(|i| i as u32 + 1)
-        .unwrap_or(0)
+        .map_or(0, |i| i as u32 + 1)
 }
 
 /// (#131 Bruce) Draw each LIVE enemy's IDENTITY number above-LEFT of its hull on the
@@ -3283,13 +3287,11 @@ pub fn push_enemy_id_badges_2d(
         let center = tween
             .visual
             .get(&ship.id)
-            .map(|v| v.center)
-            .unwrap_or(q.center);
+            .map_or(q.center, |v| v.center);
         let depth = tween
             .visual
             .get(&ship.id)
-            .map(|v| v.depth_scale)
-            .unwrap_or(q.depth_scale);
+            .map_or(q.depth_scale, |v| v.depth_scale);
         // Above-LEFT of the hull: left of centre, up by ~the hull half-height.
         let half = (q.near_edge_width() * 0.5).max(10.0);
         let bx = center[0] - half;
@@ -3671,15 +3673,15 @@ pub enum AbilityIcon {
 }
 
 impl AbilityIcon {
-    fn atlas_cell(self) -> (u32, u32) {
+    const fn atlas_cell(self) -> (u32, u32) {
         match self {
-            AbilityIcon::Beam => atlas::GLYPH_BEAM,
-            AbilityIcon::Ordnance => atlas::GLYPH_ORDNANCE,
-            AbilityIcon::Broadside => atlas::GLYPH_BROADSIDE,
-            AbilityIcon::Displacement => atlas::GLYPH_DISPLACEMENT,
-            AbilityIcon::Control => atlas::GLYPH_CONTROL,
-            AbilityIcon::Movement => atlas::GLYPH_MOVEMENT,
-            AbilityIcon::Defensive => atlas::GLYPH_DEFENSIVE,
+            Self::Beam => atlas::GLYPH_BEAM,
+            Self::Ordnance => atlas::GLYPH_ORDNANCE,
+            Self::Broadside => atlas::GLYPH_BROADSIDE,
+            Self::Displacement => atlas::GLYPH_DISPLACEMENT,
+            Self::Control => atlas::GLYPH_CONTROL,
+            Self::Movement => atlas::GLYPH_MOVEMENT,
+            Self::Defensive => atlas::GLYPH_DEFENSIVE,
         }
     }
 }
@@ -3756,7 +3758,7 @@ const TILE_TWEEN_SECS: f32 = 0.18;
 /// Stateful player ability-tile layout + animation. Holds a per-slot lerp
 /// (`0.0` = resting below the lane, `1.0` = docked in the above-ship queue
 /// stack) so queue/dequeue animate. The bin advances it each frame and emits.
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct AbilityHud {
     /// slot char → current animated position fraction (0 below ↔ 1 above).
     phase: std::collections::HashMap<char, f32>,
@@ -3947,7 +3949,7 @@ fn emit_tile(out: &mut Vec<DrawCommand>, t: &AbilityTile, pos: [f32; 2], enemy: 
 
 /// What an enemy's next queued action is, for the telegraph cue. The bin maps
 /// the queued action id → effects → this.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TelegraphKind {
     /// A weapon/ability that will deal `damage` (an incoming attack).
     Ability { icon: AbilityIcon, damage: i32 },
@@ -4032,7 +4034,7 @@ pub fn push_incoming_attack(
     let y = lane.center_y;
     let dx = player_x - enemy_x;
     let len = dx.abs().max(1.0);
-    let cx = (enemy_x + player_x) / 2.0;
+    let cx = f32::midpoint(enemy_x, player_x);
     let alpha = 0.30 + 0.45 * pulse;
     out.push(DrawCommand::Sprite(SpriteInstance {
         pos: [cx, y],
@@ -4116,7 +4118,7 @@ fn emit_turn_glyph(out: &mut Vec<DrawCommand>, pos: [f32; 2], r: f32, color: [f3
 /// One readied entry in an enemy's telegraph stack. `Pending` is the spinny
 /// "winding up" placeholder occupying the slot where the next action will
 /// resolve; the others are the resolved cues (ability icon / move arrow / turn).
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TelegraphSlot {
     /// The next-to-resolve slot, not yet committed to a concrete cue. Drawn as
     /// the animated spinner so the player sees the enemy "winding up".
@@ -4296,7 +4298,7 @@ pub fn push_move_arrow_around(
     let head = 11.0;
     let shaft_near_x = enemy_x + sign * gap;
     let shaft_far_x = shaft_near_x + sign * shaft_len;
-    let shaft_cx = (shaft_near_x + shaft_far_x) / 2.0;
+    let shaft_cx = f32::midpoint(shaft_near_x, shaft_far_x);
     // Shaft.
     push_sprite(
         out,
@@ -4373,7 +4375,7 @@ fn push_centered_banner(out: &mut Vec<DrawCommand>, banner: &str, y_center: f32,
 pub enum BetweenEncounterChoice {
     /// Encounter just cleared. Player picks 1/2/3 (repair / upgrade /
     /// continue). `sector_idx` is the run's CURRENT sector index
-    /// (zero-based); displayed as sector_idx+1 in the banner.
+    /// (zero-based); displayed as `sector_idx+1` in the banner.
     /// `salvage` is the run's current `Run::salvage` total after the
     /// just-completed encounter's award.
     EncounterComplete { sector_idx: usize, salvage: u32 },
@@ -4423,12 +4425,12 @@ pub fn push_between_encounter_overlay(out: &mut Vec<DrawCommand>, choice: Betwee
             // Banner row: "ENCOUNTER COMPLETE - SECTOR N" at y_center - 60.
             let pixel = 3.0;
             let sector_num = sector_idx + 1;
-            let banner = format!("ENCOUNTER COMPLETE - SECTOR {}", sector_num);
+            let banner = format!("ENCOUNTER COMPLETE - SECTOR {sector_num}");
             push_centered_banner(out, &banner, center_y - 60.0, pixel);
             // Salvage row: "SALVAGE: N" between banner and choices.
             push_centered_banner(
                 out,
-                &format!("SALVAGE: {}", salvage),
+                &format!("SALVAGE: {salvage}"),
                 center_y - 15.0,
                 pixel,
             );
@@ -4444,7 +4446,7 @@ pub fn push_between_encounter_overlay(out: &mut Vec<DrawCommand>, choice: Betwee
             push_centered_banner(out, "RUN COMPLETE", center_y - 50.0, 5.0);
             push_centered_banner(
                 out,
-                &format!("TOTAL SALVAGE: {}", salvage),
+                &format!("TOTAL SALVAGE: {salvage}"),
                 center_y + 15.0,
                 3.0,
             );
@@ -4460,6 +4462,10 @@ pub fn push_between_encounter_overlay(out: &mut Vec<DrawCommand>, choice: Betwee
  * encoded as 7 rows of 5 bits, MSB-first (bit 4 = column 0).
  * ============================================================================= */
 
+// The 5x7 glyph table has a `' ' => return` arm kept explicit (space is a known
+// blank) alongside the `_ => return` unknown-char fallback; they share a body
+// but are documented separately.
+#[allow(clippy::match_same_arms)]
 fn push_glyph_5x7(
     out: &mut Vec<DrawCommand>,
     ch: char,
@@ -4634,7 +4640,7 @@ mod tests {
 
     fn frigate_at(cell: usize, faction: Faction, orientation: Orientation) -> Ship {
         Ship {
-            id: format!("ship-{}", cell),
+            id: format!("ship-{cell}"),
             faction,
             cell,
             pos: crate::grid::Pos::new(0, 0),
@@ -4712,8 +4718,8 @@ mod tests {
     }
 
     /// (#116) A RESTING tile whose weapon can't bear (`!can_fire`, not queued) is
-    /// drawn DISABLED — it emits the dim TILE_DISABLED_BG so it reads "useless from
-    /// here". A fireable resting tile uses the normal TILE_BG. Locks the grey-out.
+    /// drawn DISABLED — it emits the dim `TILE_DISABLED_BG` so it reads "useless from
+    /// here". A fireable resting tile uses the normal `TILE_BG`. Locks the grey-out.
     #[test]
     fn resting_no_target_tile_renders_disabled() {
         let has_bg = |cmds: &[DrawCommand], color: [f32; 4]| {
@@ -5070,9 +5076,7 @@ mod tests {
         assert!(
             tweened_x < logical_x,
             "tweened ship (visual_cell=2) should be drawn LEFT of logical ship (cell=4); \
-             got logical_x={} tweened_x={}",
-            logical_x,
-            tweened_x
+             got logical_x={logical_x} tweened_x={tweened_x}"
         );
     }
 
@@ -5602,10 +5606,7 @@ mod tests {
                             for c in v {
                                 assert!(
                                     c.is_finite(),
-                                    "non-finite sprite coord at angle {}° idx {}: {:?}",
-                                    d,
-                                    i,
-                                    s
+                                    "non-finite sprite coord at angle {d}° idx {i}: {s:?}"
                                 );
                             }
                         }
@@ -5615,10 +5616,7 @@ mod tests {
                             for c in v {
                                 assert!(
                                     c.is_finite(),
-                                    "non-finite polygon coord at angle {}° idx {}: {:?}",
-                                    d,
-                                    i,
-                                    p
+                                    "non-finite polygon coord at angle {d}° idx {i}: {p:?}"
                                 );
                             }
                         }
@@ -5628,19 +5626,13 @@ mod tests {
                             for c in v {
                                 assert!(
                                     c.is_finite(),
-                                    "non-finite textured-ship coord at angle {}° idx {}: {:?}",
-                                    d,
-                                    i,
-                                    t
+                                    "non-finite textured-ship coord at angle {d}° idx {i}: {t:?}"
                                 );
                             }
                         }
                         assert!(
                             t.blend_t.is_finite(),
-                            "non-finite blend_t at angle {}° idx {}: {:?}",
-                            d,
-                            i,
-                            t
+                            "non-finite blend_t at angle {d}° idx {i}: {t:?}"
                         );
                     }
                     DrawCommand::LoftShip(l) => {
@@ -5648,10 +5640,7 @@ mod tests {
                             for c in v {
                                 assert!(
                                     c.is_finite(),
-                                    "non-finite loft-ship coord at angle {}° idx {}: {:?}",
-                                    d,
-                                    i,
-                                    l
+                                    "non-finite loft-ship coord at angle {d}° idx {i}: {l:?}"
                                 );
                             }
                         }

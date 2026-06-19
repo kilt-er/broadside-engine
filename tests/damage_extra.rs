@@ -1,26 +1,26 @@
 //! Net-new destroy / chain-window assertions (content spec C2 + D1 + D3).
 //!
 //! Most of content's C/D series is already covered:
-//! - C1 (detect_chain threshold) — src/resolve.rs inline
+//! - C1 (`detect_chain` threshold) — src/resolve.rs inline
 //!   `detect_chain_fires_at_two_destroys_in_one_window`
-//! - C3 (per-destroy chain increment) — tests/event_chain.rs
+//! - C3 (per-destroy chain increment) — `tests/event_chain.rs`
 //!   `cascading_reactor_breaches_chain_correctly`
-//! - D2 (ReactorBreach splash + OnLethal ordering, armour-0 neighbours) —
-//!   tests/event_chain.rs `reactor_breach_splashes_neighbour_then_emits_lethal`
+//! - D2 (`ReactorBreach` splash + `OnLethal` ordering, armour-0 neighbours) —
+//!   `tests/event_chain.rs` `reactor_breach_splashes_neighbour_then_emits_lethal`
 //!
 //! This file adds only the genuinely-uncovered ones, so it does NOT duplicate
 //! the above:
 //! - **D1** — `destroy` clears the cell to `None` and emits exactly one
 //!   `OnLethal` for that cell, for a PLAIN (non-ReactorBreach) ship.
-//! - **D3** — ReactorBreach splash is **shield-mediated**: a neighbour with
+//! - **D3** — `ReactorBreach` splash is **shield-mediated**: a neighbour with
 //!   facing-zone armour 1 takes `2 - 1 = 1`, proving the 2-point splash routes
 //!   through `apply_damage` / `absorb_shield`, NOT a raw `hull -= 2`.
 //! - **C2** — the chain-kill window is reset to 0 on entry to a fresh
 //!   `apply_instant_action` pass (a stale count from a prior window can't leak
 //!   a phantom chain).
-//! - **E4 (HeatSink floor)** — content flagged uncertainty on the exact
+//! - **E4 (`HeatSink` floor)** — content flagged uncertainty on the exact
 //!   low-heat arithmetic. `subsystems.rs` covers heat 4→2 / 5→2-stacked /
-//!   lockout-clear (all well above 0), but NOT the floor: HeatSink must not
+//!   lockout-clear (all well above 0), but NOT the floor: `HeatSink` must not
 //!   pull heat negative. This pins `(heat - extra).max(0)` at heat 0 and 1.
 
 use broadside_engine::resolve::{apply_instant_action, destroy, Content};
@@ -113,7 +113,7 @@ fn board(size: usize, cells: Vec<Option<Ship>>) -> Board {
     }
 }
 
-/// Wire an OnLethal recorder; returns the shared cell-log.
+/// Wire an `OnLethal` recorder; returns the shared cell-log.
 fn record_lethal(board: &mut Board) -> Rc<RefCell<Vec<usize>>> {
     let log: Rc<RefCell<Vec<usize>>> = Rc::new(RefCell::new(Vec::new()));
     let l = Rc::clone(&log);

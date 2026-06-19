@@ -107,7 +107,7 @@ impl Default for ImportLight {
 /// `[start, start+len)` **vertices** (not triangles) that share `material`
 /// (an index into [`ImportedShip::materials`]). Because the mesh is tri-soup,
 /// `start` and `len` are always multiples of 3.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct GroupRange {
     pub start: usize,
     pub len: usize,
@@ -149,9 +149,7 @@ impl ImportedShip {
         for g in &self.group_ranges {
             let color = self
                 .materials
-                .get(g.material)
-                .map(|m| m.color)
-                .unwrap_or_else(|| MeshMaterial::default().color);
+                .get(g.material).map_or_else(|| MeshMaterial::default().color, |m| m.color);
             let end = (g.start + g.len).min(vcount);
             for c in &mut colors[g.start.min(vcount)..end] {
                 *c = color;
@@ -180,9 +178,9 @@ pub enum ImportError {
 impl std::fmt::Display for ImportError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ImportError::Gltf(e) => write!(f, "glTF import error: {e}"),
-            ImportError::NoGeometry => write!(f, "glTF carried no drawable geometry"),
-            ImportError::UnsupportedTopology => {
+            Self::Gltf(e) => write!(f, "glTF import error: {e}"),
+            Self::NoGeometry => write!(f, "glTF carried no drawable geometry"),
+            Self::UnsupportedTopology => {
                 write!(f, "glTF primitive used a non-triangle topology")
             }
         }
@@ -192,7 +190,7 @@ impl std::fmt::Display for ImportError {
 impl std::error::Error for ImportError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            ImportError::Gltf(e) => Some(e),
+            Self::Gltf(e) => Some(e),
             _ => None,
         }
     }
@@ -200,7 +198,7 @@ impl std::error::Error for ImportError {
 
 impl From<gltf::Error> for ImportError {
     fn from(e: gltf::Error) -> Self {
-        ImportError::Gltf(e)
+        Self::Gltf(e)
     }
 }
 
@@ -229,9 +227,8 @@ pub fn load_glb(bytes: &[u8]) -> Result<ImportedShip, ImportError> {
             let reader = prim.reader(|b| Some(&buffers[b.index()]));
 
             // POSITION is mandatory for drawable geometry.
-            let pos_iter = match reader.read_positions() {
-                Some(p) => p,
-                None => continue,
+            let Some(pos_iter) = reader.read_positions() else {
+                continue;
             };
             let prim_positions: Vec<[f32; 3]> = pos_iter.collect();
             if prim_positions.is_empty() {
@@ -332,33 +329,28 @@ fn material_of(prim: &gltf::Primitive) -> MeshMaterial {
 /// writes these so the engine can honour the ship's authored light direction;
 /// `bands` / `res` in the same blob are intentionally ignored (house style).
 fn read_scene_light(doc: &gltf::Document) -> ImportLight {
-    let scene = match doc.default_scene().or_else(|| doc.scenes().next()) {
-        Some(s) => s,
-        None => return ImportLight::default(),
+    let Some(scene) = doc.default_scene().or_else(|| doc.scenes().next()) else {
+        return ImportLight::default();
     };
     // With the `extras` feature, `extras()` is `&Option<Box<RawValue>>`.
-    let raw = match scene.extras() {
-        Some(r) => r,
-        None => return ImportLight::default(),
+    let Some(raw) = scene.extras() else {
+        return ImportLight::default();
     };
     // `extras` is raw JSON (a boxed RawValue); parse it leniently.
     let parsed: Result<serde_json::Value, _> = serde_json::from_str(raw.get());
-    let v = match parsed {
-        Ok(v) => v,
-        Err(_) => return ImportLight::default(),
+    let Ok(v) = parsed else {
+        return ImportLight::default();
     };
     let default = ImportLight::default();
     ImportLight {
         laz_deg: v
             .get("laz")
-            .and_then(|x| x.as_f64())
-            .map(|x| x as f32)
-            .unwrap_or(default.laz_deg),
+            .and_then(serde_json::Value::as_f64)
+            .map_or(default.laz_deg, |x| x as f32),
         lel_deg: v
             .get("lel")
-            .and_then(|x| x.as_f64())
-            .map(|x| x as f32)
-            .unwrap_or(default.lel_deg),
+            .and_then(serde_json::Value::as_f64)
+            .map_or(default.lel_deg, |x| x as f32),
     }
 }
 
@@ -397,6 +389,11 @@ mod tests {
     /// clippy's `type_complexity` lint quiet.
     type PrimSpec<'a> = (&'a [[f32; 3]], &'a [u32], [f32; 4], [f32; 3]);
 
+    // Test-only GLB writer: builds small JSON fragments by `+= &format!`. The
+    // intermediate-allocation that `format_push_string` flags is immaterial here
+    // (a few hundred bytes, once per test), and `write!`-into-String would only
+    // add `.unwrap()` noise to fixture code.
+    #[allow(clippy::format_push_string)]
     fn build_glb(prims: &[PrimSpec], scene_extras: Option<&str>) -> Vec<u8> {
         use std::io::Write;
 
@@ -412,7 +409,7 @@ mod tests {
 
         let align4 = |b: &mut Vec<u8>| {
             while !b.len().is_multiple_of(4) {
-                b.push(0)
+                b.push(0);
             }
         };
 
@@ -438,7 +435,7 @@ mod tests {
 
             // POSITION view/accessor
             let pos_off = bin.len();
-            for p in positions.iter() {
+            for p in *positions {
                 for c in p {
                     bin.write_all(&c.to_le_bytes()).unwrap();
                 }
@@ -447,7 +444,7 @@ mod tests {
             align4(&mut bin);
             let (pmin, pmax) = bounds(positions);
             buffer_views +=
-                &format!(r#"{{"buffer":0,"byteOffset":{pos_off},"byteLength":{pos_len}}},"#,);
+                &format!(r#"{{"buffer":0,"byteOffset":{pos_off},"byteLength":{pos_len}}},"#);
             let pos_acc = acc_i;
             accessors += &format!(
                 r#"{{"bufferView":{view_i},"componentType":5126,"count":{},"type":"VEC3","min":[{},{},{}],"max":[{},{},{}]}},"#,
@@ -472,7 +469,7 @@ mod tests {
             let nrm_len = bin.len() - nrm_off;
             align4(&mut bin);
             buffer_views +=
-                &format!(r#"{{"buffer":0,"byteOffset":{nrm_off},"byteLength":{nrm_len}}},"#,);
+                &format!(r#"{{"buffer":0,"byteOffset":{nrm_off},"byteLength":{nrm_len}}},"#);
             let nrm_acc = acc_i;
             accessors += &format!(
                 r#"{{"bufferView":{view_i},"componentType":5126,"count":{},"type":"VEC3"}},"#,
@@ -483,13 +480,13 @@ mod tests {
 
             // INDICES view/accessor (u32 = componentType 5125)
             let idx_off = bin.len();
-            for &ix in indices.iter() {
+            for &ix in *indices {
                 bin.write_all(&ix.to_le_bytes()).unwrap();
             }
             let idx_len = bin.len() - idx_off;
             align4(&mut bin);
             buffer_views +=
-                &format!(r#"{{"buffer":0,"byteOffset":{idx_off},"byteLength":{idx_len}}},"#,);
+                &format!(r#"{{"buffer":0,"byteOffset":{idx_off},"byteLength":{idx_len}}},"#);
             let idx_acc = acc_i;
             accessors += &format!(
                 r#"{{"bufferView":{view_i},"componentType":5125,"count":{},"type":"SCALAR"}},"#,

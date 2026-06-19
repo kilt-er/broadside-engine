@@ -31,7 +31,7 @@ use broadside_engine::projector::ProjectorConfig;
 use broadside_engine::runs::{enemy_spawn_facing, player_spawn_facing, player_start_pos};
 use broadside_engine::types::{Board, EventBus, Faction, LaneEnd, Mount, Orientation, Ship};
 
-/// Build a `types::Ship` at `pos`/`facing` (mirrors the bin's make_ship: 2-D
+/// Build a `types::Ship` at `pos`/`facing` (mirrors the bin's `make_ship`: 2-D
 /// pos/facing drive the render; legacy 1-D cell/orientation kept consistent).
 fn make_ship(id: &str, faction: Faction, pos: Pos, facing: Facing) -> Ship {
     let orientation = match facing {
@@ -175,7 +175,7 @@ fn main() {
     match gfx.install_enemy_glb(AEGIS_GLB) {
         Ok(()) => log::info!("capture: enemy Aegis hull (steel-grey) installed from Aegis.glb"),
         Err(e) => {
-            log::warn!("capture: enemy Aegis.glb import failed ({e}); enemies fall back to CAD/2D")
+            log::warn!("capture: enemy Aegis.glb import failed ({e}); enemies fall back to CAD/2D");
         }
     }
 
@@ -229,11 +229,7 @@ fn main() {
         3
     } else if std::env::var("BROADSIDE_GRID_STRAIGHT").is_ok_and(|v| v != "0") {
         2
-    } else if std::env::var("BROADSIDE_GRID_STRETCH").is_ok_and(|v| v != "0") {
-        1
-    } else {
-        0
-    };
+    } else { u32::from(std::env::var("BROADSIDE_GRID_STRETCH").is_ok_and(|v| v != "0")) };
     while broadside_engine::gfx::grid_mode() != target_mode {
         broadside_engine::gfx::cycle_grid_mode();
     }
@@ -257,10 +253,10 @@ fn main() {
     // REORIENTED live player (the frozen spawn-facing masked the chase-cam pose
     // bug). Default = the campaign spawn facing.
     let player_facing = match std::env::args().nth(3).as_deref() {
-        Some("n") | Some("N") => Facing::Bow(Dir4::N),
-        Some("s") | Some("S") => Facing::Bow(Dir4::S),
-        Some("e") | Some("E") => Facing::Bow(Dir4::E),
-        Some("w") | Some("W") => Facing::Bow(Dir4::W),
+        Some("n" | "N") => Facing::Bow(Dir4::N),
+        Some("s" | "S") => Facing::Bow(Dir4::S),
+        Some("e" | "E") => Facing::Bow(Dir4::E),
+        Some("w" | "W") => Facing::Bow(Dir4::W),
         _ => player_spawn_facing(),
     };
     // Optional 4th arg = player ROW (0..ROWS-1) so the capture can place the
@@ -337,9 +333,7 @@ fn main() {
             .cells
             .iter()
             .flatten()
-            .find(|s| s.faction == Faction::Player)
-            .map(|s| s.pos)
-            .unwrap_or_else(|| Pos::new(2, 3));
+            .find(|s| s.faction == Faction::Player).map_or_else(|| Pos::new(2, 3), |s| s.pos);
         board.threats.push(Threat {
             pos: ppos,
             kind: ThreatKind::Damage { amount: 9 }, // ≥ hull ⇒ LETHAL fill (brightest)
@@ -382,9 +376,7 @@ fn main() {
             .cells
             .iter()
             .flatten()
-            .find(|s| s.faction == Faction::Player)
-            .map(|s| s.pos)
-            .unwrap_or_else(|| Pos::new(2, 3));
+            .find(|s| s.faction == Faction::Player).map_or_else(|| Pos::new(2, 3), |s| s.pos);
         let mid = COLS / 2;
         let tgt = Pos::new(mid, 0); // centre back-row enemy
         board.fire_events.push(FireEvent {

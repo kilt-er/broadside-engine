@@ -25,10 +25,10 @@ pub enum SpriteView {
 }
 
 impl SpriteView {
-    pub fn slug(self) -> &'static str {
+    pub const fn slug(self) -> &'static str {
         match self {
-            SpriteView::Side => "side",
-            SpriteView::Top => "top",
+            Self::Side => "side",
+            Self::Top => "top",
         }
     }
 }
@@ -44,11 +44,11 @@ pub enum SpriteStance {
 }
 
 impl SpriteStance {
-    pub fn slug(self) -> &'static str {
+    pub const fn slug(self) -> &'static str {
         match self {
-            SpriteStance::BowOnFore => "bowOnFore",
-            SpriteStance::BowOnAft => "bowOnAft",
-            SpriteStance::Broadside => "broadside",
+            Self::BowOnFore => "bowOnFore",
+            Self::BowOnAft => "bowOnAft",
+            Self::Broadside => "broadside",
         }
     }
 }
@@ -81,7 +81,7 @@ pub enum LoftMeshKind {
 }
 
 /// A decoded sprite ready to upload to the GPU.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct SpriteImage {
     pub width: u32,
     pub height: u32,
@@ -125,7 +125,7 @@ pub fn sprite_path(
 ) -> PathBuf {
     asset_dir
         .join("sprites")
-        .join(format!("{}_{}_{}.png", class, stance.slug(), view.slug(),))
+        .join(format!("{}_{}_{}.png", class, stance.slug(), view.slug()))
 }
 
 /// Load both views (side + top) for a ship sprite. Either or both may
@@ -187,7 +187,7 @@ pub fn mirror_horizontal(src: &SpriteImage) -> SpriteImage {
 /// brief.
 ///
 /// Used by [`crate::gfx::Gfx::try_load_ship_sprites`] as step 2 of the
-/// `broadside_top` fallback chain: explicit → rotate90(bowOnFore_top)
+/// `broadside_top` fallback chain: explicit → `rotate90(bowOnFore_top)`
 /// → procedural. `broadside_side` has NO auto-derivation — it's a
 /// front-face view of the hull (beam × height) that can't be
 /// reconstructed from the side or top of a bow-on sprite.
@@ -252,6 +252,7 @@ pub trait SpriteRegistry {
 
 /// No-op registry — every lookup returns false. Useful for tests and for
 /// `compose_scene` callers that don't have a GPU registry to query.
+#[derive(Debug)]
 pub struct EmptySpriteRegistry;
 
 impl SpriteRegistry for EmptySpriteRegistry {

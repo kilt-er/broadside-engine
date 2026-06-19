@@ -194,11 +194,11 @@ fn demo_board() -> (Vec<MockShip>, Vec<MockThreat>) {
  * code that lifts into hud.rs.
  * ============================================================================= */
 
-/// A thin line segment as a rotated 1px-thick sprite quad (mirrors hud::push_line).
+/// A thin line segment as a rotated 1px-thick sprite quad (mirrors `hud::push_line`).
 fn line(out: &mut Vec<DrawCommand>, a: [f32; 2], b: [f32; 2], thickness: f32, color: [f32; 4]) {
     let dx = b[0] - a[0];
     let dy = b[1] - a[1];
-    let len = (dx * dx + dy * dy).sqrt();
+    let len = dx.hypot(dy);
     out.push(DrawCommand::Sprite(SpriteInstance {
         pos: [(a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5],
         half_size: [len * 0.5, thickness * 0.5],
@@ -210,7 +210,7 @@ fn line(out: &mut Vec<DrawCommand>, a: [f32; 2], b: [f32; 2], thickness: f32, co
     }));
 }
 
-/// A flat-filled quad over four explicit corners (SOLID_WHITE × tint).
+/// A flat-filled quad over four explicit corners (`SOLID_WHITE` × tint).
 fn fill_quad(out: &mut Vec<DrawCommand>, corners: [[f32; 2]; 4], color: [f32; 4]) {
     out.push(DrawCommand::Polygon(PolygonInstance::flat(
         corners,
@@ -233,7 +233,7 @@ fn outline_cell(out: &mut Vec<DrawCommand>, q: &CellQuad, color: [f32; 4]) {
 /// / fade) without needing the GPU `Background` resource or any `gfx.rs` change:
 /// each visible layer becomes one flat polygon the size of the scaled 960×270
 /// canvas, tinted by depth and faded by the layer's edge alpha. The real game
-/// composites painted PNGs the same way (background.rs::draw).
+/// composites painted PNGs the same way (`background.rs::draw`).
 fn push_backdrop(out: &mut Vec<DrawCommand>, focus: f32, player_pos: f32) {
     let p = ParallaxParams::default();
     let frame_w = VIRTUAL_W as f32;
@@ -317,7 +317,7 @@ fn push_move_arrow(out: &mut Vec<DrawCommand>, ship: &MockShip, cfg: &ProjectorC
     // centers without poking through the ship hulls.
     let dx = to[0] - from[0];
     let dy = to[1] - from[1];
-    let len = (dx * dx + dy * dy).sqrt().max(1e-3);
+    let len = dx.hypot(dy).max(1e-3);
     let (ux, uy) = (dx / len, dy / len);
     let inset = 10.0_f32.min(len * 0.3);
     let a = [from[0] + ux * inset, from[1] + uy * inset];
@@ -342,7 +342,7 @@ fn push_move_arrow(out: &mut Vec<DrawCommand>, ship: &MockShip, cfg: &ProjectorC
 /// for a `Broadside` stance it points along the hull axis (toward the axis's
 /// positive cardinal — purely a render choice for the arrow, since both flanks
 /// are symmetric). y is screen-down, so `N` (toward row 0 / up the board) is -y.
-fn bow_screen_dir(facing: Facing) -> (f32, f32) {
+const fn bow_screen_dir(facing: Facing) -> (f32, f32) {
     // Map a Dir4 to its screen unit vector (y-down): N up, S down, E right, W left.
     let dir4 = match facing {
         Facing::Bow(d) => d,
@@ -543,8 +543,8 @@ impl ApplicationHandler for App {
         let attrs = Window::default_attributes()
             .with_title("Broadside grid preview — ←/→ parallax · Space pause drift · Esc quit")
             .with_inner_size(winit::dpi::LogicalSize::new(
-                (VIRTUAL_W * 3) as f64,
-                (VIRTUAL_H * 3) as f64,
+                f64::from(VIRTUAL_W * 3),
+                f64::from(VIRTUAL_H * 3),
             ));
         let window = Arc::new(event_loop.create_window(attrs).expect("window"));
         let gfx = pollster::block_on(Gfx::new(window.clone()));
@@ -573,7 +573,7 @@ impl ApplicationHandler for App {
                 KeyCode::Space => self.drift = !self.drift,
                 KeyCode::ArrowLeft => self.player_col = (self.player_col - 1.0).max(0.0),
                 KeyCode::ArrowRight => {
-                    self.player_col = (self.player_col + 1.0).min((COLS - 1) as f32)
+                    self.player_col = (self.player_col + 1.0).min((COLS - 1) as f32);
                 }
                 _ => {}
             },
@@ -596,7 +596,7 @@ impl ApplicationHandler for App {
                     match gfx.render(&commands) {
                         Ok(()) => {}
                         Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
-                            gfx.reconfigure()
+                            gfx.reconfigure();
                         }
                         Err(e) => eprintln!("[grid_preview] surface error: {e:?}"),
                     }

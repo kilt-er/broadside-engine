@@ -98,27 +98,30 @@ impl Point2 {
     /// First component. For `plan` this is x-along-length (stern 0 → prow 1);
     /// for `section` it is z (half-width 0..1); for `heightProfile` it is
     /// x-along-length.
-    pub fn x(self) -> f64 {
+    pub const fn x(self) -> f64 {
         self.0[0]
     }
 
     /// Second component. For `plan` this is half-width (0..1); for `section`
     /// it is y-height (-1..1, top → belly); for `heightProfile` it is the
     /// height multiplier (~0..1.5).
-    pub fn y(self) -> f64 {
+    pub const fn y(self) -> f64 {
         self.0[1]
     }
 }
 
 impl From<[f64; 2]> for Point2 {
     fn from(p: [f64; 2]) -> Self {
-        Point2(p)
+        Self(p)
     }
 }
 
 impl From<(f64, f64)> for Point2 {
+    // `[x, y]` is the clearest body for this 2-field newtype; clippy's
+    // tuple_array_conversions rewrite would only obscure it.
+    #[allow(clippy::tuple_array_conversions)]
     fn from((x, y): (f64, f64)) -> Self {
-        Point2([x, y])
+        Self([x, y])
     }
 }
 
@@ -208,7 +211,7 @@ pub struct ShipDesign {
 pub enum DesignError {
     /// Couldn't read the file from disk (missing, permissions, etc.).
     Io(std::io::Error),
-    /// serde_json rejected the bytes as a [`ShipDesign`] (malformed JSON, a
+    /// `serde_json` rejected the bytes as a [`ShipDesign`] (malformed JSON, a
     /// missing required field, or a type mismatch).
     Parse(serde_json::Error),
 }
@@ -216,8 +219,8 @@ pub enum DesignError {
 impl std::fmt::Display for DesignError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            DesignError::Io(e) => write!(f, "ship-design io error: {e}"),
-            DesignError::Parse(e) => write!(f, "ship-design parse error: {e}"),
+            Self::Io(e) => write!(f, "ship-design io error: {e}"),
+            Self::Parse(e) => write!(f, "ship-design parse error: {e}"),
         }
     }
 }
@@ -225,15 +228,15 @@ impl std::fmt::Display for DesignError {
 impl std::error::Error for DesignError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            DesignError::Io(e) => Some(e),
-            DesignError::Parse(e) => Some(e),
+            Self::Io(e) => Some(e),
+            Self::Parse(e) => Some(e),
         }
     }
 }
 
 impl From<std::io::Error> for DesignError {
     fn from(e: std::io::Error) -> Self {
-        DesignError::Io(e)
+        Self::Io(e)
     }
 }
 
@@ -241,12 +244,12 @@ impl ShipDesign {
     /// Parse a [`ShipDesign`] from in-memory JSON bytes (e.g. an `include_bytes!`
     /// asset or a network payload). Version-tolerant: any `version` parses;
     /// unknown extra fields are ignored by serde.
-    pub fn load_from_json(bytes: &[u8]) -> Result<ShipDesign, DesignError> {
+    pub fn load_from_json(bytes: &[u8]) -> Result<Self, DesignError> {
         serde_json::from_slice(bytes).map_err(DesignError::Parse)
     }
 
     /// Read and parse a [`ShipDesign`] from a `.json` file on disk.
-    pub fn load_from_path(path: impl AsRef<Path>) -> Result<ShipDesign, DesignError> {
+    pub fn load_from_path(path: impl AsRef<Path>) -> Result<Self, DesignError> {
         let bytes = std::fs::read(path.as_ref())?;
         Self::load_from_json(&bytes)
     }
@@ -267,7 +270,7 @@ impl ShipDesign {
     /// Whether `version` is the schema version this build understands
     /// ([`KNOWN_VERSION`]). A `false` here is a hint to warn / migrate, not a
     /// parse failure — newer files still load their compatible subset.
-    pub fn is_known_version(&self) -> bool {
+    pub const fn is_known_version(&self) -> bool {
         self.version == KNOWN_VERSION
     }
 }

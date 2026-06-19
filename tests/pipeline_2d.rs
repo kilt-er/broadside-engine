@@ -158,8 +158,7 @@ fn hull(b: &Board, id: &str) -> i32 {
         .iter()
         .flatten()
         .find(|s| s.id == id)
-        .map(|s| s.hull)
-        .unwrap_or(i32::MIN)
+        .map_or(i32::MIN, |s| s.hull)
 }
 
 /// Read a ship's bow-face shield charge by id.
@@ -179,7 +178,7 @@ fn bow_charge(b: &Board, id: &str) -> i32 {
  * ====================================================================== */
 
 /// The canonical pipeline (resolve.rs `apply_damage_2d`): falloff -> modifier
-/// -> target-lock x2 -> shield -> hull. With a +1 modifier and a TargetLock on
+/// -> target-lock x2 -> shield -> hull. With a +1 modifier and a `TargetLock` on
 /// a naked target, raw 4 (falloff off) becomes `2 * (4 + 1) = 10`. If the lock
 /// were applied BEFORE the modifier it would be `2*4 + 1 = 9`. This is the
 /// load-bearing order assertion on the LIVE fn (the dead `apply_damage` has its

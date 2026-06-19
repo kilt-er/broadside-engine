@@ -16,16 +16,16 @@
 //!
 //! Scenarios covered (team-lead's Phase 1 spec):
 //!
-//! 1. CommitTurn on empty queue -> no-op resolve_round (only EOT tick:
+//! 1. `CommitTurn` on empty queue -> no-op `resolve_round` (only EOT tick:
 //!    heat decremented, cooldowns ticked, no damage emits)
-//! 2. QueueAction(pulse_laser) -> CommitTurn -> action fires once
-//! 3. Three MoveLeft -> CommitTurn -> ship moves up to 3 cells, clamped
-//!    at the edge (with the resolve_self_move stub: thrust in the ship's
-//!    bow direction, so MoveRight on bow=Fore moves Fore; clamping is at
+//! 2. `QueueAction(pulse_laser)` -> `CommitTurn` -> action fires once
+//! 3. Three `MoveLeft` -> `CommitTurn` -> ship moves up to 3 cells, clamped
+//!    at the edge (with the `resolve_self_move` stub: thrust in the ship's
+//!    bow direction, so `MoveRight` on bow=Fore moves Fore; clamping is at
 //!    board edge OR at the first occupied cell on the path)
-//! 4. Vent -> CommitTurn -> heat 0, locked_out cleared
-//! 5. ReorientFlip -> CommitTurn -> orientation flipped
-//! 6. Synthetic actions have heat 0 and cooldown_max 0 — pinned at the
+//! 4. Vent -> `CommitTurn` -> heat 0, `locked_out` cleared
+//! 5. `ReorientFlip` -> `CommitTurn` -> orientation flipped
+//! 6. Synthetic actions have heat 0 and `cooldown_max` 0 — pinned at the
 //!    engine boundary by running them with non-zero starting heat and
 //!    asserting heat is unchanged (modulo the EOT -1 dissipation)
 
@@ -46,7 +46,7 @@ use std::rc::Rc;
  * Fixtures
  * ====================================================================== */
 
-/// Player at `cell`, bow=Fore, two Forward mounts (pulse_laser + torpedo)
+/// Player at `cell`, bow=Fore, two Forward mounts (`pulse_laser` + torpedo)
 /// matching the demo binary's `player_ship` factory at
 /// `bin/broadside.rs:168-179`. Default shield profile.
 fn player_ship(cell: usize) -> Ship {
@@ -126,6 +126,7 @@ fn solo_board() -> Board {
 /// Intent into a queue mutation OR a resolver call, depending on the
 /// variant. Returns true if board state changed (matching the bin's
 /// signature so future test cases can assert on the return value).
+#[allow(clippy::needless_pass_by_value)] // mirrors the bin's `apply_intent` signature on purpose
 fn apply_intent_lib(intent: Intent, board: &mut Board, content: &DemoContent) -> bool {
     match intent {
         Intent::CommitTurn => {
@@ -157,7 +158,7 @@ fn apply_intent_lib(intent: Intent, board: &mut Board, content: &DemoContent) ->
     }
 }
 
-/// Wire a recording bus capturing (cell, amount) for OnDamageTaken — used
+/// Wire a recording bus capturing (cell, amount) for `OnDamageTaken` — used
 /// by tests that assert "no shots fired" (empty queue) or "exactly one
 /// shot landed".
 fn wire_damage_log(board: &mut Board) -> Rc<RefCell<Vec<(usize, i32)>>> {
@@ -307,7 +308,7 @@ fn queue_pulse_laser_then_commit_fires_once_against_a_target() {
  * even as the ship moves between cells.
  * ====================================================================== */
 
-/// Three MoveRight thrusts queued, one CommitTurn drains the entire
+/// Three `MoveRight` thrusts queued, one `CommitTurn` drains the entire
 /// queue. With #50's lane-relative direction and #52's ship-by-id
 /// tracking, player advances from cell 0 to cell 3 in one round.
 #[test]
@@ -342,7 +343,7 @@ fn three_thrusts_then_commit_moves_three_cells() {
 }
 
 /// Movement is CLAMPED at the board edge. Player at cell 5, bow=Fore,
-/// three MoveRight thrusts queued. Without clamping the third step would
+/// three `MoveRight` thrusts queued. Without clamping the third step would
 /// land at cell 8, but board.size == 7. Per-step clamping inside
 /// `resolve_self_move` rejects any out-of-bounds step, so the player
 /// ends at cell 6 (the last in-bounds cell), not cell 8 (no overshoot,

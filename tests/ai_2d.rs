@@ -88,7 +88,7 @@ fn beam(id: &str, raw: i32, bands_2d: Vec<broadside_engine::grid::Range>) -> Act
     }
 }
 
-/// The default test weapon: a "close/near" pulse_laser — fires Adjacent+Near
+/// The default test weapon: a "close/near" `pulse_laser` — fires Adjacent+Near
 /// (the over-extension deadzone keeps it OUT of Far), raw 4.
 fn pulse_laser() -> Action {
     beam(

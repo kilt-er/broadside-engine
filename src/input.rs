@@ -93,29 +93,29 @@ pub enum Intent {
     /// Push a real action onto the ship's queue. The id refers to a mount's
     /// weapon (e.g. `"pulse_laser"`).
     QueueAction(String),
-    /// Push the synthetic `__move_left` action — DISPLACE_SELF in the
+    /// Push the synthetic `__move_left` action — `DISPLACE_SELF` in the
     /// `Aft` lane direction by 1 cell via THRUST.
     MoveLeft,
-    /// Push the synthetic `__move_right` action — DISPLACE_SELF in the
+    /// Push the synthetic `__move_right` action — `DISPLACE_SELF` in the
     /// `Fore` lane direction by 1 cell via THRUST.
     MoveRight,
-    /// v2 (#18): push the synthetic `__move_up` action — DISPLACE_SELF one cell
+    /// v2 (#18): push the synthetic `__move_up` action — `DISPLACE_SELF` one cell
     /// N (toward row 0 / the far enemies) via THRUST. Functional once resolver
     /// R6's `resolve_self_move` reads `direction_2d`.
     MoveUp,
-    /// v2 (#18): push the synthetic `__move_down` action — DISPLACE_SELF one
+    /// v2 (#18): push the synthetic `__move_down` action — `DISPLACE_SELF` one
     /// cell S (toward the player's front row) via THRUST.
     MoveDown,
-    /// Push the synthetic `__reorient_flip` action — REORIENT::Flip.
+    /// Push the synthetic `__reorient_flip` action — `REORIENT::Flip`.
     ReorientFlip,
-    /// v2 (#75): push the synthetic `__rotate_left` action — REORIENT::RotateLeft,
+    /// v2 (#75): push the synthetic `__rotate_left` action — `REORIENT::RotateLeft`,
     /// turning the player's FACING a quarter-turn counter-clockwise (N→W→S→E). The
     /// hull rotates on screen + the firing arcs follow (both key off `facing`).
     RotateLeft,
-    /// v2 (#75): push the synthetic `__rotate_right` action — REORIENT::RotateRight,
+    /// v2 (#75): push the synthetic `__rotate_right` action — `REORIENT::RotateRight`,
     /// a quarter-turn clockwise (N→E→S→W).
     RotateRight,
-    /// Push the synthetic `__vent` action — VENT_HEAT 3, recharge cooldowns.
+    /// Push the synthetic `__vent` action — `VENT_HEAT` 3, recharge cooldowns.
     Vent,
     /// Play a field-kit Card by id (task #63). Caller validates +
     /// decrements charges via `Content::try_play_card`, then pushes the
@@ -156,7 +156,7 @@ pub enum Intent {
 ///
 /// Returns `None` for an unbound key OR for a digit key past the ship's
 /// mount / card count. `content` is queried for the ship's card inventory
-/// (the runtime FieldKit lives on Content until architect lands
+/// (the runtime `FieldKit` lives on Content until architect lands
 /// `Ship::field_kit`); ship is still consulted for mounts.
 pub fn key_to_intent(key: Key, ship: &Ship, content: &dyn Content) -> Option<Intent> {
     match key {
@@ -194,7 +194,7 @@ fn mount_action(ship: &Ship, idx: usize) -> Option<String> {
 /// plays need a separate validation + charge-decrement step the caller
 /// performs via [`Content::try_play_card`]; on success the caller then
 /// pushes [`synthetic_card_action_id`] manually.
-pub fn intent_to_action_id(intent: &Intent) -> Option<&str> {
+pub const fn intent_to_action_id(intent: &Intent) -> Option<&str> {
     match intent {
         Intent::QueueAction(id) => Some(id.as_str()),
         Intent::MoveLeft => Some(SYNTHETIC_MOVE_LEFT),
@@ -244,7 +244,7 @@ pub const SYNTHETIC_MOVE_UP: &str = "__move_up";
 pub const SYNTHETIC_MOVE_DOWN: &str = "__move_down";
 pub const SYNTHETIC_REORIENT_FLIP: &str = "__reorient_flip";
 /// v2 (#75): rotate the player's FACING a quarter-turn counter-clockwise via
-/// REORIENT::RotateLeft. Registered on `DemoContent` (like reorient/vent) so the
+/// `REORIENT::RotateLeft`. Registered on `DemoContent` (like reorient/vent) so the
 /// queued action resolves through the normal `execute_queue` pipeline.
 pub const SYNTHETIC_ROTATE_LEFT: &str = "__rotate_left";
 /// v2 (#75): rotate the player's FACING a quarter-turn clockwise.
@@ -285,7 +285,7 @@ fn self_targeting() -> Targeting {
     }
 }
 
-fn zero_cost() -> ActionCost {
+const fn zero_cost() -> ActionCost {
     ActionCost {
         heat: 0,
         cooldown_max: 0,
@@ -409,7 +409,7 @@ pub fn synthetic_reorient_flip() -> Action {
     }
 }
 
-/// Synthetic rotate-LEFT (#75): REORIENT::RotateLeft turns the player's `facing`
+/// Synthetic rotate-LEFT (#75): `REORIENT::RotateLeft` turns the player's `facing`
 /// a quarter-turn counter-clockwise (and re-derives `orientation`). Zero-cost,
 /// self-targeted, all-bands — same instant-apply shape as the move/flip actions.
 pub fn synthetic_rotate_left() -> Action {
@@ -427,7 +427,7 @@ pub fn synthetic_rotate_left() -> Action {
     }
 }
 
-/// Synthetic rotate-RIGHT (#75): REORIENT::RotateRight, a quarter-turn clockwise.
+/// Synthetic rotate-RIGHT (#75): `REORIENT::RotateRight`, a quarter-turn clockwise.
 pub fn synthetic_rotate_right() -> Action {
     Action {
         id: SYNTHETIC_ROTATE_RIGHT.into(),
@@ -471,7 +471,7 @@ pub fn synthetic_vent() -> Action {
  * ====================================================================== */
 
 /// A pre-built `Content` impl for the demo binary. Loaded with the four
-/// synthetic actions and a starter pulse_laser / torpedo. Real catalog
+/// synthetic actions and a starter `pulse_laser` / torpedo. Real catalog
 /// content will replace this once the JSON export lands.
 ///
 /// Carries a [`crate::subsystems::Installations`] registry so subsystems
@@ -482,6 +482,7 @@ pub fn synthetic_vent() -> Action {
 /// Also carries a [`crate::cards::FieldKitRegistry`] + [`crate::cards::CardCatalog`]
 /// so per-ship card inventories live with the content layer until
 /// architect lands `Ship::field_kit` (task #63 follow-up).
+#[derive(Debug)]
 pub struct DemoContent {
     pub actions: HashMap<String, Action>,
     pub installations: crate::subsystems::Installations,
@@ -515,7 +516,7 @@ impl DemoContent {
     /// is purely a wiring step — no band authoring.
     ///
     /// **Does NOT clobber existing actions** (insert-if-absent): the demo's
-    /// hand-tuned player weapons (pulse_laser / torpedo / broadside_battery,
+    /// hand-tuned player weapons (`pulse_laser` / torpedo / `broadside_battery`,
     /// with their explicit demo bands) and the synthetics take precedence over a
     /// same-id catalog entry. So merging the catalog adds the *missing* enemy
     /// weapons without changing the player's loadout behavior.
@@ -906,7 +907,7 @@ pub fn spawn_ordnance(kind: &str, owner: &Ship) -> Projectile {
 /// Matches `resolve::bearing_cardinals`'s arc-less ORDNANCE convention: the
 /// bow direction for a `Bow` stance, the axis's increasing-coordinate
 /// direction for a `Broadside` stance (a stable "ahead" with no single bow).
-fn ordnance_heading8(owner: &Ship) -> crate::grid::Dir8 {
+const fn ordnance_heading8(owner: &Ship) -> crate::grid::Dir8 {
     use crate::grid::Facing;
     match owner.facing {
         Facing::Bow(dir) => dir.to_dir8(),
@@ -924,7 +925,7 @@ fn ordnance_heading8(owner: &Ship) -> crate::grid::Dir8 {
 ///
 /// Adding a binding: add the key to [`Key`], the arm to [`key_to_intent`],
 /// and one line here in the same commit so the three stay in sync.
-pub fn tutorial_lines() -> &'static [&'static str] {
+pub const fn tutorial_lines() -> &'static [&'static str] {
     &[
         "every input advances time",
         "[arrows] move (instant)",
@@ -1167,13 +1168,13 @@ mod tests {
             "card binding must be advertised"
         );
         assert!(lines.iter().any(|l| l.contains("Tab")));
-        assert!(lines.iter().any(|l| l.contains("V")));
+        assert!(lines.iter().any(|l| l.contains('V')));
         assert!(lines.iter().any(|l| l.contains("R/Space")));
         assert!(lines.iter().any(|l| l.contains("Enter")));
         assert!(lines.iter().any(|l| l.contains("Esc")));
     }
 
-    /// Task #62 — DemoContent::default registers every placeholder class
+    /// Task #62 — `DemoContent::default` registers every placeholder class
     /// Signature action, so a future "press S to fire signature" intent
     /// can `content.action(class.signature)` and get back a real Action.
     #[test]
@@ -1189,7 +1190,7 @@ mod tests {
         }
     }
 
-    /// End-to-end sanity: queue a synthetic, run resolve_round, see the
+    /// End-to-end sanity: queue a synthetic, run `resolve_round`, see the
     /// effect land. Demonstrates the queue->execute_queue path works for
     /// player-input synthetics without any pipeline bypass.
     #[test]
@@ -1319,7 +1320,7 @@ mod tests {
         );
     }
 
-    /// End-to-end: HeatSink installed on the owning ship subtracts one
+    /// End-to-end: `HeatSink` installed on the owning ship subtracts one
     /// extra heat at end-of-turn, stacking with the canonical -1.
     #[test]
     fn heatsink_subsystem_doubles_dissipation_per_turn() {
@@ -1356,8 +1357,8 @@ mod tests {
 
     /* ---- Phase 2 field-kit Card integration --------------------------- */
 
-    /// End-to-end: try_play_card decrements charges, push the synthetic
-    /// id, run execute_queue, see the board-wide effect land.
+    /// End-to-end: `try_play_card` decrements charges, push the synthetic
+    /// id, run `execute_queue`, see the board-wide effect land.
     #[test]
     fn mass_lock_card_play_through_execute_queue() {
         use crate::cards::{PlayResult, CARD_MASS_LOCK};
@@ -1432,7 +1433,7 @@ mod tests {
             .all(|st| st.kind != StatusKind::TargetLock));
     }
 
-    /// Replaying a depleted card returns InsufficientCharges; the
+    /// Replaying a depleted card returns `InsufficientCharges`; the
     /// synthetic should NOT be queued in that case. (This test
     /// documents the caller contract; the bin enforces it.)
     #[test]
@@ -1450,7 +1451,7 @@ mod tests {
         );
     }
 
-    /// key_to_intent's D5 returns the first card id from the ship's kit.
+    /// `key_to_intent`'s D5 returns the first card id from the ship's kit.
     #[test]
     fn key_d5_returns_first_card_intent() {
         use crate::cards::CARD_MASS_LOCK;
@@ -1463,7 +1464,7 @@ mod tests {
         assert_eq!(intent, Some(Intent::PlayCard(CARD_MASS_LOCK.into())));
     }
 
-    /// key_to_intent's D5 returns None when the ship has no kit at all.
+    /// `key_to_intent`'s D5 returns None when the ship has no kit at all.
     #[test]
     fn key_d5_returns_none_without_kit() {
         let p = player_with_mounts(0);
@@ -1471,16 +1472,16 @@ mod tests {
         assert_eq!(key_to_intent(Key::D5, &p, &content), None);
     }
 
-    /// PlayCard intent does NOT route through intent_to_action_id
-    /// (which returns None) — callers must invoke try_play_card +
-    /// synthetic_card_action_id separately.
+    /// `PlayCard` intent does NOT route through `intent_to_action_id`
+    /// (which returns None) — callers must invoke `try_play_card` +
+    /// `synthetic_card_action_id` separately.
     #[test]
     fn intent_to_action_id_returns_none_for_play_card() {
         let i = Intent::PlayCard("mass_lock".into());
         assert_eq!(intent_to_action_id(&i), None);
     }
 
-    /// synthetic_card_action_id uses the `__card_` prefix.
+    /// `synthetic_card_action_id` uses the `__card_` prefix.
     #[test]
     fn synthetic_card_action_id_format() {
         assert_eq!(synthetic_card_action_id("mass_lock"), "__card_mass_lock");
@@ -1501,7 +1502,7 @@ mod tests {
     }
 
     /// Every catalog ordnance kind that emits `SPAWN_ORDNANCE` (torpedo,
-    /// missile_salvo, heavy_torpedo) spawns a real projectile with its
+    /// `missile_salvo`, `heavy_torpedo`) spawns a real projectile with its
     /// authored per-kind stats — not the old 0-damage dummy. This is the #42
     /// regression: pre-fix only "torpedo"/"missile" had stats, so a catalog
     /// `missile_salvo` / `heavy_torpedo` launch produced an inert 0-damage

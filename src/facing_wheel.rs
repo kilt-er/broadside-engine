@@ -51,9 +51,9 @@ impl Fan {
     /// The `r` multiplier in `facingYaw = laneYaw + r·90` (contract §5).
     pub const fn rotation(self) -> i32 {
         match self {
-            Fan::Left => -1,
-            Fan::Forward => 0,
-            Fan::Right => 1,
+            Self::Left => -1,
+            Self::Forward => 0,
+            Self::Right => 1,
         }
     }
 
@@ -61,9 +61,9 @@ impl Fan {
     /// `fan_ord·LANES + lane`, matching the contract's group table order.
     const fn ordinal(self) -> usize {
         match self {
-            Fan::Left => 0,
-            Fan::Forward => 1,
-            Fan::Right => 2,
+            Self::Left => 0,
+            Self::Forward => 1,
+            Self::Right => 2,
         }
     }
 }
@@ -90,13 +90,13 @@ impl Facing15 {
 
     /// The flat sprite-sheet index `0..FACING_COUNT` (fan-major: Left 0..4,
     /// Forward 5..9, Right 10..14 — the contract's group-table order).
-    pub fn index(self) -> usize {
+    pub const fn index(self) -> usize {
         self.fan.ordinal() * LANES + self.lane
     }
 
     /// Inverse of [`index`]: the `(fan, lane)` a flat index denotes. `None` if
     /// out of range.
-    pub fn from_index(index: usize) -> Option<Self> {
+    pub const fn from_index(index: usize) -> Option<Self> {
         if index >= FACING_COUNT {
             return None;
         }
@@ -126,13 +126,13 @@ impl Facing15 {
     /// sprite horizontally flipped instead of baking this one. Forward-fan facings
     /// mirror within the Forward fan (lane mirror). Only valid to USE if the baked
     /// lighting is left/right-symmetric (a side key light breaks it).
-    pub fn mirror_source(self) -> (Facing15, bool) {
+    pub fn mirror_source(self) -> (Self, bool) {
         let mirror_lane = (LANES - 1) - self.lane;
         match self.fan {
             // Left is drawn as Right, flipped.
-            Fan::Left => (Facing15::new(Fan::Right, mirror_lane), true),
+            Fan::Left => (Self::new(Fan::Right, mirror_lane), true),
             // Forward's left half mirrors to its right half.
-            Fan::Forward => (Facing15::new(Fan::Forward, mirror_lane), true),
+            Fan::Forward => (Self::new(Fan::Forward, mirror_lane), true),
             // Right is its own source (the baked half).
             Fan::Right => (self, false),
         }
@@ -165,6 +165,10 @@ pub fn facing_slug(class: &str, facing: Facing15) -> String {
 /// separate enemy bake (lead escalated to Bruce). Do NOT route enemies here.
 pub fn player_facing15(facing: crate::grid::Facing, column: usize) -> Facing15 {
     use crate::grid::{Axis, Dir4, Facing};
+    // The facing -> fan arms below are a deliberate mapping table; several share
+    // a body (e.g. several facings collapse to `Forward`) but are kept explicit
+    // and individually documented rather than merged.
+    #[allow(clippy::match_same_arms)]
     let fan = match facing {
         Facing::Bow(Dir4::N) => Fan::Forward,
         Facing::Bow(Dir4::E) => Fan::Right,

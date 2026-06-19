@@ -5,7 +5,7 @@
 //!
 //! Run: `cargo run --bin loft_poc --features render,runtime`
 //!
-//! Pipeline (mirrors docs/BROADSIDE_RENDER_PIPELINE_HANDOFF.md):
+//! Pipeline (mirrors `docs/BROADSIDE_RENDER_PIPELINE_HANDOFF.md)`:
 //!   1. Lofted dagger hull (`loft` mod) uploaded once as flat-shaded tris.
 //!   2. Depth-tested 3D pass — orthographic ¾ camera + flat Lambert (key +
 //!      fill + ambient) into a LOW-RES (160×100) offscreen color + depth
@@ -84,7 +84,7 @@ mod loft {
     }
 
     /// Flat 1.0 — no traced side-view profile in the default tool state.
-    fn sample_height_prof(_x: f32) -> f32 {
+    const fn sample_height_prof(_x: f32) -> f32 {
         1.0
     }
 
@@ -321,7 +321,7 @@ mod parts {
             self.colors.extend_from_slice(&[color, color, color]);
         }
 
-        pub fn append(&mut self, other: &ColoredMesh) {
+        pub fn append(&mut self, other: &Self) {
             self.positions.extend_from_slice(&other.positions);
             self.normals.extend_from_slice(&other.normals);
             self.colors.extend_from_slice(&other.colors);
@@ -461,6 +461,7 @@ mod parts {
     /// parts (battery blisters) seat here, where `z = z_factor * half_width` is
     /// the true hull edge; above/below the chine the section curves inward so a
     /// fixed height would float off the narrower surface.
+    #[allow(clippy::tuple_array_conversions)] // `(best[0], best[1])` reads clearer than a conversion
     fn chine(section: &[[f32; 2]]) -> (f32, f32) {
         let mut best = section[0];
         for p in section {
@@ -479,14 +480,14 @@ mod parts {
     }
     /// Seeded hash (not RNG) so the greeble scatter is stable frame-to-frame.
     fn hash01(n: u32) -> f32 {
-        let mut x = n.wrapping_mul(0x9e3779b1);
+        let mut x = n.wrapping_mul(0x9e37_79b1);
         x ^= x >> 15;
-        x = x.wrapping_mul(0x85ebca6b);
+        x = x.wrapping_mul(0x85eb_ca6b);
         x ^= x >> 13;
         (x & 0x00ff_ffff) as f32 / 0x0100_0000 as f32
     }
 
-    /// All attached parts in ship space — direct port of rebuild()'s primitive
+    /// All attached parts in ship space — direct port of `rebuild()`'s primitive
     /// layer. `l`/`h` = hull world half-length/height; `plan` = half-width
     /// outline; `section` = cross-section profile (for seating parts on the
     /// dorsal skin); `greeb` = density (tool default 0.6).
@@ -732,7 +733,7 @@ struct SceneUniform {
 }
 
 /// Posterize band count, live-tunable. Padded to 16 bytes (uniform alignment;
-/// three scalar pads, never a vec3 — see the gfx.rs BlendUniform lesson).
+/// three scalar pads, never a vec3 — see the gfx.rs `BlendUniform` lesson).
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 struct PostUniform {
@@ -742,7 +743,7 @@ struct PostUniform {
     _pad2: f32,
 }
 
-const HULL_SHADER: &str = r#"
+const HULL_SHADER: &str = r"
 struct Scene {
     view_proj: mat4x4<f32>,
     model:     mat4x4<f32>,
@@ -777,9 +778,9 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let lit = in.color * (scene.ambient.rgb + vec3<f32>(key) + vec3<f32>(0.53, 0.67, 1.0) * fill);
     return vec4<f32>(lit, 1.0);
 }
-"#;
+";
 
-const POST_SHADER: &str = r#"
+const POST_SHADER: &str = r"
 @group(0) @binding(0) var tex: texture_2d<f32>;
 @group(0) @binding(1) var samp: sampler;
 // Scalar pads, NOT vec3<f32>: a WGSL vec3 forces 16-byte alignment and would
@@ -842,7 +843,7 @@ fn fs_post(in: VsOut) -> @location(0) vec4<f32> {
     let q = floor(col * post.bands + 0.5) / post.bands;
     return vec4<f32>(q, 1.0);
 }
-"#;
+";
 
 struct Gpu {
     surface: wgpu::Surface<'static>,
@@ -865,7 +866,7 @@ struct Gpu {
     post_bgl: wgpu::BindGroupLayout,
     post_sampler: wgpu::Sampler,
     bands_ubo: wgpu::Buffer,
-    /// Index into RES_LADDER (current offscreen size) and BANDS_LADDER.
+    /// Index into `RES_LADDER` (current offscreen size) and `BANDS_LADDER`.
     res_idx: usize,
     bands_idx: usize,
 
@@ -884,7 +885,7 @@ struct Gpu {
     steer_up: bool,
     steer_down: bool,
     /// Ortho zoom (camera view-scale = 9 / zoom). >1 zooms in. Scroll wheel
-    /// and +/- adjust it; clamped to ZOOM_MIN..ZOOM_MAX.
+    /// and +/- adjust it; clamped to `ZOOM_MIN..ZOOM_MAX`.
     zoom: f32,
     /// Wall-clock of the previous frame, for frame-rate-independent motion.
     last_frame: Instant,
@@ -920,7 +921,7 @@ impl Gpu {
             .formats
             .iter()
             .copied()
-            .find(|f| f.is_srgb())
+            .find(wgpu::TextureFormat::is_srgb)
             .unwrap_or(caps.formats[0]);
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
@@ -1480,8 +1481,8 @@ impl ApplicationHandler for App {
                 "Loft POC — ←→ yaw · ↑↓ pitch · Space pause · 1-4 snap · [ ] res · - = bands · scroll/Z X zoom",
             )
             .with_inner_size(winit::dpi::LogicalSize::new(
-                (RES_LADDER[DEFAULT_RES_IDX].0 * 3) as f64,
-                (RES_LADDER[DEFAULT_RES_IDX].1 * 3) as f64,
+                f64::from(RES_LADDER[DEFAULT_RES_IDX].0 * 3),
+                f64::from(RES_LADDER[DEFAULT_RES_IDX].1 * 3),
             ));
         let window = Arc::new(event_loop.create_window(attrs).expect("window"));
         let gpu = pollster::block_on(Gpu::new(window.clone()));

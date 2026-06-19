@@ -17,7 +17,7 @@
 //! ### Single-source fire-gate (V4-at-C1)
 //!
 //! The FIRE rung's "can I fire?" test IS [`crate::resolve::resolve_targeting_2d`]
-//! — the SAME 2-D targeting path the shot fires through and the ThreatMap (R8)
+//! — the SAME 2-D targeting path the shot fires through and the `ThreatMap` (R8)
 //! caches. So what the AI elects to fire == what the telegraph paints == where
 //! the shot lands; there is NO second targeting path (the 1-D
 //! `resolve_targeting` is never called here — reviewer V4 greps this file for
@@ -125,8 +125,7 @@ pub fn decide_enemy_action(enemy_cell: usize, board: &mut Board, content: &dyn C
         let any_hostile = cells.iter().any(|&p| {
             board
                 .ship_at(p)
-                .map(|s| s.faction != Faction::Enemy)
-                .unwrap_or(false)
+                .is_some_and(|s| s.faction != Faction::Enemy)
         });
         if !any_hostile {
             continue;
@@ -302,7 +301,7 @@ pub fn decide_enemy_action(enemy_cell: usize, board: &mut Board, content: &dyn C
 /// So we take `enemy_initiative`, find `self_pos`'s index, and union the
 /// threatened cells of the strictly-earlier enemies, computing each via
 /// [`resolve_targeting_2d`] on that ally's queued action (the SAME single source
-/// the shot + ThreatMap use — no parallel targeting path). Only DAMAGE-bearing
+/// the shot + `ThreatMap` use — no parallel targeting path). Only DAMAGE-bearing
 /// queued actions threaten cells (a queued move/reorient/vent threatens nothing).
 /// Pure read; no new board state.
 fn allies_threatened_cells(self_pos: Pos, board: &Board, content: &dyn Content) -> Vec<Pos> {
@@ -426,7 +425,7 @@ fn choose_maneuver_dir(
 
 /// Ordinal of a [`Range`] band for near/far comparison (`Adjacent` < `Near` <
 /// `Far`). Local to the AI's maneuver heuristic — not a geometry seam.
-fn band_ordinal(r: Range) -> u8 {
+const fn band_ordinal(r: Range) -> u8 {
     match r {
         Range::Adjacent => 0,
         Range::Near => 1,
@@ -441,7 +440,7 @@ fn band_ordinal(r: Range) -> u8 {
 /// lateral is the dodge axis and the move resolves one cell, so the next phase
 /// re-decides and the depth component follows. `None` only for the zero vector
 /// (co-located, already excluded upstream by `from_to`).
-fn synthetic_move_for_dir(dir: Dir8) -> Option<&'static str> {
+const fn synthetic_move_for_dir(dir: Dir8) -> Option<&'static str> {
     use crate::input::{
         SYNTHETIC_MOVE_DOWN, SYNTHETIC_MOVE_LEFT, SYNTHETIC_MOVE_RIGHT, SYNTHETIC_MOVE_UP,
     };
@@ -462,7 +461,7 @@ fn synthetic_move_for_dir(dir: Dir8) -> Option<&'static str> {
 /// Q3 (#86) generalized to ARC-AGNOSTIC rotate-to-bear (#92): pick the synthetic
 /// ROTATE id that turns the enemy the SHORTEST way to a `Bow` facing from which
 /// its OWN weapon BEARS on the player — bow-on for a Forward gun, SIDE-on for a
-/// BroadsideArc gun, etc. `None` if it already bears (let the close/hold rungs
+/// `BroadsideArc` gun, etc. `None` if it already bears (let the close/hold rungs
 /// act) or no facing bears (no point spinning).
 ///
 /// ## Single source of truth (no bow-vs-broadside hardcode)
@@ -472,12 +471,12 @@ fn synthetic_move_for_dir(dir: Dir8) -> Option<&'static str> {
 /// [`Dir4`] `Bow(F)` by temporarily setting the enemy's `facing`, running
 /// `resolve_targeting_2d` for its dominant weapon, and checking whether the
 /// player's cell is in the result — then RESTORE the facing (pure probe, no
-/// lasting board mutation). This is why a BroadsideArc enemy will orient
+/// lasting board mutation). This is why a `BroadsideArc` enemy will orient
 /// PERPENDICULAR to the player (its `arc_bears` only returns true for a
 /// `Broadside` stance whose axis is across the bearing) while a Forward enemy
 /// orients bow-on — all from the one targeting path, never a hardcoded stance
 /// rule. (We only rotate among the four `Bow` cardinals; the resolver's
-/// REORIENT::RotateLeft/Right cycle the bow, and `orientation_from_facing` maps
+/// `REORIENT::RotateLeft/Right` cycle the bow, and `orientation_from_facing` maps
 /// Bow(E)/Bow(W) to a Broadside `orientation`, so a quarter-turn into the E/W
 /// bow IS the broadside stance the arc test wants.)
 ///

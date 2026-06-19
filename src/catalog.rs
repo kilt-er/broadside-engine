@@ -40,8 +40,8 @@ pub enum LoadError {
 impl std::fmt::Display for LoadError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            LoadError::Io(e) => write!(f, "io error reading catalog: {e}"),
-            LoadError::Parse(e) => write!(f, "parse error in catalog json: {e}"),
+            Self::Io(e) => write!(f, "io error reading catalog: {e}"),
+            Self::Parse(e) => write!(f, "parse error in catalog json: {e}"),
         }
     }
 }
@@ -49,20 +49,20 @@ impl std::fmt::Display for LoadError {
 impl std::error::Error for LoadError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            LoadError::Io(e) => Some(e),
-            LoadError::Parse(e) => Some(e),
+            Self::Io(e) => Some(e),
+            Self::Parse(e) => Some(e),
         }
     }
 }
 
 impl From<io::Error> for LoadError {
     fn from(e: io::Error) -> Self {
-        LoadError::Io(e)
+        Self::Io(e)
     }
 }
 impl From<serde_json::Error> for LoadError {
     fn from(e: serde_json::Error) -> Self {
-        LoadError::Parse(e)
+        Self::Parse(e)
     }
 }
 
@@ -86,13 +86,12 @@ pub fn load_from_path(path: impl AsRef<Path>) -> Result<Catalog, LoadError> {
 /// Same auto-detect dispatch as [`load_from_path`].
 pub fn load_from_bytes(bytes: &[u8]) -> Result<Catalog, LoadError> {
     // Strict shape first — fast path for engine-emitted JSON.
-    let mut catalog = match serde_json::from_slice::<Catalog>(bytes) {
-        Ok(c) => c,
+    let mut catalog = if let Ok(c) = serde_json::from_slice::<Catalog>(bytes) {
+        c
+    } else {
         // Fallback: parse to a loose Value and run the canonical transformer.
-        Err(_) => {
-            let v: serde_json::Value = serde_json::from_slice(bytes)?;
-            crate::catalog_canonical::from_canonical_value(v)?
-        }
+        let v: serde_json::Value = serde_json::from_slice(bytes)?;
+        crate::catalog_canonical::from_canonical_value(v)?
     };
     // v2 (#28): guarantee every action has 2-D Range bands, on BOTH load paths.
     // The canonical transformer derives them inline; a STRICT-shape catalog that
@@ -193,12 +192,12 @@ pub(crate) fn expand_band_2d(b: crate::types::RangeBand) -> Vec<crate::grid::Ran
 /// Build an enemy [`Ship`] for `spawn` from the catalog's `enemies[]`
 /// definition matching `spawn.class_id`. Returns `None` if no enemy with
 /// that id exists in the catalog — the bin's spawn closure can then fall
-/// back to its placeholder synthesizer (so a typo'd class_id degrades
+/// back to its placeholder synthesizer (so a typo'd `class_id` degrades
 /// gracefully instead of crashing the demo).
 ///
 /// ## Field mapping (documented here because it isn't in `geometry.ts`)
 ///
-/// - **hull / max_hull** ← `EnemyDef.hull`. (`hull5`, the Patrol-5 scaled
+/// - **hull / `max_hull`** ← `EnemyDef.hull`. (`hull5`, the Patrol-5 scaled
 ///   value, is left for a future patrol-tier scaler; the spawn's
 ///   `hp_override` still wins over both.)
 /// - **mounts** ← `EnemyDef.weapons`. The canonical export lists weapons by
@@ -207,18 +206,18 @@ pub(crate) fn expand_band_2d(b: crate::types::RangeBand) -> Vec<crate::grid::Ran
 ///   display-name→id map built from `catalog.actions`; a weapon already in
 ///   id form passes through. The mount's `arc` is taken from the resolved
 ///   action's `targeting.requires_arc` (so a forward beam mounts Forward, a
-///   broadside battery mounts BroadsideArc); arc-less actions (movement /
+///   broadside battery mounts `BroadsideArc`); arc-less actions (movement /
 ///   defensive — Afterburner, Brace, Blink Drive) default to `Forward` so
 ///   they still surface in the AI's fallback ladder. Unresolved weapon names
 ///   are skipped (logged) rather than mounted as a dangling id.
 /// - **traits** ← `EnemyDef.traits`, mapped from canonical display strings
 ///   ("Burn-Hard", "Reactor Breach", "Pursuit", "Agile") to [`Trait`]
 ///   variants via [`trait_from_str`]. Unknown trait strings are skipped.
-/// - **shield_profile** — a light enemy default (bow/port/starboard armour
+/// - **`shield_profile`** — a light enemy default (bow/port/starboard armour
 ///   1, stern 0): the soft-stern invariant the analysis doc rewards
 ///   flanking against. The boss (`boss_ship_for_spawn` in `runs.rs`) keeps
 ///   its own richer profile; this is the generic enemy shell.
-/// - **heat_max 6**, heat 0, not locked out, empty queue/cooldowns/statuses.
+/// - **`heat_max` 6**, heat 0, not locked out, empty queue/cooldowns/statuses.
 ///
 /// `orientation` and `hp_override` come from the spawn (the encounter
 /// author's call), matching [`crate::runs::build_encounter_board`]'s
@@ -346,7 +345,7 @@ pub fn ship_from_enemy_def_at_tier(
 /// already threads `patrol_tier` here, so no signature changes are needed
 /// then. Kept as a named fn (rather than inlining `def.hull`) precisely so
 /// that future change is one edit.
-fn select_hull(def: &EnemyDef, _patrol_tier: u8) -> i32 {
+const fn select_hull(def: &EnemyDef, _patrol_tier: u8) -> i32 {
     // TODO(broadside-content, difficulty-tier scaling): when wired, return
     //   if patrol_tier >= 5 { def.hull5 } else { def.hull }
     // and wire patrol_tier -> Board.patrol at the encounter-builder level.
@@ -390,7 +389,7 @@ fn action_name_to_id(catalog: &Catalog) -> HashMap<String, String> {
 }
 
 /// Resolve a weapon reference to an action id. A reference already in
-/// snake_case id form (no spaces, lowercase + digits + underscore) passes
+/// `snake_case` id form (no spaces, lowercase + digits + underscore) passes
 /// through; otherwise it's looked up as a display name. `None` if neither
 /// resolves.
 fn resolve_weapon_id(weapon: &str, name_to_id: &HashMap<String, String>) -> Option<String> {
@@ -414,7 +413,7 @@ fn trait_from_str(s: &str) -> Option<Trait> {
     // and "Burn Hard" all resolve.
     let key: String = s
         .chars()
-        .filter(|c| c.is_ascii_alphanumeric())
+        .filter(char::is_ascii_alphanumeric)
         .map(|c| c.to_ascii_lowercase())
         .collect();
     match key.as_str() {
@@ -437,7 +436,7 @@ mod tests {
     use super::*;
 
     /// A minimum-viable catalog that should round-trip: enough fields to exercise
-    /// the trickier serde shapes (tagged Effect, Orientation, RangeBand casing).
+    /// the trickier serde shapes (tagged Effect, Orientation, `RangeBand` casing).
     /// Empty arrays for the placeholder sections (`capitals` etc.) are accepted
     /// via `#[serde(default)]` on the Catalog struct.
     const MINIMAL_CATALOG_JSON: &str = r#"

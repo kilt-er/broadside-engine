@@ -1,8 +1,8 @@
 //! Sanity tests for the shared 2-D fixture builders (`tests/common/mod.rs`).
 //!
 //! The `board_2d`/`ship_2d` helpers are the reusable invariant-A fixtures the
-//! v2 combat-test rewrite is built on (the run_action 2-D rewrite + un-ignoring
-//! the combat_loop/run_loop integration tests). A fixture builder is itself
+//! v2 combat-test rewrite is built on (the `run_action` 2-D rewrite + un-ignoring
+//! the `combat_loop/run_loop` integration tests). A fixture builder is itself
 //! load-bearing — if it silently produced a non-invariant-A board, every test
 //! built on it would assert against a wrong setup. So pin the builder's
 //! contract here: invariant A holds, placement is where we asked, and the

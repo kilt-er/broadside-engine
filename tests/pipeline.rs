@@ -190,7 +190,7 @@ fn dual_damage_both_absent_apply_falloff_to_each() {
 }
 
 /// Baseline opposite: both DAMAGE effects with `bandFalloff: Some(false)`.
-/// Falloff is disabled; each apply_damage lands the full 4. Two calls -> 8
+/// Falloff is disabled; each `apply_damage` lands the full 4. Two calls -> 8
 /// total. Final hull == 2.
 #[test]
 fn dual_damage_both_some_false_bypass_falloff() {
@@ -297,13 +297,13 @@ fn dual_damage_mixed_none_and_some_true_keeps_falloff_on() {
 /// the first effect, moving the action-level predicate into the per-effect
 /// match) shows up here. Per reviewer's follow-up note on commit 96ecd6c.
 ///
-/// Setup: attacker at cell 0 with the dual-DAMAGE pulse_laser queued
+/// Setup: attacker at cell 0 with the dual-DAMAGE `pulse_laser` queued
 /// (Some(false) + None mix). Target at cell 5 (Long range, delta 2 from
 /// Close optimal). With the action-level predicate aggregating correctly,
-/// BOTH apply_damage calls bypass falloff, landing raw 4 each. Two effects
-/// -> two apply_damage invocations -> total 8 damage. Naked target with
+/// BOTH `apply_damage` calls bypass falloff, landing raw 4 each. Two effects
+/// -> two `apply_damage` invocations -> total 8 damage. Naked target with
 /// hull 10 ends at 2. (Same expected outcome as
-/// dual_damage_mixed_predicate_aggregates_at_action_level, but routed
+/// `dual_damage_mixed_predicate_aggregates_at_action_level`, but routed
 /// through the resolver's effect-dispatch boundary instead of bypassing it.)
 #[test]
 fn dual_damage_mixed_predicate_through_execute_queue() {

@@ -14,7 +14,7 @@
 //! - **heat curve** (`heat::*`) — the heat/lockout state machine spans
 //!   `run_action` (accumulate + set-lockout-at-max) and `end_of_turn`
 //!   (dissipate + clear-lockout-below-max). The fixed sequences in
-//!   `tests/combat_loop.rs` (#73) pin ONE weapon (pulse_laser heat 2, max 6);
+//!   `tests/combat_loop.rs` (#73) pin ONE weapon (`pulse_laser` heat 2, max 6);
 //!   the dimensions that actually vary in play — per-weapon heat cost and a
 //!   ship's `heat_max` — plus arbitrary fire/idle turn orderings are an
 //!   unbounded space. The property drives the REAL resolver (no oracle
@@ -29,7 +29,7 @@ use broadside_engine::geometry::{absorb_shield, band_falloff};
 use broadside_engine::types::{RangeBand, ShieldFace};
 use proptest::prelude::*;
 
-/// The five RangeBand variants in canonical declaration order. Mirrors the
+/// The five `RangeBand` variants in canonical declaration order. Mirrors the
 /// private `BAND_ORDER` in `src/geometry.rs:39-45`; kept local so the
 /// integration test doesn't depend on an exported constant.
 const ALL_BANDS: [RangeBand; 5] = [
@@ -210,7 +210,7 @@ mod heat {
     use proptest::prelude::*;
     use std::collections::HashMap;
 
-    fn naked_shields() -> ShieldProfile {
+    const fn naked_shields() -> ShieldProfile {
         ShieldProfile {
             bow: ShieldFace {
                 armour: 0,
@@ -332,7 +332,7 @@ mod heat {
         }
     }
 
-    /// Read the shooter's (heat, heat_max, locked_out).
+    /// Read the shooter's (heat, `heat_max`, `locked_out`).
     fn read(b: &Board, id: &str) -> (i32, i32, bool) {
         let s = b
             .cells
@@ -462,7 +462,7 @@ mod combat_2d {
     }
 
     /// A `HullZone` is always one of the four faces — used to assert totality.
-    fn is_valid_zone(z: HullZone) -> bool {
+    const fn is_valid_zone(z: HullZone) -> bool {
         matches!(
             z,
             HullZone::Bow | HullZone::Stern | HullZone::Port | HullZone::Starboard
@@ -491,7 +491,7 @@ mod combat_2d {
 
     /* ---- live-path fixtures (invariant A) ----------------------------- */
 
-    fn naked() -> ShieldProfile {
+    const fn naked() -> ShieldProfile {
         ShieldProfile {
             bow: ShieldFace {
                 armour: 0,
@@ -559,7 +559,7 @@ mod combat_2d {
         }
     }
 
-    /// A Turret weapon with `pattern`, the full 3-band range, optional hits_all.
+    /// A Turret weapon with `pattern`, the full 3-band range, optional `hits_all`.
     fn weapon(pattern: TargetingPattern, hits_all: bool) -> Action {
         Action {
             id: "w".into(),
@@ -670,7 +670,7 @@ mod combat_2d {
                 ship_at("a", Faction::Player, atk, 10, Facing::Bow(Dir4::N)),
                 ship_at("t", Faction::Enemy, tgt, 20, tgt_facing),
             ]);
-            let hull_before = board.ship_at(tgt).map(|s| s.hull).unwrap_or(0);
+            let hull_before = board.ship_at(tgt).map_or(0, |s| s.hull);
             let a = weapon(TargetingPattern::BEAM, false);
 
             // Must not panic for any in-bounds attacker/target pair.

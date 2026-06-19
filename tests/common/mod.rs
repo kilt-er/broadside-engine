@@ -10,9 +10,9 @@
 //! `ship.cell == pos.to_index()`), so a `Bow`/`Forward` shot actually bears in
 //! the 2-D targeting model.
 //!
-//! Consumers: the 2-D-fixture rewrite of the run_action tests (resolver-owned
+//! Consumers: the 2-D-fixture rewrite of the `run_action` tests (resolver-owned
 //! `resolve.rs` keeps an inline copy of this shape) and the un-ignoring of the
-//! combat_loop / run_loop integration tests as the 2-D combat stack lands.
+//! `combat_loop` / `run_loop` integration tests as the 2-D combat stack lands.
 //!
 //! This is a `tests/common/` submodule (NOT its own test binary, per Cargo
 //! convention): integration test files pull it in with `mod common;`.
@@ -27,7 +27,7 @@ use std::collections::HashMap;
 
 /// A frigate-grade hull: strong bow (2), weak stern (0), medium flanks (1) —
 /// the canonical [`broadside_engine::geometry::default_shield_profile`] shape.
-pub fn frigate_shields() -> ShieldProfile {
+pub const fn frigate_shields() -> ShieldProfile {
     ShieldProfile {
         bow: ShieldFace {
             armour: 2,
@@ -50,7 +50,7 @@ pub fn frigate_shields() -> ShieldProfile {
 
 /// A bare hull — no armour, no charge on any zone. Use when a test wants every
 /// point of damage to land on hull (observable) rather than being soaked.
-pub fn naked_shields() -> ShieldProfile {
+pub const fn naked_shields() -> ShieldProfile {
     ShieldProfile {
         bow: ShieldFace {
             armour: 0,
@@ -76,7 +76,7 @@ pub fn naked_shields() -> ShieldProfile {
 /// the matching cardinal mapped to a lane end (N/W → Aft side, S/E → Fore side
 /// is arbitrary here — only the 2-D `facing` drives the live path); `Broadside`
 /// → `Broadside`. Kept so a fixture's legacy field is never left contradictory.
-fn legacy_orientation_for(facing: Facing) -> Orientation {
+const fn legacy_orientation_for(facing: Facing) -> Orientation {
     match facing {
         Facing::Bow(dir) => {
             // Map the cardinal to *some* lane end deterministically; the 2-D

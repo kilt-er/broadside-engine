@@ -8,7 +8,7 @@
 //! cargo run --bin render_refs --features render,runtime
 //! ```
 //!
-//! Outputs (per the SPRITE_SPEC.md table):
+//! Outputs (per the `SPRITE_SPEC.md` table):
 //! - `docs/sprite-refs/frigate_bowOnFore_<deg>.png`
 //! - `docs/sprite-refs/frigate_bowOnAft_<deg>.png`
 //! - `docs/sprite-refs/frigate_broadside_<deg>.png`
@@ -29,7 +29,7 @@ struct ClassDef {
 }
 
 /// Classes to render. Add Scout / Gunboat once their `ShipDims` land in
-/// `perspective.rs` (see SPRITE_SPEC.md).
+/// `perspective.rs` (see `SPRITE_SPEC.md`).
 const CLASSES: &[ClassDef] = &[ClassDef {
     name: "frigate",
     dims: FRIGATE_DIMS,
@@ -47,11 +47,11 @@ enum Orientation {
 }
 
 impl Orientation {
-    fn slug(self) -> &'static str {
+    const fn slug(self) -> &'static str {
         match self {
-            Orientation::BowOnFore => "bowOnFore",
-            Orientation::BowOnAft => "bowOnAft",
-            Orientation::Broadside => "broadside",
+            Self::BowOnFore => "bowOnFore",
+            Self::BowOnAft => "bowOnAft",
+            Self::Broadside => "broadside",
         }
     }
 }
@@ -63,7 +63,7 @@ const ORIENTATIONS: &[Orientation] = &[
 ];
 
 /// PNG fill / stroke / background colors (RGBA8). Match the renderer's
-/// PLAYER_HULL palette so bruce's hand-painted art has a matching tone.
+/// `PLAYER_HULL` palette so bruce's hand-painted art has a matching tone.
 const BG: [u8; 4] = [12, 18, 28, 255]; // deep-space ink-ish
 const FILL: [u8; 4] = [26, 42, 62, 255]; // player hull fill
 const STROKE: [u8; 4] = [84, 207, 201, 255]; // player hull stroke (--gold)
@@ -131,7 +131,7 @@ fn rasterize_bow_on(
     let full_bow_w = width * 0.25;
     let bow_w = full_bow_w * cos_a;
     let body_w = width - bow_w;
-    let mid_y = (top_y + base_y) / 2.0;
+    let mid_y = f32::midpoint(top_y, base_y);
     let sign = if bow_fore { 1.0 } else { -1.0 };
     let stern_edge_x = cx - sign * width / 2.0;
     let bow_corner_x = cx - sign * width / 2.0 + sign * body_w;

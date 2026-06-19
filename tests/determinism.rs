@@ -8,7 +8,7 @@
 //!
 //! The state most at risk is the `HashMap`-bearing fields: `Ship.cooldowns`
 //! (and any future `extras`-style map). `HashMap`'s iteration order is not
-//! stable across runs (it's randomized per-process by SipHash). If a code
+//! stable across runs (it's randomized per-process by `SipHash`). If a code
 //! path ever iterates a cooldown map (or any other `HashMap`) and lets that
 //! order affect which action fires, which target is picked, or the order of
 //! damage application, two byte-identical starting boards could diverge.
@@ -28,7 +28,7 @@
 //! That immediately failed — but for a benign reason worth recording: the
 //! resolved *game state* was identical across runs, but `Ship.cooldowns` is
 //! a `HashMap<String, i32>`, and `serde_json` serializes a `HashMap` in its
-//! iteration order, which Rust randomizes per-process via SipHash. So two
+//! iteration order, which Rust randomizes per-process via `SipHash`. So two
 //! byte-identical boards produced JSON that differed only in cooldown-key
 //! order (`{"a":0,"b":0}` vs `{"b":0,"a":0}`) — same map, different bytes.
 //!
@@ -36,7 +36,7 @@
 //! different claims.** This file tests the first via `BoardSnapshot`'s
 //! derived `PartialEq` (a `HashMap` compares by content, order-independent).
 //! The second — that a JSON save of identical state is byte-identical — is
-//! NOT true today because of the HashMap ordering, and the resolver/save
+//! NOT true today because of the `HashMap` ordering, and the resolver/save
 //! owner should know that (flagged to the lead). `serde_json` has a
 //! `preserve_order`/`BTreeMap` route if byte-stable saves ever matter (e.g.
 //! for save-file diffing or content hashing); it does not affect gameplay.
@@ -94,7 +94,7 @@ fn pulse_laser() -> Action {
 }
 
 /// A forward launcher that spawns a "torpedo" projectile. Exercises the
-/// SPAWN_ORDNANCE -> Content::spawn_projectile -> ordnance-advance path.
+/// `SPAWN_ORDNANCE` -> `Content::spawn_projectile` -> ordnance-advance path.
 fn launch_torpedo() -> Action {
     Action {
         id: "launch_torpedo".into(),
@@ -127,7 +127,7 @@ fn launch_torpedo() -> Action {
     }
 }
 
-/// A forward beam that applies HullBreach (damage-over-time) to its target,
+/// A forward beam that applies `HullBreach` (damage-over-time) to its target,
 /// so the round mutates `Ship.statuses` as well as hull.
 fn ion_lance() -> Action {
     Action {
@@ -272,9 +272,9 @@ fn mount(id: &str, weapon: &str) -> Mount {
 /// A 7-cell board exercising every HashMap-bearing path:
 /// - player at 0 (bow=Aft so its forward arc bears up-lane on the enemies),
 ///   queued to fire a beam AND launch a torpedo, with a populated cooldown
-///   map (multiple keys -> multiple HashMap entries to iterate).
+///   map (multiple keys -> multiple `HashMap` entries to iterate).
 /// - two enemies at 2 and 4 with their own cooldown maps and a pre-set
-///   HullBreach status, so the AI scoring + status tick + per-ship cooldown
+///   `HullBreach` status, so the AI scoring + status tick + per-ship cooldown
 ///   bookkeeping all run.
 /// - one pre-seeded live projectile already on the lane, so the ordnance
 ///   advance/impact path runs from round 1 (independent of any launch).
@@ -359,14 +359,14 @@ fn busy_board() -> Board {
 }
 
 /// The persistable state of a board, captured for structural comparison.
-/// `BoardSnapshot` derives `PartialEq`, and its `Ship.cooldowns` HashMap
+/// `BoardSnapshot` derives `PartialEq`, and its `Ship.cooldowns` `HashMap`
 /// compares by content — so this fingerprint is order-independent (see the
 /// module doc on why string comparison would be wrong).
 fn fingerprint(board: &Board) -> BoardSnapshot {
     BoardSnapshot::from(board)
 }
 
-/// Run `rounds` resolve_rounds on a fresh `busy_board`, re-arming the player
+/// Run `rounds` `resolve_rounds` on a fresh `busy_board`, re-arming the player
 /// each round so the queue-driven paths keep firing, and return the
 /// per-round fingerprints (index 0 = after round 1).
 fn play(rounds: usize) -> Vec<BoardSnapshot> {
@@ -396,10 +396,10 @@ const ROUNDS: usize = 8;
 
 /// The core claim: two independent playthroughs from identical starting
 /// inputs produce structurally-identical state after each of N rounds. If
-/// any code path lets HashMap iteration order (or any other nondeterminism)
+/// any code path lets `HashMap` iteration order (or any other nondeterminism)
 /// affect *outcomes*, the snapshots diverge at the round it first bites — and
 /// the per-round comparison localizes exactly where. (Comparison is
-/// structural via BoardSnapshot's PartialEq, deliberately NOT serialized
+/// structural via `BoardSnapshot`'s `PartialEq`, deliberately NOT serialized
 /// bytes — see the module doc.)
 #[test]
 fn two_runs_from_identical_inputs_match_structurally_each_round() {
@@ -423,11 +423,11 @@ fn two_runs_from_identical_inputs_match_structurally_each_round() {
 }
 
 /// Re-running the SAME starting board many times must always land on the
-/// same final fingerprint. This is the cross-process guard: HashMap seed
+/// same final fingerprint. This is the cross-process guard: `HashMap` seed
 /// randomization is per-process, so within one process the order is fixed —
 /// but iterating the map in a way that depends on insertion-order vs
 /// hash-order can still differ between two separately-built maps. Building
-/// the board fresh each iteration (new HashMaps) catches that.
+/// the board fresh each iteration (new `HashMaps`) catches that.
 #[test]
 fn repeated_independent_playthroughs_share_one_final_state() {
     let baseline = play(ROUNDS).pop().expect("ROUNDS > 0");
@@ -443,7 +443,7 @@ fn repeated_independent_playthroughs_share_one_final_state() {
 
 /// Guard the guard: the board must actually CHANGE over the run. A
 /// determinism test that passes because nothing ever happens is worthless —
-/// if a refactor made resolve_round a no-op, the two-runs test would still
+/// if a refactor made `resolve_round` a no-op, the two-runs test would still
 /// pass trivially. Assert the state after round 1 differs from the initial
 /// state, and the final state differs from round 1.
 #[test]
@@ -465,7 +465,7 @@ fn the_board_actually_evolves_so_the_determinism_claim_is_meaningful() {
     );
 }
 
-/// Cooldown maps are the headline HashMap risk. Assert that the player's
+/// Cooldown maps are the headline `HashMap` risk. Assert that the player's
 /// cooldown map — which has multiple keys, the classic place an unordered
 /// iteration could hide — round-trips identically across two runs. This is a
 /// narrower, more legible assertion than the whole-board fingerprint: it
@@ -507,7 +507,7 @@ fn player_cooldown_map_is_identical_across_runs() {
 ///
 /// The board state is deterministic (asserted via structural `==` above),
 /// but a JSON SAVE of two structurally-identical boards is NOT guaranteed
-/// byte-identical, because `Ship.cooldowns` is a `HashMap` and serde_json
+/// byte-identical, because `Ship.cooldowns` is a `HashMap` and `serde_json`
 /// emits map keys in (per-process-randomized) iteration order. This test
 /// documents that reality: structural equality holds, and the two snapshots
 /// parse back to equal values, but we do NOT assert their serialized bytes
@@ -515,7 +515,7 @@ fn player_cooldown_map_is_identical_across_runs() {
 ///
 /// If the save layer ever needs byte-stable output (save-file diffing,
 /// content-hash dedup, deterministic test fixtures), the fix is a
-/// BTreeMap-backed cooldowns field or serde_json's `preserve_order`/sorted
+/// BTreeMap-backed cooldowns field or `serde_json`'s `preserve_order`/sorted
 /// serialization — NOT a gameplay change. Flagged to the resolver/save owner.
 #[test]
 fn structurally_equal_boards_round_trip_but_save_bytes_need_not_match() {

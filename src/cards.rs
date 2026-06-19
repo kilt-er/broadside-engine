@@ -25,7 +25,7 @@
 //! Until architect adds `Ship::field_kit`, per-ship card inventories live
 //! on [`crate::input::DemoContent`] via [`FieldKitRegistry`]. The lead
 //! pre-authorized this content-side placeholder. The Card catalog itself
-//! lives in [`CardCatalog`] (also on DemoContent for now); a future
+//! lives in [`CardCatalog`] (also on `DemoContent` for now); a future
 //! `Catalog::fieldkit: Vec<Card>` upgrade reads into the same shape.
 //!
 //! ## Charges, not turns
@@ -68,7 +68,7 @@ pub struct FieldKit {
 }
 
 impl FieldKit {
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self { cards: Vec::new() }
     }
 
@@ -76,7 +76,7 @@ impl FieldKit {
     /// in the inventory, charges accumulate.
     pub fn grant(&mut self, card_id: impl Into<String>, charges: u32) {
         let id = card_id.into();
-        for c in self.cards.iter_mut() {
+        for c in &mut self.cards {
             if c.card_id == id {
                 c.charges = c.charges.saturating_add(charges);
                 return;
@@ -99,7 +99,7 @@ impl FieldKit {
     }
 }
 
-/// `ship_id` → [`FieldKit`]. The DemoContent owns one.
+/// `ship_id` → [`FieldKit`]. The `DemoContent` owns one.
 #[derive(Clone, Debug, Default)]
 pub struct FieldKitRegistry {
     pub by_ship: HashMap<String, FieldKit>,
@@ -112,7 +112,7 @@ impl FieldKitRegistry {
         }
     }
 
-    /// Convenience: grant a card to a ship; creates the FieldKit if absent.
+    /// Convenience: grant a card to a ship; creates the `FieldKit` if absent.
     pub fn grant(&mut self, ship_id: impl Into<String>, card_id: impl Into<String>, charges: u32) {
         self.by_ship
             .entry(ship_id.into())
@@ -210,8 +210,7 @@ pub fn apply_card_effect(note: &str, source_cell: usize, board: &mut Board) {
     // from a destroyed ship, and the alternative would silently no-op.
     let source_faction = board.cells[source_cell]
         .as_ref()
-        .map(|s| s.faction)
-        .unwrap_or(Faction::Player);
+        .map_or(Faction::Player, |s| s.faction);
     let target_faction = match source_faction {
         Faction::Player => Faction::Enemy,
         Faction::Enemy => Faction::Player,
@@ -295,7 +294,7 @@ pub enum PlayResult {
     NotCarried,
     /// Card is in inventory but insufficient charges.
     InsufficientCharges,
-    /// Unknown card id (not in the CardCatalog).
+    /// Unknown card id (not in the `CardCatalog`).
     UnknownCard,
 }
 

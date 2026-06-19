@@ -503,7 +503,7 @@ fn delta_magnitudes_match_cardinal_vs_diagonal() {
             "{d:?} unit components"
         );
         assert_ne!((dc, dr), (0, 0), "{d:?} is a real step");
-        let nonzero = (dc != 0) as u8 + (dr != 0) as u8;
+        let nonzero = u8::from(dc != 0) + u8::from(dr != 0);
         if d.is_cardinal() {
             assert_eq!(nonzero, 1, "cardinal {d:?} moves on one axis");
         } else {
@@ -1029,8 +1029,8 @@ fn dir4_axis_groups_n_s_and_e_w() {
     assert_eq!(Dir4::W.axis(), Axis::EastWest);
     // Exactly two cardinals on each axis.
     for axis in ALL_AXES {
-        let on_axis: Vec<Dir4> = ALL_DIR4.into_iter().filter(|d| d.axis() == axis).collect();
-        assert_eq!(on_axis.len(), 2, "two cardinals on {axis:?}");
+        let on_axis = ALL_DIR4.into_iter().filter(|d| d.axis() == axis).count();
+        assert_eq!(on_axis, 2, "two cardinals on {axis:?}");
     }
 }
 

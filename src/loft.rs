@@ -121,7 +121,7 @@ pub struct HullMesh {
 
 impl HullMesh {
     /// Triangle count (`positions.len() / 3`).
-    pub fn tri_count(&self) -> usize {
+    pub const fn tri_count(&self) -> usize {
         self.positions.len() / 3
     }
 }
@@ -429,8 +429,8 @@ mod tests {
             LoftParams::default(),
         );
         let xs: Vec<f32> = mesh.positions.iter().map(|p| p[0]).collect();
-        let min_x = xs.iter().cloned().fold(f32::INFINITY, f32::min);
-        let max_x = xs.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+        let min_x = xs.iter().copied().fold(f32::INFINITY, f32::min);
+        let max_x = xs.iter().copied().fold(f32::NEG_INFINITY, f32::max);
 
         let z_extent_near = |target_x: f32| -> f32 {
             let mut zmax = 0.0f32;
@@ -472,8 +472,8 @@ mod tests {
         );
         let x_extent = |m: &HullMesh| {
             let xs: Vec<f32> = m.positions.iter().map(|p| p[0]).collect();
-            let lo = xs.iter().cloned().fold(f32::INFINITY, f32::min);
-            let hi = xs.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+            let lo = xs.iter().copied().fold(f32::INFINITY, f32::min);
+            let hi = xs.iter().copied().fold(f32::NEG_INFINITY, f32::max);
             hi - lo
         };
         let ratio = x_extent(&stretched) / x_extent(&base);
@@ -501,8 +501,8 @@ mod tests {
         );
         let y_extent = |m: &HullMesh| {
             let ys: Vec<f32> = m.positions.iter().map(|p| p[1]).collect();
-            let lo = ys.iter().cloned().fold(f32::INFINITY, f32::min);
-            let hi = ys.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+            let lo = ys.iter().copied().fold(f32::INFINITY, f32::min);
+            let hi = ys.iter().copied().fold(f32::NEG_INFINITY, f32::max);
             hi - lo
         };
         let ratio = y_extent(&tall) / y_extent(&flat);

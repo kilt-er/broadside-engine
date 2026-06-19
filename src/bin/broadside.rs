@@ -18,7 +18,7 @@
 //! | `V` | `Vent` | Queue synthetic `__vent` |
 //! | `R` / `Space` | `CommitTurn` | Run `resolve_round`; re-renders next frame |
 //! | `Enter` | `Restart` (end-state ONLY) | Restart the run — accepted ONLY on a run-end overlay (defeat / victory). A NO-OP during active combat (#97: it used to rebuild the board mid-fight) |
-//! | `1` / `2` / `3` (overloaded) | Path choice | While the EncounterComplete overlay is up: 1 = repair (+2 hull), 2 = upgrade (placeholder), 3 = continue to next encounter |
+//! | `1` / `2` / `3` (overloaded) | Path choice | While the `EncounterComplete` overlay is up: 1 = repair (+2 hull), 2 = upgrade (placeholder), 3 = continue to next encounter |
 //! | `,` / `.` | ship-render res (#76) | Cycle the loft offscreen size `160×100 → 220×138 → 320×200 → 480×300` (live) |
 //! | `;` / `'` | scene res (#76) | Cycle the whole-scene offscreen size `480×270 → 640×360 → 960×540` (live; 480 is the min + default; everything scales together) |
 //! | `Esc` | exit | Close the window |
@@ -79,7 +79,7 @@ use broadside_engine::types::{
  * everything else returns None and the key is ignored.
  * ========================================================================== */
 
-fn keycode_to_key(code: KeyCode) -> Option<Key> {
+const fn keycode_to_key(code: KeyCode) -> Option<Key> {
     Some(match code {
         KeyCode::ArrowLeft => Key::Left,
         KeyCode::ArrowRight => Key::Right,
@@ -105,9 +105,9 @@ fn keycode_to_key(code: KeyCode) -> Option<Key> {
 
 /// (#139/#140/#142) The live scene projector: `for_scene` at the current scene size,
 /// re-pitched by the live grid-pitch step (`G`). The `T` key cycles THREE modes the
-/// pitch feeds: 0 = with_pitch (constant-footprint drawbridge); 1 = with_stretch (grid
+/// pitch feeds: 0 = `with_pitch` (constant-footprint drawbridge); 1 = `with_stretch` (grid
 /// stretches to a uniform top-down square, curved column edges mid-arc); 2 =
-/// with_stretch_straight (same stretch, STRAIGHT column edges). At pitch step 0 ALL
+/// `with_stretch_straight` (same stretch, STRAIGHT column edges). At pitch step 0 ALL
 /// THREE are byte-identical to the chase-cam (each == base at t==0) — the no-regression
 /// invariant. ONE place builds it so every projected element (grid, cells, movement,
 /// threats, ordnance) shares the identical projection (single spatial source).
@@ -340,14 +340,14 @@ fn append_to_player_queue(board: &mut Board, action_id: String) -> bool {
 /// (telegraph / ability tiles / hull bar) that return as 2-D overlays on the
 /// projector. Delete once those are all reborn on the 2-D path.
 #[allow(dead_code)]
-fn demo_lane() -> LaneGeometry {
+const fn demo_lane() -> LaneGeometry {
     DEFAULT_LANE
 }
 
 /// Build the demo [`DemoContent`] with the player's Phase 2 loadout
-/// pre-installed: HeatSink + Point-Blank Doctrine subsystems and one
-/// charge of each placeholder field-kit card (mass_lock / mass_breach /
-/// sensor_pulse). Called on startup and on every Restart so card
+/// pre-installed: `HeatSink` + Point-Blank Doctrine subsystems and one
+/// charge of each placeholder field-kit card (`mass_lock` / `mass_breach` /
+/// `sensor_pulse`). Called on startup and on every Restart so card
 /// charges are refilled when the player restarts.
 fn fresh_content() -> DemoContent {
     let mut c = DemoContent::default();
@@ -359,7 +359,7 @@ fn fresh_content() -> DemoContent {
 
 /// [`fresh_content`] PLUS the loaded catalog's actions merged in (#49a), so the
 /// resolver's fire path can resolve the catalog weapon ids that
-/// catalog-synthesized enemies mount (beam_cannon, railgun_broadside, …) —
+/// catalog-synthesized enemies mount (`beam_cannon`, `railgun_broadside`, …) —
 /// otherwise `content.action(id)` is `None` and enemies never fire. The catalog
 /// actions already carry 2-D bands (derived at load); merge is insert-if-absent
 /// so the hand-tuned player weapons keep precedence. `None` catalog (load
@@ -421,7 +421,7 @@ fn player_lane_x(board: &Board, lane: &LaneGeometry) -> Option<f32> {
 }
 
 /// Archetype → placeholder icon (until real per-ability art lands).
-fn archetype_icon(a: WeaponArchetype) -> hud::AbilityIcon {
+const fn archetype_icon(a: WeaponArchetype) -> hud::AbilityIcon {
     match a {
         WeaponArchetype::Beam => hud::AbilityIcon::Beam,
         WeaponArchetype::Ordnance => hud::AbilityIcon::Ordnance,
@@ -438,7 +438,7 @@ fn archetype_icon(a: WeaponArchetype) -> hud::AbilityIcon {
 /// Reads the action's own first `DAMAGE` effect; but an ORDNANCE action
 /// (`SPAWN_ORDNANCE`, e.g. torpedo / missile) carries NO direct DAMAGE — its
 /// damage lives on the spawned projectile's payload (#117 bug: tile 2 read 0
-/// because action_damage only looked at the action's own effects). So when the
+/// because `action_damage` only looked at the action's own effects). So when the
 /// action has no direct DAMAGE but DOES spawn ordnance, ask `content` to build
 /// the projectile (`spawn_projectile`, the same call the resolver uses) and read
 /// the DAMAGE amount off its `payload`. `ship` is the owner the spawn keys off.
@@ -501,8 +501,8 @@ fn queue_index(ship: &Ship, action_id: &str) -> Option<usize> {
 ///
 /// (#102 fix) The can't-bear cue only makes sense for an AIMED weapon — one that
 /// bears on a target cell via an arc/line. A non-aimed action (a SELF buff or a
-/// DEPLOYED_CELL placement, i.e. the field-kit utility cards mass_lock /
-/// mass_breach / sensor_pulse) has no "does it bear" concept; `resolve_targeting_2d`
+/// `DEPLOYED_CELL` placement, i.e. the field-kit utility cards `mass_lock` /
+/// `mass_breach` / `sensor_pulse`) has no "does it bear" concept; `resolve_targeting_2d`
 /// returns empty for it by construction, which previously veiled + slashed those
 /// card tiles ("what is the slash through 5?"). So such actions ALWAYS read as
 /// fireable — the veil never applies to a utility/self ability, only to a weapon
@@ -521,7 +521,7 @@ fn action_can_fire(action: &broadside_engine::types::Action, board: &Board, ship
 /// (#108) One-letter firing-arc tag for a mount's [`Arc`], drawn on its ability
 /// tile so the player can tell a SIDE weapon from a forward one without firing:
 /// `F` Forward, `B` Broadside, `T` Turret, `R` Rear.
-fn arc_letter(arc: broadside_engine::types::Arc) -> char {
+const fn arc_letter(arc: broadside_engine::types::Arc) -> char {
     use broadside_engine::types::Arc;
     match arc {
         Arc::Forward => 'F',
@@ -586,7 +586,7 @@ fn build_ship_tiles(ship: &Ship, content: &dyn Content, board: &Board) -> Vec<hu
 
 /// Categorise an enemy's NEXT queued action (resolver telegraph, b9268c4) into
 /// a [`hud::TelegraphKind`] for the readout: a DAMAGE effect → an incoming
-/// `Ability` (icon + amount), a DISPLACE_SELF → a `Move` (its lane direction),
+/// `Ability` (icon + amount), a `DISPLACE_SELF` → a `Move` (its lane direction),
 /// a REORIENT → a turn cue. Returns `None` for actions with none of those
 /// (nothing worth telegraphing). Read-only over the ship + content.
 ///
@@ -639,7 +639,7 @@ fn defeat_cause(board: &Board) -> Option<String> {
         .as_deref()
         .unwrap_or("ENEMY")
         .to_ascii_uppercase();
-    Some(format!("DESTROYED BY {}", name))
+    Some(format!("DESTROYED BY {name}"))
 }
 
 /// Mirrors the board state hard-coded in `render-example.ts`. Used as both
@@ -745,7 +745,7 @@ fn player_ship(pos: broadside_engine::grid::Pos, facing: broadside_engine::grid:
 /// Materialize an enemy [`Ship`] from a `ShipSpawn`, in dispatch priority:
 ///
 /// 1. **Final boss** (`class_id == "warlord"`, task #83) → the hand-tuned
-///    [`boss_ship_for_spawn`] (hull 14, ReactorBreach, 3 mounts).
+///    [`boss_ship_for_spawn`] (hull 14, `ReactorBreach`, 3 mounts).
 /// 2. **Sector-end capitals** (#69) → [`capital_boss_ship_for_spawn`]: an armed
 ///    boss baseline, NOT the hull-3 fallback. Before this, every named capital
 ///    except the warlord degraded to a popgun because `capital_spawn` writes
@@ -780,8 +780,8 @@ fn synth_enemy_for_spawn(
     fallback_ship_for_spawn(spawn)
 }
 
-/// Enemy frigate: one Forward pulse_laser so the AI can actually queue an
-/// action. Without a mount, decide_enemy_action returns nothing and the
+/// Enemy frigate: one Forward `pulse_laser` so the AI can actually queue an
+/// action. Without a mount, `decide_enemy_action` returns nothing and the
 /// enemy looks inert.
 fn enemy_ship(
     id: &str,
@@ -877,7 +877,7 @@ struct TweenAnchor {
     /// The ship's facing BEFORE the move (the turn's start) — for the rotation
     /// tween (shortest-path yaw lerp).
     from_facing: Facing,
-    /// When the input fired. Elapsed > TWEEN_DURATION_MS ⇒ resolved + evictable.
+    /// When the input fired. Elapsed > `TWEEN_DURATION_MS` ⇒ resolved + evictable.
     started_at: Instant,
 }
 
@@ -886,7 +886,7 @@ struct TweenAnchor {
 /// state; the other three are modal overlays that gate input.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum DemoState {
-    /// Live encounter — normal apply_intent flow.
+    /// Live encounter — normal `apply_intent` flow.
     Playing,
     /// Last encounter cleared. 1/2/3 chooses repair / upgrade /
     /// continue. Everything else is swallowed except Esc.
@@ -902,9 +902,9 @@ enum DemoState {
 }
 
 /// (#133 Bruce) In-turn BEAT playback of the player's committed volley. On a
-/// CommitTurn the resolver fires the whole queue atomically (all beams + hull
+/// `CommitTurn` the resolver fires the whole queue atomically (all beams + hull
 /// drops land at once); to make each ability read distinctly we DRAIN the player's
-/// fire-events off the board into here and release them ONE AT A TIME, BEAT_SECS
+/// fire-events off the board into here and release them ONE AT A TIME, `BEAT_SECS`
 /// apart, each re-pushed onto `board.fire_events` so both beam-render paths animate
 /// it + an impact/number recorded at that moment. Input is LOCKED while this is
 /// `Some` (the turn-based model holds — input is just suspended for the brief
@@ -996,7 +996,7 @@ struct App {
     beat_playback: Option<BeatPlayback>,
     /// (#136) "Can't queue — recharging" cue: the weapon id the player just tried to
     /// queue while it was ON COOLDOWN + when. Set in the keypress handler when a
-    /// QueueAction is blocked; the redraw flashes that ability tile for a short fade
+    /// `QueueAction` is blocked; the redraw flashes that ability tile for a short fade
     /// so the block reads as "still cooling down", not a silent no-op. Pruned on
     /// expiry; cleared on restart.
     queue_blocked_flash: Option<(String, Instant)>,
@@ -1079,7 +1079,7 @@ impl App {
     }
 
     /// Build the player ship for the current run. Cloned from the
-    /// existing demo player so loadout / shield_profile / mounts stay
+    /// existing demo player so loadout / `shield_profile` / mounts stay
     /// consistent across encounters. Subsystems live on `content`, not
     /// on the ship, so they carry over for free.
     fn fresh_player_ship() -> Ship {
@@ -1106,8 +1106,7 @@ impl App {
         let patrol_tier = self
             .sectors
             .get(self.run.current_sector_idx)
-            .map(|s| s.patrol_tier)
-            .unwrap_or(1);
+            .map_or(1, |s| s.patrol_tier);
         let player = Self::fresh_player_ship();
         let catalog = self.catalog.as_ref();
         Some(build_encounter_board(enc, player, |spawn| {
@@ -1135,8 +1134,7 @@ impl App {
         let patrol_tier = self
             .sectors
             .get(self.run.current_sector_idx)
-            .map(|s| s.patrol_tier)
-            .unwrap_or(1);
+            .map_or(1, |s| s.patrol_tier);
         // Compute the salvage with only IMMUTABLE borrows (catalog, enc,
         // sectors), then apply it to self.run with the mutable borrow —
         // avoids borrowing self.catalog and self.run simultaneously.
@@ -1155,7 +1153,7 @@ impl App {
 
     /// Reset run + content + board to a fresh sector-0 / encounter-0
     /// start. Called on Restart from `RunComplete` / `RunDefeated`
-    /// overlays. Also re-installs audio on the new board's EventBus.
+    /// overlays. Also re-installs audio on the new board's `EventBus`.
     fn restart_run(&mut self) {
         self.run = Run::new(Self::fresh_player_ship());
         // #49a: re-merge the catalog actions so enemy weapons resolve after a
@@ -1177,7 +1175,7 @@ impl App {
     /// React to an `EncounterComplete` 1/2/3 choice. Repair applies
     /// a small hull-restore on the player; upgrade is a placeholder
     /// (no-op); continue advances the run. Returns true if the
-    /// caller should request_redraw.
+    /// caller should `request_redraw`.
     fn apply_path_choice(&mut self, choice: Key) -> bool {
         match choice {
             Key::D1 => {
@@ -1244,8 +1242,11 @@ impl App {
         }
     }
 
+    // No-op twin of the `audio`-enabled `reinstall_audio(&mut self)`; the `&mut
+    // self` signature is kept identical across both cfg variants on purpose.
     #[cfg(not(feature = "audio"))]
-    fn reinstall_audio(&mut self) {}
+    #[allow(clippy::unused_self, clippy::needless_pass_by_ref_mut)]
+    const fn reinstall_audio(&mut self) {}
 
     /// Snapshot the current visual position of every ship. Called BEFORE
     /// `apply_intent` so we have a `from_cell` to anchor the tween from.
@@ -1341,7 +1342,7 @@ impl App {
     /// interpolation. The redraw loop polls this at end-of-frame to
     /// keep requesting redraws while a tween is in flight.
     fn has_active_tween(&self, now: Instant) -> bool {
-        let dur = std::time::Duration::from_millis(TWEEN_DURATION_MS as u64);
+        let dur = std::time::Duration::from_millis(u64::from(TWEEN_DURATION_MS));
         self.tween_anchors
             .values()
             .any(|a| now.duration_since(a.started_at) < dur)
@@ -1359,8 +1360,8 @@ impl ApplicationHandler for App {
             .with_title("Broadside")
             .with_maximized(true)
             .with_inner_size(winit::dpi::LogicalSize::new(
-                VIRTUAL_W as f64,
-                VIRTUAL_H as f64,
+                f64::from(VIRTUAL_W),
+                f64::from(VIRTUAL_H),
             ));
         let window = Arc::new(event_loop.create_window(attrs).expect("create window"));
         let mut gfx = pollster::block_on(Gfx::new(window.clone()));
@@ -1369,7 +1370,7 @@ impl ApplicationHandler for App {
         // the procedural silhouette. See docs/SPRITE_SPEC.md.
         let loaded = gfx.try_load_ship_sprites(std::path::Path::new("assets"));
         if loaded > 0 {
-            log::info!("loaded {} ship sprite PNG(s) from assets/sprites/", loaded);
+            log::info!("loaded {loaded} ship sprite PNG(s) from assets/sprites/");
         }
         // (#149 Bruce) PLAYER = broadside-ship_01.glb, the ship from Bruce's 2nd
         // editor, re-exported to our GLB contract (verified: hull length on +X = 12,
@@ -1396,7 +1397,7 @@ impl ApplicationHandler for App {
         match gfx.install_enemy_glb(AEGIS_GLB) {
             Ok(()) => log::info!("loft: enemy Aegis hull installed from Aegis.glb"),
             Err(e) => {
-                log::warn!("loft: enemy Aegis.glb import failed ({e}); enemies fall back to CAD/2D")
+                log::warn!("loft: enemy Aegis.glb import failed ({e}); enemies fall back to CAD/2D");
             }
         }
         self.window = Some(window);
@@ -1799,8 +1800,7 @@ impl ApplicationHandler for App {
                     if self
                         .beat_playback
                         .as_ref()
-                        .map(|p| p.pending.is_empty())
-                        .unwrap_or(false)
+                        .is_some_and(|p| p.pending.is_empty())
                     {
                         self.beat_playback = None;
                     }
@@ -1912,8 +1912,7 @@ impl ApplicationHandler for App {
                     .iter()
                     .flatten()
                     .find(|s| s.faction == Faction::Player)
-                    .map(|s| s.pos.col)
-                    .unwrap_or(broadside_engine::grid::COLS / 2);
+                    .map_or(broadside_engine::grid::COLS / 2, |s| s.pos.col);
                 let bg_level = self.board.level;
                 // (#76 scene-res) The projector for THIS frame, scaled to the LIVE
                 // scene (offscreen) size so the lane geometry reprojects when `;`/`'`
@@ -2288,7 +2287,7 @@ mod tests {
     /// twice must STRAFE the player to col 4, SAME row, facing UNCHANGED (Bow N).
     /// This is the ground-truth for "arrows = lateral strafe, facing preserved"
     /// (Bruce's control model). If this passes, the live render of the moved
-    /// player is bow-on toward the VP at col 4 (== the f4_c4_n capture).
+    /// player is bow-on toward the VP at col 4 (== the `f4_c4_n` capture).
     #[test]
     fn right_arrow_twice_strafes_to_col4_facing_unchanged() {
         use broadside_engine::grid::{Dir4, Facing};
@@ -2413,7 +2412,7 @@ mod tests {
 
     /// (#100 REGRESSION, was the #97 follow-up diagnostic) Bruce's exact live
     /// sequence headlessly: campaign spawn (player bow-N front) -> press 3 (queue
-    /// broadside_battery) -> press Space (commit). This LOCKS the two #100 render
+    /// `broadside_battery`) -> press Space (commit). This LOCKS the two #100 render
     /// cues at the data layer (the bottom-HUD tile renderer reads exactly these
     /// fields):
     ///   * pressing 3 populates the queue, so the queued tile reports
@@ -2424,6 +2423,7 @@ mod tests {
     ///     verdict from the ship's current pose — the data the "NO TARGET /
     ///     can't bear" veil renders from (so the veil can never disagree with
     ///     whether a shot actually bears).
+    ///
     /// It still prints the full repro (run with `-- --nocapture`) for eyeballing,
     /// but now FAILS on regression rather than only logging.
     #[test]
@@ -2541,11 +2541,11 @@ mod tests {
     }
 
     /// (#102 REGRESSION) The #100 "no target / can't bear" cue must NEVER fire on a
-    /// utility/self ability. The field-kit cards (mass_lock / mass_breach /
-    /// sensor_pulse) are `TargetingPattern::SELF`, so `resolve_targeting_2d` is
+    /// utility/self ability. The field-kit cards (`mass_lock` / `mass_breach` /
+    /// `sensor_pulse`) are `TargetingPattern::SELF`, so `resolve_targeting_2d` is
     /// empty for them by construction — which used to veil + slash their tiles
     /// ("what is the slash through 5?"). `action_can_fire` now structurally returns
-    /// `true` for SELF / DEPLOYED_CELL, so the veil can't apply. Lock that: every
+    /// `true` for SELF / `DEPLOYED_CELL`, so the veil can't apply. Lock that: every
     /// card action reads as fireable regardless of board state, while an aimed
     /// weapon out of bears still reads `false`.
     #[test]
@@ -2632,10 +2632,10 @@ mod tests {
         );
     }
 
-    /// (#117) An ORDNANCE action (SPAWN_ORDNANCE, e.g. torpedo) reports the spawned
+    /// (#117) An ORDNANCE action (`SPAWN_ORDNANCE`, e.g. torpedo) reports the spawned
     /// PROJECTILE's damage on its tile, not 0. The damage lives on the projectile
-    /// payload, not the action's own effects — action_damage now resolves it via
-    /// content.spawn_projectile. Bruce's tile 2 (torpedo) read 0; must read its real
+    /// payload, not the action's own effects — `action_damage` now resolves it via
+    /// `content.spawn_projectile`. Bruce's tile 2 (torpedo) read 0; must read its real
     /// damage (4 in the demo loadout).
     #[test]
     fn ordnance_tile_shows_spawned_projectile_damage() {
@@ -2699,7 +2699,7 @@ mod tests {
     #[test]
     fn restart_intent_after_defeat_recreates_player() {
         let mut board = fresh_board();
-        for slot in board.cells.iter_mut() {
+        for slot in &mut board.cells {
             if matches!(slot, Some(s) if s.faction == Faction::Player) {
                 *slot = None;
             }
@@ -2763,8 +2763,7 @@ mod tests {
             let card = <DemoContent as Content>::card_at(&content, "player", i);
             assert!(
                 card.is_some(),
-                "expected card at kit slot {} after fresh_content",
-                i
+                "expected card at kit slot {i} after fresh_content"
             );
         }
     }
@@ -2787,8 +2786,7 @@ mod tests {
             .field_kits
             .for_ship("player")
             .and_then(|k| k.find(&card_id))
-            .map(|c| c.charges)
-            .unwrap_or(0);
+            .map_or(0, |c| c.charges);
         let changed = apply_intent(
             Intent::PlayCard(card_id.clone()),
             &mut board,
@@ -2804,8 +2802,7 @@ mod tests {
             .field_kits
             .for_ship("player")
             .and_then(|k| k.find(&card_id))
-            .map(|c| c.charges)
-            .unwrap_or(0);
+            .map_or(0, |c| c.charges);
         assert_eq!(
             charges_after,
             charges_before - 1,

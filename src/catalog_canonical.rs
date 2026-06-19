@@ -36,7 +36,7 @@
 //!   That's the conservative read: weapons fire only at their optimal
 //!   range under canonical data. Tune later when a real "allowed bands"
 //!   field lands in the export.
-//! - **`hits_all`**: SPINAL_LINE pierces only if explicitly true; default
+//! - **`hits_all`**: `SPINAL_LINE` pierces only if explicitly true; default
 //!   `false`.
 //! - **`facingRelative: true`** for every transformed action (the
 //!   canonical engine treats targeting as facing-relative by default).
@@ -272,6 +272,10 @@ fn transform_action(v: Value) -> Result<Value, &'static str> {
 ///
 /// MUST stay identical to `catalog::expand_band_2d` (the strict load path) so the
 /// two catalog shapes can't diverge.
+// The `long`/`extreme` arm is kept explicit (not folded into `_`) to document
+// the full 1-D band vocabulary as a mapping table; it shares the `_` fallback's
+// body but reads as a deliberate entry, not an accident.
+#[allow(clippy::match_same_arms)]
 fn derive_range_2d_set(band_1d: &str) -> Vec<&'static str> {
     match band_1d {
         "pointBlank" => vec!["adjacent"],
@@ -307,13 +311,13 @@ fn transform_subsystem(v: Value) -> Value {
 ///    canonical, camelCase form in strict).
 /// 2. **set1 / set2 normalization** (task #82): canonical lists action
 ///    *display names* ("Broadside Battery"), engine expects action ids
-///    ("broadside_battery"). Rewrite each entry via `action_name_to_id`.
+///    ("`broadside_battery`"). Rewrite each entry via `action_name_to_id`.
 ///    Unmapped names are left as-is (resolver will silently skip them
 ///    when the class is selected) and logged via `eprintln!` for the
 ///    catalog-author to fix.
 /// 3. **signature derivation** (task #82): canonical `signature` is
 ///    prose ("Slip — move forward to trade places…"). Extract the
-///    leading title before the em-dash / dash, snake_case it, and use
+///    leading title before the em-dash / dash, `snake_case` it, and use
 ///    that as the signature action id. The action def itself isn't in
 ///    the canonical export today — the resolver will no-op the
 ///    Signature press until someone adds a matching action — but the
@@ -382,20 +386,17 @@ fn normalize_action_ref(
     {
         return v;
     }
-    match action_name_to_id.get(&name.to_lowercase()) {
-        Some(id) => Value::String(id.clone()),
-        None => {
-            eprintln!(
-                "[catalog_canonical] class `{class_id}` {field}: action \
-                 display-name `{name}` has no matching id in the catalog; \
-                 leaving as-is",
-            );
-            v
-        }
+    if let Some(id) = action_name_to_id.get(&name.to_lowercase()) { Value::String(id.clone()) } else {
+        eprintln!(
+            "[catalog_canonical] class `{class_id}` {field}: action \
+             display-name `{name}` has no matching id in the catalog; \
+             leaving as-is",
+        );
+        v
     }
 }
 
-/// Extract a snake_case id from a canonical Signature prose string.
+/// Extract a `snake_case` id from a canonical Signature prose string.
 /// Canonical format: `"<Title> — <description>"` (em-dash U+2014) or
 /// `"<Title> - <description>"` (ASCII hyphen with spaces). The leading
 /// title is the human name; lowercase + space-to-underscore makes it
@@ -411,8 +412,7 @@ fn signature_id_from_prose(prose: &str) -> String {
     let title_part = prose
         .split_once('\u{2014}')
         .or_else(|| prose.split_once(" - "))
-        .map(|(a, _)| a)
-        .unwrap_or(prose);
+        .map_or(prose, |(a, _)| a);
     let title = title_part.trim();
     if title.is_empty() {
         return String::new();
@@ -460,11 +460,11 @@ const SELF_RELATIVE_SWAP_SIGNATURES: &[&str] = &["slip", "swap_toss"];
 const SELF_RELATIVE_RAM_SIGNATURES: &[&str] = &["ram", "throw"];
 
 /// Rewrite the loose effect list for the self-relative class signatures
-/// (slip / swap_toss / ram / throw) BEFORE inflation:
+/// (slip / `swap_toss` / ram / throw) BEFORE inflation:
 ///
 /// - any `DISPLACE_TARGET` string becomes `DISPLACE_SELF` (the actual
 ///   movement-mode mapping is applied later by [`inflate_effect`]'s
-///   DISPLACE_SELF arm, keyed off the action id);
+///   `DISPLACE_SELF` arm, keyed off the action id);
 /// - for the ram-style ids, the trailing `DAMAGE` is dropped (collision
 ///   damage is billed by the resolver's self-move path, not a separate
 ///   SELF-pattern DAMAGE that would hit the empty origin).
@@ -512,6 +512,10 @@ fn rewrite_self_relative_signature(action_id: &str, effects: Value) -> Value {
 
 /// Inflate one loose effect entry (string or already-an-object) into a
 /// strict Effect-tagged JSON object.
+// Several match arms below share a body but are kept separate to document the
+// canonical-archetype mapping (e.g. `ordnance` vs `displacement`/`control` both
+// applying `systemsOffline`, for documented but different reasons).
+#[allow(clippy::match_same_arms)]
 fn inflate_effect(v: Value, archetype: &str, heat: i32, action_id: &str) -> Value {
     let kind = match &v {
         // Already in strict form — pass through.
@@ -1224,7 +1228,7 @@ mod tests {
         );
     }
 
-    /// A set-ref that's already an action id (snake_case form) skips the
+    /// A set-ref that's already an action id (`snake_case` form) skips the
     /// lookup and passes through. Lets hybrid catalogs (some loose, some
     /// strict) work without the normalizer over-rewriting things.
     #[test]
@@ -1347,14 +1351,14 @@ mod tests {
     /// BEHAVIOUR regression — fire each of the five signatures on a two-ship
     /// board through the real resolver and assert the board state actually
     /// changed. This is the test that would have caught the dead signatures:
-    /// the pre-fix slip/swap_toss were pure no-ops and ram/throw shoved the
+    /// the pre-fix `slip/swap_toss` were pure no-ops and ram/throw shoved the
     /// wrong ship the wrong way for zero damage.
     ///
     /// (#29) The five class signatures change board state through the resolver,
     /// on real 2-D invariant-A fixtures. The transformer rewrites the four
-    /// self-relative sigs (slip/swap_toss/ram/throw) to DISPLACE_SELF and `phase`
-    /// is natively DISPLACE_SELF, so all five move along the operator's FACING via
-    /// resolve_self_move_2d (R6). Both ships sit on row 0 (so `pos.to_index() ==
+    /// self-relative sigs (`slip/swap_toss/ram/throw`) to `DISPLACE_SELF` and `phase`
+    /// is natively `DISPLACE_SELF`, so all five move along the operator's FACING via
+    /// `resolve_self_move_2d` (R6). Both ships sit on row 0 (so `pos.to_index() ==
     /// col` and the cell asserts read as columns); the operator faces E (Bow(E))
     /// toward the foe one column East.
     #[test]
@@ -1523,9 +1527,9 @@ mod tests {
     /// A 2-D invariant-A board (#29): operator ("op") at `op_col` and a foe
     /// ("foe") at `foe_col`, BOTH on row 0 so `pos.to_index() == col` and the
     /// 1-D cell assertions below read directly as columns. `op_facing` is the
-    /// load-bearing knob — every signature is a DISPLACE_SELF that moves along
+    /// load-bearing knob — every signature is a `DISPLACE_SELF` that moves along
     /// the operator's facing (the transformer rewrites the self-relative sigs to
-    /// DISPLACE_SELF; resolve_self_move_2d reads `facing`), so the test points
+    /// `DISPLACE_SELF`; `resolve_self_move_2d` reads `facing`), so the test points
     /// the op's bow at (or away from) the foe per the move under test. Foe faces
     /// W (back toward the op) — inert for these self-moves. Both hull 5 so
     /// collision damage is observable. Upholds invariant A

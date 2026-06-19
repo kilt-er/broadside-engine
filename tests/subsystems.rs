@@ -10,7 +10,7 @@
 //! the right pipeline-order positions, and actually mutate observable
 //! state.
 //!
-//! Per audit #67 (commit c441295), damage_modifier fires from the
+//! Per audit #67 (commit c441295), `damage_modifier` fires from the
 //! ATTACKER's installed subsystems, not the target's. Marksman / PBD
 //! installs in this file are on the attacker; an inverse test pins the
 //! "no bonus when installed on the target" semantics.
@@ -160,7 +160,7 @@ fn damage_log(board: &mut Board) -> Rc<RefCell<Vec<(usize, i32)>>> {
  * ====================================================================== */
 
 /// Without Marksman installed, raw 3 damage at long range lands 3.
-/// With Marksman installed on the TARGET, the damage_modifier adds +1
+/// With Marksman installed on the TARGET, the `damage_modifier` adds +1
 /// at Long band only — total 4. The +1 comes from
 /// `Content::damage_modifier` being called inside `apply_modifiers` at
 /// step 2 of the pipeline (resolve.rs:1115).
@@ -298,7 +298,7 @@ fn marksman_is_band_gated() {
  * Point-Blank Doctrine — +2 at PointBlank, 0 elsewhere
  * ====================================================================== */
 
-/// PBD adds +2 at PointBlank distance only (d <= 1). Raw 3 -> 5 lands.
+/// PBD adds +2 at `PointBlank` distance only (d <= 1). Raw 3 -> 5 lands.
 /// Install is on the ATTACKER per audit #67.
 #[test]
 fn point_blank_doctrine_adds_two_at_point_blank_through_content_trait() {
@@ -333,7 +333,7 @@ fn point_blank_doctrine_adds_two_at_point_blank_through_content_trait() {
  * ====================================================================== */
 
 /// Both subsystems installed on the ATTACKER (per audit #67): at Long
-/// range, Marksman contributes +1; at PointBlank, PBD contributes +2;
+/// range, Marksman contributes +1; at `PointBlank`, PBD contributes +2;
 /// at Mid, neither.
 #[test]
 fn marksman_and_pbd_cooperate_at_their_respective_bands() {
@@ -395,14 +395,14 @@ fn marksman_and_pbd_cooperate_at_their_respective_bands() {
  * HeatSink — one extra heat dissipation per turn end, through Content trait
  * ====================================================================== */
 
-/// Without HeatSink, end_of_turn dissipates exactly 1 heat. With
-/// HeatSink, the Content::on_turn_end hook dissipates 1 EXTRA on top of
-/// the base. Net: heat 4 -> 2 in a HeatSink turn (1 base + 1 extra).
+/// Without `HeatSink`, `end_of_turn` dissipates exactly 1 heat. With
+/// `HeatSink`, the `Content::on_turn_end` hook dissipates 1 EXTRA on top of
+/// the base. Net: heat 4 -> 2 in a `HeatSink` turn (1 base + 1 extra).
 ///
 /// resolve.rs:442 calls `content.on_turn_end(board)` BEFORE the
 /// `OnTurnEnd` bus emit and AFTER the base passive dissipation. So
 /// subsystem state should be observable on the board right after
-/// resolve_round returns.
+/// `resolve_round` returns.
 #[test]
 fn heat_sink_adds_one_extra_dissipation_per_resolve_round() {
     // Baseline: no HeatSink.
@@ -425,7 +425,7 @@ fn heat_sink_adds_one_extra_dissipation_per_resolve_round() {
     assert_eq!(p.heat, 2, "with HeatSink: heat 4 -> 2 (1 base + 1 extra)");
 }
 
-/// Two HeatSinks dissipate 1+2 = 3 heat per resolve_round. The HeatSink
+/// Two `HeatSinks` dissipate 1+2 = 3 heat per `resolve_round`. The `HeatSink`
 /// behavior at subsystems.rs:166-185 explicitly stacks, so the integration
 /// path must preserve that.
 #[test]
@@ -444,8 +444,8 @@ fn two_heat_sinks_stack_additively_through_resolve_round() {
     );
 }
 
-/// HeatSink can pull a ship out of lockout when the dropped heat falls
-/// below heat_max. This is the lockout-clear path through the resolver.
+/// `HeatSink` can pull a ship out of lockout when the dropped heat falls
+/// below `heat_max`. This is the lockout-clear path through the resolver.
 #[test]
 fn heat_sink_clears_lockout_after_resolve_round() {
     let mut player = naked_ship("p", Faction::Player, 0, 10);

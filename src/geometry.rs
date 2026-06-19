@@ -10,7 +10,7 @@ use crate::types::{
 };
 
 /// `fore` is toward higher cell index; `opposite(fore) = aft` and vice versa.
-pub fn opposite(end: LaneEnd) -> LaneEnd {
+pub const fn opposite(end: LaneEnd) -> LaneEnd {
     match end {
         LaneEnd::Fore => LaneEnd::Aft,
         LaneEnd::Aft => LaneEnd::Fore,
@@ -19,7 +19,7 @@ pub fn opposite(end: LaneEnd) -> LaneEnd {
 
 /// Direction one must travel to get FROM `a` TO `b` along the lane.
 /// Mirrors `directionTo` exactly: `b >= a` returns `Fore`, so `a == b` is `Fore`.
-pub fn direction_to(a: usize, b: usize) -> LaneEnd {
+pub const fn direction_to(a: usize, b: usize) -> LaneEnd {
     if b >= a {
         LaneEnd::Fore
     } else {
@@ -28,7 +28,7 @@ pub fn direction_to(a: usize, b: usize) -> LaneEnd {
 }
 
 /// Cell distance between two lane positions.
-pub fn distance(a: usize, b: usize) -> usize {
+pub const fn distance(a: usize, b: usize) -> usize {
     a.abs_diff(b)
 }
 
@@ -37,7 +37,7 @@ pub fn distance(a: usize, b: usize) -> usize {
 /// Index of `b` in the canonical band ordering used by `band_falloff`'s delta
 /// math. The exhaustive match here is the drift guard: adding a [`RangeBand`]
 /// variant without extending this function fails to compile.
-fn band_index(b: RangeBand) -> usize {
+const fn band_index(b: RangeBand) -> usize {
     match b {
         RangeBand::PointBlank => 0,
         RangeBand::Close => 1,
@@ -48,7 +48,7 @@ fn band_index(b: RangeBand) -> usize {
 }
 
 /// Bucket a cell distance into a range band. Matches the doc's band ruler.
-pub fn range_band(attacker_cell: usize, target_cell: usize) -> RangeBand {
+pub const fn range_band(attacker_cell: usize, target_cell: usize) -> RangeBand {
     let d = distance(attacker_cell, target_cell);
     if d <= 1 {
         RangeBand::PointBlank
@@ -69,7 +69,7 @@ pub fn band_falloff(raw: i32, actual: RangeBand, optimal: RangeBand) -> i32 {
     let delta = (band_index(actual) as i32 - band_index(optimal) as i32).unsigned_abs() as usize;
     let factors = [1.0_f64, 0.66, 0.5, 0.33, 0.2];
     let factor = factors[delta.min(4)];
-    let scaled = (raw as f64 * factor).floor() as i32;
+    let scaled = (f64::from(raw) * factor).floor() as i32;
     scaled.max(0)
 }
 
@@ -125,7 +125,7 @@ pub fn arc_bears(o: Orientation, arc: Arc, toward_end: LaneEnd) -> bool {
 }
 
 /// Does the ship have ANY orientation-legal bearing for this arc toward the
-/// target cell? `None` arc means arc-less (SELF / DEPLOYED_CELL) and always
+/// target cell? `None` arc means arc-less (SELF / `DEPLOYED_CELL`) and always
 /// bears.
 pub fn bears(ship: &Ship, arc: Option<Arc>, target_cell: usize) -> bool {
     match arc {
@@ -156,7 +156,7 @@ pub fn absorb_shield(face: &mut ShieldFace, dmg: i32) -> i32 {
 /// The starting Frigate's hull: strong bow (2), weak stern (0), medium flanks (1).
 /// Mirrors `defaultShieldProfile` in `geometry.ts` and matches the shape used
 /// throughout `demo.ts`.
-pub fn default_shield_profile() -> ShieldProfile {
+pub const fn default_shield_profile() -> ShieldProfile {
     ShieldProfile {
         bow: ShieldFace {
             armour: 2,

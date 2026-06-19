@@ -79,7 +79,7 @@ pub fn cell_uvs(cell: (u32, u32)) -> ([f32; 2], [f32; 2]) {
 }
 
 /// Generate the entire atlas as a tight RGBA8 byte buffer
-/// (ATLAS_SIZE * ATLAS_SIZE * 4 bytes).
+/// (`ATLAS_SIZE` * `ATLAS_SIZE` * 4 bytes).
 pub fn generate_atlas() -> Vec<u8> {
     let mut buf = vec![0u8; (ATLAS_SIZE * ATLAS_SIZE * 4) as usize];
 
@@ -147,7 +147,7 @@ pub(crate) fn fill_cell(buf: &mut [u8], cell: (u32, u32), rgba: [u8; 4]) {
     fill_rect(buf, cx, cy, CELL_SIZE, CELL_SIZE, rgba);
 }
 
-pub(crate) fn cell_origin(cell: (u32, u32)) -> (u32, u32) {
+pub(crate) const fn cell_origin(cell: (u32, u32)) -> (u32, u32) {
     (cell.0 * CELL_SIZE, cell.1 * CELL_SIZE)
 }
 
@@ -634,9 +634,9 @@ fn draw_parallax_nebula(buf: &mut [u8], cell: (u32, u32)) {
                 if f > 0.0 {
                     let wa = f * 0.55; // peak per-lobe alpha
                     a += wa;
-                    r += col[0] as f32 * wa;
-                    g += col[1] as f32 * wa;
-                    b += col[2] as f32 * wa;
+                    r += f32::from(col[0]) * wa;
+                    g += f32::from(col[1]) * wa;
+                    b += f32::from(col[2]) * wa;
                 }
             }
             if a > 0.01 {
@@ -824,8 +824,8 @@ mod tests {
             SOLID_WHITE,
         ];
         for (c, r) in cells {
-            assert!(*c < CELLS_PER_ROW, "col {} out of bounds", c);
-            assert!(*r < CELLS_PER_ROW, "row {} out of bounds", r);
+            assert!(*c < CELLS_PER_ROW, "col {c} out of bounds");
+            assert!(*r < CELLS_PER_ROW, "row {r} out of bounds");
         }
     }
 
@@ -862,7 +862,7 @@ mod tests {
         ];
         for (i, a) in cells.iter().enumerate() {
             for b in &cells[i + 1..] {
-                assert_ne!(a, b, "cell collision at {:?}", a);
+                assert_ne!(a, b, "cell collision at {a:?}");
             }
         }
     }

@@ -242,9 +242,9 @@ pub enum BackgroundLoadError {
 impl std::fmt::Display for BackgroundLoadError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            BackgroundLoadError::Io(e) => write!(f, "background manifest io: {e}"),
-            BackgroundLoadError::Json(e) => write!(f, "background manifest json: {e}"),
-            BackgroundLoadError::Image(e) => write!(f, "background layer image: {e}"),
+            Self::Io(e) => write!(f, "background manifest io: {e}"),
+            Self::Json(e) => write!(f, "background manifest json: {e}"),
+            Self::Image(e) => write!(f, "background layer image: {e}"),
         }
     }
 }
@@ -265,7 +265,7 @@ struct LayerUniform {
     p1: [f32; 2],
     p2: [f32; 2],
     p3: [f32; 2],
-    /// 2/VIRTUAL_W, 2/VIRTUAL_H — same px→NDC map as the sprite/polygon view.
+    /// `2/VIRTUAL_W`, `2/VIRTUAL_H` — same px→NDC map as the sprite/polygon view.
     px_to_ndc: [f32; 2],
     /// Per-draw edge-fade alpha; `_pad` keeps the struct 16-byte aligned.
     alpha: f32,
@@ -277,7 +277,7 @@ struct LayerUniform {
 // invalid-encoder trap, made a compile error — see gfx.rs for the rationale).
 const _: () = assert!(std::mem::size_of::<LayerUniform>() == 48);
 
-const BACKGROUND_SHADER: &str = r#"
+const BACKGROUND_SHADER: &str = r"
 struct Layer {
     p0: vec2<f32>,
     p1: vec2<f32>,
@@ -322,15 +322,17 @@ fn fs_bg(in: VsOut) -> @location(0) vec4<f32> {
     // texel. ALPHA_BLENDING in the pipeline composites this over farther layers.
     return vec4<f32>(s.rgb, s.a) * vec4<f32>(1.0, 1.0, 1.0, layer.alpha);
 }
-"#;
+";
 
 /// One depth-queue layer: either a loaded texture or the solid-ink fallback.
 /// Both expose a `view` so the draw path is uniform.
+#[derive(Debug)]
 struct Layer {
     view: wgpu::TextureView,
 }
 
 /// The whole parallax background as one GPU resource (spec §7 ECS shape).
+#[derive(Debug)]
 pub struct Background {
     /// One slot per depth index (len = `layer_count`); always populated — a
     /// slot with no painted PNG holds its solid-ink fallback texture.
@@ -472,14 +474,14 @@ impl Background {
     }
 
     /// Number of layers in the depth queue.
-    pub fn layer_count(&self) -> usize {
+    pub const fn layer_count(&self) -> usize {
         self.layers.len()
     }
 
     /// Set the depth target (campaign layer 0..count-1 — `Run.layer`). Clamped
     /// to the queue; the editor authors a fixed stack and does not wrap
     /// (spec §5), so we clamp rather than ring-buffer.
-    pub fn set_focus_target(&mut self, layer: usize) {
+    pub const fn set_focus_target(&mut self, layer: usize) {
         let max = self.layers.len().saturating_sub(1) as f32;
         self.focus_target = (layer as f32).clamp(0.0, max);
     }
@@ -624,7 +626,7 @@ fn ease_factor(k_60: f32, dt: f32) -> f32 {
 }
 
 /// Build the background render pipeline + bind-group layout + sampler. NEAREST
-/// sampler everywhere (spec §6) for crisp pixels; ALPHA_BLENDING so layers
+/// sampler everywhere (spec §6) for crisp pixels; `ALPHA_BLENDING` so layers
 /// composite straight-alpha far → near.
 fn build_pipeline(
     device: &wgpu::Device,
@@ -959,7 +961,7 @@ mod tests {
     }
 
     /// A spec **v1.0** manifest carries new top-level `sprites[]` / `placements[]`
-    /// blocks (BACKGROUND_SPEC_v1.0 §0/§9) that the engine does not consume here.
+    /// blocks (`BACKGROUND_SPEC_v1.0` §0/§9) that the engine does not consume here.
     /// The `Manifest` deserializer must IGNORE those unknown fields (no
     /// `deny_unknown_fields`) so a v1.0 bundle still loads its parallax + layers
     /// — the layer background renders even before the §9 animated-sprite path

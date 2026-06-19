@@ -9,7 +9,7 @@
 //! ROTATES (the #92/#86 arc-agnostic `rotate_to_make_weapon_bear`) until its
 //! flank bears, then fires.
 //!
-//! Geometry (Model D): a `Bow(E)` hull's forward axis is EastWest, so its flanks
+//! Geometry (Model D): a `Bow(E)` hull's forward axis is `EastWest`, so its flanks
 //! face N/S — it broadsides UP/DOWN a column. Two ships on the same column thus
 //! present flanks at each other. We use that: player at the front of column 2
 //! Bow(E), enemy up the column Bow(E), so each one's flank bears on the other.
@@ -65,7 +65,7 @@ struct BroadsideContent {
 }
 impl BroadsideContent {
     fn new(actions: Vec<Action>) -> Self {
-        BroadsideContent {
+        Self {
             actions: actions.into_iter().map(|a| (a.id.clone(), a)).collect(),
         }
     }
@@ -261,7 +261,7 @@ fn misfacing_broadside_enemy_rotates_flank_to_bear_then_fires() {
     assert!(
         matches!(
             ef,
-            Facing::Bow(Dir4::E) | Facing::Bow(Dir4::W) | Facing::Broadside(_)
+            Facing::Bow(Dir4::E | Dir4::W) | Facing::Broadside(_)
         ),
         "the enemy rotated to a flank-bearing stance; ended at {ef:?}",
     );

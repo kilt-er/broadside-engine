@@ -19,7 +19,7 @@
 //! 2. **Played-through defeat.** A real board where the player ship is
 //!    destroyed routes through `mark_defeated`. If `encounter_outcome`
 //!    stopped returning `Lost` when the player dies, the run would hang
-//!    "InProgress" forever and this test would never call `mark_defeated`.
+//!    "`InProgress`" forever and this test would never call `mark_defeated`.
 //! 3. **Salvage → meta accrual across a real win.** Enemies die on a
 //!    live board; `salvage_for_encounter_win` reads the spawn list,
 //!    `award_run_salvage` banks it, `accumulate_into_meta` crosses an
@@ -56,7 +56,7 @@ mod common;
  * ====================================================================== */
 
 /// A player frigate at `cell` with `hull`, bow facing forward (`Fore`).
-/// Carries one forward-arc mount loaded with the test "siege_beam"
+/// Carries one forward-arc mount loaded with the test "`siege_beam`"
 /// weapon. Heat budget generous so the loop never lockouts.
 fn player_frigate(cell: usize, hull: i32) -> Ship {
     Ship {
@@ -165,7 +165,7 @@ fn armed_enemy(id: &str, cell: usize, hull: i32) -> Ship {
 }
 
 /// The test weapon: a heavy forward beam. 6 raw damage, optimal at
-/// PointBlank so adjacent shots land full, fires PointBlank/Close/Mid,
+/// `PointBlank` so adjacent shots land full, fires PointBlank/Close/Mid,
 /// Forward-arc only. One shot kills a 3-hull weak-stern enemy at
 /// point-blank (6 raw, no falloff, stern armour 0 → 6 lands).
 fn siege_beam() -> Action {
@@ -273,9 +273,9 @@ fn step_forward() -> Action {
     }
 }
 
-/// Content serving the player's run-loop kit: the siege_beam plus the `flip`
+/// Content serving the player's run-loop kit: the `siege_beam` plus the `flip`
 /// reorient and `step` thrust the harness uses to face + close on pincering,
-/// dynamic (#71) enemies. spawn_projectile panics — these scenarios fire
+/// dynamic (#71) enemies. `spawn_projectile` panics — these scenarios fire
 /// beams, not ordnance. Constructed via `LoopContent::new()`.
 struct LoopContent(HashMap<String, Action>);
 impl LoopContent {
@@ -284,7 +284,7 @@ impl LoopContent {
         for a in [siege_beam(), flip_facing(), step_forward()] {
             m.insert(a.id.clone(), a);
         }
-        LoopContent(m)
+        Self(m)
     }
 }
 impl Content for LoopContent {
@@ -351,10 +351,11 @@ fn encounter(id: &str, spawns: Vec<ShipSpawn>, is_boss: bool) -> EncounterDef {
     }
 }
 
-/// Materialize a capital-boss spawn (class_id = the capital's display name)
+/// Materialize a capital-boss spawn (`class_id` = the capital's display name)
 /// into a killable target ship, so the capital-salvage integration test can
 /// actually WIN the boss encounter. The salvage value comes from the
-/// CapitalDef tier endpoints, not this ship's hull — so a low hull is fine.
+/// `CapitalDef` tier endpoints, not this ship's hull — so a low hull is fine.
+#[allow(clippy::unnecessary_wraps)] // Option signals "spawn builder may drop"; kept for call-site parity
 fn build_capital_ship(spawn: &ShipSpawn) -> Option<Ship> {
     Some(weak_enemy(
         &format!("{}@{}", spawn.class_id, spawn.cell),
@@ -365,8 +366,8 @@ fn build_capital_ship(spawn: &ShipSpawn) -> Option<Ship> {
 
 /// A two-sector campaign: sector 0 has two single-target encounters,
 /// sector 1 has one boss encounter. Small enough to play to victory in a
-/// handful of rounds, structured enough to exercise NextEncounter →
-/// NextSector → Victorious in sequence.
+/// handful of rounds, structured enough to exercise `NextEncounter` →
+/// `NextSector` → Victorious in sequence.
 fn two_sector_campaign() -> Vec<Sector> {
     vec![
         Sector {
@@ -404,7 +405,7 @@ enum FightResult {
 
 /// Drive `board` through `resolve_round` until it is no longer
 /// `InProgress`. When `arm_player` is true, re-queue the player's
-/// siege_beam each round (the queue clears after every resolve, exactly as
+/// `siege_beam` each round (the queue clears after every resolve, exactly as
 /// the bin re-arms it each turn). When false, the player sits idle and the
 /// board outcome is driven entirely by enemy fire — the defeat path.
 /// `cap` guards against an accidental infinite loop if the outcome logic
@@ -425,7 +426,7 @@ fn fight_to_completion(
         match encounter_outcome(board) {
             EncounterOutcome::Won => return FightResult::Won { rounds: round },
             EncounterOutcome::Lost => return FightResult::Lost { rounds: round },
-            EncounterOutcome::InProgress => continue,
+            EncounterOutcome::InProgress => {}
         }
     }
     panic!("fight did not terminate within {cap} rounds — outcome logic likely regressed");
@@ -435,7 +436,7 @@ fn fight_to_completion(
 /// a real playstyle against the #72 back-row spread + #71's firing/moving
 /// enemies. The player spawns front-centre (`(2,3)`) bow N, so its Forward gun
 /// bears up its own column; enemies fan across the back rows. The driver:
-///   - **fire** when the siege_beam already bears on a hostile cell — gated by
+///   - **fire** when the `siege_beam` already bears on a hostile cell — gated by
 ///     the SAME single source the shot fires through (`resolve_targeting_2d`),
 ///     so "the driver decided to fire" == "the shot connects" (no parallel
 ///     aim math that could drift from the engine);
@@ -484,8 +485,7 @@ fn queue_player_combat_action(board: &mut Board) {
                 .cells
                 .get(p.to_index())
                 .and_then(|c| c.as_ref())
-                .map(|s| s.faction != Faction::Player)
-                .unwrap_or(false)
+                .is_some_and(|s| s.faction != Faction::Player)
         });
         if bears_on_hostile {
             weapon_id.clone()
@@ -582,7 +582,7 @@ fn player_fires_and_kills_one_enemy_in_2d_ends_the_encounter() {
         if let Some(slot) = board
             .cells
             .iter()
-            .position(|c| c.as_ref().map(|s| s.id == "p").unwrap_or(false))
+            .position(|c| c.as_ref().is_some_and(|s| s.id == "p"))
         {
             if let Some(p) = board.cells[slot].as_mut() {
                 p.queue = vec!["siege_beam".into()];
@@ -767,7 +767,7 @@ fn winning_an_encounter_accrues_salvage_into_the_run() {
 /// `award_run_salvage_with_catalog` (see
 /// `capital_boss_win_accrues_tier_scaled_salvage_into_the_run` below). This
 /// test pins the still-valid no-catalog fallback (placeholder campaign with
-/// no CapitalDefs), so it must NOT be read as "capitals pay ×2 in the game."
+/// no `CapitalDefs`), so it must NOT be read as "capitals pay ×2 in the game."
 #[test]
 fn catalogless_boss_fallback_doubles_salvage_on_a_real_win() {
     let content = LoopContent::new();
@@ -789,13 +789,13 @@ fn catalogless_boss_fallback_doubles_salvage_on_a_real_win() {
 
 /// The LIVE reward path (the bin's `award_encounter_salvage`): a capital-boss
 /// win, played through real boards, banks the doc-canonical TIER-SCALED
-/// capital salvage (CapitalDef salvage_p1→salvage_p7 interpolation) into the
+/// capital salvage (`CapitalDef` `salvage_p1→salvage_p7` interpolation) into the
 /// run, and `accumulate_into_meta` rolls it forward. content's meta.rs units
 /// pin `capital_salvage_for_tier` / `salvage_for_capital_encounter` at the
 /// function level; this locks the same value flowing through the run loop
 /// exactly as the bin awards it.
 ///
-/// The Dasher: salvage_p1=2, salvage_p7=7. At patrol tier 4 the interpolation
+/// The Dasher: `salvage_p1=2`, `salvage_p7=7`. At patrol tier 4 the interpolation
 /// is 2 + (7-2)*(4-1)/6 = 2 + 2 = 4 (matching content's
 /// `capital_salvage_interpolates_p1_to_p7_by_tier`).
 #[test]
@@ -956,7 +956,7 @@ fn build_board_and_first_resolve_round_does_not_panic() {
 /// A minimal canonical catalog with a spawn pool: two combat sectors
 /// (intro ship-types + a capital each) plus a leading Staging passthrough.
 /// Mirrors the shape `generate_campaign` consumes. Built via the canonical
-/// transformer so it exercises the real catalog → SectorDef path.
+/// transformer so it exercises the real catalog → `SectorDef` path.
 fn generated_campaign_catalog() -> broadside_engine::types::Catalog {
     // Full canonical shape (mirrors src/runs.rs's gen_catalog) so the
     // transformer's enemy / capital / SectorDef deserializers are exercised
@@ -996,8 +996,9 @@ fn generated_campaign_catalog() -> broadside_engine::types::Catalog {
 /// ship-type ids (skiff/lancer/gunboat) for regular enemies and the
 /// capital's display name (The Dasher / The Impaler) for bosses — all
 /// bow=Aft (facing the player). All become low-hull, mountless targets so
-/// the player's siege_beam clears them; the point is that EVERY generated
+/// the player's `siege_beam` clears them; the point is that EVERY generated
 /// class id materializes (no `None` drop would silently empty an encounter).
+#[allow(clippy::unnecessary_wraps)] // Option signals "spawn builder may drop"; kept for call-site parity
 fn build_generated_ship(spawn: &ShipSpawn) -> Option<Ship> {
     // hp_override is None on generated spawns; give regulars hull 3 and
     // capitals a bit more so the boss encounter takes a couple of rounds.

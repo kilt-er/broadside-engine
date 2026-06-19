@@ -33,7 +33,7 @@ use std::collections::HashMap;
  * Fixtures.
  * ====================================================================== */
 
-fn zero_profile() -> ShieldProfile {
+const fn zero_profile() -> ShieldProfile {
     ShieldProfile {
         bow: ShieldFace {
             armour: 0,
@@ -157,7 +157,7 @@ fn damage_action(id: &str, raw: i32, r#mod: Option<&str>, cooldown_max: i32, hea
             amount: raw,
             band_falloff: Some(false),
         }],
-        r#mod: r#mod.map(|s| s.to_string()),
+        r#mod: r#mod.map(std::string::ToString::to_string),
         icon: None,
     }
 }
@@ -170,7 +170,7 @@ struct ModContent {
 }
 impl ModContent {
     fn new(actions: Vec<Action>) -> Self {
-        ModContent {
+        Self {
             actions: actions.into_iter().map(|a| (a.id.clone(), a)).collect(),
             marksman_on: None,
         }
@@ -209,8 +209,7 @@ fn hull_at(board: &Board, cell: usize) -> i32 {
 fn has_status(board: &Board, cell: usize, kind: StatusKind) -> bool {
     board.cells[cell]
         .as_ref()
-        .map(|s| s.statuses.iter().any(|st| st.kind == kind))
-        .unwrap_or(false)
+        .is_some_and(|s| s.statuses.iter().any(|st| st.kind == kind))
 }
 
 /* =========================================================================

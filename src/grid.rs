@@ -141,15 +141,15 @@ pub enum Dir8 {
 
 impl Dir8 {
     /// All eight directions in clockwise order from `N`.
-    pub const ALL: [Dir8; 8] = [
-        Dir8::N,
-        Dir8::NE,
-        Dir8::E,
-        Dir8::SE,
-        Dir8::S,
-        Dir8::SW,
-        Dir8::W,
-        Dir8::NW,
+    pub const ALL: [Self; 8] = [
+        Self::N,
+        Self::NE,
+        Self::E,
+        Self::SE,
+        Self::S,
+        Self::SW,
+        Self::W,
+        Self::NW,
     ];
 
     /// Clockwise index `0..8` (`N`=0, `NE`=1, … `NW`=7). The single source of
@@ -157,29 +157,29 @@ impl Dir8 {
     /// [`Dir8::from_step`].
     pub const fn step(self) -> u8 {
         match self {
-            Dir8::N => 0,
-            Dir8::NE => 1,
-            Dir8::E => 2,
-            Dir8::SE => 3,
-            Dir8::S => 4,
-            Dir8::SW => 5,
-            Dir8::W => 6,
-            Dir8::NW => 7,
+            Self::N => 0,
+            Self::NE => 1,
+            Self::E => 2,
+            Self::SE => 3,
+            Self::S => 4,
+            Self::SW => 5,
+            Self::W => 6,
+            Self::NW => 7,
         }
     }
 
     /// Inverse of [`Dir8::step`]: build a direction from a clockwise index,
     /// taken `mod 8` so rotation arithmetic never panics.
-    pub const fn from_step(step: u8) -> Dir8 {
+    pub const fn from_step(step: u8) -> Self {
         match step % 8 {
-            0 => Dir8::N,
-            1 => Dir8::NE,
-            2 => Dir8::E,
-            3 => Dir8::SE,
-            4 => Dir8::S,
-            5 => Dir8::SW,
-            6 => Dir8::W,
-            _ => Dir8::NW,
+            0 => Self::N,
+            1 => Self::NE,
+            2 => Self::E,
+            3 => Self::SE,
+            4 => Self::S,
+            5 => Self::SW,
+            6 => Self::W,
+            _ => Self::NW,
         }
     }
 
@@ -187,31 +187,31 @@ impl Dir8 {
     /// `+row` is toward the player (see module docs).
     pub const fn delta(self) -> (i32, i32) {
         match self {
-            Dir8::N => (0, -1),
-            Dir8::NE => (1, -1),
-            Dir8::E => (1, 0),
-            Dir8::SE => (1, 1),
-            Dir8::S => (0, 1),
-            Dir8::SW => (-1, 1),
-            Dir8::W => (-1, 0),
-            Dir8::NW => (-1, -1),
+            Self::N => (0, -1),
+            Self::NE => (1, -1),
+            Self::E => (1, 0),
+            Self::SE => (1, 1),
+            Self::S => (0, 1),
+            Self::SW => (-1, 1),
+            Self::W => (-1, 0),
+            Self::NW => (-1, -1),
         }
     }
 
     /// The 180°-opposite direction (`+4 mod 8`).
-    pub const fn opposite(self) -> Dir8 {
-        Dir8::from_step(self.step() + 4)
+    pub const fn opposite(self) -> Self {
+        Self::from_step(self.step() + 4)
     }
 
     /// Rotate one eighth-turn clockwise (`N → NE → E → …`).
-    pub const fn rotate_cw(self) -> Dir8 {
-        Dir8::from_step(self.step() + 1)
+    pub const fn rotate_cw(self) -> Self {
+        Self::from_step(self.step() + 1)
     }
 
     /// Rotate one eighth-turn counter-clockwise (`N → NW → W → …`). `+7 mod 8`
     /// to keep the arithmetic in `u8` without an underflow.
-    pub const fn rotate_ccw(self) -> Dir8 {
-        Dir8::from_step(self.step() + 7)
+    pub const fn rotate_ccw(self) -> Self {
+        Self::from_step(self.step() + 7)
     }
 
     /// `true` for the four cardinal directions (`N`/`E`/`S`/`W`); `false` for
@@ -255,7 +255,7 @@ pub fn from_to(a: Pos, b: Pos) -> Option<Dir8> {
 /// leaves the grid (including underflow past `col`/`row` 0). `dist` is `i32`
 /// so callers can pass a negative to step backward without flipping the
 /// direction; the bounds check covers both ends.
-pub fn offset(pos: Pos, dir: Dir8, dist: i32) -> Option<Pos> {
+pub const fn offset(pos: Pos, dir: Dir8, dist: i32) -> Option<Pos> {
     let (dc, dr) = dir.delta();
     let col = (pos.col as i32) + dc * dist;
     let row = (pos.row as i32) + dr * dist;
@@ -301,36 +301,36 @@ pub enum Dir4 {
 
 impl Dir4 {
     /// All four cardinals, clockwise from `N`.
-    pub const ALL: [Dir4; 4] = [Dir4::N, Dir4::E, Dir4::S, Dir4::W];
+    pub const ALL: [Self; 4] = [Self::N, Self::E, Self::S, Self::W];
 
     /// Widen to the matching [`Dir8`] cardinal.
     pub const fn to_dir8(self) -> Dir8 {
         match self {
-            Dir4::N => Dir8::N,
-            Dir4::E => Dir8::E,
-            Dir4::S => Dir8::S,
-            Dir4::W => Dir8::W,
+            Self::N => Dir8::N,
+            Self::E => Dir8::E,
+            Self::S => Dir8::S,
+            Self::W => Dir8::W,
         }
     }
 
     /// Narrow a [`Dir8`] to a [`Dir4`], or `None` if it is a diagonal.
-    pub const fn from_dir8(dir: Dir8) -> Option<Dir4> {
+    pub const fn from_dir8(dir: Dir8) -> Option<Self> {
         match dir {
-            Dir8::N => Some(Dir4::N),
-            Dir8::E => Some(Dir4::E),
-            Dir8::S => Some(Dir4::S),
-            Dir8::W => Some(Dir4::W),
+            Dir8::N => Some(Self::N),
+            Dir8::E => Some(Self::E),
+            Dir8::S => Some(Self::S),
+            Dir8::W => Some(Self::W),
             _ => None,
         }
     }
 
     /// The 180°-opposite cardinal.
-    pub const fn opposite(self) -> Dir4 {
+    pub const fn opposite(self) -> Self {
         match self {
-            Dir4::N => Dir4::S,
-            Dir4::E => Dir4::W,
-            Dir4::S => Dir4::N,
-            Dir4::W => Dir4::E,
+            Self::N => Self::S,
+            Self::E => Self::W,
+            Self::S => Self::N,
+            Self::W => Self::E,
         }
     }
 
@@ -338,32 +338,32 @@ impl Dir4 {
     /// is ordered clockwise from `N`, so this is `+1 (mod 4)`. The renderer's
     /// rotate-RIGHT control turns the player's bow this way (toward higher `col`
     /// when starting from `N`).
-    pub const fn rotate_cw(self) -> Dir4 {
+    pub const fn rotate_cw(self) -> Self {
         match self {
-            Dir4::N => Dir4::E,
-            Dir4::E => Dir4::S,
-            Dir4::S => Dir4::W,
-            Dir4::W => Dir4::N,
+            Self::N => Self::E,
+            Self::E => Self::S,
+            Self::S => Self::W,
+            Self::W => Self::N,
         }
     }
 
     /// Rotate one quarter-turn **counter-clockwise** (`N → W → S → E → N`), i.e.
     /// `−1 (mod 4)`. The renderer's rotate-LEFT control turns the player's bow
     /// this way.
-    pub const fn rotate_ccw(self) -> Dir4 {
+    pub const fn rotate_ccw(self) -> Self {
         match self {
-            Dir4::N => Dir4::W,
-            Dir4::W => Dir4::S,
-            Dir4::S => Dir4::E,
-            Dir4::E => Dir4::N,
+            Self::N => Self::W,
+            Self::W => Self::S,
+            Self::S => Self::E,
+            Self::E => Self::N,
         }
     }
 
     /// The axis this cardinal lies on.
     pub const fn axis(self) -> Axis {
         match self {
-            Dir4::N | Dir4::S => Axis::NorthSouth,
-            Dir4::E | Dir4::W => Axis::EastWest,
+            Self::N | Self::S => Axis::NorthSouth,
+            Self::E | Self::W => Axis::EastWest,
         }
     }
 }
@@ -384,12 +384,12 @@ pub enum Axis {
 
 impl Axis {
     /// The two cardinals lying on this axis, as `(positive, negative)` where
-    /// "positive" is the increasing-coordinate direction (`S` for NorthSouth
-    /// since `+row` is toward the player; `E` for EastWest).
+    /// "positive" is the increasing-coordinate direction (`S` for `NorthSouth`
+    /// since `+row` is toward the player; `E` for `EastWest`).
     pub const fn dirs(self) -> (Dir4, Dir4) {
         match self {
-            Axis::NorthSouth => (Dir4::S, Dir4::N),
-            Axis::EastWest => (Dir4::E, Dir4::W),
+            Self::NorthSouth => (Dir4::S, Dir4::N),
+            Self::EastWest => (Dir4::E, Dir4::W),
         }
     }
 }
@@ -419,8 +419,8 @@ impl Facing {
     /// is the hull's axis.
     pub const fn forward_axis(self) -> Axis {
         match self {
-            Facing::Bow(dir) => dir.axis(),
-            Facing::Broadside(axis) => axis,
+            Self::Bow(dir) => dir.axis(),
+            Self::Broadside(axis) => axis,
         }
     }
 }

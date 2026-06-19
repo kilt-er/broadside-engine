@@ -14,7 +14,7 @@
 //!    the Broadside renderer feeds raw pixel coordinates from
 //!    [`crate::perspective`] straight through.
 //! 3. The atlas comes from [`crate::atlas`] (Broadside content) rather than
-//!    the GameEngine humanoid set.
+//!    the `GameEngine` humanoid set.
 //! 4. The clear color is deep-space ink (`#080c14`), matching the analysis
 //!    HTML's `--ink` token.
 //!
@@ -174,7 +174,7 @@ pub fn grid_mode_tag() -> &'static str {
 /// first stretch mode (curved) if currently OFF, else back to drawbridge. Returns
 /// whether stretch is now on. Prefer [`cycle_grid_mode`] for the live `T` key.
 pub fn toggle_grid_stretch() -> bool {
-    let next = if grid_mode() == 0 { 1 } else { 0 };
+    let next = u32::from(grid_mode() == 0);
     GRID_MODE.store(next, std::sync::atomic::Ordering::Relaxed);
     next != 0
 }
@@ -246,9 +246,9 @@ const OFFSCREEN_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrg
 /// Values are pre-converted to linear space because `OFFSCREEN_FORMAT` is
 /// sRGB and `wgpu::Color` is interpreted linearly when the target is sRGB.
 const CLEAR: wgpu::Color = wgpu::Color {
-    r: 0.001214,
-    g: 0.002428,
-    b: 0.006995,
+    r: 0.001_214,
+    g: 0.002_428,
+    b: 0.006_995,
     a: 1.0,
 };
 const LETTERBOX: wgpu::Color = wgpu::Color {
@@ -294,12 +294,15 @@ pub struct SpriteInstance {
     pub uv_min: [f32; 2],
     pub uv_max: [f32; 2],
     pub rotation_rad: f32,
+    // GPU std140/430 alignment padding; pub for the `#[repr(C)]` Pod layout and
+    // named `_pad` by convention (never read), so opt out of pub_underscore_fields.
+    #[allow(clippy::pub_underscore_fields)]
     pub _pad: [f32; 3],
 }
 
 impl SpriteInstance {
     /// Convenience for the common axis-aligned case.
-    pub fn axis_aligned(
+    pub const fn axis_aligned(
         pos: [f32; 2],
         half_size: [f32; 2],
         color: [f32; 4],
@@ -344,10 +347,10 @@ pub struct PolygonInstance {
 
 impl PolygonInstance {
     /// Build a polygon from a `[Point2-shaped; 4]` corner array using the
-    /// SOLID_WHITE atlas cell so the `color` field is the visible tint.
-    /// Caller supplies the SOLID_WHITE uv rect to keep this module
+    /// `SOLID_WHITE` atlas cell so the `color` field is the visible tint.
+    /// Caller supplies the `SOLID_WHITE` uv rect to keep this module
     /// decoupled from `crate::atlas`.
-    pub fn flat(
+    pub const fn flat(
         corners: [[f32; 2]; 4],
         color: [f32; 4],
         solid_white_uv: ([f32; 2], [f32; 2]),
@@ -461,32 +464,32 @@ pub struct LoftShipInstance {
 
 impl From<SpriteInstance> for DrawCommand {
     fn from(s: SpriteInstance) -> Self {
-        DrawCommand::Sprite(s)
+        Self::Sprite(s)
     }
 }
 
 impl From<PolygonInstance> for DrawCommand {
     fn from(p: PolygonInstance) -> Self {
-        DrawCommand::Polygon(p)
+        Self::Polygon(p)
     }
 }
 
 impl From<TexturedShipInstance> for DrawCommand {
     fn from(t: TexturedShipInstance) -> Self {
-        DrawCommand::TexturedShip(t)
+        Self::TexturedShip(t)
     }
 }
 
 impl From<LoftShipInstance> for DrawCommand {
     fn from(l: LoftShipInstance) -> Self {
-        DrawCommand::LoftShip(l)
+        Self::LoftShip(l)
     }
 }
 
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 struct ViewUniform {
-    /// 2.0 / VIRTUAL_W, 2.0 / VIRTUAL_H. Multiplying a virtual-pixel position
+    /// 2.0 / `VIRTUAL_W`, 2.0 / `VIRTUAL_H`. Multiplying a virtual-pixel position
     /// by this gives NDC half-extent; subtracting 1.0 maps to [-1, 1]. Y is
     /// flipped in the shader so we feed y-down pixel coords directly.
     px_to_ndc: [f32; 2],
@@ -523,7 +526,7 @@ const _: () = assert!(std::mem::size_of::<ViewUniform>() == 16);
 const _: () = assert!(std::mem::size_of::<BlitUniform>() == 16);
 const _: () = assert!(std::mem::size_of::<BlendUniform>() == 16);
 
-const SPRITE_SHADER: &str = r#"
+const SPRITE_SHADER: &str = r"
 struct ViewUniform {
     px_to_ndc: vec2<f32>,
     _pad: vec2<f32>,
@@ -581,7 +584,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let s = textureSample(atlas, atlas_samp, in.uv);
     return s * in.color;
 }
-"#;
+";
 
 // Polygon shader. Each instance has four explicit corner positions; we expand
 // to 6 vertices (two triangles, indices 0-1-2 and 0-2-3) using
@@ -589,7 +592,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
 // from uv_min (top-left) to uv_max (bottom-right) in the polygon's own
 // corner frame — so a textured polygon samples its full atlas cell across
 // its quad, with the same y-flip convention as SpriteInstance.
-const POLYGON_SHADER: &str = r#"
+const POLYGON_SHADER: &str = r"
 struct ViewUniform {
     px_to_ndc: vec2<f32>,
     _pad: vec2<f32>,
@@ -643,13 +646,13 @@ fn fs_poly(in: VsOut) -> @location(0) vec4<f32> {
     let s = textureSample(atlas, atlas_samp, in.uv);
     return s * in.color;
 }
-"#;
+";
 
 // Textured-ship shader. Same vertex layout as POLYGON_SHADER (four explicit
 // corners expanded by vertex_index), but the fragment samples two textures
 // (side, top) and blends by `blend_t` carried in a uniform — one uniform
 // per ship since each batch is a single instance with its own texture pair.
-const TEXTURED_SHIP_SHADER: &str = r#"
+const TEXTURED_SHIP_SHADER: &str = r"
 struct ViewUniform {
     px_to_ndc: vec2<f32>,
     _pad: vec2<f32>,
@@ -732,9 +735,9 @@ fn fs_ship(in: VsOut) -> @location(0) vec4<f32> {
     let t = smoothstep(SWAP - HALF_BAND, SWAP + HALF_BAND, ship.blend_t);
     return mix(side_px, top_px, t);
 }
-"#;
+";
 
-const BLIT_SHADER: &str = r#"
+const BLIT_SHADER: &str = r"
 struct BlitUniform {
     ndc_min: vec2<f32>,
     ndc_max: vec2<f32>,
@@ -767,11 +770,17 @@ fn vs_blit(@builtin(vertex_index) idx: u32) -> VsOut {
 fn fs_blit(in: VsOut) -> @location(0) vec4<f32> {
     return textureSample(src_tex, src_samp, in.uv);
 }
-"#;
+";
 
 /// wgpu state owner. Builds the surface, virtual-res offscreen target, the
 /// procedural atlas texture, and all render pipelines on `new`. Renders one
 /// frame on `render` given a pre-built draw command list.
+// `Debug` is intentionally not derived: `Gfx` is the wgpu god-object and
+// aggregates ~8 render-internal pipeline structs (Layer, *Pipeline, LoftMesh,
+// ...) that would each need their own derive in turn. A `Debug` listing eight
+// opaque GPU pipelines carries no diagnostic value, so this struct opts out
+// rather than cascade the derive through the whole render backend.
+#[allow(missing_debug_implementations)]
 pub struct Gfx {
     /// `None` in HEADLESS mode ([`Gfx::new_headless`], used by the offscreen PNG
     /// capture tool) — there is no window/swapchain to present to; only the
@@ -793,7 +802,7 @@ pub struct Gfx {
     /// render path looks up handles here and supplies them as side/top
     /// bindings.
     ship_sprites: std::collections::HashMap<String, ShipSpriteEntry>,
-    /// Cache of per-slot bind groups by (slot_idx, side_slug, top_slug).
+    /// Cache of per-slot bind groups by (`slot_idx`, `side_slug`, `top_slug`).
     /// The bind group includes the slot's blend uniform (slot-specific)
     /// AND the texture pair. Cleared on `try_load_ship_sprites` since
     /// loaded textures may have changed.
@@ -837,7 +846,7 @@ struct LoftMesh {
 
 /// One uploaded ship sprite. `dimensions` is the source PNG size in
 /// pixels so the renderer can compute the dest rect from the sprite's
-/// intended bbox in the SPRITE_SPEC table.
+/// intended bbox in the `SPRITE_SPEC` table.
 struct ShipSpriteEntry {
     texture_view: wgpu::TextureView,
     #[allow(dead_code)]
@@ -920,7 +929,7 @@ struct LoftQuadUniform {
     p1: [f32; 2],
     p2: [f32; 2],
     p3: [f32; 2],
-    /// 2/VIRTUAL_W, 2/VIRTUAL_H — same px→NDC map as the sprite/polygon view.
+    /// `2/VIRTUAL_W`, `2/VIRTUAL_H` — same px→NDC map as the sprite/polygon view.
     px_to_ndc: [f32; 2],
     _pad: [f32; 2],
 }
@@ -934,7 +943,7 @@ const _: () = assert!(std::mem::size_of::<LoftQuadUniform>() == 48);
 // two triangles 0-1-2 / 0-2-3) into virtual-pixel space → NDC, samples the
 // loft output texture across the quad, and returns it straight (already
 // posterized + cut-out). Y-flip on both clip and UV matches the sprite path.
-const LOFT_SHIP_SHADER: &str = r#"
+const LOFT_SHIP_SHADER: &str = r"
 struct Quad {
     p0: vec2<f32>,
     p1: vec2<f32>,
@@ -975,7 +984,7 @@ fn vs_loft(@builtin(vertex_index) v_idx: u32) -> VsOut {
 fn fs_loft(in: VsOut) -> @location(0) vec4<f32> {
     return textureSample(ship_tex, ship_samp, in.uv);
 }
-"#;
+";
 
 impl crate::sprites::SpriteRegistry for Gfx {
     fn has(
@@ -984,11 +993,11 @@ impl crate::sprites::SpriteRegistry for Gfx {
         stance: crate::sprites::SpriteStance,
         view: crate::sprites::SpriteView,
     ) -> bool {
-        Gfx::has_ship_sprite(self, class, stance, view)
+        Self::has_ship_sprite(self, class, stance, view)
     }
 
     fn has_facing(&self, class: &str, index: usize) -> bool {
-        Gfx::has_facing_sprite(self, class, index)
+        Self::has_facing_sprite(self, class, index)
     }
 
     fn loft_kind(&self, _ship_id: &str, is_player: bool) -> Option<crate::sprites::LoftMeshKind> {
@@ -1053,7 +1062,7 @@ impl Gfx {
             .formats
             .iter()
             .copied()
-            .find(|f| f.is_srgb())
+            .find(wgpu::TextureFormat::is_srgb)
             .unwrap_or(caps.formats[0]);
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
@@ -1182,7 +1191,7 @@ impl Gfx {
 
     /// (#76 scene-res) Build the offscreen render target + its view at `(w, h)`.
     /// One body for the constructor and the live [`Self::cycle_scene_res`] so the
-    /// texture is identical (same format + usages); the COPY_SRC usage lets the
+    /// texture is identical (same format + usages); the `COPY_SRC` usage lets the
     /// headless capture read the frame back.
     fn make_offscreen(device: &wgpu::Device, w: u32, h: u32) -> (wgpu::Texture, wgpu::TextureView) {
         let tex = device.create_texture(&wgpu::TextureDescriptor {
@@ -1344,7 +1353,7 @@ impl Gfx {
         let unpadded = cap_w * bytes_per_pixel;
         let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT; // 256
         let padded = unpadded.div_ceil(align) * align;
-        let buf_size = (padded * cap_h) as u64;
+        let buf_size = u64::from(padded * cap_h);
         let readback = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("capture readback"),
             size: buf_size,
@@ -1610,7 +1619,7 @@ impl Gfx {
     }
 
     /// The current SHIP loft-render resolution `(w, h)` — for the bin's readout.
-    pub fn loft_res(&self) -> (u32, u32) {
+    pub const fn loft_res(&self) -> (u32, u32) {
         self.loft.output_size()
     }
 
@@ -1744,7 +1753,7 @@ impl Gfx {
     /// Walk `assets/sprites/` and upload any `<class>_<stance>_<view>.png`
     /// files to GPU textures. Missing files are silently skipped (the
     /// procedural silhouette renders as the fallback). Each successfully
-    /// loaded sprite is keyed by the same slug the SPRITE_SPEC defines.
+    /// loaded sprite is keyed by the same slug the `SPRITE_SPEC` defines.
     ///
     /// **Fallback chain** (applied in order per `<class>_<stance>_<view>`
     /// slot, fall through on miss):
@@ -1764,7 +1773,7 @@ impl Gfx {
     ///
     /// Explicit files always take precedence over derivations. Bruce
     /// can paint asymmetric ships per-class by dropping explicit
-    /// bowOnAft / broadside_top PNGs.
+    /// bowOnAft / `broadside_top` PNGs.
     ///
     /// Returns the count of sprites loaded so the caller can log it.
     pub fn try_load_ship_sprites(&mut self, asset_dir: &std::path::Path) -> usize {
@@ -1823,8 +1832,7 @@ impl Gfx {
                             view.slug()
                         );
                         log::debug!(
-                            "sprite: deriving {} from horizontally-mirrored bowOnFore",
-                            slug
+                            "sprite: deriving {slug} from horizontally-mirrored bowOnFore"
                         );
                         self.upload_ship_sprite(&slug, &mirrored);
                         loaded += 1;
@@ -1855,7 +1863,7 @@ impl Gfx {
                             SpriteStance::Broadside.slug(),
                             view.slug()
                         );
-                        log::debug!("sprite: deriving {} from rotate90(bowOnFore_top)", slug);
+                        log::debug!("sprite: deriving {slug} from rotate90(bowOnFore_top)");
                         self.upload_ship_sprite(&slug, &rotated);
                         loaded += 1;
                     }
@@ -1961,9 +1969,9 @@ impl Gfx {
         self.ship_sprites.contains_key(&slug)
     }
 
-    /// (#67) Whether the v2 15-facing frame `index` (0..FACING_COUNT) is loaded
+    /// (#67) Whether the v2 15-facing frame `index` (`0..FACING_COUNT`) is loaded
     /// for `class` — i.e. `<class>_f{index:02}` was found by
-    /// [`Self::try_load_ship_sprites`]. push_ship_2d gates the wheel draw on this:
+    /// [`Self::try_load_ship_sprites`]. `push_ship_2d` gates the wheel draw on this:
     /// true once Bruce's 15-facing bake is dropped, false today (→ keep the
     /// current sprite/flat-box path, no regression).
     pub fn has_facing_sprite(&self, class: &str, index: usize) -> bool {
@@ -1982,16 +1990,13 @@ impl Gfx {
         }
         let side_entry = self.ship_sprites.get(side.as_str());
         let top_entry = self.ship_sprites.get(top.as_str());
-        let (side_view, top_view) = match (side_entry, top_entry) {
-            (Some(s), Some(t)) => (&s.texture_view, &t.texture_view),
-            _ => {
-                log::debug!(
-                    "ship bg skipped: side={} top={} (one or both not loaded)",
-                    side.as_str(),
-                    top.as_str()
-                );
-                return;
-            }
+        let (side_view, top_view) = if let (Some(s), Some(t)) = (side_entry, top_entry) { (&s.texture_view, &t.texture_view) } else {
+            log::debug!(
+                "ship bg skipped: side={} top={} (one or both not loaded)",
+                side.as_str(),
+                top.as_str()
+            );
+            return;
         };
         let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("ship per-instance bg"),
@@ -2237,6 +2242,9 @@ impl Gfx {
         // segment CLEARS the offscreen; every later segment LOADs it (preserving
         // what earlier segments drew), keeping the single-pass z-order intact
         // across the splits.
+        // `cleared` is a running flag mutated across the segment loop below (first
+        // segment clears, later ones load), not a simple let-then-if assignment.
+        #[allow(clippy::useless_let_if_seq)]
         let mut cleared = false;
 
         // (#8/#50) Draw the parallax background into the offscreen FIRST, clearing
@@ -2314,20 +2322,18 @@ impl Gfx {
                             }
                             BatchKind::TexturedShip(slot_idx) => {
                                 let (side, top, _blend) = ship_meta[slot_idx as usize];
-                                let bg = match gfx.ship_bg_cache.get(&(slot_idx, side, top)) {
-                                    Some(bg) => bg,
-                                    None => {
-                                        // Bind group missing — sprites for this slug
-                                        // pair aren't loaded. Skip the draw; the
-                                        // procedural polygons below stay visible.
-                                        continue;
-                                    }
+                                // Bind group missing — sprites for this slug pair
+                                // aren't loaded. Skip the draw; the procedural
+                                // polygons below stay visible.
+                                let Some(bg) = gfx.ship_bg_cache.get(&(slot_idx, side, top))
+                                else {
+                                    continue;
                                 };
                                 pass.set_pipeline(&gfx.textured_ships.pipeline);
                                 pass.set_bind_group(0, &gfx.textured_ships.view_bg, &[]);
                                 pass.set_bind_group(1, bg, &[]);
                                 // Offset the vbuf to this slot's 32 bytes.
-                                let off = (slot_idx as u64) * 32;
+                                let off = u64::from(slot_idx) * 32;
                                 pass.set_vertex_buffer(
                                     0,
                                     gfx.textured_ships.instance_vbuf.slice(off..off + 32),
@@ -3070,7 +3076,7 @@ impl TexturedShipPipeline {
         let mut blend_ubos = Vec::with_capacity(MAX_TEXTURED_SHIPS);
         for i in 0..MAX_TEXTURED_SHIPS {
             blend_ubos.push(device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some(&format!("ship blend ubo {}", i)),
+                label: Some(&format!("ship blend ubo {i}")),
                 size: std::mem::size_of::<BlendUniform>() as u64,
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,

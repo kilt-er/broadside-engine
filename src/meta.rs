@@ -31,7 +31,7 @@
 //!
 //! ## Unlock thresholds
 //!
-//! The starter set (Marksman / Point-Blank Doctrine / HeatSink) is
+//! The starter set (Marksman / Point-Blank Doctrine / `HeatSink`) is
 //! **always available** — those are baked into `src/subsystems.rs` and
 //! the demo's `DemoContent::default`. The four meta-unlockable
 //! subsystems below ladder by total salvage earned:
@@ -96,8 +96,8 @@ pub enum MetaError {
 impl std::fmt::Display for MetaError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            MetaError::Io(e) => write!(f, "io error reading/writing meta: {e}"),
-            MetaError::Parse(e) => write!(f, "parse error in meta json: {e}"),
+            Self::Io(e) => write!(f, "io error reading/writing meta: {e}"),
+            Self::Parse(e) => write!(f, "parse error in meta json: {e}"),
         }
     }
 }
@@ -105,20 +105,20 @@ impl std::fmt::Display for MetaError {
 impl std::error::Error for MetaError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            MetaError::Io(e) => Some(e),
-            MetaError::Parse(e) => Some(e),
+            Self::Io(e) => Some(e),
+            Self::Parse(e) => Some(e),
         }
     }
 }
 
 impl From<io::Error> for MetaError {
     fn from(e: io::Error) -> Self {
-        MetaError::Io(e)
+        Self::Io(e)
     }
 }
 impl From<serde_json::Error> for MetaError {
     fn from(e: serde_json::Error) -> Self {
-        MetaError::Parse(e)
+        Self::Parse(e)
     }
 }
 
@@ -157,11 +157,11 @@ impl MetaProgression {
 
     /// Full set of subsystem ids currently available to the player —
     /// the starter set plus any cross-run unlocks. Returned as a
-    /// HashSet to keep "is this available?" cheap. Useful for the
+    /// `HashSet` to keep "is this available?" cheap. Useful for the
     /// future between-encounter purchase UI's "show available
     /// subsystems" query.
     pub fn available_subsystems(&self) -> HashSet<String> {
-        let mut out: HashSet<String> = STARTER_SUBSYSTEMS.iter().map(|s| s.to_string()).collect();
+        let mut out: HashSet<String> = STARTER_SUBSYSTEMS.iter().map(std::string::ToString::to_string).collect();
         out.extend(self.unlocked_subsystems.iter().cloned());
         out
     }
@@ -184,7 +184,7 @@ pub const STARTER_SUBSYSTEMS: &[&str] = &[
 /// ship's max hull (the canonical analysis HTML uses hull as the
 /// rough proxy for "how big a deal was this kill"):
 ///
-/// | max_hull | salvage |
+/// | `max_hull` | salvage |
 /// |----------|---------|
 /// | 1-3      | 1       |
 /// | 4-6      | 2       |
@@ -196,7 +196,7 @@ pub const STARTER_SUBSYSTEMS: &[&str] = &[
 ///
 /// Bosses (encounter `is_boss: true`) get a flat ×2 multiplier
 /// applied by [`salvage_for_encounter_win`].
-pub fn salvage_for_destroyed(ship: &Ship) -> u32 {
+pub const fn salvage_for_destroyed(ship: &Ship) -> u32 {
     match ship.max_hull {
         i if i <= 3 => 1,
         i if i <= 6 => 2,
@@ -281,8 +281,8 @@ where
 /// - Doc-canonical numbers (the sP1/sP7 catalog fields); linear is the
 ///   plainest reading of "scales with patrol tier" — not a balance knob.
 pub fn capital_salvage_for_tier(capital: &crate::types::CapitalDef, patrol_tier: u8) -> u32 {
-    let p1 = capital.salvage_p1.unwrap_or(0).max(0) as i64;
-    let p7 = capital.salvage_p7.max(0) as i64;
+    let p1 = i64::from(capital.salvage_p1.unwrap_or(0).max(0));
+    let p7 = i64::from(capital.salvage_p7.max(0));
     let tier = patrol_tier.clamp(1, 7);
     if tier <= 1 {
         return p1 as u32;
@@ -291,7 +291,7 @@ pub fn capital_salvage_for_tier(capital: &crate::types::CapitalDef, patrol_tier:
         return p7 as u32;
     }
     // Linear over the 6 steps between P1 and P7 (interior tiers 2..=6).
-    let span = (tier as i64) - 1;
+    let span = i64::from(tier) - 1;
     (p1 + (p7 - p1) * span / 6).max(0) as u32
 }
 
@@ -359,7 +359,7 @@ pub const SUBSYSTEM_UNLOCK_THRESHOLDS: &[(&str, u32)] = &[
 ];
 
 /// Card unlock thresholds. Currently empty — cards inherit from the
-/// starter set (mass_lock / mass_breach / sensor_pulse). Future card
+/// starter set (`mass_lock` / `mass_breach` / `sensor_pulse`). Future card
 /// tiers land here.
 pub const CARD_UNLOCK_THRESHOLDS: &[(&str, u32)] = &[];
 
@@ -805,8 +805,8 @@ mod tests {
         );
     }
 
-    /// Build a catalog with one capital so salvage_for_capital_encounter can
-    /// resolve a boss encounter's class_id → CapitalDef by name.
+    /// Build a catalog with one capital so `salvage_for_capital_encounter` can
+    /// resolve a boss encounter's `class_id` → `CapitalDef` by name.
     fn capital_catalog() -> crate::types::Catalog {
         let json = serde_json::json!({
             "meta": { "schema": "x", "lane": [5], "newAxes": [], "bands": ["close"] },

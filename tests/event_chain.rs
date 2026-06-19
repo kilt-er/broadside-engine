@@ -8,7 +8,7 @@
 //! downstream hooks AFTER the current callback returns.
 //!
 //! `destroy` at `resolve.rs:757-784` is the canonical example: when a
-//! ReactorBreach ship dies, `destroy` calls `apply_damage` directly on
+//! `ReactorBreach` ship dies, `destroy` calls `apply_damage` directly on
 //! both neighbours (line 776), which itself emits `OnDamageTaken`, and
 //! THEN emits `OnLethal` for the original target (line 781). The whole
 //! chain runs through the wrapper's serial-emit pattern — no callback
@@ -29,7 +29,7 @@ use std::rc::Rc;
  * Fixtures
  * ====================================================================== */
 
-/// Empty content. `destroy` now takes `&dyn Content` so the ReactorBreach
+/// Empty content. `destroy` now takes `&dyn Content` so the `ReactorBreach`
 /// splash routes its `apply_damage` calls through the full pipeline
 /// including subsystem modifiers. Default `damage_modifier` returns 0, so
 /// these tests' arithmetic is unchanged.
@@ -113,23 +113,23 @@ fn empty_board(size: usize, ships: Vec<Option<Ship>>) -> Board {
  * The serial-emit pattern through resolver functions
  * ====================================================================== */
 
-/// ReactorBreach + neighbour splash chains correctly. The chain is:
+/// `ReactorBreach` + neighbour splash chains correctly. The chain is:
 ///
 /// 1. Test calls `destroy(1, ...)` directly.
-/// 2. `destroy` takes the ReactorBreach ship out of cell 1.
+/// 2. `destroy` takes the `ReactorBreach` ship out of cell 1.
 /// 3. `destroy` calls `apply_damage(2, 2, ...)` on the right neighbour —
-///    a DIRECT function call, not a bus emit. apply_damage runs the
+///    a DIRECT function call, not a bus emit. `apply_damage` runs the
 ///    damage pipeline and emits `OnDamageTaken` through the live bus
 ///    (the wrapper has restored it by this point because `destroy`'s
 ///    `OnLethal` emit hasn't started yet).
-/// 4. apply_damage emits `OnDamageTaken { target_cell: 2, amount: 2 }`.
+/// 4. `apply_damage` emits `OnDamageTaken { target_cell: 2, amount: 2 }`.
 ///    The neighbour's hull drops to 8.
 /// 5. `destroy` continues, emits `OnLethal { target_cell: 1 }`.
 ///
-/// Observable order: OnDamageTaken (cell 2, +2) BEFORE OnLethal (cell 1).
+/// Observable order: `OnDamageTaken` (cell 2, +2) BEFORE `OnLethal` (cell 1).
 /// That ordering is the "callback effects chain after the current
 /// callback returns" property — the same property that the negative
-/// canary in tests/event_bus.rs guards.
+/// canary in `tests/event_bus.rs` guards.
 #[test]
 fn reactor_breach_splashes_neighbour_then_emits_lethal() {
     let breacher = naked_ship_with_traits(
@@ -226,13 +226,13 @@ fn reactor_breach_splashes_neighbour_then_emits_lethal() {
     assert_eq!(board.destroys_this_window, 1);
 }
 
-/// Cascading destruction: if a ReactorBreach kills the neighbour, the
-/// neighbour's destroy() runs too. With a hull-2 ReactorBreach blowing a
-/// hull-2 neighbour also with ReactorBreach, you get a chain reaction
+/// Cascading destruction: if a `ReactorBreach` kills the neighbour, the
+/// neighbour's `destroy()` runs too. With a hull-2 `ReactorBreach` blowing a
+/// hull-2 neighbour also with `ReactorBreach`, you get a chain reaction
 /// — the neighbour's splash hits ITS far neighbour, and so on.
 ///
 /// Pinning this confirms the chain doesn't infinite-loop and that
-/// destroys_this_window counts the cascade correctly.
+/// `destroys_this_window` counts the cascade correctly.
 #[test]
 fn cascading_reactor_breaches_chain_correctly() {
     // Cells: 0=empty, 1=breacher(2hp), 2=tiny breacher (2hp), 3=neighbour(10hp).

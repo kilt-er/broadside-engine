@@ -11,8 +11,8 @@
 //! - The full damage pipeline ([`apply_damage`]) in the canonical order:
 //!   `band falloff -> modifiers -> target-lock 2x -> directional shield ->
 //!   hull`.
-//! - Effect dispatch ([`apply_effect`]) for DAMAGE, APPLY_STATUS, VENT_HEAT,
-//!   REORIENT, SPAWN_ORDNANCE, DEPLOY.
+//! - Effect dispatch ([`apply_effect`]) for DAMAGE, `APPLY_STATUS`, `VENT_HEAT`,
+//!   REORIENT, `SPAWN_ORDNANCE`, DEPLOY.
 //! - Ordnance advance and end-of-turn.
 //!
 //! ## What is stubbed (content slice owns these)
@@ -23,7 +23,7 @@
 //!
 //! - [`apply_modifiers`] — subsystem damage bonuses (Marksman, Point-Blank
 //!   Doctrine, ...). Currently returns `dmg` unchanged.
-//! - [`resolve_self_move`] — full THRUST/BURN/SLIP/JUMP/TRACTOR_SWAP with
+//! - [`resolve_self_move`] — full `THRUST/BURN/SLIP/JUMP/TRACTOR_SWAP` with
 //!   occupancy + collision. Currently a simple step-loop in the bow direction.
 //! - [`resolve_target_move`] — push/pull/swap with collision damage. Currently
 //!   a no-op.
@@ -117,7 +117,7 @@ pub trait Content {
     ///
     /// Concrete impls (today: [`crate::input::DemoContent`]) walk their
     /// installed-subsystem registry and apply OnTurnEnd-shaped effects
-    /// (e.g. HeatSink subtracting an extra heat from the owning ship).
+    /// (e.g. `HeatSink` subtracting an extra heat from the owning ship).
     /// The runtime layer lives in [`crate::subsystems`]; see that module
     /// for why the registry isn't on `Board`.
     ///
@@ -125,7 +125,7 @@ pub trait Content {
     fn on_turn_end(&self, _board: &mut Board) {}
 
     /// Dispatch a `BOARD` effect by its `note` string. Used by field-kit
-    /// Cards (mass_lock, mass_breach, sensor_pulse) which encode their
+    /// Cards (`mass_lock`, `mass_breach`, `sensor_pulse`) which encode their
     /// behavior as `Effect::BOARD { note: "mass_lock" }` and let the
     /// content layer decide what each note string actually does.
     ///
@@ -162,7 +162,7 @@ pub trait Content {
     /// the synthetic `__card_<id>` action runs through `execute_queue`
     /// and reaches the BOARD arm of `apply_effect`.
     ///
-    /// Default impl returns `UnknownCard` (no cards). DemoContent overrides.
+    /// Default impl returns `UnknownCard` (no cards). `DemoContent` overrides.
     ///
     /// Task #63.
     fn try_play_card(&mut self, _ship_id: &str, _card_id: &str) -> crate::cards::PlayResult {
@@ -372,14 +372,14 @@ pub fn live_enemy_ids(board: &Board) -> Vec<String> {
 /// Tick ONE enemy: the fire-then-decide step for a single enemy. Called once
 /// per enemy by [`run_world_phase`] (in `enemy_initiative` order) so that each
 /// world turn every enemy takes exactly one action - the turn-based model
-/// (docs/design/CORE_GAMEPLAY_LOOP.md), "enemies queue before they fire."
+/// (`docs/design/CORE_GAMEPLAY_LOOP.md`), "enemies queue before they fire."
 /// (Extracted in #124 for a real-time bin that was reverted in #126; it remains
 /// the per-enemy seam `run_world_phase` composes.)
 ///
 /// TELEGRAPH-ONE-TURN-AHEAD (#67), per enemy:
 ///   a. FIRE the queue it telegraphed on its PREVIOUS tick — [`fire_player_queue`]
 ///      runs and CLEARS it (a no-op on the first tick, queue empty). Gated by
-///      `skips_turn` (SystemsOffline) — a stunned enemy still DECIDES (shows
+///      `skips_turn` (`SystemsOffline`) — a stunned enemy still DECIDES (shows
 ///      intent) but does not fire this tick.
 ///   b. RE-LOCATE (firing may have moved/destroyed it) and DECIDE its next
 ///      action, left queued + un-fired so the renderer's telegraph shows it.
@@ -415,13 +415,13 @@ pub fn tick_enemy(enemy_id: &str, board: &mut Board, content: &dyn Content) {
 /// (the live turn-based path uses [`run_world_phase`]; the headless path uses
 /// `resolve_round`). RETAINED as a composable seam. NOTE the difference from
 /// `run_world_phase`: this CLEARS `board.fire_events` (it owned the real-time
-/// render window), whereas run_world_phase does not.
+/// render window), whereas `run_world_phase` does not.
 ///
 /// FIRE-EVENTS WINDOW (the lead's re-windowing requirement): the under-fire-pause
 /// shield regen in [`end_of_turn`] reads `board.fire_events` to know which faces
 /// took fire "this window". To keep the pause correct under the global tick, the
-/// window is "since the last `tick_world`": end_of_turn reads the accumulated
-/// fire_events, then this fn CLEARS them so the next window starts fresh. (The
+/// window is "since the last `tick_world`": `end_of_turn` reads the accumulated
+/// `fire_events`, then this fn CLEARS them so the next window starts fresh. (The
 /// renderer draws beams from `fire_events` on its faster frame cadence, so it
 /// must draw BEFORE each `tick_world` — flagged to render. The headless
 /// `run_world_phase` does NOT call `tick_world`; its window boundary is the
@@ -502,7 +502,7 @@ pub fn paint_threats(board: &mut Board, content: &dyn Content) {
 }
 
 /// Classify a queued [`Action`] into the renderer's [`crate::types::ThreatKind`]
-/// by its effect family (blueprint: "styled by ThreatKind + lethal flash").
+/// by its effect family (blueprint: "styled by `ThreatKind` + lethal flash").
 /// `Damage` carries the projected PRE-mitigation total so the renderer can flash
 /// cells where the hit would be lethal; the falloff/shield mitigation is NOT
 /// applied here (the telegraph shows the raw threat, and the player's defensive
@@ -682,8 +682,7 @@ fn run_action(
     if fires_damage {
         let attacker_faction = board.cells[ship_cell]
             .as_ref()
-            .map(|s| s.faction)
-            .unwrap_or(Faction::Enemy);
+            .map_or(Faction::Enemy, |s| s.faction);
         for &target in &cells {
             // Only connecting shots (a ship sits at the target cell) and never
             // a self-targeting beam (SELF actions resolve to the firer's own
@@ -736,8 +735,7 @@ fn run_action(
     };
 
     let passes = if WeaponMod::of(action)
-        .map(WeaponMod::applies_effects_twice)
-        .unwrap_or(false)
+        .is_some_and(WeaponMod::applies_effects_twice)
     {
         2
     } else {
@@ -824,7 +822,7 @@ fn find_cell_by_id(board: &Board, ship_id: &str) -> Option<usize> {
     board
         .cells
         .iter()
-        .position(|c| c.as_ref().map(|s| s.id == ship_id).unwrap_or(false))
+        .position(|c| c.as_ref().is_some_and(|s| s.id == ship_id))
 }
 
 /* =============================================================================
@@ -905,7 +903,7 @@ pub fn advance_projectile(projectile_id: &str, board: &mut Board, content: &dyn 
 /// Per step: `grid::offset(pos, heading8, 1)` — off-grid (`None`) removes the
 /// projectile (flew off the board); otherwise update `pos`+`cell` (invariant A)
 /// and, if a non-owner ship occupies the new cell, drop the payload
-/// (DAMAGE -> [`apply_damage_2d`], APPLY_STATUS -> [`add_status`]) and remove
+/// (DAMAGE -> [`apply_damage_2d`], `APPLY_STATUS` -> [`add_status`]) and remove
 /// the projectile.
 ///
 /// Impact direction: the projectile arrives FROM the cell behind it along its
@@ -1045,7 +1043,7 @@ pub fn end_of_turn(board: &mut Board, content: &dyn Content) {
 
 /// Return the lane cells `a` resolves on, honouring arc + band. Mirrors
 /// `resolveTargeting` in `resolve.ts`. Patterns that don't pick board cells
-/// (SELF / DEPLOYED_CELL / ORDNANCE) return the acting ship's own cell or the
+/// (SELF / `DEPLOYED_CELL` / ORDNANCE) return the acting ship's own cell or the
 /// spawn cell as appropriate.
 pub fn resolve_targeting(a: &Action, board: &Board, ship_cell: usize) -> Vec<usize> {
     let t = &a.targeting;
@@ -1252,7 +1250,7 @@ fn first_target_along(board: &Board, from: Pos, dir: Dir8) -> Option<Pos> {
 // R-task that needs an arbitrary-target bearing test, to avoid dead code now.
 
 /// 2-D `resolve_targeting`: the cells `a` resolves on from `ship_pos`, honouring
-/// arc + 3-band range. The SINGLE source for firing AND the ThreatMap telegraph.
+/// arc + 3-band range. The SINGLE source for firing AND the `ThreatMap` telegraph.
 /// See the module-level firing-direction contract above. Pure + deterministic.
 pub fn resolve_targeting_2d(a: &Action, board: &Board, ship_pos: Pos) -> Vec<Pos> {
     let t = &a.targeting;
@@ -1583,7 +1581,7 @@ pub fn apply_damage_2d(
 /// `PointBlank -> Adjacent`, `Close -> Near`, `Mid|Long|Extreme -> Far`. So a 1-D
 /// `Long` hit maps to `Far` — and a `Far`-keyed subsystem (Marksman) still fires
 /// on the 1-D path, matching its 2-D behaviour.
-fn rangeband_to_range(b: RangeBand) -> crate::grid::Range {
+const fn rangeband_to_range(b: RangeBand) -> crate::grid::Range {
     use crate::grid::Range;
     match b {
         RangeBand::PointBlank => Range::Adjacent,
@@ -1689,7 +1687,7 @@ pub fn apply_effect(
                     ReorientTo::BowOn => {
                         source.orientation = Orientation::BowOn { bow: LaneEnd::Fore }
                     }
-                };
+                }
             }
             emit(board, Hook::OnReorient, |ctx| {
                 ctx.source_cell = Some(source_cell);
@@ -1846,27 +1844,27 @@ impl WeaponMod {
     /// Parse a catalog mod id. `None` for unknown ids — an action carrying an
     /// unrecognised mod simply fires un-modded (forward-compatible with mods
     /// the resolver doesn't implement yet).
-    fn from_id(id: &str) -> Option<WeaponMod> {
+    fn from_id(id: &str) -> Option<Self> {
         match id {
-            "flak_burst" => Some(WeaponMod::FlakBurst),
-            "precision_core" => Some(WeaponMod::PrecisionCore),
-            "incendiary" => Some(WeaponMod::Incendiary),
-            "emp_charge" => Some(WeaponMod::EmpCharge),
-            "twin_linked" => Some(WeaponMod::TwinLinked),
-            "targeting_laser" => Some(WeaponMod::TargetingLaser),
-            "autoloader" => Some(WeaponMod::Autoloader),
+            "flak_burst" => Some(Self::FlakBurst),
+            "precision_core" => Some(Self::PrecisionCore),
+            "incendiary" => Some(Self::Incendiary),
+            "emp_charge" => Some(Self::EmpCharge),
+            "twin_linked" => Some(Self::TwinLinked),
+            "targeting_laser" => Some(Self::TargetingLaser),
+            "autoloader" => Some(Self::Autoloader),
             _ => None,
         }
     }
 
     /// The mod parsed off an action, if any.
-    fn of(action: &Action) -> Option<WeaponMod> {
-        action.r#mod.as_deref().and_then(WeaponMod::from_id)
+    fn of(action: &Action) -> Option<Self> {
+        action.r#mod.as_deref().and_then(Self::from_id)
     }
 
     /// `twin_linked` runs the effect list twice.
     fn applies_effects_twice(self) -> bool {
-        self == WeaponMod::TwinLinked
+        self == Self::TwinLinked
     }
 
     /// `autoloader` forces the action to not advance the turn. Returns
@@ -1875,9 +1873,9 @@ impl WeaponMod {
     /// consumes this; the resolver pipeline itself never branches on
     /// turn-advance, so this is exposed for the dispatcher rather than acted on
     /// inside [`run_action`].
-    fn advances_turn_override(self) -> Option<bool> {
+    const fn advances_turn_override(self) -> Option<bool> {
         match self {
-            WeaponMod::Autoloader => Some(false),
+            Self::Autoloader => Some(false),
             _ => None,
         }
     }
@@ -1903,7 +1901,7 @@ pub fn action_advances_turn(action: &Action) -> bool {
 /// origin.
 ///
 /// Called from the DAMAGE arm of [`apply_effect`]; not a bus subscriber, so it
-/// never re-enters the resolver through the EventBus. Action-level mods
+/// never re-enters the resolver through the `EventBus`. Action-level mods
 /// (`twin_linked`, `autoloader`) are NOT handled here — see [`run_action`].
 fn apply_on_hit_mod(
     action: &Action,
@@ -1976,7 +1974,7 @@ fn apply_on_hit_mod(
 
 /// All live ships on the board, cloned for snapshot iteration.
 pub fn ships_of(board: &Board) -> Vec<Ship> {
-    board.cells.iter().filter_map(|c| c.clone()).collect()
+    board.cells.iter().filter_map(std::clone::Clone::clone).collect()
 }
 
 /// Cells of every enemy ship, in lane order. The TS `enemyInitiative` says
@@ -2119,7 +2117,7 @@ fn tick_statuses(cell: usize, board: &mut Board, content: &dyn Content) {
         // Pre-tick effects: hullBreach does 1 damage per turn before its
         // duration decrements (matches TS order).
         let mut breach_hits = 0;
-        for s in ship.statuses.iter() {
+        for s in &ship.statuses {
             if s.kind == StatusKind::HullBreach {
                 breach_hits += 1;
             }
@@ -2128,7 +2126,7 @@ fn tick_statuses(cell: usize, board: &mut Board, content: &dyn Content) {
         if ship.hull <= 0 {
             hull_breach_destroyed = true;
         }
-        for s in ship.statuses.iter_mut() {
+        for s in &mut ship.statuses {
             s.duration -= 1;
         }
         ship.statuses.retain(|s| s.duration > 0);
@@ -2143,12 +2141,11 @@ fn tick_statuses(cell: usize, board: &mut Board, content: &dyn Content) {
 pub fn skips_turn(board: &Board, cell: usize) -> bool {
     board.cells[cell]
         .as_ref()
-        .map(|s| {
+        .is_some_and(|s| {
             s.statuses
                 .iter()
                 .any(|s| s.kind == StatusKind::SystemsOffline)
         })
-        .unwrap_or(false)
 }
 
 /// Destroy the ship at `cell`. Mirrors `destroy` in `resolve.ts`. Reactor-
@@ -2156,7 +2153,7 @@ pub fn skips_turn(board: &Board, cell: usize) -> bool {
 /// pipeline (with a dummy "_impact" action so falloff is skipped).
 ///
 /// `content` is threaded through so the splash hits go through the full
-/// damage pipeline including subsystem modifiers — a ReactorBreach hitting
+/// damage pipeline including subsystem modifiers — a `ReactorBreach` hitting
 /// a flank could legitimately trigger a Marksman bonus.
 pub fn destroy(cell: usize, board: &mut Board, content: &dyn Content) {
     // Pull the ship out of the cell. Reactor-breach trait check needs the
@@ -2190,7 +2187,7 @@ pub fn destroy(cell: usize, board: &mut Board, content: &dyn Content) {
     });
 }
 
-fn flip_orientation(o: Orientation) -> Orientation {
+const fn flip_orientation(o: Orientation) -> Orientation {
     match o {
         Orientation::BowOn { bow } => Orientation::BowOn { bow: opposite(bow) },
         Orientation::Broadside => Orientation::Broadside,
@@ -2200,7 +2197,7 @@ fn flip_orientation(o: Orientation) -> Orientation {
 /// Rotate a [`Facing`] one quarter-turn **clockwise** (#75 player rotate-RIGHT).
 /// A `Bow` stance turns its bow `Dir4` (`N→E→S→W`); a `Broadside` stance swaps
 /// its axis (the hull pivots from across-lane to along-lane). Total + pure.
-fn rotate_facing_cw(facing: crate::grid::Facing) -> crate::grid::Facing {
+const fn rotate_facing_cw(facing: crate::grid::Facing) -> crate::grid::Facing {
     use crate::grid::{Axis, Facing};
     match facing {
         Facing::Bow(d) => Facing::Bow(d.rotate_cw()),
@@ -2210,7 +2207,7 @@ fn rotate_facing_cw(facing: crate::grid::Facing) -> crate::grid::Facing {
 }
 
 /// Rotate a [`Facing`] one quarter-turn **counter-clockwise** (#75 rotate-LEFT).
-fn rotate_facing_ccw(facing: crate::grid::Facing) -> crate::grid::Facing {
+const fn rotate_facing_ccw(facing: crate::grid::Facing) -> crate::grid::Facing {
     use crate::grid::{Axis, Facing};
     match facing {
         Facing::Bow(d) => Facing::Bow(d.rotate_ccw()),
@@ -2229,12 +2226,13 @@ fn rotate_facing_ccw(facing: crate::grid::Facing) -> crate::grid::Facing {
 /// enemy-spawn-oriented [`crate::types::facing_from_orientation`] (which maps
 /// `Fore → Bow(S)`); the player path uses the bin's construction convention so a
 /// rotated player's `orientation` matches how its ship was built.
-fn orientation_from_facing(facing: crate::grid::Facing) -> Orientation {
+#[allow(clippy::match_same_arms)] // deliberate facing->orientation table; arms kept explicit
+const fn orientation_from_facing(facing: crate::grid::Facing) -> Orientation {
     use crate::grid::{Dir4, Facing};
     match facing {
         Facing::Bow(Dir4::N) => Orientation::BowOn { bow: LaneEnd::Fore },
         Facing::Bow(Dir4::S) => Orientation::BowOn { bow: LaneEnd::Aft },
-        Facing::Bow(Dir4::E) | Facing::Bow(Dir4::W) => Orientation::Broadside,
+        Facing::Bow(Dir4::E | Dir4::W) => Orientation::Broadside,
         Facing::Broadside(_) => Orientation::Broadside,
     }
 }
@@ -2340,7 +2338,7 @@ pub(crate) fn resolver_ai_move(action_id: &str) -> Option<Action> {
 }
 
 /// A throwaway weapon used by the resolver for unattributed damage (projectile
-/// impact, ReactorBreach splash). Falloff is disabled via `bandFalloff: false`
+/// impact, `ReactorBreach` splash). Falloff is disabled via `bandFalloff: false`
 /// so the projectile's payload `amount` lands as-is. Mirrors `dummyWeapon`.
 fn dummy_weapon() -> Action {
     Action {
@@ -2482,13 +2480,13 @@ fn apply_modifiers(
 ///   - `BowOn { bow: Fore }` -> step +1
 ///   - `BowOn { bow: Aft }`  -> step -1
 ///   - `Broadside` -> step +1 (arbitrary; broadside ships rarely queue a
-///     DISPLACE_SELF, and the design doc gives no preference; matches TS).
+///     `DISPLACE_SELF`, and the design doc gives no preference; matches TS).
 ///
 /// AI / scripted moves pass `direction: None` so behaviour matches the TS
 /// engine bit-for-bit. Player synthetic Left/Right actions pass
 /// `Some(Aft)` / `Some(Fore)` so the arrow keys are lane-relative.
 ///
-/// **Dead-for-live (R6):** the live `apply_effect` DISPLACE_SELF arm now calls
+/// **Dead-for-live (R6):** the live `apply_effect` `DISPLACE_SELF` arm now calls
 /// [`resolve_self_move_2d`]; this 1-D version is retained only for its own 1-D
 /// fixture tests (`self_move_*`) until CONTRACT deletes it (same expand-contract
 /// shape as the 1-D `resolve_targeting`). `#[allow(dead_code)]` because it has no
@@ -2908,10 +2906,16 @@ fn self_move_2d_commit(
 /// Mirrors what would have been `resolveTargetMove` in `resolve.ts` — the TS
 /// body was a stub.
 ///
-/// **Dead-for-live (R6b):** the live `apply_effect` DISPLACE_TARGET arm now calls
+/// **Dead-for-live (R6b):** the live `apply_effect` `DISPLACE_TARGET` arm now calls
 /// [`resolve_target_move_2d`]; this 1-D version is retained only for its own 1-D
 /// fixture tests until CONTRACT (Shape 2, like `resolve_self_move`).
 #[allow(dead_code)]
+// The nested `match mode { Push.. Pull.. _ => unreachable!() }` triggers
+// match_same_arms + match_wildcard_for_single_variants; the proper fix (match
+// the two modes in the outer arm) is review #148 finding M2, owned by the
+// resolver. Allowed here to keep the gate green without restructuring the
+// displacement logic in this cleanup pass.
+#[allow(clippy::match_same_arms, clippy::match_wildcard_for_single_variants)]
 fn resolve_target_move(
     target_cell: usize,
     source_cell: usize,
@@ -3015,10 +3019,10 @@ fn resolve_target_move(
 }
 
 /// 2-D `resolve_target_move` (blueprint R6b). The v2 port of [`resolve_target_move`]
-/// above — the DISPLACE_TARGET (push / pull / swap) mover — over the grid + the
+/// above — the `DISPLACE_TARGET` (push / pull / swap) mover — over the grid + the
 /// Board invariant (A). Same expand-contract shape as the rest of the R-series:
 /// the 1-D version stays (its fixture tests) until CONTRACT; the live
-/// `apply_effect` DISPLACE_TARGET arm switches here.
+/// `apply_effect` `DISPLACE_TARGET` arm switches here.
 ///
 /// Direction is derived 2-D: PUSH moves the target AWAY from the source
 /// (`direction_to(source_pos, target_pos)`), PULL TOWARD the source
@@ -3030,6 +3034,10 @@ fn resolve_target_move(
 /// boards). Collision routes through [`apply_damage`] for now (provisional
 /// shield-zone, like R6's self-move was) — R4 switches it to `apply_damage_2d`
 /// for the true 2-D collision face.
+// Same nested displace-mode match as the 1-D version; the structural fix is
+// review #148 M2 (resolver-owned). Allowed here so this cleanup pass keeps the
+// gate green without touching the displacement step logic.
+#[allow(clippy::match_same_arms, clippy::match_wildcard_for_single_variants)]
 fn resolve_target_move_2d(
     target_pos: Pos,
     source_pos: Pos,
@@ -3131,7 +3139,7 @@ fn resolve_target_move_2d(
 /// within this execution window; >=2 is a chain kill.`). The counter is the
 /// runtime field architect added on `Board` for exactly this purpose; the
 /// resets are inserted at the two window boundaries above.
-fn detect_chain(board: &Board) -> bool {
+const fn detect_chain(board: &Board) -> bool {
     board.destroys_this_window >= 2
 }
 
@@ -3283,11 +3291,11 @@ mod tests {
 
     /// A `Ship` at a real 2-D `pos` with bearing `facing`, one `arc`-mount
     /// loaded with `weapon`. `shield` lets a test route a hit onto a known
-    /// face. Upholds invariant A. heat_max generous (12) so no accidental
+    /// face. Upholds invariant A. `heat_max` generous (12) so no accidental
     /// lockout; override fields on the returned ship as needed.
     ///
-    /// Richer than the bare `ship_2d` in the resolve_targeting_2d sanity section
-    /// below (which hardcodes hull/weapon) — the run_action tests need to set
+    /// Richer than the bare `ship_2d` in the `resolve_targeting_2d` sanity section
+    /// below (which hardcodes hull/weapon) — the `run_action` tests need to set
     /// hull, weapon id, and a specific shield profile, so this is its own
     /// builder rather than overloading that one.
     #[allow(clippy::too_many_arguments)] // a fixture builder; explicit params mirror tests/common::ship_2d
@@ -3491,7 +3499,7 @@ mod tests {
     /// Heat accumulates and lockout fires at heatMax. Cooldown is reset
     /// unconditionally on the firing action. (#20 2-D fixture: attacker at
     /// (2,1) Bow(S), scout directly ahead at (2,2) — distance 1 (Adjacent), in
-    /// pulse_laser's band, on the bearing ray, so the shot connects and the
+    /// `pulse_laser`'s band, on the bearing ray, so the shot connects and the
     /// heat/lockout/cooldown bookkeeping runs through the live 2-D fire path.)
     #[test]
     fn execute_queue_overheats_and_records_cooldown() {
@@ -3607,7 +3615,7 @@ mod tests {
         let cell_of_frigate = board
             .cells
             .iter()
-            .position(|c| c.as_ref().map(|s| s.id == "frigate").unwrap_or(false))
+            .position(|c| c.as_ref().is_some_and(|s| s.id == "frigate"))
             .expect("frigate still on the board");
         assert_eq!(cell_of_frigate, 3, "all three queued thrusts should fire");
 
@@ -3679,7 +3687,7 @@ mod tests {
         let cell_of_frigate = board
             .cells
             .iter()
-            .position(|c| c.as_ref().map(|s| s.id == "frigate").unwrap_or(false))
+            .position(|c| c.as_ref().is_some_and(|s| s.id == "frigate"))
             .expect("frigate still on the board");
         assert_eq!(cell_of_frigate, 6, "thrust chain clamps at last lane cell");
         let p = board.cells[cell_of_frigate].as_ref().unwrap();
@@ -3892,7 +3900,7 @@ mod tests {
         assert_eq!(scout_hull, Some(1));
     }
 
-    /// VENT_HEAT clears the locked-out flag and optionally resets cooldowns.
+    /// `VENT_HEAT` clears the locked-out flag and optionally resets cooldowns.
     #[test]
     fn vent_heat_clears_lockout_and_recharges_cooldowns() {
         let mut attacker = make_ship("frigate", Faction::Player, 0, 10, LaneEnd::Fore);
@@ -3934,7 +3942,7 @@ mod tests {
         assert_eq!(p.cooldowns.get("pulse_laser").copied(), Some(0));
     }
 
-    /// REORIENT::Flip swaps the bow end on a bow-on ship.
+    /// `REORIENT::Flip` swaps the bow end on a bow-on ship.
     #[test]
     fn reorient_flip_swaps_bow_end() {
         let attacker = make_ship("frigate", Faction::Player, 0, 10, LaneEnd::Fore);
@@ -3986,7 +3994,7 @@ mod tests {
         assert_eq!(p.cooldowns.get("rail").copied(), Some(0));
     }
 
-    /// HullBreach status ticks 1 damage per turn and expires after duration
+    /// `HullBreach` status ticks 1 damage per turn and expires after duration
     /// turns.
     #[test]
     fn hull_breach_status_ticks_damage_and_expires() {
@@ -4023,7 +4031,7 @@ mod tests {
     /// TS `tickStatuses` (resolve.ts:319-328) does `ship.hull -= 1; if
     /// (ship.hull <= 0) destroy(ship, board)` — so a breach that takes the
     /// last hull point must clear the cell AND fire the full destroy path
-    /// (`onLethal`, and ReactorBreach splash if traited). The existing
+    /// (`onLethal`, and `ReactorBreach` splash if traited). The existing
     /// damage-tick test only covers the non-lethal case; this locks the
     /// lethal routing. (Note: `add_status` coalesces same-kind statuses by
     /// `max` duration, so at most one hullBreach is ever present — the Rust
@@ -4062,7 +4070,7 @@ mod tests {
         );
     }
 
-    /// Targeting: SPINAL_LINE with hits_all=false picks the first occupant only.
+    /// Targeting: `SPINAL_LINE` with `hits_all=false` picks the first occupant only.
     #[test]
     fn resolve_targeting_spinal_line_first_only_picks_first_target() {
         let attacker = make_ship("frigate", Faction::Player, 0, 10, LaneEnd::Fore);
@@ -4093,7 +4101,7 @@ mod tests {
         assert_eq!(cells, vec![2]);
     }
 
-    /// Targeting: SPINAL_LINE with hits_all=true pierces through both occupants.
+    /// Targeting: `SPINAL_LINE` with `hits_all=true` pierces through both occupants.
     #[test]
     fn resolve_targeting_spinal_line_hits_all_pierces() {
         let attacker = make_ship("frigate", Faction::Player, 0, 10, LaneEnd::Fore);
@@ -4228,7 +4236,7 @@ mod tests {
     }
 
     /// THRUST into an occupied cell stays in place and takes 1 collision
-    /// damage (remaining_distance × 1 = 1).
+    /// damage (`remaining_distance` × 1 = 1).
     #[test]
     fn self_move_thrust_blocked_takes_one_collision() {
         let mut ship = make_ship("s", Faction::Player, 2, 5, LaneEnd::Fore);
@@ -4348,7 +4356,7 @@ mod tests {
         assert_eq!(board.cells[6].as_ref().unwrap().hull, 10 - 3);
     }
 
-    /// TRACTOR_SWAP trades cells with the first adjacent occupant.
+    /// `TRACTOR_SWAP` trades cells with the first adjacent occupant.
     #[test]
     fn self_move_tractor_swap_trades_with_adjacent() {
         let ship = make_ship("s", Faction::Player, 2, 10, LaneEnd::Fore);
@@ -4630,7 +4638,7 @@ mod tests {
         }
     }
 
-    /// Default Content::damage_modifier returns 0, so dmg passes through.
+    /// Default `Content::damage_modifier` returns 0, so dmg passes through.
     #[test]
     fn apply_modifiers_default_is_passthrough() {
         let scout = make_ship("scout", Faction::Enemy, 1, 5, LaneEnd::Fore);
@@ -4640,7 +4648,7 @@ mod tests {
     }
 
     /// A Content impl that adds +1 damage applies the bonus before
-    /// target-lock / shield. End-to-end via apply_damage: 4 raw, no
+    /// target-lock / shield. End-to-end via `apply_damage`: 4 raw, no
     /// falloff bypass so pointBlank<->close delta=1 -> floor(4*0.66)=2,
     /// + 1 modifier = 3, no armour/charge -> hull drops by 3.
     #[test]
@@ -4679,7 +4687,7 @@ mod tests {
 
     /// Target-lock applies AFTER the modifier per the TS comment at
     /// resolve.ts:154-157. So +1 Marksman followed by 2x lock gives a
-    /// final hit of 2*(raw_falloff + 1), not 2*raw_falloff + 1.
+    /// final hit of 2*(`raw_falloff` + 1), not 2*`raw_falloff` + 1.
     #[test]
     fn apply_modifiers_runs_before_target_lock() {
         let attacker = make_ship("frigate", Faction::Player, 0, 10, LaneEnd::Fore);
@@ -4773,8 +4781,8 @@ mod tests {
     /// scores into the pick but no longer SUPPRESSES firing. This locks the
     /// fire-when-you-can behavior against the suppression detour creeping back.
     ///
-    /// (Supersedes the former ai_o1_repositions_instead_of_redundant_fire_on
-    /// _covered_end, which #71 made stale: that test asserted the dropped
+    /// (Supersedes the former `ai_o1_repositions_instead_of_redundant_fire_on`
+    /// _`covered_end`, which #71 made stale: that test asserted the dropped
     /// suppression but passed only coincidentally — its enemy's arc didn't
     /// bear, so it fell through to a maneuver. reviewer-2 flagged the
     /// mislabel; this is the corrected, behavior-true lock.)
@@ -4835,9 +4843,9 @@ mod tests {
     /// designed mechanic), but the AI declines to fire on allies
     /// unprompted.
     ///
-    /// Reproduces tests/demo_scenarios.rs scenario B: gunboat at cell 4
+    /// Reproduces `tests/demo_scenarios.rs` scenario B: gunboat at cell 4
     /// bow=aft -> Forward arc bears aft. First occupant aft is the scout
-    /// at cell 1 (same Faction::Enemy). AI must SKIP this action.
+    /// at cell 1 (same `Faction::Enemy`). AI must SKIP this action.
     #[test]
     fn ai_skips_friendly_fire_only_target() {
         let player = make_ship("p", Faction::Player, 0, 10, LaneEnd::Fore);
@@ -4993,7 +5001,7 @@ mod tests {
     // (#20/#33) The 1-D make_ship stub of `ai_skips_action_that_overshoots_heat_budget`
     // was DELETED here — migrated to tests/ai_2d.rs on 2-D invariant-A fixtures.
 
-    /// B4-heat boundary: an action that lands EXACTLY at heat_max + 1 is still
+    /// B4-heat boundary: an action that lands EXACTLY at `heat_max` + 1 is still
     /// allowed (the AI tolerates overheating by exactly one). This pins the
     /// `>` (not `>=`) in the gate so the boundary doesn't silently drift.
     #[test]
@@ -5037,12 +5045,12 @@ mod tests {
     /// heat-averse enemy would pick the cheap option. Two mounts: "cheap"
     /// (raw 4, heat 0) and "hot" (raw 5, heat 4). For a normal enemy:
     ///   cheap = 10 + 4 - 0 = 14 ; hot = 10 + 5 - 4 = 11  -> picks cheap.
-    /// For BurnHard (heat penalty halved):
+    /// For `BurnHard` (heat penalty halved):
     ///   cheap = 10 + 4 - 0 = 14 ; hot = 10 + 5 - 2 = 13  -> still cheap.
     /// So to actually flip the pick we widen the raw gap: hot raw 8, heat 4.
     ///   normal: cheap 14 ; hot = 10 + 8 - 4 = 14 -> tie/cheap.
-    ///   BurnHard: hot = 10 + 8 - 2 = 16 > 14 -> hot wins.
-    /// This pins that BurnHard's halved-heat term changes the decision.
+    ///   `BurnHard`: hot = 10 + 8 - 2 = 16 > 14 -> hot wins.
+    /// This pins that `BurnHard`'s halved-heat term changes the decision.
     #[test]
     fn ai_burn_hard_trait_picks_the_hot_action_a_cautious_enemy_would_skip() {
         let player = make_ship("p", Faction::Player, 0, 10, LaneEnd::Fore);
@@ -5308,7 +5316,7 @@ mod tests {
     /// attacker's fate. The pre-fix Rust nested the emit inside the
     /// `Some(post_cell)` guard, so a self-destructing attacker skipped it.
     ///
-    /// Mechanism: a `SELF`-targeting `DAMAGE` action (band_falloff:false) with
+    /// Mechanism: a `SELF`-targeting `DAMAGE` action (`band_falloff:false`) with
     /// amount >= the firing ship's hull, against a zero-armour shield, drops
     /// the ship's own hull to <=0 and `destroy()`s it during effect
     /// application. After the queue runs, the ship's cell is empty AND the
@@ -5446,16 +5454,16 @@ mod tests {
         a
     }
 
-    /// flak_burst: on hit, each lane-neighbour of the HIT cell takes 1 through
+    /// `flak_burst`: on hit, each lane-neighbour of the HIT cell takes 1 through
     /// the pipeline — faction-blind (an adjacent ALLY of the attacker is hit
     /// too). The hit cell itself is not re-damaged by the burst.
     ///
-    /// !! REAL 2-D GAP (flagged to lead — flak-2d): the flak_burst ON-HIT MOD
-    /// splash (apply_on_hit_mod, resolve.rs FlakBurst arm) is still 1-D and is
+    /// !! REAL 2-D GAP (flagged to lead — flak-2d): the `flak_burst` ON-HIT MOD
+    /// splash (`apply_on_hit_mod`, resolve.rs `FlakBurst` arm) is still 1-D and is
     /// effectively BROKEN on a real 2-D board. It splashes the HIT CELL's
     /// flat-index neighbours `hit_cell +/- 1`, bounds-checked against
-    /// `board.size`, via the 1-D apply_damage — NOT grid::neighbors +
-    /// apply_damage_2d. Two failures result on the grid: (1) flat `+/- 1` is only
+    /// `board.size`, via the 1-D `apply_damage` — NOT `grid::neighbors` +
+    /// `apply_damage_2d`. Two failures result on the grid: (1) flat `+/- 1` is only
     /// the spatial E-W neighbour mid-row (it crosses rows at a column edge), and
     /// (2) `board.size` is the grid WIDTH (COLS=5), so any neighbour index >= 5
     /// (i.e. anything off row 0) is wrongly culled as "off-board" — so on a
@@ -5465,7 +5473,7 @@ mod tests {
     /// This test is the SPEC of the intended 2-D behaviour (center's spatial
     /// neighbours each take 1, faction-blind). flak-2d FIXED: the mod now splashes
     /// `grid::neighbors(hit_pos)` via `apply_damage_2d`, so the splash lands on a
-    /// real 2-D board (off row 0 too). The other 8 run_action tests (#20) don't
+    /// real 2-D board (off row 0 too). The other 8 `run_action` tests (#20) don't
     /// touch this mod.
     #[test]
     fn mod_flak_burst_splashes_both_neighbours_faction_blind() {
@@ -5553,7 +5561,7 @@ mod tests {
         );
     }
 
-    /// incendiary: APPLY_STATUS hullBreach 3 on the hit cell. (#20 2-D fixture:
+    /// incendiary: `APPLY_STATUS` hullBreach 3 on the hit cell. (#20 2-D fixture:
     /// p at (2,1) Bow(S) fires S onto t directly ahead at (2,2), Adjacent.)
     #[test]
     fn mod_incendiary_applies_hull_breach_on_hit() {
@@ -5598,7 +5606,7 @@ mod tests {
         );
     }
 
-    /// emp_charge: APPLY_STATUS systemsOffline 3 on the hit cell. (#20 2-D fixture.)
+    /// `emp_charge`: `APPLY_STATUS` systemsOffline 3 on the hit cell. (#20 2-D fixture.)
     #[test]
     fn mod_emp_charge_applies_systems_offline_on_hit() {
         let mut p = armed_ship_2d(
@@ -5642,7 +5650,7 @@ mod tests {
         );
     }
 
-    /// targeting_laser: APPLY_STATUS targetLock on hit — and it lands even when
+    /// `targeting_laser`: `APPLY_STATUS` targetLock on hit — and it lands even when
     /// the directional shield fully absorbs the hull damage (rider on contact).
     /// (#20 2-D fixture: t carries armour 99 on every face, so whichever zone
     /// the southward shot presents absorbs the full pulse — the rider still lands.)
@@ -5710,7 +5718,7 @@ mod tests {
         );
     }
 
-    /// precision_core: a lethal hit recharges THIS action's cooldown to 0; a
+    /// `precision_core`: a lethal hit recharges THIS action's cooldown to 0; a
     /// non-lethal hit does not.
     #[test]
     fn mod_precision_core_recharges_cooldown_only_on_kill() {
@@ -5805,7 +5813,7 @@ mod tests {
         );
     }
 
-    /// twin_linked: the action's effects apply twice (cost paid once). A 3-dmg
+    /// `twin_linked`: the action's effects apply twice (cost paid once). A 3-dmg
     /// no-falloff pulse on a 20-hull shieldless target lands 6 total. (#20 2-D
     /// fixture: p at (2,1) Bow(S) fires S onto t at (2,2), naked so 6 lands raw.)
     #[test]
@@ -5863,7 +5871,7 @@ mod tests {
     }
 
     /// autoloader: the turn-dispatch seam reports the action as free-fire
-    /// (advances_turn = false) regardless of the action's declared value.
+    /// (`advances_turn` = false) regardless of the action's declared value.
     #[test]
     fn mod_autoloader_overrides_advances_turn_for_dispatch() {
         let mut a = pulse_laser();
@@ -5895,9 +5903,9 @@ mod tests {
         );
     }
 
-    /// #59: FireEvents accumulate across the WHOLE round — the player's fired
-    /// shot AND every enemy's — and are cleared once at resolve_round start.
-    /// This is the regression that proves fire_player_queue does NOT clear
+    /// #59: `FireEvents` accumulate across the WHOLE round — the player's fired
+    /// shot AND every enemy's — and are cleared once at `resolve_round` start.
+    /// This is the regression that proves `fire_player_queue` does NOT clear
     /// per-enemy (which would wipe all-but-the-last ship's beams).
     #[test]
     fn fire_events_accumulate_across_a_multi_ship_round() {
@@ -5965,7 +5973,7 @@ mod tests {
         if let Some(c) = board
             .cells
             .iter()
-            .position(|s| s.as_ref().map(|s| s.id == "p").unwrap_or(false))
+            .position(|s| s.as_ref().is_some_and(|s| s.id == "p"))
         {
             if let Some(s) = board.cells[c].as_mut() {
                 s.queue.push("pulse_laser".into());
@@ -6264,7 +6272,7 @@ mod tests {
         assert!(resolve_targeting_2d(&a, &board, Pos::new(2, 2)).is_empty());
     }
 
-    /// (#75) THE rotation gate: a REORIENT::RotateRight changes the player's
+    /// (#75) THE rotation gate: a `REORIENT::RotateRight` changes the player's
     /// FACING by +90 (N→E), re-derives orientation, AND the fire-gate follows
     /// end to end. A Forward beam that bore NORTH (hitting the enemy due N)
     /// must, after one rotate-right, bear EAST (hit the enemy due E and NOT the
@@ -6379,7 +6387,7 @@ mod tests {
         );
     }
 
-    /// (#75) Tab's 180° about-face: two RotateRight effects (the bin's Tab
+    /// (#75) Tab's 180° about-face: two `RotateRight` effects (the bin's Tab
     /// applies exactly this) reverse the bow (N->S), so the hull visibly turns
     /// around — the fix for "Tab does nothing to the ship" (it used to toggle
     /// orientation only, which no longer moves the facing-driven render/arcs).
@@ -6447,7 +6455,7 @@ mod tests {
      * ================================================================== */
 
     /// Assert the ship `id` is at `pos` AND invariant (A) holds for it
-    /// (slot == pos.to_index(), pos == cell-as-index).
+    /// (slot == `pos.to_index()`, pos == cell-as-index).
     fn assert_ship_at(board: &Board, id: &str, pos: Pos) {
         let s = board
             .ship_at(pos)
@@ -6981,7 +6989,7 @@ mod tests {
 
     /// A projectile at `pos` heading `heading8` with `speed` and a payload.
     /// `cell` mirrors `pos.to_index()` (invariant A); `heading` (1-D) is set
-    /// to a coherent LaneEnd but is unused on the 2-D path.
+    /// to a coherent `LaneEnd` but is unused on the 2-D path.
     fn proj_2d(
         id: &str,
         pos: Pos,

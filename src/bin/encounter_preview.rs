@@ -233,8 +233,8 @@ impl ApplicationHandler for App {
         let attrs = Window::default_attributes()
             .with_title("Broadside encounter preview (real board) — Space pause drift · 1-5 enemies · Esc quit")
             .with_inner_size(winit::dpi::LogicalSize::new(
-                (VIRTUAL_W * 3) as f64,
-                (VIRTUAL_H * 3) as f64,
+                f64::from(VIRTUAL_W * 3),
+                f64::from(VIRTUAL_H * 3),
             ));
         let window = Arc::new(event_loop.create_window(attrs).expect("window"));
         let gfx = pollster::block_on(Gfx::new(window.clone()));
@@ -283,7 +283,7 @@ impl ApplicationHandler for App {
                     match gfx.render(&commands) {
                         Ok(()) => {}
                         Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
-                            gfx.reconfigure()
+                            gfx.reconfigure();
                         }
                         Err(e) => eprintln!("[encounter_preview] surface error: {e:?}"),
                     }

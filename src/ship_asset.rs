@@ -69,9 +69,9 @@ pub enum AssetError {
 impl std::fmt::Display for AssetError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            AssetError::Design(e) => write!(f, "ship-asset design load: {e}"),
-            AssetError::Mesh(e) => write!(f, "ship-asset mesh load: {e}"),
-            AssetError::UnknownExtension => {
+            Self::Design(e) => write!(f, "ship-asset design load: {e}"),
+            Self::Mesh(e) => write!(f, "ship-asset mesh load: {e}"),
+            Self::UnknownExtension => {
                 write!(
                     f,
                     "ship-asset: unrecognized file extension (expected .json / .glb / .gltf)"
@@ -84,9 +84,9 @@ impl std::fmt::Display for AssetError {
 impl std::error::Error for AssetError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            AssetError::Design(e) => Some(e),
-            AssetError::Mesh(e) => Some(e),
-            AssetError::UnknownExtension => None,
+            Self::Design(e) => Some(e),
+            Self::Mesh(e) => Some(e),
+            Self::UnknownExtension => None,
         }
     }
 }

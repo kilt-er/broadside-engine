@@ -119,23 +119,23 @@ pub struct CellQuad {
 
 impl CellQuad {
     /// The top-left corner.
-    pub fn top_left(&self) -> Point2 {
+    pub const fn top_left(&self) -> Point2 {
         Point2::new(self.corners[0][0], self.corners[0][1])
     }
     /// The top-right corner.
-    pub fn top_right(&self) -> Point2 {
+    pub const fn top_right(&self) -> Point2 {
         Point2::new(self.corners[1][0], self.corners[1][1])
     }
     /// The bottom-right corner.
-    pub fn bottom_right(&self) -> Point2 {
+    pub const fn bottom_right(&self) -> Point2 {
         Point2::new(self.corners[2][0], self.corners[2][1])
     }
     /// The bottom-left corner.
-    pub fn bottom_left(&self) -> Point2 {
+    pub const fn bottom_left(&self) -> Point2 {
         Point2::new(self.corners[3][0], self.corners[3][1])
     }
     /// The cell center point.
-    pub fn center_point(&self) -> Point2 {
+    pub const fn center_point(&self) -> Point2 {
         Point2::new(self.center[0], self.center[1])
     }
     /// Width of the cell's near (bottom) edge in virtual pixels.
@@ -195,9 +195,9 @@ pub struct ProjectorConfig {
     /// (#140 Bruce) STRETCH-mode blend `t ∈ [0, 1]`. `0` = the pure-perspective
     /// chase-cam (every existing path + the pixel-identity gate depend on this being
     /// the default, so `for_scene` sets it `0.0` and `grid_cell_quad` is byte-
-    /// identical at `0`). `> 0` LERPS each cell's corners + center + depth_scale
+    /// identical at `0`). `> 0` LERPS each cell's corners + center + `depth_scale`
     /// toward a UNIFORM TOP-DOWN grid (rows equal-height stacked up from the near
-    /// edge, columns equal-width = the near-row width, depth_scale → 1.0). So cell
+    /// edge, columns equal-width = the near-row width, `depth_scale` → 1.0). So cell
     /// (=> ship) size stays ~constant as the grid STRETCHES vertically toward a
     /// square top-down board — Bruce's "stretch mode" that kills the constant-
     /// footprint ballooning. Set via [`Self::with_stretch`]. Independent of
@@ -338,7 +338,7 @@ impl ProjectorConfig {
     /// square top-down board with ~constant cell (=> ship) size. The bin steps `t`
     /// with the pitch arc when STRETCH is ON. `with_stretch(0.0)` == self, so step 0
     /// is byte-identical (the no-regression invariant).
-    pub fn with_stretch(self, t: f32) -> Self {
+    pub const fn with_stretch(self, t: f32) -> Self {
         Self {
             stretch_t: t.clamp(0.0, 1.0),
             ..self
@@ -350,7 +350,7 @@ impl ProjectorConfig {
     /// mode Bruce asked for ("I expected straight lines"). `t = 0` == self (byte-
     /// identical step 0); `t = 1` = a uniform straight top-down square. Sets both
     /// `stretch_t` and the `stretch_straight` flag the [`grid_cell_quad`] blend reads.
-    pub fn with_stretch_straight(self, t: f32) -> Self {
+    pub const fn with_stretch_straight(self, t: f32) -> Self {
         Self {
             stretch_t: t.clamp(0.0, 1.0),
             stretch_straight: true,
@@ -362,7 +362,7 @@ impl ProjectorConfig {
     /// but each front-to-back column boundary is ONE straight line (no per-cell kinks =
     /// the "stepped per quadrant" look of [`Self::with_stretch_straight`]). `t = 0` ==
     /// self (byte-identical step 0). Sets `stretch_t` + `stretch_lines_continuous`.
-    pub fn with_stretch_continuous(self, t: f32) -> Self {
+    pub const fn with_stretch_continuous(self, t: f32) -> Self {
         Self {
             stretch_t: t.clamp(0.0, 1.0),
             stretch_lines_continuous: true,
@@ -743,8 +743,8 @@ pub fn vanishing_point(cfg: &ProjectorConfig) -> Point2 {
     // slope, so use an edge column.)
     let near = grid_cell_quad(Pos::new(0, ROWS - 1), cfg).center;
     let far = grid_cell_quad(Pos::new(0, 0), cfg).center;
-    let (nx, ny) = (near[0], near[1]);
-    let (fx, fy) = (far[0], far[1]);
+    let [nx, ny] = near;
+    let [fx, fy] = far;
     let dx = fx - nx;
     if dx.abs() < 1e-6 {
         // Degenerate (a column already on center) — fall back to the horizon line.
@@ -856,13 +856,13 @@ mod tests {
     /// (#70 deterministic bow gate) THE non-eyeball verification that a facing-N
     /// (up-lane) hull banks its BOW TOWARD the vanishing point at every column —
     /// the thing that slipped past screenshot review ~5 times. Under scene-space
-    /// (camera_perspective), world-heading-N = +Z (deeper = toward the VP), so the
-    /// bow point = cell_camera_point + (0,0,+bow_len). We project the bow + the
+    /// (`camera_perspective`), world-heading-N = +Z (deeper = toward the VP), so the
+    /// bow point = `cell_camera_point` + (`0,0,+bow_len`). We project the bow + the
     /// cell centre and assert the bow's screen-x is on the VP side of centre:
-    ///   col 0 (left of centre)  → bow_x > centre_x (banks up-RIGHT toward VP)
-    ///   col 2 (centre)          → bow_x ≈ centre_x (straight up)
-    ///   col 4 (right of centre) → bow_x < centre_x (banks up-LEFT toward VP)
-    /// This is correct BY CONSTRUCTION for camera_perspective (no yaw-sign to get
+    ///   col 0 (left of centre)  → `bow_x` > `centre_x` (banks up-RIGHT toward VP)
+    ///   col 2 (centre)          → `bow_x` ≈ `centre_x` (straight up)
+    ///   col 4 (right of centre) → `bow_x` < `centre_x` (banks up-LEFT toward VP)
+    /// This is correct BY CONSTRUCTION for `camera_perspective` (no yaw-sign to get
     /// wrong) — it's the oracle the billboard must match or be replaced by.
     #[test]
     fn facing_n_bow_banks_toward_vp_every_column() {
@@ -911,7 +911,7 @@ mod tests {
         );
     }
 
-    /// The far row is drawn SMALLER (depth_scale shrinks with recession). The
+    /// The far row is drawn SMALLER (`depth_scale` shrinks with recession). The
     /// scale is normalized so the **near plane** (`d = 0`) is `1.0`; each cell's
     /// `depth_scale` is taken at its CENTER depth, so even the front row reads a
     /// touch under 1.0 (its center is set back from the near plane) — but it is
@@ -1086,7 +1086,7 @@ mod tests {
     /// the bottom). HORIZONTAL is deliberately NOT bounded for the near rows: the
     /// #62 chase-cam fans the near lanes WIDE so the outer lanes run off the
     /// bottom corners (the reference "road" filling the lower screen), so near-row
-    /// corners legitimately exceed [0, frame_w]. The FAR row (row 0, where enemies
+    /// corners legitimately exceed [0, `frame_w`]. The FAR row (row 0, where enemies
     /// read) must still fit horizontally so their silhouettes aren't clipped.
     #[test]
     fn default_board_fits_inside_frame() {
@@ -1195,11 +1195,11 @@ mod tests {
         assert!(approx(mid.center[0], big.frame_w * 0.5, 1e-3));
     }
 
-    /// (#139) with_pitch keeps the grid's front-to-back screen DEPTH CONSTANT as it
+    /// (#139) `with_pitch` keeps the grid's front-to-back screen DEPTH CONSTANT as it
     /// pitches toward top-down (Bruce: "grid depth should remain constant rather than
     /// getting stretched"). The grid's footprint = the front row's near edge (bottom)
     /// down to the back row's far edge (top); both screen-y's must hold across every
-    /// pitch step. Also: the near-row size (near_row_y, z_near, fan) is untouched, so
+    /// pitch step. Also: the near-row size (`near_row_y`, `z_near`, fan) is untouched, so
     /// only the VIEWING ANGLE changes — the proof the projector is cleanly factored.
     #[test]
     fn with_pitch_holds_grid_depth_constant() {
@@ -1240,10 +1240,10 @@ mod tests {
         }
     }
 
-    /// (#140) STRETCH mode: with_stretch(0) is byte-identical (the step-0 / no-
+    /// (#140) STRETCH mode: `with_stretch(0)` is byte-identical (the step-0 / no-
     /// regression invariant), and at t=1 the grid is UNIFORM — every row's cell is
     /// the SAME height (constant ship size, no balloon) and columns are PARALLEL (a
-    /// true top-down square), with depth_scale == 1 everywhere.
+    /// true top-down square), with `depth_scale` == 1 everywhere.
     #[test]
     fn with_stretch_step0_identity_and_uniform_at_full() {
         let base = cfg();
