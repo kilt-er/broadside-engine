@@ -256,6 +256,47 @@ impl ProjectorConfig {
 }
 
 impl ProjectorConfig {
+    /// (#139 Bruce) Re-pitch the camera toward TOP-DOWN by `t` ∈ [0, 1] while
+    /// keeping the grid's apparent front-to-back DEPTH CONSTANT (Bruce: "grid depth
+    /// should remain constant rather than getting stretched as you raise the
+    /// horizon"). `t = 0` is the current chase-cam look; `t = 1` is near-overhead.
+    ///
+    /// HOW depth stays constant. A row's screen-y is
+    /// `horizon_y + (near_row_y - horizon_y) * (z_near / z)`, so the grid's screen
+    /// footprint is `near_row_y` (front, fixed) down to the back-row y
+    /// `y_back = near_row_y - (near_row_y - horizon_y) * (1 - z_near/z_far)`.
+    /// Raising the pitch = flattening the perspective = pushing the depth ratio
+    /// `r = z_near/z_far` toward 1 (rows spread evenly, columns stop converging =
+    /// overhead). That alone would SHRINK the footprint `(1 - r)` (the "stretch"
+    /// Bruce saw is the inverse — a naive horizon raise changes it per step). We
+    /// COMPENSATE: pin `near_row_y`, hold the target depth `D` (the t=0 footprint)
+    /// fixed, and solve `horizon_y = near_row_y - D / (1 - r)` for each `r`. Then
+    /// `y_back = near_row_y - D` for ALL t — the grid's top + bottom screen edges
+    /// don't move; only the INTERNAL row spacing + column convergence change, so it
+    /// reads as the SAME grid seen from a steeper angle. `z_near` + `near_row_y` +
+    /// `fan_half_width` are untouched (so the near-row size is identical), proving
+    /// the projector is cleanly factored — depth holds by adjusting one ratio +
+    /// the compensating horizon, no baked constant to fight.
+    pub fn with_pitch(self, t: f32) -> Self {
+        let t = t.clamp(0.0, 1.0);
+        // Base (t=0) depth ratio and the footprint depth D it produces — the
+        // invariant to preserve.
+        let r0 = self.z_near / self.z_far;
+        let d_base = (self.near_row_y - self.horizon_y) * (1.0 - r0);
+        // Steepen toward overhead: r -> ~0.9 (near-flat). Capped below 1.0 so
+        // 1/(1-r) stays finite (a true r=1 is a pure top-down with no recession).
+        let r = r0 + (0.9 - r0) * t;
+        let z_far = self.z_near / r;
+        // Compensate the horizon so the back-row screen-y (hence the grid depth)
+        // is unchanged: y_back = near_row_y - d_base for every t.
+        let horizon_y = self.near_row_y - d_base / (1.0 - r);
+        Self {
+            z_far,
+            horizon_y,
+            ..self
+        }
+    }
+
     /// The frame-center x the board's column fan is symmetric about.
     fn center_x(&self) -> f32 {
         self.frame_w * 0.5
@@ -924,5 +965,41 @@ mod tests {
         // The center column still lands on the (now-doubled) frame centre.
         let mid = grid_cell_quad(Pos::new(COLS / 2, ROWS - 1), &big);
         assert!(approx(mid.center[0], big.frame_w * 0.5, 1e-3));
+    }
+
+    /// (#139) with_pitch keeps the grid's front-to-back screen DEPTH CONSTANT as it
+    /// pitches toward top-down (Bruce: "grid depth should remain constant rather than
+    /// getting stretched"). The grid's footprint = the front row's near edge (bottom)
+    /// down to the back row's far edge (top); both screen-y's must hold across every
+    /// pitch step. Also: the near-row size (near_row_y, z_near, fan) is untouched, so
+    /// only the VIEWING ANGLE changes — the proof the projector is cleanly factored.
+    #[test]
+    fn with_pitch_holds_grid_depth_constant() {
+        let base = cfg();
+        let front = Pos::new(COLS / 2, ROWS - 1); // near row
+        let back = Pos::new(COLS / 2, 0); // far row
+        let near_y0 = grid_cell_quad(front, &base).bottom_left().y;
+        let far_y0 = grid_cell_quad(back, &base).top_left().y;
+        let depth0 = near_y0 - far_y0;
+        assert!(depth0 > 0.0, "grid has positive screen depth at t=0");
+
+        for step in 0..=8u32 {
+            let t = step as f32 / 8.0;
+            let p = base.with_pitch(t);
+            let near_y = grid_cell_quad(front, &p).bottom_left().y;
+            let far_y = grid_cell_quad(back, &p).top_left().y;
+            // Front + back screen edges (hence the depth) are unchanged across t.
+            assert!(approx(near_y, near_y0, 0.5), "near edge fixed at t={t}: {near_y} vs {near_y0}");
+            assert!(approx(near_y - far_y, depth0, 0.5), "grid depth constant at t={t}");
+            // The near-row size knobs are not touched — only the angle changes.
+            assert_eq!(p.z_near, base.z_near);
+            assert!(approx(p.near_row_y, base.near_row_y, 1e-3));
+            assert!(approx(p.fan_half_width, base.fan_half_width, 1e-3));
+            // Higher pitch = flatter perspective = larger z_near/z_far ratio (rows
+            // spread toward even = more overhead).
+            if step > 0 {
+                assert!(p.z_near / p.z_far > base.z_near / base.z_far, "pitch flattens recession at t={t}");
+            }
+        }
     }
 }

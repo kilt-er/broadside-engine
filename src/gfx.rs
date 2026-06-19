@@ -86,6 +86,36 @@ pub fn scene_h() -> u32 {
     SCENE_H.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+/// (#139 Bruce) Live GRID-PITCH step, 0..=[`GRID_PITCH_STEPS`]. `0` = the chase-cam
+/// look; each step (the `G` key) tilts ~5° toward TOP-DOWN. A process-global like
+/// the scene size so every `ProjectorConfig::for_scene(..).with_pitch(grid_pitch_t())`
+/// call site (grid, cells, movement, threats, ordnance) shares ONE pitch — the
+/// projector is the single spatial source, so they all reproject together.
+static GRID_PITCH_STEP: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// Number of pitch steps from chase-cam (step 0) to near-top-down (the last step).
+/// ~5° each toward overhead; 8 steps ≈ a 40° swing past the ~20° base.
+pub const GRID_PITCH_STEPS: u32 = 8;
+
+/// The live pitch as `t` ∈ [0, 1] for [`crate::projector::ProjectorConfig::with_pitch`]
+/// (`0` chase-cam, `1` near-overhead). Step `n` → `n / GRID_PITCH_STEPS`.
+pub fn grid_pitch_t() -> f32 {
+    GRID_PITCH_STEP.load(std::sync::atomic::Ordering::Relaxed) as f32 / GRID_PITCH_STEPS as f32
+}
+
+/// The live pitch STEP (0..=[`GRID_PITCH_STEPS`]) for the debug readout.
+pub fn grid_pitch_step() -> u32 {
+    GRID_PITCH_STEP.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// (#139) Cycle the grid pitch one step toward top-down, wrapping back to the
+/// chase-cam (step 0) after the last step. Returns the new step. Bound to `G`.
+pub fn cycle_grid_pitch() -> u32 {
+    let next = (grid_pitch_step() + 1) % (GRID_PITCH_STEPS + 1);
+    GRID_PITCH_STEP.store(next, std::sync::atomic::Ordering::Relaxed);
+    next
+}
+
 /// (#76 scene-res) The scene-resolution presets `;` / `'` step through, all 16:9.
 /// 480×270 is the MINIMUM + the pixel-identity baseline (Bruce: 480 is the floor —
 /// the old 320×180 was dropped as too chunky); 640×360 is the BOOT default (#135);

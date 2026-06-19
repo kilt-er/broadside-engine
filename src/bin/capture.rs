@@ -176,6 +176,19 @@ fn main() {
         }
     }
 
+    // (#139) Optional BROADSIDE_GRID_PITCH=N steps the grid pitch toward top-down
+    // before the capture (mirrors the live `G` key), so the headless shots show the
+    // constant-depth re-pitch at steps 0 / mid / near-top-down. The capture's `cfg`
+    // below applies grid_pitch_t() so the grid/cells/ordnance reproject.
+    if let Ok(n) = std::env::var("BROADSIDE_GRID_PITCH") {
+        if let Ok(steps) = n.parse::<u32>() {
+            for _ in 0..steps {
+                let s = broadside_engine::gfx::cycle_grid_pitch();
+                log::info!("capture: grid pitch -> step {s}");
+            }
+        }
+    }
+
     // Optional 2nd arg = player column (0..COLS-1) so the capture can place the
     // player OFF-CENTER to expose lane-dependent pose bugs (a centred shot at the
     // zero-lane-yaw col 2 masks a mirrored lane-aim sign). Defaults to the
@@ -384,7 +397,8 @@ fn main() {
     let cfg = ProjectorConfig::for_scene(
         broadside_engine::gfx::scene_w() as f32,
         broadside_engine::gfx::scene_h() as f32,
-    );
+    )
+    .with_pitch(broadside_engine::gfx::grid_pitch_t()); // (#139) live pitch step
     let mut commands = compose_scene_2d_with(&board, &cfg, &gfx);
     // (#127) SALVAGE readout — the live bin draws this in its Playing overlay (not
     // inside compose_scene_2d), so append it here with a representative value so the

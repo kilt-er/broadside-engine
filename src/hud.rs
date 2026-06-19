@@ -3387,8 +3387,19 @@ pub fn push_res_readout(out: &mut Vec<DrawCommand>, ship: (u32, u32), scene: (u3
         let start_x = canvas_w - total_w - right_pad;
         push_text_left(out, text, start_x, y, pixel, DIM);
     };
+    // (#139) PITCH step (0 = chase-cam, GRID_PITCH_STEPS = near-top-down), read from
+    // the gfx global so no signature change. Only shown when pitched off the default,
+    // so it doesn't clutter the readout in normal play.
     right_align(out, &format!("SHIP {}x{}", ship.0, ship.1), h - 20.0);
     right_align(out, &format!("SCENE {}x{}", scene.0, scene.1), h - 10.0);
+    // (#139) PITCH step (0 = chase-cam, GRID_PITCH_STEPS = near-top-down), read from
+    // the gfx global. Placed at h-40, ABOVE the POS/FACE line (h-30, push_player_readout)
+    // so the bottom-right debug stack doesn't overlap. Only shown when pitched off the
+    // default, so normal play stays uncluttered.
+    let pitch = crate::gfx::grid_pitch_step();
+    if pitch > 0 {
+        right_align(out, &format!("PITCH {}/{}", pitch, crate::gfx::GRID_PITCH_STEPS), h - 40.0);
+    }
 }
 
 /// Minimalist controls legend, bottom-left corner. Dim single-column text,

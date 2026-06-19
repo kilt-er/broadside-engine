@@ -103,6 +103,18 @@ fn keycode_to_key(code: KeyCode) -> Option<Key> {
     })
 }
 
+/// (#139) The live scene projector: `for_scene` at the current scene size, re-
+/// pitched by the live grid-pitch step (`G` key). ONE place builds it so every
+/// projected element — grid, ship cells, movement, threats, in-flight ordnance —
+/// shares the identical pitch + scale (the projector is the single spatial source).
+fn scene_projector() -> ProjectorConfig {
+    ProjectorConfig::for_scene(
+        broadside_engine::gfx::scene_w() as f32,
+        broadside_engine::gfx::scene_h() as f32,
+    )
+    .with_pitch(broadside_engine::gfx::grid_pitch_t())
+}
+
 /* =============================================================================
  * Applying an Intent to the board.
  *
@@ -1373,6 +1385,19 @@ impl ApplicationHandler for App {
                         if let Some(win) = self.window.as_ref() { win.request_redraw(); }
                         return;
                     }
+                    // (#139) `G` cycles the GRID PITCH toward top-down (constant grid
+                    // depth — the projector compensates the horizon). Renderer-owned
+                    // raw binding like the res cycles; everything projector-derived
+                    // (grid/cells/movement/threats/ordnance) reprojects via
+                    // scene_projector(). The loft player ship is baked to the chase-cam
+                    // angle, so it won't follow near top-down (expected — it's a
+                    // parameterization TEST).
+                    if code == KeyCode::KeyG {
+                        let step = broadside_engine::gfx::cycle_grid_pitch();
+                        log::info!("grid pitch step: {step}/{}", broadside_engine::gfx::GRID_PITCH_STEPS);
+                        if let Some(win) = self.window.as_ref() { win.request_redraw(); }
+                        return;
+                    }
                 }
                 let Some(key) = keycode_to_key(code) else { return };
 
@@ -1509,10 +1534,7 @@ impl ApplicationHandler for App {
                                 // dead ship's PROJECTED screen position (same kill
                                 // signal). Once per death (we're in the resolve
                                 // branch, not per-frame), so it doesn't re-seed.
-                                let pcfg = ProjectorConfig::for_scene(
-                                    broadside_engine::gfx::scene_w() as f32,
-                                    broadside_engine::gfx::scene_h() as f32,
-                                );
+                                let pcfg = scene_projector();
                                 let c = broadside_engine::projector::grid_cell_quad(pos, &pcfg).center;
                                 self.particles.spawn_burst(c, 22, EXPLOSION_PARTICLE_COLOR, 0.55);
                             }
@@ -1536,10 +1558,7 @@ impl ApplicationHandler for App {
                     // — so the player SEES the ordnance launch on the commit turn, not
                     // just a mystery hit when it lands a turn later. push_ordnance_2d
                     // then draws it travelling each subsequent turn.
-                    let pcfg = ProjectorConfig::for_scene(
-                        broadside_engine::gfx::scene_w() as f32,
-                        broadside_engine::gfx::scene_h() as f32,
-                    );
+                    let pcfg = scene_projector();
                     for proj in &self.board.ordnance {
                         if proj.owner_faction == Faction::Player && !prev_ordnance.contains(&proj.id) {
                             let c = broadside_engine::projector::grid_cell_quad(proj.pos, &pcfg).center;
@@ -1638,10 +1657,7 @@ impl ApplicationHandler for App {
                     if let Some(fe) = due {
                         // Impact spark on the struck cell, timed to the beat.
                         if fe.hit {
-                            let pcfg = ProjectorConfig::for_scene(
-                                broadside_engine::gfx::scene_w() as f32,
-                                broadside_engine::gfx::scene_h() as f32,
-                            );
+                            let pcfg = scene_projector();
                             let c = broadside_engine::projector::grid_cell_quad(fe.to_pos, &pcfg).center;
                             self.particles.spawn_burst(c, 8, EXPLOSION_PARTICLE_COLOR, 0.25);
                         }
@@ -1758,10 +1774,7 @@ impl ApplicationHandler for App {
                 // change the resolution. At the 480×270 default `for_scene` ==
                 // `default()`, so this is identical to the old fixed path until a
                 // cycle. Built from the gfx scene-size globals (free fns, no borrow).
-                let scene_cfg = ProjectorConfig::for_scene(
-                    broadside_engine::gfx::scene_w() as f32,
-                    broadside_engine::gfx::scene_h() as f32,
-                );
+                let scene_cfg = scene_projector();
                 // (#79) Per-ship slide/turn tween for THIS frame — computed BEFORE
                 // the gfx mutable borrow (it reads &self). Empty when nothing is
                 // mid-move, so the render is identical to the static path at rest.
