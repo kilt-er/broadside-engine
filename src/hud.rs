@@ -82,6 +82,9 @@ const THREAT_FILL_LETHAL: [f32; 4] = [0.961, 0.341, 0.286, 0.62]; // would-kill 
 const THREAT_FILL_DISPLACE: [f32; 4] = [0.353, 0.624, 0.878, 0.42]; // push/pull/swap
 const THREAT_FILL_STATUS: [f32; 4] = [0.608, 0.549, 0.859, 0.42]; // debuff
 const THREAT_FILL_OTHER: [f32; 4] = [0.55, 0.55, 0.55, 0.34]; // catch-all
+// (#122) PLAYER targeting telegraph = bright CYAN (the player's colour, mirroring
+// the enemy threat red) — the cells a queued player weapon would strike.
+const PLAYER_AIM_CYAN: [f32; 4] = [0.30, 0.85, 0.95, 1.0];
 // (#99) THREAT_BEAM (the persistent red enemy→cell intent line) removed — Bruce:
 // clutter. The threatened-cell outline is the cue; the fire beam shows the shot.
 
@@ -1046,6 +1049,66 @@ fn push_threats_2d(out: &mut Vec<DrawCommand>, board: &Board, cfg: &ProjectorCon
         // momentary fire beam (`push_fire_2d`) on CommitTurn. So the enemy-fire
         // telegraph survives without the standing line.
     }
+}
+
+/// (#122) PLAYER targeting telegraph — the mirror of the enemy threat overlay, in
+/// the player's CYAN. When the player has a weapon QUEUED, the bin resolves the
+/// cells it would strike from the current pose (`resolve_targeting_2d`, the SAME
+/// single source the shot fires through) and passes them here. We outline each
+/// target cell + draw a cyan aim line from the player's cell to it, so BEFORE
+/// committing the player sees exactly what the queued ability will hit. Empty
+/// `targets` (the weapon can't bear / nothing in range) draws nothing here — the
+/// "won't fire" cue (`push_fizzle_cue_2d`) carries that case instead. Drawn under
+/// the ships (like the threats) so hulls sit on top.
+pub fn push_player_targeting_2d(
+    out: &mut Vec<DrawCommand>,
+    player_pos: crate::grid::Pos,
+    targets: &[crate::grid::Pos],
+    cfg: &ProjectorConfig,
+) {
+    if targets.is_empty() {
+        return;
+    }
+    let from = grid_cell_quad(player_pos, cfg).center;
+    for &tp in targets {
+        let q = grid_cell_quad(tp, cfg);
+        // Faint cyan interior + bright cyan outline (mirrors push_threats_2d, the
+        // OUTLINE is the cue, never a slab).
+        let faint = [PLAYER_AIM_CYAN[0], PLAYER_AIM_CYAN[1], PLAYER_AIM_CYAN[2], 0.08];
+        push_polygon(
+            out,
+            PolygonInstance::flat(q.corners, faint, atlas::cell_uvs(atlas::SOLID_WHITE)),
+        );
+        let outline = [PLAYER_AIM_CYAN[0], PLAYER_AIM_CYAN[1], PLAYER_AIM_CYAN[2], 0.95];
+        let c = q.corners;
+        for k in 0..4 {
+            push_line(out, pt(c[k]), pt(c[(k + 1) % 4]), 1.0, outline);
+        }
+        // Dim cyan aim line player → target so the shot PATH reads (not just the
+        // end cell). Thin + semi-transparent so it doesn't compete with the actual
+        // fire beam on commit.
+        let aim = [PLAYER_AIM_CYAN[0], PLAYER_AIM_CYAN[1], PLAYER_AIM_CYAN[2], 0.40];
+        push_line(out, pt(from), pt(q.center), 1.0, aim);
+    }
+}
+
+/// (#123) "WON'T FIRE" cue — when the player has a weapon QUEUED that can't
+/// connect from the current pose (its `resolve_targeting_2d` is empty), draw a
+/// loud on-board warning above the PLAYER so a wasted commit isn't silent: a small
+/// red "X"-ish mark + a short "no-target" bar over the player's cell. The bin
+/// gates this on (player has a queued weapon) AND (none of the queued weapons
+/// bear). Complements the resting tile grey-out — this is the queued+commit cue.
+pub fn push_fizzle_cue_2d(out: &mut Vec<DrawCommand>, player_pos: crate::grid::Pos, cfg: &ProjectorConfig) {
+    let q = grid_cell_quad(player_pos, cfg);
+    let scale = q.depth_scale;
+    let r = (10.0 * scale).max(7.0);
+    // Float above the player hull.
+    let cx = q.center[0];
+    let cy = q.center[1] - (22.0 * scale + 18.0 * scale).max(26.0);
+    let col = [0.95, 0.32, 0.28, 0.95]; // warning red
+    // A bold X (two crossed bars) = "won't fire from here".
+    push_line(out, pt([cx - r, cy - r]), pt([cx + r, cy + r]), 2.0, col);
+    push_line(out, pt([cx - r, cy + r]), pt([cx + r, cy - r]), 2.0, col);
 }
 
 /// (#90) Draw the RESOLVED weapon fire for this round in the 2-D scene (Bruce:

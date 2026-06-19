@@ -396,6 +396,22 @@ fn main() {
             AbilityTile { slot: '5', icon: AbilityIcon::Defensive, damage: 0, range: 0, cooldown: 0, cooldown_max: 0, queued_index: None, can_fire: true, arc: None },
         ];
         broadside_engine::hud::push_ability_tiles_2d(&mut commands, &tiles);
+        // (#122) Player targeting telegraph demo: show the cyan preview of where a
+        // queued weapon would strike. The live bin resolves the cells via
+        // resolve_targeting_2d; here we hand-pick a target cell forward of the
+        // player so the headless shot shows the cyan target outline + aim line.
+        if let Some(ppos) = board
+            .cells
+            .iter()
+            .flatten()
+            .find(|s| s.faction == Faction::Player)
+            .map(|s| s.pos)
+        {
+            // A cell two rows up-lane (toward the enemies) as the demo target.
+            let tgt = Pos::new(ppos.col, ppos.row.saturating_sub(2));
+            broadside_engine::hud::push_player_targeting_2d(&mut commands, ppos, &[tgt], &cfg);
+            log::info!("capture: #122 player targeting telegraph demo {ppos:?} -> {tgt:?}");
+        }
     }
     // (#90 yellow-square repro) With QUEUE_DEMO, dump any LARGE draw command (a
     // sprite half-size > 60px or a polygon spanning > 120px in either axis) + its

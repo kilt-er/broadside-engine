@@ -1522,6 +1522,36 @@ impl ApplicationHandler for App {
                     .map(|p| build_ship_tiles(p, &self.content, &self.board))
                     .unwrap_or_default();
                 let ability_active = self.ability_hud.advance(&player_tiles, 1.0 / 60.0);
+                // (#122/#123) Player targeting telegraph: for each weapon the player
+                // has QUEUED, resolve the cells it would strike from the current pose
+                // (resolve_targeting_2d — the same single source the shot fires
+                // through). Collect the union of target cells (the cyan preview) and
+                // whether ANY queued weapon bears (else the commit will fizzle → the
+                // "won't fire" cue). Computed before the gfx borrow; read-only.
+                let (aim_pos, aim_cells, queued_any, queued_bears) = {
+                    let mut cells: Vec<Pos> = Vec::new();
+                    let mut any = false;
+                    let mut bears = false;
+                    let mut ppos = Pos::new(broadside_engine::grid::COLS / 2, 0);
+                    if let Some(p) = self.board.cells.iter().flatten().find(|s| s.faction == Faction::Player) {
+                        ppos = p.pos;
+                        for qid in &p.queue {
+                            if let Some(action) = self.content.action(qid) {
+                                any = true;
+                                let hits = broadside_engine::resolve::resolve_targeting_2d(action, &self.board, p.pos);
+                                if !hits.is_empty() {
+                                    bears = true;
+                                    for h in hits {
+                                        if !cells.contains(&h) {
+                                            cells.push(h);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    (ppos, cells, any, bears)
+                };
                 // (#57) Player column + campaign level drive the parallax: the
                 // background pans horizontally with the player's lateral position
                 // and recedes with the campaign level. Read before the gfx borrow.
@@ -1659,6 +1689,16 @@ impl ApplicationHandler for App {
                     // live-scene projector. Gated to Playing so a board reset / overlay
                     // frame never bursts. Recorded only on a combat-turn resolve.
                     hud::push_destruction_at(&mut instances, &kill_cells, &scene_cfg);
+                    // (#122) Player targeting telegraph — cyan preview of where each
+                    // QUEUED weapon will strike from the current pose (mirrors the
+                    // enemy threat overlay). No-op when nothing is queued/bears.
+                    hud::push_player_targeting_2d(&mut instances, aim_pos, &aim_cells, &scene_cfg);
+                    // (#123) "Won't fire" cue: a queued weapon exists but NONE bear
+                    // from here → committing will fizzle. Loud red X over the player
+                    // so a wasted commit isn't silent.
+                    if queued_any && !queued_bears {
+                        hud::push_fizzle_cue_2d(&mut instances, aim_pos, &scene_cfg);
+                    }
                     // (#119) Procedural explosion particles seeded at ship death —
                     // one SOLID_WHITE sprite per live particle, fading + shrinking.
                     // Already in screen space (spawned via the projector), so it
