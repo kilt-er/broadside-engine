@@ -560,11 +560,18 @@ fn key_to_intent_table_pins_every_canonical_binding() {
     ];
     let content = DemoContent::default();
 
-    // The canonical 10-row table from input.rs:99-108. If a future PR
-    // drops a row, this fails with the offending key visible.
+    // The canonical key->intent table. If a future PR drops a row, this fails
+    // with the offending key visible.
+    //
+    // (#165 tank controls) Left/Right ROTATE (no strafe) — same intents as Q/E.
+    // This row was a pre-#165 strafe leftover (`Left -> MoveLeft`); corrected here
+    // to the shipped behavior (input.rs `key_to_intent` returns RotateLeft/Right,
+    // and the inline `key_to_intent_is_tank_controls` unit test already pins it).
+    // Forward/reverse now live on Up/Down and are facing-relative, so they aren't
+    // in this fixed-intent table.
     let cases: &[(Key, Intent)] = &[
-        (Key::Left, Intent::MoveLeft),
-        (Key::Right, Intent::MoveRight),
+        (Key::Left, Intent::RotateLeft),
+        (Key::Right, Intent::RotateRight),
         (Key::Tab, Intent::ReorientFlip),
         (Key::V, Intent::Vent),
         (Key::D1, Intent::QueueAction("weapon_a".into())),

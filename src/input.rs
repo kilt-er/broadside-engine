@@ -194,7 +194,11 @@ pub fn key_to_intent(key: Key, ship: &Ship, content: &dyn Content) -> Option<Int
 /// so forward defaults to the axis's canonical positive cardinal (N for NS, E for EW)
 /// — a safe total fallback (the player only ever holds a cardinal `Bow` facing via
 /// the rotate controls; Broadside is the enemy flank stance). Reverse is `.opposite()`.
-const fn forward_dir4(facing: crate::grid::Facing) -> crate::grid::Dir4 {
+///
+/// `pub(crate)` so the enemy AI (#166) reuses the SAME forward semantics the
+/// player's tank controls do — one definition of "which way is forward" shared by
+/// the render/input half and the AI half (no second copy to drift).
+pub(crate) const fn forward_dir4(facing: crate::grid::Facing) -> crate::grid::Dir4 {
     use crate::grid::{Axis, Dir4, Facing};
     match facing {
         Facing::Bow(dir) => dir,

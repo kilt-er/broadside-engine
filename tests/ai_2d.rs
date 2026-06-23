@@ -321,24 +321,29 @@ fn ai_allows_action_that_lands_exactly_one_over_heat_max() {
 }
 
 /* =========================================================================
- * MANEUVER tests (7) — the C1-flipped ones. Best-guess 2-D fixtures; the exact
- * SYNTHETIC_MOVE direction the 2-D ladder picks is iterated against the RUNNER
- * in the build window (the assertion direction below is the working hypothesis:
- * an enemy NORTH of the player closes SOUTH = toward the player; with a
- * same-column setup that is SYNTHETIC_MOVE_DOWN, but the legacy tests expected
- * _LEFT on the 1-D lane — RECONCILE against C1's actual 2-D pick).
+ * MANEUVER tests — the C1-flipped ones, runner-verified against the committed
+ * ladder. Every fixture here puts the enemy directly NORTH of the front-row
+ * player in the SAME column with its bow already pointing S (toward the player),
+ * so the approach axis IS the bow axis: closing is the ON-AXIS forward step
+ * `SYNTHETIC_MOVE_DOWN`. This is the rotate-then-forward model's on-axis case
+ * (#166); the OFF-axis (perpendicular -> rotate first) and horizontal on-axis
+ * cases are locked by `ai_rotates_then_advances_when_approach_is_perpendicular`
+ * and `ai_advances_forward_along_a_horizontal_approach_axis` below.
  *
- * NOTE (#33): these are drafted, NOT yet runner-verified. Marked with a TODO so
- * the build-window pass pins each direction. Kept compiling + asserting SOMETHING
- * real (a maneuver is queued, not empty) so they're not vacuous pre-iteration.
+ * (#166) Bruce's no-strafe ruling: enemies never slide sideways. To change
+ * column they ROTATE to face the approach, then advance FORWARD. So a maneuver
+ * is always EITHER an on-axis `SYNTHETIC_MOVE_*` (forward/reverse along the bow)
+ * OR a `SYNTHETIC_ROTATE_*`, never a lateral move that is perpendicular to the
+ * hull's facing.
  * ====================================================================== */
 
 /// Helper for the maneuver tests: an enemy that can't fire CLOSES toward the
 /// player via the exact synthetic move. All maneuver fixtures put the enemy on a
-/// back row directly NORTH of the front-row player (same column), so closing =
-/// step SOUTH (+row, toward the player) = `SYNTHETIC_MOVE_DOWN` (verified against
-/// the committed C1 ladder). Asserts the EXACT cardinal — a sharper claim than
-/// "some move": a wrong direction (closing away / sideways) fails here.
+/// back row directly NORTH of the front-row player (same column) with bow S, so
+/// closing = the ON-AXIS step SOUTH (+row, toward the player) =
+/// `SYNTHETIC_MOVE_DOWN` (verified against the committed ladder). Asserts the
+/// EXACT cardinal — a sharper claim than "some move": a wrong direction (closing
+/// away / sideways) fails here.
 fn assert_closes_toward_player(q: &[String], weapon: &str) {
     assert!(
         !q.contains(&weapon.to_string()),
@@ -447,6 +452,98 @@ fn ai_rotates_to_bear_when_misfacing_in_band() {
         q,
         vec![SYNTHETIC_ROTATE_RIGHT.to_string()],
         "#86: a mis-facing in-band enemy ROTATES to bring its bow toward the player, not close/mash; got {q:?}",
+    );
+}
+
+#[test]
+fn ai_rotates_then_advances_when_approach_is_perpendicular() {
+    // (#166 no-strafe) The enemy is OUT of band and the player lies mostly in a
+    // DIFFERENT column, so the approach cardinal is horizontal (E) — perpendicular
+    // to the enemy's southward bow. Under the rotate-then-forward model the enemy
+    // must NOT slide sideways (the old strafe); it ROTATES its bow toward the
+    // approach (S -> E is a CCW quarter-turn = __rotate_left), and next phase
+    // advances forward along the new facing.
+    use broadside_engine::input::{
+        SYNTHETIC_MOVE_DOWN, SYNTHETIC_MOVE_LEFT, SYNTHETIC_MOVE_RIGHT, SYNTHETIC_ROTATE_LEFT,
+    };
+    let player = ship_2d(
+        "p",
+        Faction::Player,
+        Pos::new(4, 3),
+        10,
+        Facing::Bow(Dir4::N),
+        Arc::Forward,
+        "pulse_laser",
+    );
+    // Enemy at (0,1) Bow(S): distance to (4,3) is Chebyshev max(4,2)=4 = Far →
+    // pulse_laser (Adjacent+Near) is out of band → maneuver. Its Forward arc
+    // bears S down column 0; the player is in column 4 → does NOT bear → no fire.
+    let enemy = ship_2d(
+        "e",
+        Faction::Enemy,
+        Pos::new(0, 1),
+        5,
+        Facing::Bow(Dir4::S),
+        Arc::Forward,
+        "pulse_laser",
+    );
+    let mut board = board_2d(vec![player, enemy]);
+    let c = content(&[pulse_laser()]);
+    decide_enemy_action(Pos::new(0, 1).to_index(), &mut board, &c);
+    let q = queue_of(&board, Pos::new(0, 1));
+    assert_eq!(
+        q,
+        vec![SYNTHETIC_ROTATE_LEFT.to_string()],
+        "#166: a perpendicular approach ROTATES the bow toward the player (no strafe); got {q:?}",
+    );
+    // Belt-and-braces: it must NOT have emitted ANY lateral/forward slide.
+    for slide in [
+        SYNTHETIC_MOVE_LEFT,
+        SYNTHETIC_MOVE_RIGHT,
+        SYNTHETIC_MOVE_DOWN,
+    ] {
+        assert!(
+            !q.contains(&slide.to_string()),
+            "#166: rotate-then-forward must not slide before turning; got {q:?}",
+        );
+    }
+}
+
+#[test]
+fn ai_advances_forward_along_a_horizontal_approach_axis() {
+    // (#166 no-strafe) When the bow ALREADY points along the approach axis the
+    // enemy advances FORWARD (no needless rotate, no strafe). Enemy at (0,0)
+    // Bow(E), player due E at (4,0) on the same row: the approach cardinal is E =
+    // the bow direction, so closing is the on-axis forward step __move_right.
+    // (Distance 4 = Far → pulse_laser out of band → it maneuvers rather than
+    // fires, even though its E-bearing Forward arc is aimed right at the player.)
+    use broadside_engine::input::SYNTHETIC_MOVE_RIGHT;
+    let player = ship_2d(
+        "p",
+        Faction::Player,
+        Pos::new(4, 0),
+        10,
+        Facing::Bow(Dir4::W),
+        Arc::Forward,
+        "pulse_laser",
+    );
+    let enemy = ship_2d(
+        "e",
+        Faction::Enemy,
+        Pos::new(0, 0),
+        5,
+        Facing::Bow(Dir4::E),
+        Arc::Forward,
+        "pulse_laser",
+    );
+    let mut board = board_2d(vec![player, enemy]);
+    let c = content(&[pulse_laser()]);
+    decide_enemy_action(Pos::new(0, 0).to_index(), &mut board, &c);
+    let q = queue_of(&board, Pos::new(0, 0));
+    assert_eq!(
+        q,
+        vec![SYNTHETIC_MOVE_RIGHT.to_string()],
+        "#166: bow already on the approach axis advances FORWARD (no rotate, no strafe); got {q:?}",
     );
 }
 

@@ -78,6 +78,11 @@ pub fn decide_enemy_action(enemy_cell: usize, board: &mut Board, content: &dyn C
     let cooldowns = enemy.cooldowns.clone();
     let mount_weapons: Vec<String> = enemy.mounts.iter().map(|m| m.weapon.clone()).collect();
     let traits: Vec<Trait> = enemy.traits.clone();
+    // (#166) The enemy's current facing — snapshotted here so RUNG 2's
+    // rotate-then-forward maneuver knows which way is "forward" (the bow). Same
+    // read-only block as the gating state above (borrow released before the
+    // scoring loop re-borrows the board).
+    let facing = enemy.facing;
 
     let has_trait = |t: Trait| traits.contains(&t);
     let burn_hard = has_trait(Trait::BurnHard);
@@ -177,12 +182,48 @@ pub fn decide_enemy_action(enemy_cell: usize, board: &mut Board, content: &dyn C
     // Only when we couldn't fire AND aren't locked out (a locked-out enemy
     // prefers to VENT below so it can fire again, not maneuver uselessly).
     // Anchored ships skip this rung (immune to self-displacement).
+    //
+    // (#166 rotate-then-forward, Bruce's no-strafe ruling) Ships do NOT slide
+    // sideways. `choose_maneuver_dir` still owns the BAND decision (close vs open
+    // vs hold) — but instead of emitting the absolute slide it returned, we:
+    //   1. derive the TARGET cardinal (the dominant-component Dir4 of the raw
+    //      enemy->player delta, flipped to its opposite when opening range), and
+    //   2. if that cardinal lies on the bow AXIS (== forward, or == its reverse),
+    //      queue the on-axis forward/reverse step (`synthetic_move_for_dir`);
+    //   3. otherwise (the cardinal is perpendicular to the bow) queue a ROTATE
+    //      toward it — next phase the bow points the right way and the enemy
+    //      advances forward. Rotate-then-forward, never a free lateral step.
+    // This mirrors the resolver's forward-only self-move gate (#167, landing
+    // AFTER this) — but the AI must already STOP emitting laterals on its own, so
+    // it never relies on the gate to bounce an illegal move.
     if !locked_out && !anchored {
         if let Some(dir) = choose_maneuver_dir(&mount_weapons, enemy_pos, player_pos, content) {
-            if let Some(synth_id) = synthetic_move_for_dir(dir) {
-                if let Some(s) = board.ship_at_mut(enemy_pos) {
-                    s.queue.push(synth_id.to_string());
-                    return;
+            // `choose_maneuver_dir` returns exactly `from_to(enemy, player)`
+            // (CLOSE) or its `.opposite()` (OPEN). So we recover the sense by
+            // comparing against the toward-direction; `from_to` is `Some` here
+            // (co-located enemies make it `None`, and then the call above is
+            // `None` too, so we wouldn't be inside this block).
+            let toward8 = grid::from_to(enemy_pos, player_pos);
+            let opening = toward8 != Some(dir);
+            if let Some(toward_card) = dominant_cardinal(enemy_pos, player_pos) {
+                let target = if opening {
+                    toward_card.opposite()
+                } else {
+                    toward_card
+                };
+                let forward = crate::input::forward_dir4(facing);
+                let synth_id = if target == forward || target == forward.opposite() {
+                    // On the bow axis: advance forward / reverse straight.
+                    synthetic_move_for_dir(target.to_dir8())
+                } else {
+                    // Perpendicular to the bow: turn toward the approach first.
+                    rotate_toward_cardinal(forward, target)
+                };
+                if let Some(synth_id) = synth_id {
+                    if let Some(s) = board.ship_at_mut(enemy_pos) {
+                        s.queue.push(synth_id.to_string());
+                        return;
+                    }
                 }
             }
         }
@@ -249,9 +290,33 @@ pub fn decide_enemy_action(enemy_cell: usize, board: &mut Board, content: &dyn C
     // fires when Rung 2's band-aware open/close already declined (i.e. the weapon
     // is in band; closing keeps it in/below band, never strands a Far gun's
     // deadzone open). A locked-out enemy still prefers VENT (below).
-    if !locked_out && !anchored {
-        if let Some(dir) = grid::from_to(enemy_pos, player_pos) {
-            if let Some(synth_id) = synthetic_move_for_dir(dir) {
+    //
+    // (#166) Same rotate-then-forward discipline as RUNG 2: the close is along
+    // the bow axis when the player's dominant cardinal lies on it, else a rotate
+    // toward that cardinal (no lateral slide). The CLOSE sense is always "toward"
+    // here, so the target IS the dominant cardinal (no open-flip).
+    //
+    // (#166) Gated on having at least one mount: a MOUNTLESS hull has no weapon to
+    // bring to bear, so neither closing nor rotating serves any purpose — it would
+    // just wander. Under the old strafe model a mountless ship slid sideways toward
+    // the player (a latent oddity that happened to keep the winnability canary
+    // converging — it lined a stray target up under the player's column); the
+    // forward-only model can't line up off-column without strafing, so a wandering
+    // mountless ship instead chase-livelocked that canary. Holding it still is both
+    // more correct (no gun = no maneuver intent) AND restores convergence (the
+    // player closes onto the now-stationary target). No live enemy is mountless, so
+    // this is invisible in real combat — only the test harness builds gun-less
+    // "target" hulls. (RUNG 2 is already mount-gated: `choose_maneuver_dir` returns
+    // None when there is no dominant weapon.)
+    if !locked_out && !anchored && !mount_weapons.is_empty() {
+        if let Some(target) = dominant_cardinal(enemy_pos, player_pos) {
+            let forward = crate::input::forward_dir4(facing);
+            let synth_id = if target == forward || target == forward.opposite() {
+                synthetic_move_for_dir(target.to_dir8())
+            } else {
+                rotate_toward_cardinal(forward, target)
+            };
+            if let Some(synth_id) = synth_id {
                 if let Some(s) = board.ship_at_mut(enemy_pos) {
                     s.queue.push(synth_id.to_string());
                     return;
@@ -436,10 +501,15 @@ const fn band_ordinal(r: Range) -> u8 {
 /// Map a chosen [`Dir8`] step to the resolver-served synthetic move id. The AI
 /// closes/opens via the SAME synthetic moves the player uses (resolver-served
 /// through `resolver_ai_move`, so no `Content` dependency). All four cardinals
-/// are served as of R6. A diagonal step prefers its LATERAL (column) component —
-/// lateral is the dodge axis and the move resolves one cell, so the next phase
-/// re-decides and the depth component follows. `None` only for the zero vector
-/// (co-located, already excluded upstream by `from_to`).
+/// are served as of R6.
+///
+/// (#166 no-strafe) Since Bruce's rotate-then-forward ruling, the AI only ever
+/// passes a CARDINAL here — the on-axis forward/reverse step it has already
+/// committed to (perpendicular approaches become a ROTATE instead, never a slide;
+/// see RUNG 2 / RUNG 3.5). The diagonal arms below are kept only so the mapping
+/// stays total over `Dir8`; the move model no longer produces diagonal closes.
+/// A diagonal would resolve its column component first. `None` only for the zero
+/// vector (co-located, already excluded upstream by `from_to`).
 const fn synthetic_move_for_dir(dir: Dir8) -> Option<&'static str> {
     use crate::input::{
         SYNTHETIC_MOVE_DOWN, SYNTHETIC_MOVE_LEFT, SYNTHETIC_MOVE_RIGHT, SYNTHETIC_MOVE_UP,
@@ -455,6 +525,55 @@ const fn synthetic_move_for_dir(dir: Dir8) -> Option<&'static str> {
         Some(SYNTHETIC_MOVE_DOWN) // S: toward the player (close)
     } else {
         None
+    }
+}
+
+/// (#166) The dominant-component cardinal [`Dir4`] pointing from `from` toward
+/// `to` — the "which way do I want to face to approach" used by the
+/// rotate-then-forward maneuver. Resolves a diagonal to a SINGLE cardinal by the
+/// larger axis delta (ties → the column axis E/W, the dodge axis), so a ship
+/// rotates onto one approach heading and advances straight rather than sliding.
+/// `None` only for the zero vector (co-located, excluded upstream).
+///
+/// Note this is intentionally distinct from [`grid::from_to`] (which yields the
+/// 8-way octant, diagonals included): the no-strafe model needs a cardinal the
+/// hull can FACE, so we collapse to 4-way here.
+const fn dominant_cardinal(from: Pos, to: Pos) -> Option<crate::grid::Dir4> {
+    use crate::grid::Dir4;
+    let dc = (to.col as i32) - (from.col as i32);
+    let dr = (to.row as i32) - (from.row as i32);
+    if dc == 0 && dr == 0 {
+        return None;
+    }
+    // |dc| >= |dr| -> horizontal dominates (ties pick the column/dodge axis).
+    if dc.abs() >= dr.abs() {
+        Some(if dc >= 0 { Dir4::E } else { Dir4::W })
+    } else {
+        Some(if dr >= 0 { Dir4::S } else { Dir4::N })
+    }
+}
+
+/// (#166) The synthetic ROTATE id that turns `current` the SHORTEST quarter-turn
+/// toward `target`, or `None` if already aligned. A 180°-opposite target picks
+/// `__rotate_right` (either turn closes the gap equally; the next phase finishes
+/// the about-face) — the SAME turn-choice convention as
+/// [`rotate_to_make_weapon_bear`], so the maneuver and the rotate-to-bear rungs
+/// spin a hull the same way. Resolver-served id (`resolver_ai_move`), no
+/// `Content`-action dependency.
+fn rotate_toward_cardinal(
+    current: crate::grid::Dir4,
+    target: crate::grid::Dir4,
+) -> Option<&'static str> {
+    use crate::input::{SYNTHETIC_ROTATE_LEFT, SYNTHETIC_ROTATE_RIGHT};
+    if current == target {
+        None // already facing the approach — caller should advance, not spin
+    } else if current.rotate_cw() == target {
+        Some(SYNTHETIC_ROTATE_RIGHT)
+    } else if current.rotate_ccw() == target {
+        Some(SYNTHETIC_ROTATE_LEFT)
+    } else {
+        // 180° off: either quarter-turn reduces the gap; finish next phase.
+        Some(SYNTHETIC_ROTATE_RIGHT)
     }
 }
 
