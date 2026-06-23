@@ -1226,43 +1226,34 @@ pub const CHASE_CAM_BASE_YAW_DEG: f32 = 270.0;
 ///
 /// The hull renders FLAT on the grid (Bruce's hard requirement: no barrel-roll);
 /// only its ground-plane heading turns, via this yaw fed to the ortho loft
-/// camera. Composes three flat terms:
+/// camera. Composes two flat terms:
 ///   - [`CHASE_CAM_BASE_YAW_DEG`] (270 = stern-on, bow up-lane),
 ///   - `facing_yaw_deg` — the tactical-facing offset (`N`=0 / `E`=+90 / `S`=180
-///     / `W`=−90), so the four cardinals read as distinct flat poses,
-///   - the **lane-aim convergence** `psi`, so an off-centre ship's bow banks
-///     toward the vanishing point (converges with the lane) instead of pointing
-///     parallel to the screen.
+///     / `W`=−90), so the four cardinals read as distinct flat poses.
 ///
-/// `aim_at` is the ship's CELL-centre screen point (virtual px) — the anchor the
-/// convergence angle is measured FROM (not the dragged-down hero quad).
+/// (#170 Bruce) The hull is rendered PERPENDICULAR/PARALLEL to the grid lines at
+/// ALL times — square to the lane, never banked. The old **lane-aim convergence**
+/// term (`psi`) used to rotate an off-centre ship's bow toward the vanishing point
+/// so it "converged with the lane"; that read well when movement was free-aimed,
+/// but combat is now ORTHOGONAL (tank controls — cardinal-only facings, no strafe,
+/// movement-model umbrella #164/#165/#167), so a bow that tilts off the cardinal no
+/// longer matches the orthogonally-directed combat lines. The hull now holds its
+/// exact cardinal stance in every column. `psi` is dropped (the convergence + its
+/// SIGN was the bug that burned ~5 screenshot reviews — now moot, since it's gone).
 ///
-/// SIGN (the bug that burned ~5 reviews — now PINNED by the bow gate): decreasing
-/// the camera yaw from 270 banks the bow LEFT on screen; increasing banks it
-/// RIGHT (verified against the real ortho camera). A ship RIGHT of centre
-/// (`aim_at.x > vp.x`) must bank LEFT toward the VP ⇒ yaw must DECREASE. There
-/// `alpha < 0` (so `psi < 0`), hence we ADD `psi` (`+psi`, not the old `−psi`
-/// which pushed off-centre bows AWAY from the VP).
+/// `aim_at` / `cfg` / `pitch_deg` are retained in the signature (the live render +
+/// bow gate pass them, and they'd be needed again if convergence is ever revived)
+/// but no longer affect the result — the yaw is a pure function of `facing_yaw_deg`.
 pub fn chase_cam_ground_yaw_deg(
     aim_at: [f32; 2],
     facing_yaw_deg: f32,
     cfg: &crate::projector::ProjectorConfig,
     pitch_deg: f32,
 ) -> f32 {
-    let vp = crate::projector::vanishing_point(cfg);
-    let (ax, ay) = (aim_at[0], aim_at[1]);
-    // Screen angle straight-up → VP, measured from the cell centre. `alpha > 0`
-    // when the cell is LEFT of the VP (vp.x − ax > 0), `< 0` when RIGHT.
-    let alpha = (vp.x - ax).atan2(ay - vp.y);
-    // (#155) `pitch_deg` is the LIVE loft-camera pitch (gfx::loft_pitch_deg) — since
-    // #140 the hull camera pitches with the grid (20→82), so the convergence mapping
-    // must use the live angle, not a fixed CAMERA_PITCH_DEG. (Callers that render at
-    // the base chase pitch pass CAMERA_PITCH_DEG and get the prior behavior.)
-    let pitch = pitch_deg.to_radians();
-    // Flat ground-yaw that lands the up-lane component on the VP under the
-    // chase pitch (atan(tan(alpha)·sin(pitch))).
-    let psi = (alpha.tan() * pitch.sin()).atan();
-    CHASE_CAM_BASE_YAW_DEG + facing_yaw_deg + psi.to_degrees()
+    // (#170) Lane-aim convergence removed — the hull stays square to the grid. These
+    // are intentionally unused now (kept in the signature; see the doc-comment).
+    let _ = (aim_at, cfg, pitch_deg);
+    CHASE_CAM_BASE_YAW_DEG + facing_yaw_deg
 }
 
 fn normalize3(v: [f32; 3]) -> [f32; 3] {
@@ -1544,19 +1535,22 @@ mod tests {
     /// The hull stays FLAT (no roll); only its ground heading turns. Per facing,
     /// the projected bow (local `+X`, the prow) must sit, relative to the hull
     /// centre:
-    ///   - `N` → ABOVE (NDC +y, up-lane) AND banked toward the VP-x at off-centre
-    ///     columns (col 0 → right, col 4 → left — NEVER toward the screen edge),
-    ///   - `S` → BELOW (toward the camera),
+    ///   - `N` → ABOVE (NDC +y, up-lane) AND PERFECTLY straight (no x-bank) at
+    ///     EVERY column — the hull is square to the grid, never converged,
+    ///   - `S` → BELOW (toward the camera), no x-bank,
     ///   - `E` → screen-RIGHT, `W` → screen-LEFT.
     ///
-    /// The N convergence is the exact regression that slipped ~5 reviews.
+    /// (#170 Bruce) The old test asserted the N bow BANKED toward the VP at
+    /// off-centre columns; that lane-aim convergence is REMOVED (combat is
+    /// orthogonal/tank-controls now), so the bow must stay parallel/perpendicular
+    /// to the grid in every column. This test now PINS that: zero x-deflection on
+    /// the on-axis facings regardless of column.
     #[test]
     fn live_loft_bow_points_correctly_all_facings_and_columns() {
         use crate::grid::{Dir4, Facing, Pos, COLS, ROWS};
-        use crate::projector::{grid_cell_quad, vanishing_point, ProjectorConfig};
+        use crate::projector::{grid_cell_quad, ProjectorConfig};
 
         let cfg = ProjectorConfig::default();
-        let vp = vanishing_point(&cfg);
         let bow_local = [3.0_f32, 0.0, 0.0]; // prow +X, ~half hull length
         let ctr_local = [0.0_f32, 0.0, 0.0];
         let row = ROWS - 1; // the player's front row
@@ -1590,25 +1584,23 @@ mod tests {
                             dy > 1e-3,
                             "col {col} N: bow must be ABOVE centre (up-lane); dy={dy:.4}"
                         );
-                        // Banked toward the VP, never toward the screen edge.
-                        // aim_at.x < vp.x (col left of centre) ⇒ bow leans RIGHT
-                        // (dx>0) toward the VP; aim_at.x > vp.x ⇒ leans LEFT.
-                        if aim_at[0] < vp.x - 1e-3 {
-                            assert!(
-                                dx > 1e-4,
-                                "col {col} N (left of VP): bow must bank RIGHT toward VP; dx={dx:.4}"
-                            );
-                        } else if aim_at[0] > vp.x + 1e-3 {
-                            assert!(
-                                dx < -1e-4,
-                                "col {col} N (right of VP): bow must bank LEFT toward VP; dx={dx:.4}"
-                            );
-                        }
+                        // (#170) NO lane-aim: the bow is dead-straight up-lane in
+                        // EVERY column — square to the grid, never banked toward the VP.
+                        assert!(
+                            dx.abs() < 1e-3,
+                            "col {col} N: bow must be STRAIGHT up-lane (no bank, square to grid); dx={dx:.4}"
+                        );
                     }
-                    Facing::Bow(Dir4::S) => assert!(
-                        dy < -1e-3,
-                        "col {col} S: bow must be BELOW centre (toward camera); dy={dy:.4}"
-                    ),
+                    Facing::Bow(Dir4::S) => {
+                        assert!(
+                            dy < -1e-3,
+                            "col {col} S: bow must be BELOW centre (toward camera); dy={dy:.4}"
+                        );
+                        assert!(
+                            dx.abs() < 1e-3,
+                            "col {col} S: bow must be straight (no bank); dx={dx:.4}"
+                        );
+                    }
                     Facing::Bow(Dir4::E) => assert!(
                         dx > 1e-3,
                         "col {col} E: bow must be screen-RIGHT of centre; dx={dx:.4}"
@@ -1623,16 +1615,14 @@ mod tests {
         }
     }
 
-    /// (#76 scene-res POSE BUG regression) The player's chase-cam ground yaw must
-    /// be IDENTICAL at every scene-resolution preset. The bug: the live loft render
-    /// computed the lane-aim vanishing point from `ProjectorConfig::default()`
-    /// (480x270) while `aim_at` came from the resized `for_scene(w,h)` projector, so
-    /// at a non-default scene res `alpha`/`psi` were nonzero even for a centred ship
-    /// and the hull yawed ~20deg on a `;`/`'` toggle. With `aim_at` AND the VP both
-    /// from the same `for_scene` cfg, the yaw is invariant across presets (all
-    /// presets are 16:9, so the scaled screen geometry is similar → identical
-    /// angles). Covers the centred column (must be exactly the base yaw, psi=0) and
-    /// off-centre columns (nonzero psi, but the SAME at every res).
+    /// (#76 scene-res POSE BUG regression; #170) The player's chase-cam ground yaw
+    /// must be IDENTICAL at every scene-resolution preset. The original #76 bug was a
+    /// lane-aim vanishing point computed from a different projector than `aim_at`, so
+    /// the hull yawed ~20deg on a `;`/`'` toggle. Since #170 the lane-aim term is
+    /// gone entirely (the hull stays square to the grid), so the yaw is a pure
+    /// function of the cardinal facing and is now TRIVIALLY res-invariant — this test
+    /// stays as a guard that no future scene-res-dependent term creeps back into the
+    /// pose. Every column (incl. off-centre) must read exactly the base+facing yaw.
     #[test]
     fn player_chase_yaw_is_identical_across_scene_presets() {
         use crate::gfx::SCENE_RES_PRESETS;
@@ -1674,86 +1664,60 @@ mod tests {
                          (lane-aim VP must scale WITH aim_at — the ship must NOT rotate on a scene-res toggle)"
                     );
                 }
-                // The centred column must be exactly the base+facing yaw (psi == 0).
-                if col == COLS / 2 {
-                    let base = CHASE_CAM_BASE_YAW_DEG + facing_yaw(facing);
-                    assert!(
-                        (ref_yaw - base).abs() < 1e-2,
-                        "centred col {facing:?}: yaw {ref_yaw:.4} should be the base {base:.4} (no lane-aim)"
-                    );
-                }
+                // (#170) EVERY column — not just the centred one — must read exactly
+                // the base+facing yaw now that the lane-aim convergence is gone.
+                let base = CHASE_CAM_BASE_YAW_DEG + facing_yaw(facing);
+                assert!(
+                    (ref_yaw - base).abs() < 1e-2,
+                    "col {col} {facing:?}: yaw {ref_yaw:.4} should be the base {base:.4} (no lane-aim — hull square to grid)"
+                );
             }
         }
     }
 
-    /// (#155 regression) The player lane-aim must TRACK the vanishing point as the
-    /// grid TILTS up via G/T — Bruce: it over-rotated, the bisector drifting off the
-    /// VP the more the grid pitched. The bug was the aim cfg (VP) NOT being pitched
-    /// while `aim_at` WAS, plus psi using the fixed 20deg loft pitch instead of the
-    /// live one. With BOTH applied (`with_pitch(t)` feeding the VP + the live loft
-    /// pitch into psi, exactly as gfx does), the off-centre bow must (1) stay banked
-    /// toward the VP at every pitch step, never flip away, and (2) NOT grow more
-    /// extreme as the grid flattens — the lane-aim convergence must DECREASE toward
-    /// top-down (columns parallelise → VP recedes → psi → ~0), not over-rotate.
+    /// (#170 Bruce, supersedes the #155 lane-aim-tracking test) The hull stays
+    /// SQUARE to the grid — perpendicular/parallel to the lane lines — at ALL
+    /// columns AND all grid-pitch steps. The old test asserted the bow BANKED toward
+    /// the vanishing point and that the convergence relaxed toward top-down; that
+    /// whole lane-aim term is REMOVED now that combat is orthogonal (tank controls),
+    /// so the correct invariant is the OPPOSITE: the ground yaw is EXACTLY the
+    /// cardinal pose (`base + facing`) in every column at every pitch — zero
+    /// convergence, never banked — and the projected bow has NO screen-x deflection
+    /// on the up-lane (N) facing regardless of column or tilt.
     #[test]
-    fn lane_aim_tracks_vp_as_grid_tilts_up() {
+    fn hull_stays_square_to_grid_all_columns_and_pitches() {
         use crate::grid::{Pos, COLS, ROWS};
-        use crate::projector::{grid_cell_quad, vanishing_point, ProjectorConfig};
+        use crate::projector::{grid_cell_quad, ProjectorConfig};
 
         let row = ROWS - 1; // the player's front row
-                            // Facing N (up-lane): the lane-aim convergence is the whole story; yaw 0.
-        let facing_yaw = 0.0_f32;
+        let facing_yaw = 0.0_f32; // N, up-lane — the facing the old convergence acted on
+        let base = CHASE_CAM_BASE_YAW_DEG + facing_yaw;
         // Live loft pitch across the arc (mirrors gfx::loft_pitch_deg: 20 -> 82).
         let loft_pitch =
             |t: f32| CAMERA_PITCH_DEG + (crate::gfx::LOFT_PITCH_TOPDOWN_DEG - CAMERA_PITCH_DEG) * t;
 
-        // Off-centre columns (col 0 left of VP, last col right of VP) where the bow
-        // banks; the centre column has no lane-aim so it's covered by the psi==0 case.
-        for &col in &[0usize, COLS - 1] {
-            let mut last_psi_mag = f32::INFINITY;
+        for &col in &[0usize, COLS / 2, COLS - 1] {
             for step in 0..=8u32 {
                 let t = step as f32 / 8.0;
                 // The SAME pitched projector the hud builds (drawbridge mode = with_pitch).
                 let cfg = ProjectorConfig::for_scene(480.0, 270.0).with_pitch(t);
                 let aim = grid_cell_quad(Pos::new(col, row), &cfg).center;
-                let vp = vanishing_point(&cfg);
                 let yaw = chase_cam_ground_yaw_deg(aim, facing_yaw, &cfg, loft_pitch(t));
-
-                // THE invariant Bruce cares about: the rendered BOW must point AT the
-                // vanishing point — i.e. when we project the hull's nose through the loft
-                // camera at this step's pitch, the bow's screen-x must sit on the SAME
-                // side of the cell centre as the VP (banked toward it), never away. This
-                // is what "the bisector points at the VP as the grid tilts" means; the
-                // raw psi value can hump (the true yaw needed under a steepening camera),
-                // but the DIRECTION must always track the VP. Project bow + centre via
-                // bow_loft_ndc at the LIVE pitch and compare screen-x deltas.
+                // Yaw is the pure cardinal pose — independent of column + pitch.
+                assert!(
+                    (yaw - base).abs() < 1e-4,
+                    "col {col} step {step} t={t:.2}: yaw {yaw:.4} must equal the cardinal base \
+                     {base:.4} (hull square to grid — no lane-aim convergence)"
+                );
+                // And the projected bow has no screen-x bank at the live pitch.
                 let (bx, _) = bow_loft_ndc_pitched(yaw, [3.0, 0.0, 0.0], loft_pitch(t));
                 let (cx, _) = bow_loft_ndc_pitched(yaw, [0.0, 0.0, 0.0], loft_pitch(t));
-                let bow_dx = bx - cx; // >0 bow leans screen-RIGHT, <0 screen-LEFT
-                let vp_dx = vp.x - aim[0]; // >0 VP is RIGHT of the ship, <0 LEFT
-                if vp_dx.abs() > 1.0 {
-                    assert!(
-                        bow_dx.signum() == vp_dx.signum() || bow_dx.abs() < 1e-3,
-                        "col {col} step {step} t={t:.2}: bow must bank TOWARD the VP — \
-                         bow_dx {bow_dx:.4} (sign) vs VP-side {vp_dx:.1}; the bisector drifted off the VP"
-                    );
-                }
-                last_psi_mag = (yaw - (CHASE_CAM_BASE_YAW_DEG + facing_yaw)).abs();
+                assert!(
+                    (bx - cx).abs() < 1e-3,
+                    "col {col} step {step}: bow must be straight up-lane (no bank); dx={:.4}",
+                    bx - cx
+                );
             }
-            // Toward top-down the convergence must RELAX vs its mid-arc peak (the
-            // over-rotation bug grew it unbounded; the fix lets the receding VP pull it
-            // back down). Pin: the full-top-down lane-aim is well under the t=0 baseline.
-            let base_aim = {
-                let cfg0 = ProjectorConfig::for_scene(480.0, 270.0).with_pitch(0.0);
-                let aim0 = grid_cell_quad(Pos::new(col, row), &cfg0).center;
-                let y0 = chase_cam_ground_yaw_deg(aim0, facing_yaw, &cfg0, loft_pitch(0.0));
-                (y0 - (CHASE_CAM_BASE_YAW_DEG + facing_yaw)).abs()
-            };
-            assert!(
-                last_psi_mag < base_aim,
-                "col {col}: full-top-down lane-aim |psi| {last_psi_mag:.3} must be LESS than \
-                 the t=0 baseline {base_aim:.3} (convergence relaxes as columns parallelise)"
-            );
         }
     }
 

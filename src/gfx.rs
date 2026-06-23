@@ -2398,32 +2398,20 @@ impl Gfx {
                     // (#70/#73) FLAT ground-plane chase-cam yaw: the hull stays FLAT
                     // on the grid (Bruce's requirement: no barrel-roll) and only its
                     // heading turns. Composes the stern-on base (270) + the tactical
-                    // facing offset (`q.facing_yaw_deg`: N=0 / E=+90 / S=180 / W=−90)
-                    // + the lane-aim convergence so an off-centre bow banks toward the
-                    // vanishing point. The whole formula — and crucially the lane-aim
-                    // SIGN that burned ~5 screenshot reviews — lives in ONE pure,
-                    // CPU-tested place (`chase_cam_ground_yaw_deg`), gated by a bow
-                    // test that replicates THIS ortho loft camera (not the scene-space
-                    // pinhole the earlier oracle wrongly tested). Aim from the true
-                    // CELL centre (`q.aim_at`), not the dragged-down hero quad.
-                    //
-                    // (#76 scene-res POSE BUG) The lane-aim `vanishing_point` MUST be
-                    // computed in the SAME coordinate space as `q.aim_at` — which the
-                    // hud builds from the LIVE-scene projector `for_scene(scene_w,
-                    // scene_h)`. Using `default()` (480x270) here while aim_at is in a
-                    // resized space (e.g. 640x360) put the VP at the wrong screen
-                    // point, so `alpha`/`psi` were nonzero even for a centred ship →
-                    // the hull yawed ~20deg on a scene-res toggle. Build the cfg from
-                    // the live scene size so the VP scales WITH aim_at and psi==0 at
-                    // every preset (Bruce: ship rotated left on `;`/`'`).
-                    //
-                    // (#155 Bruce) The cfg MUST ALSO apply the live grid pitch/stretch —
-                    // q.aim_at comes from the hud's `scene_projector()` which pitches the
-                    // cell via with_pitch/with_stretch (G/T). Computing the VP from the
-                    // UN-pitched projector while aim_at is pitched put the VP in the wrong
-                    // space → the lane-aim OVER-ROTATED as the grid tilted up (the
-                    // bisector drifted off the VP — Bruce). Mirror scene_projector()'s
-                    // mode switch here so the VP tracks aim_at at every pitch step.
+                    // facing offset (`q.facing_yaw_deg`: N=0 / E=+90 / S=180 / W=−90).
+                    // (#170 Bruce) The lane-aim convergence term is REMOVED — the hull
+                    // renders perpendicular/parallel to the grid lines at ALL times
+                    // (square to the lane), since combat is now orthogonal (tank
+                    // controls); a bow banked toward the vanishing point no longer
+                    // matched the orthogonally-directed combat lines. The yaw formula
+                    // lives in ONE pure, CPU-tested place
+                    // (`chase_cam_ground_yaw_deg`), gated by a bow test that replicates
+                    // THIS ortho loft camera (not the scene-space pinhole the earlier
+                    // oracle wrongly tested). `cfg` + the live loft pitch are still
+                    // passed (the function keeps them in its signature in case the
+                    // convergence is ever revived) but no longer affect the pose; the
+                    // cfg also still drives `loft_quads`/`q.aim_at` elsewhere, so it's
+                    // built from the live scene size + grid mode regardless.
                     let base = crate::projector::ProjectorConfig::for_scene(
                         scene_w() as f32,
                         scene_h() as f32,
@@ -2435,11 +2423,6 @@ impl Gfx {
                         3 => base.with_stretch_continuous(t),
                         _ => base.with_pitch(t),
                     };
-                    // (#155) Pass the LIVE loft-camera pitch into the lane-aim mapping:
-                    // since #140 the hull camera pitches with the grid (loft_pitch_deg,
-                    // 20→82), so `psi` must use that live pitch, not the fixed 20° — else
-                    // the convergence is computed for the wrong angle and compounds the
-                    // over-rotation.
                     let base_yaw = crate::loft_gpu::chase_cam_ground_yaw_deg(
                         q.aim_at,
                         q.facing_yaw_deg,
