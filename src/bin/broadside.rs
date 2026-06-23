@@ -2296,7 +2296,7 @@ mod tests {
     /// the Bow(N) facing axis, so the resolver's no-strafe gate REJECTS it (no-op,
     /// like a blocked move). The player therefore stays at its spawn column, same
     /// row, facing unchanged — pressing arrow-Right does not slide the hull
-    /// sideways. (Note: the live key binding maps arrow-Right to RotateRight now;
+    /// sideways. (Note: the live key binding maps arrow-Right to `RotateRight` now;
     /// this test drives the raw `MoveRight` intent to pin the resolver gate
     /// directly, independent of the key map.)
     #[test]
