@@ -11,9 +11,9 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, v2]
   pull_request:
-    branches: [main]
+    branches: [main, v2]
 
 # Cancel superseded runs on the same ref so a fast push train doesn't queue.
 concurrency:
@@ -38,14 +38,23 @@ jobs:
       - name: Cache cargo registry + build
         uses: Swatinem/rust-cache@v2
 
+      # Formatting gate. The one-time repo-wide `cargo fmt` sweep landed in the
+      # Rust-quality Phase 0 (#150, H1 of the review), so the tree is now
+      # rustfmt-clean and this can be enforced — a drift slipped through the
+      # clippy-only gate once, which is the systemic hole this closes (review
+      # rec M-B). `--check` fails (non-zero) on any unformatted file without
+      # rewriting it, so CI reports the drift for the author to `cargo fmt`.
+      # Runs before clippy so a formatting nit is reported as exactly that, not
+      # masked by a lint failure.
+      - name: fmt
+        run: cargo fmt --all -- --check
+
       # Clippy on the default feature set, all targets, warnings DENIED. The
       # non-render bins are skipped automatically by their required-features.
       # The whole-tree lint backlog is cleared (render files #126, resolve.rs
       # #101, types/meta/runs/mesh_import #100), so `-D warnings` now holds.
       # `-D warnings` is scoped to clippy (not a global RUSTFLAGS) so the test
-      # steps below don't also fail on warnings. fmt --check is deliberately
-      # NOT enforced yet — deferred to #39 (needs a one-time repo-wide
-      # `cargo fmt` sweep + bruce's OK; the tree currently has wide fmt drift).
+      # steps below don't also fail on warnings.
       - name: clippy
         run: cargo clippy --all-targets -- -D warnings
 
