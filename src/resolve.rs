@@ -822,11 +822,11 @@ fn run_action(
 /// that previously re-indexed and `.expect()`-ed the slot can no longer
 /// panic. Callers that need only the index take `.map(|(i, _)| i)`.
 fn find_cell_by_id<'b>(board: &'b Board, ship_id: &str) -> Option<(usize, &'b Ship)> {
-    board.cells.iter().enumerate().find_map(|(i, c)| {
-        c.as_ref()
-            .filter(|s| s.id == ship_id)
-            .map(|s| (i, s))
-    })
+    board
+        .cells
+        .iter()
+        .enumerate()
+        .find_map(|(i, c)| c.as_ref().filter(|s| s.id == ship_id).map(|s| (i, s)))
 }
 
 /// `&mut` companion to [`find_cell_by_id`] — locates the ship by id and hands
@@ -834,11 +834,11 @@ fn find_cell_by_id<'b>(board: &'b Board, ship_id: &str) -> Option<(usize, &'b Sh
 /// then write the ship's fields (clearing the queue, banking heat / cooldown).
 /// Same structural guarantee: no separate re-index + `.expect()`.
 fn find_cell_by_id_mut<'b>(board: &'b mut Board, ship_id: &str) -> Option<(usize, &'b mut Ship)> {
-    board.cells.iter_mut().enumerate().find_map(|(i, c)| {
-        c.as_mut()
-            .filter(|s| s.id == ship_id)
-            .map(|s| (i, s))
-    })
+    board
+        .cells
+        .iter_mut()
+        .enumerate()
+        .find_map(|(i, c)| c.as_mut().filter(|s| s.id == ship_id).map(|s| (i, s)))
 }
 
 /* =============================================================================
@@ -3024,7 +3024,14 @@ fn resolve_target_move(
     // Collision damage if we were blocked.
     if remaining > 0 {
         let phantom_atk = (c + step).clamp(0, size - 1) as usize;
-        apply_damage(landing, remaining, phantom_atk, &dummy_weapon(), board, content);
+        apply_damage(
+            landing,
+            remaining,
+            phantom_atk,
+            &dummy_weapon(),
+            board,
+            content,
+        );
     }
 }
 
