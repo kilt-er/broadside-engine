@@ -1389,16 +1389,21 @@ impl ApplicationHandler for App {
                 "loft: broadside-ship_01.glb import failed ({e}); player falls back to sprite/flat-box"
             ),
         }
-        // (#89) ENEMIES = the Aegis hull, tinted (Bruce): every enemy renders as a
-        // ship-class hull in a hostile colour instead of the flat CAD box. Enemies
-        // stay on Aegis.glb for now (the player-ship swap #149 is player-only).
-        // loft_kind prefers EnemyLoft once this is installed.
-        const AEGIS_GLB: &[u8] = include_bytes!("../../assets/ships/Aegis.glb");
-        match gfx.install_enemy_glb(AEGIS_GLB) {
-            Ok(()) => log::info!("loft: enemy Aegis hull installed from Aegis.glb"),
+        // (#163 Bruce) ENEMIES = broadside-ship_02.glb, the distinct enemy hull from
+        // Bruce's editor (verified to our GLB contract: hull length on +X = 12, bow +X,
+        // beam on Z, unlit engine glow + scene laz/lel — a chunkier cruiser silhouette
+        // vs the player's ship_01). Replaces Aegis.glb as the enemy loft mesh; tinted
+        // (ENEMY_TINT) so the fleet reads hostile. loft_kind prefers EnemyLoft once
+        // installed. Player stays on broadside-ship_01.glb (above).
+        const ENEMY_GLB: &[u8] = include_bytes!("../../assets/ships/broadside-ship_02.glb");
+        match gfx.install_enemy_glb(ENEMY_GLB) {
+            Ok(()) => log::info!(
+                "loft: enemy hull installed from broadside-ship_02.glb ({} bytes)",
+                ENEMY_GLB.len()
+            ),
             Err(e) => {
                 log::warn!(
-                    "loft: enemy Aegis.glb import failed ({e}); enemies fall back to CAD/2D"
+                    "loft: broadside-ship_02.glb import failed ({e}); enemies fall back to CAD/2D"
                 );
             }
         }

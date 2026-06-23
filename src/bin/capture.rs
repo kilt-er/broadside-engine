@@ -168,14 +168,16 @@ fn main() {
             "capture: broadside-ship_01.glb import failed ({e}); player falls back to sprite/flat-box"
         ),
     }
-    // (#89/#93) ENEMIES = the Aegis hull, tinted (matches the live bin's ENEMY_TINT) so
-    // the capture shows the oncoming enemy ships, not flat boxes. Enemies stay on Aegis
-    // (the #149 swap is player-only).
-    const AEGIS_GLB: &[u8] = include_bytes!("../../assets/ships/Aegis.glb");
-    match gfx.install_enemy_glb(AEGIS_GLB) {
-        Ok(()) => log::info!("capture: enemy Aegis hull (steel-grey) installed from Aegis.glb"),
+    // (#163) ENEMIES = broadside-ship_02.glb, tinted (matches the live bin's ENEMY_TINT)
+    // so the capture shows the oncoming enemy hulls, not flat boxes. Matches the live
+    // enemy-mesh swap (player stays broadside-ship_01.glb).
+    const ENEMY_GLB: &[u8] = include_bytes!("../../assets/ships/broadside-ship_02.glb");
+    match gfx.install_enemy_glb(ENEMY_GLB) {
+        Ok(()) => log::info!("capture: enemy hull installed from broadside-ship_02.glb"),
         Err(e) => {
-            log::warn!("capture: enemy Aegis.glb import failed ({e}); enemies fall back to CAD/2D");
+            log::warn!(
+                "capture: broadside-ship_02.glb import failed ({e}); enemies fall back to CAD/2D"
+            );
         }
     }
 
