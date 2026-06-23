@@ -1736,6 +1736,11 @@ pub fn apply_effect(
             // `direction_2d` cardinal can't express "aft" for an arbitrary
             // facing). The legacy 1-D resolve_self_move + its fixture tests stay
             // until CONTRACT.
+            //
+            // #167 no-strafe gate: a basic self-move is on-axis only; a skill
+            // that grants lateral movement is exempt. `grants_lateral(a)` is the
+            // single predicate that decides — the rule itself lives in
+            // resolve_self_move_2d.
             if let Some(source_pos) = Pos::from_index(source_cell) {
                 resolve_self_move_2d(
                     source_pos,
@@ -1743,6 +1748,7 @@ pub fn apply_effect(
                     *distance,
                     *direction_2d,
                     *direction,
+                    grants_lateral(a),
                     board,
                     content,
                 );
@@ -2698,6 +2704,26 @@ fn resolve_self_move(
     }
 }
 
+/// Does this action's self-move grant LATERAL (off-facing-axis) movement? (#167)
+///
+/// The single skill-exception hook for the no-strafe rule. Per Bruce's
+/// "rotate then move forward" ruling a self-move is on-axis only — so the
+/// default for every action is `false`, and only a content skill that
+/// explicitly grants a strafe / dash / slide should be exempt. The rule
+/// itself (what "on-axis" means) lives in [`resolve_self_move_2d`]; this
+/// predicate is purely the basic-vs-skill discriminator, so there is exactly
+/// one place to extend when such a skill lands.
+///
+/// **Extension point (content):** when a lateral-granting skill is authored,
+/// key it here — e.g. by action id, a `WeaponMod`, or a future `Targeting`
+/// flag — returning `true` for that action only. Today no catalog action moves
+/// laterally (the movement signatures `slip`/`ram`/`phase` are forward,
+/// `throw` is aft — all on-axis), so this is a total `false`.
+const fn grants_lateral(_a: &Action) -> bool {
+    // No lateral-granting skill exists yet; every self-move is on-axis-only.
+    false
+}
+
 /// 2-D `resolve_self_move` (blueprint R6). The v2 port of the 1-D
 /// [`resolve_self_move`] above, over the real grid + the Board EXPAND occupancy
 /// seam. Same expand-contract shape as `resolve_targeting_2d`: the 1-D fn stays
@@ -2722,12 +2748,32 @@ fn resolve_self_move(
 /// Collision damage routes through the unchanged 1-D `apply_damage` via
 /// `to_index()` (correct under invariant (A); migrates to `Pos` with the
 /// damage pipeline).
+///
+/// ## No-strafe gate (#167, Bruce's "rotate then move forward" ruling)
+///
+/// This function is the **single source of truth** for the movement model: a
+/// self-move is legal only along the ship's **facing axis** (forward = the bow
+/// cardinal, reverse = its opposite). A *perpendicular* (lateral / strafe) move
+/// is REJECTED — the ship stays put, exactly like a wall- or occupant-blocked
+/// move (no-op, no collision). Both the player's tank controls (#165) and the
+/// enemy AI (#166) already only ever emit on-axis moves, so this gate is the
+/// model-level enforcement that no path — present or future — can sidestep.
+///
+/// `allow_lateral` is the **skill-exception hook**: a content skill that grants
+/// lateral movement (a dash / dodge / slide ability) passes `true` and is exempt
+/// from the gate. Every basic synthetic move (`__move_*`) passes `false`. The
+/// live [`apply_effect`] `DISPLACE_SELF` arm derives this from the action via
+/// [`grants_lateral`] (the one predicate content extends), so the rule itself
+/// never duplicates. On-axis moves (incl. `throw`'s aft hurl, `direction_1d ==
+/// Aft`) are always allowed regardless of `allow_lateral`.
+#[allow(clippy::too_many_arguments)] // distinct movement params (pos/mode/dist/2 dir overrides/gate); a struct would obscure the one live call + the rsm2d_* units
 fn resolve_self_move_2d(
     ship_pos: Pos,
     mode: MovementMode,
     distance: i32,
     direction_2d: Option<Dir4>,
     direction_1d: Option<LaneEnd>,
+    allow_lateral: bool,
     board: &mut Board,
     content: &dyn Content,
 ) {
@@ -2753,6 +2799,18 @@ fn resolve_self_move_2d(
         (None, Some(LaneEnd::Aft)) => forward.opposite().to_dir8(),
         _ => forward.to_dir8(),
     };
+
+    // No-strafe gate (#167). `dir` is always one of the four cardinals (every
+    // arm above widens a `Dir4`, never a diagonal), so "on the facing axis"
+    // is exactly forward OR its opposite. A perpendicular `dir` is a lateral
+    // strafe: reject it (no-op, ship stays — same as a blocked move) UNLESS the
+    // action is a skill that grants lateral movement (`allow_lateral`). This is
+    // the model-level single source of the "rotate then move forward" rule;
+    // throw's aft hurl is `forward.opposite()` = on-axis, so it passes here.
+    let on_axis = dir == forward.to_dir8() || dir == forward.opposite().to_dir8();
+    if !on_axis && !allow_lateral {
+        return;
+    }
 
     // Per-mode landing computation. `landing` is the destination cell;
     // `collision_dmg` is non-zero when a wall/occupant capped the move.
@@ -6505,6 +6563,7 @@ mod tests {
             1,
             Some(Dir4::N),
             None,
+            false,
             &mut board,
             &NoContent,
         );
@@ -6528,6 +6587,7 @@ mod tests {
             1,
             None,
             None,
+            false,
             &mut board,
             &NoContent,
         );
@@ -6574,6 +6634,7 @@ mod tests {
             1,
             None,
             None,
+            false,
             &mut board,
             &NoContent,
         );
@@ -6635,6 +6696,7 @@ mod tests {
             1,
             None,
             None,
+            false,
             &mut board,
             &NoContent,
         );
@@ -6669,6 +6731,7 @@ mod tests {
             3,
             Some(Dir4::W),
             None,
+            false,
             &mut board,
             &NoContent,
         );
@@ -6692,6 +6755,7 @@ mod tests {
             2,
             Some(Dir4::S),
             None,
+            false,
             &mut board,
             &NoContent,
         );
@@ -6723,6 +6787,7 @@ mod tests {
             2,
             Some(Dir4::S),
             None,
+            false,
             &mut board,
             &NoContent,
         );
@@ -6755,6 +6820,7 @@ mod tests {
             1,
             Some(Dir4::E),
             None,
+            false,
             &mut board,
             &NoContent,
         );
@@ -6778,6 +6844,7 @@ mod tests {
             1,
             Some(Dir4::E),
             None,
+            false,
             &mut board,
             &NoContent,
         );
@@ -6810,6 +6877,147 @@ mod tests {
             }
         }
         assert!(resolver_ai_move("not_a_move").is_none());
+    }
+
+    /* =====================================================================
+     * No-strafe gate (#167) — a basic self-move is on-axis only; a skill that
+     * grants lateral is exempt; throw's aft hurl is on-axis (reverse) so it is
+     * never rejected. Single source of truth for the "rotate then move forward"
+     * movement model (player AND enemy flow through resolve_self_move_2d).
+     * ================================================================== */
+
+    #[test]
+    fn gate_basic_lateral_move_is_rejected_noop() {
+        // Bow(N) ship (forward axis = N/S). A basic THRUST E is PERPENDICULAR
+        // = lateral strafe -> rejected, ship stays put (no-op, like a blocked
+        // move). allow_lateral = false (a basic synthetic move).
+        let mut board = board_2d(vec![ship_2d(
+            "p",
+            Faction::Player,
+            Pos::new(2, 2),
+            Facing::Bow(Dir4::N),
+            Arc::Turret,
+        )]);
+        resolve_self_move_2d(
+            Pos::new(2, 2),
+            MovementMode::THRUST,
+            1,
+            Some(Dir4::E), // lateral vs Bow(N)
+            None,
+            false,
+            &mut board,
+            &NoContent,
+        );
+        assert_ship_at(&board, "p", Pos::new(2, 2)); // did NOT strafe
+        assert!(
+            board.ship_at(Pos::new(3, 2)).is_none(),
+            "lateral target cell stays empty"
+        );
+    }
+
+    #[test]
+    fn gate_basic_on_axis_forward_and_reverse_are_allowed() {
+        // Bow(E) ship (forward axis = E/W). Forward (E) advances; from the new
+        // cell, reverse (W) backs up. Both on-axis -> allowed with
+        // allow_lateral = false.
+        let mut board = board_2d(vec![ship_2d(
+            "p",
+            Faction::Player,
+            Pos::new(1, 2),
+            Facing::Bow(Dir4::E),
+            Arc::Turret,
+        )]);
+        // Forward: E from (1,2) -> (2,2).
+        resolve_self_move_2d(
+            Pos::new(1, 2),
+            MovementMode::THRUST,
+            1,
+            Some(Dir4::E),
+            None,
+            false,
+            &mut board,
+            &NoContent,
+        );
+        assert_ship_at(&board, "p", Pos::new(2, 2));
+        // Reverse: W from (2,2) -> (1,2) (forward.opposite of Bow(E)).
+        resolve_self_move_2d(
+            Pos::new(2, 2),
+            MovementMode::THRUST,
+            1,
+            Some(Dir4::W),
+            None,
+            false,
+            &mut board,
+            &NoContent,
+        );
+        assert_ship_at(&board, "p", Pos::new(1, 2));
+    }
+
+    #[test]
+    fn gate_throw_aft_hurl_still_works_on_axis() {
+        // throw's canonical signature is DISPLACE_SELF { direction: Aft } — a
+        // facing-RELATIVE reverse hurl. For a Bow(S) ship, aft = N. That is
+        // on-axis (reverse), so it is NEVER rejected, even with
+        // allow_lateral = false (throw is not a lateral-granting skill). This
+        // is the exact shape the live DISPLACE_SELF arm passes for throw.
+        let mut board = board_2d(vec![ship_2d(
+            "p",
+            Faction::Player,
+            Pos::new(2, 2),
+            Facing::Bow(Dir4::S),
+            Arc::Turret,
+        )]);
+        resolve_self_move_2d(
+            Pos::new(2, 2),
+            MovementMode::THRUST,
+            1,
+            None,               // no Dir4 override
+            Some(LaneEnd::Aft), // throw's aft hurl
+            false,              // throw does NOT grant lateral
+            &mut board,
+            &NoContent,
+        );
+        // aft of Bow(S) = N -> (2,1).
+        assert_ship_at(&board, "p", Pos::new(2, 1));
+    }
+
+    #[test]
+    fn gate_skill_lateral_move_is_allowed_when_exempt() {
+        // A skill that grants lateral movement passes allow_lateral = true, so
+        // the SAME perpendicular move that gate_basic_..._rejected blocks now
+        // lands. This is the skill-exception hook (grants_lateral) end state.
+        let mut board = board_2d(vec![ship_2d(
+            "p",
+            Faction::Player,
+            Pos::new(2, 2),
+            Facing::Bow(Dir4::N),
+            Arc::Turret,
+        )]);
+        resolve_self_move_2d(
+            Pos::new(2, 2),
+            MovementMode::THRUST,
+            1,
+            Some(Dir4::E), // lateral vs Bow(N)
+            None,
+            true, // skill grants lateral
+            &mut board,
+            &NoContent,
+        );
+        assert_ship_at(&board, "p", Pos::new(3, 2)); // strafed E
+    }
+
+    #[test]
+    fn grants_lateral_is_false_for_every_action_today() {
+        // No catalog action grants lateral yet, so the single skill-exception
+        // predicate is a total false. This pins the default (every basic +
+        // catalog self-move is on-axis-only) and guards against a future edit
+        // accidentally opening the gate for all actions. Cover the on-axis
+        // movement signatures explicitly.
+        assert!(!grants_lateral(&crate::classes::synthetic_ram()));
+        assert!(!grants_lateral(&crate::classes::synthetic_throw()));
+        assert!(!grants_lateral(&crate::classes::synthetic_slip()));
+        assert!(!grants_lateral(&crate::input::synthetic_move_right()));
+        assert!(!grants_lateral(&dummy_weapon()));
     }
 
     /* =====================================================================

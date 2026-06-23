@@ -308,11 +308,14 @@ fn queue_pulse_laser_then_commit_fires_once_against_a_target() {
  * even as the ship moves between cells.
  * ====================================================================== */
 
-/// Three `MoveRight` thrusts queued, one `CommitTurn` drains the entire
-/// queue. With #50's lane-relative direction and #52's ship-by-id
-/// tracking, player advances from cell 0 to cell 3 in one round.
+/// (#167 no-strafe) Three `MoveRight` thrusts queued, one `CommitTurn` drains
+/// the queue. The `solo_board` player faces `Bow(S)` (forward axis = N/S), so
+/// `MoveRight` = `Dir4::E` is PERPENDICULAR = a lateral strafe. The resolver's
+/// no-strafe gate REJECTS each one (no-op), so the player stays at its starting
+/// cell even though all three actions ran. The queue still drains (the actions
+/// execute; they just decline to move a lateral step).
 #[test]
-fn three_thrusts_then_commit_moves_three_cells() {
+fn three_lateral_thrusts_then_commit_are_gated_player_unmoved() {
     let mut board = solo_board();
     let content = DemoContent::default();
 
@@ -332,24 +335,29 @@ fn three_thrusts_then_commit_moves_three_cells() {
 
     apply_intent_lib(Intent::CommitTurn, &mut board, &content);
 
-    // Player moved from cell 0 to cell 3.
-    assert!(
-        board.cells[0].is_none(),
-        "player no longer at starting cell"
-    );
-    let p = board.cells[3].as_ref().expect("player at cell 3");
+    // Lateral move gated -> the player never left cell 0.
+    let p = board.cells[0]
+        .as_ref()
+        .expect("player still at starting cell");
     assert_eq!(p.faction, Faction::Player);
     assert!(p.queue.is_empty(), "queue drained after commit");
+    // And no phantom move to col 3 (cell 3 stays empty).
+    assert!(
+        board.cells[3].is_none(),
+        "lateral strafe rejected — player did NOT advance to cell 3"
+    );
 }
 
-/// Movement is CLAMPED at the board edge. Player at cell 5, bow=Fore,
-/// three `MoveRight` thrusts queued. Without clamping the third step would
-/// land at cell 8, but board.size == 7. Per-step clamping inside
-/// `resolve_self_move` rejects any out-of-bounds step, so the player
-/// ends at cell 6 (the last in-bounds cell), not cell 8 (no overshoot,
-/// no panic).
+/// (#167 no-strafe) Repeated lateral move intents never advance the ship — so
+/// they also can never overshoot the board edge. Player at cell 5 facing
+/// `Bow(S)` (forward axis = N/S); three `MoveRight` (= `Dir4::E`) thrusts are
+/// each PERPENDICULAR = a lateral strafe, which the resolver's no-strafe gate
+/// rejects (no-op). The player stays at cell 5 — no movement, no overshoot, no
+/// panic. (Forward-direction edge clamping is covered by the resolver's own
+/// `rsm2d_*` mode tests; it can no longer be reached via `MoveRight`, which is
+/// lateral under tank controls.)
 #[test]
-fn thrust_clamps_at_board_edge_no_overshoot() {
+fn lateral_thrusts_never_advance_so_never_overshoot_edge() {
     let mut board = solo_board();
     // Move the player to cell 5 manually (bypassing intents for the setup).
     let player = board.cells[0].take().unwrap();
@@ -361,17 +369,17 @@ fn thrust_clamps_at_board_edge_no_overshoot() {
     apply_intent_lib(Intent::MoveRight, &mut board, &content);
     apply_intent_lib(Intent::CommitTurn, &mut board, &content);
 
-    // Each thrust moves 1 cell in the bow direction. With bow=Fore:
-    // 5 -> 6 (in bounds, ok). Next thrust: 6 -> 7 (out of bounds, the
-    // resolver breaks out of the move loop). Third thrust runs from
-    // cell 6 again; same result. Final cell == 6.
+    // Lateral MoveRight is gated -> the player never left cell 5.
     assert!(
-        board.cells[6]
+        board.cells[5]
             .as_ref()
             .is_some_and(|s| s.faction == Faction::Player),
-        "player should be at cell 6 (last in-bounds cell)",
+        "lateral strafe rejected — player stays at cell 5 (no overshoot)",
     );
-    // No overshoot — cell 7 doesn't exist on this 7-cell board.
+    assert!(
+        board.cells[6].is_none(),
+        "no advance to cell 6 — the move was gated, not clamped"
+    );
     assert_eq!(board.size, 7);
 }
 
@@ -464,17 +472,18 @@ fn synthetic_actions_dont_advance_heat_or_set_cooldown() {
     }
     let content = DemoContent::default();
 
-    // Queue one MoveRight + one ReorientFlip. Under #52's ship-by-id
-    // tracking, both execute in one commit even though the move shifts
-    // the ship off cell 0. Property under test: heat is unchanged
-    // (modulo the EOT -1 dissipation) and both synthetic cooldowns are
-    // set to 0 by execute_queue.
+    // Queue one MoveRight + one ReorientFlip. Both execute in one commit.
+    // (#167 no-strafe: the demo player faces Bow(S), so the lateral MoveRight
+    // is gated to a no-op — the ship does NOT relocate — but the action still
+    // RUNS, so its cost bookkeeping applies all the same.) Property under test:
+    // heat is unchanged (modulo the EOT -1 dissipation) and both synthetic
+    // cooldowns are set to 0 by execute_queue, regardless of the gated move.
     apply_intent_lib(Intent::MoveRight, &mut board, &content);
     apply_intent_lib(Intent::ReorientFlip, &mut board, &content);
     apply_intent_lib(Intent::CommitTurn, &mut board, &content);
 
-    // Look up the player wherever it ended up — the MoveRight thrust
-    // shifted it off cell 0.
+    // Look up the player wherever it is — the gated MoveRight left it in place,
+    // and the find() is robust to either outcome.
     let p = board
         .cells
         .iter()

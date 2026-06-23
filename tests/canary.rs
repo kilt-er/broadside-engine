@@ -115,16 +115,20 @@ impl Content for CanaryContent {
  * ====================================================================== */
 
 /// Choose + queue the player's action for one round in 2-D. Mirrors the
-/// `run_loop` harness driver (#25): FIRE when the gun already bears on a hostile
-/// (gated by the SAME `resolve_targeting_2d` the shot fires through, so "decided
-/// to fire" == "connects"), else strafe to line up the nearest enemy's column,
-/// else close toward the back rows. A mountless/idle player is left alone.
+/// #41 winnability driver: FIRE when the gun already bears on a hostile (gated by
+/// the SAME `resolve_targeting_2d` the shot fires through, so "decided to fire" ==
+/// "connects"), else maneuver toward the nearest enemy under the (#167) no-strafe
+/// model — ROTATE the bow to point at the enemy, then advance FORWARD on-axis
+/// (never a lateral slide; the resolver gates those). A mountless/idle player is
+/// left alone.
 fn queue_player_action(board: &mut broadside_engine::types::Board, content: &dyn Content) {
-    use broadside_engine::input::{SYNTHETIC_MOVE_LEFT, SYNTHETIC_MOVE_RIGHT, SYNTHETIC_MOVE_UP};
-
-    let Some((ppos, weapon_id)) = board.cells.iter().flatten().find_map(|s| {
+    let Some((ppos, pfacing, weapon_id)) = board.cells.iter().flatten().find_map(|s| {
         (s.faction == Faction::Player)
-            .then(|| s.mounts.first().map(|m| (s.pos, m.weapon.clone())))
+            .then(|| {
+                s.mounts
+                    .first()
+                    .map(|m| (s.pos, s.facing, m.weapon.clone()))
+            })
             .flatten()
     }) else {
         return;
@@ -155,23 +159,78 @@ fn queue_player_action(board: &mut broadside_engine::types::Board, content: &dyn
 
     let action = if bears_on_hostile {
         weapon_id
-    } else if epos.col != ppos.col {
-        // Wrong column → strafe to line up the enemy's column.
-        if epos.col < ppos.col {
-            SYNTHETIC_MOVE_LEFT
-        } else {
-            SYNTHETIC_MOVE_RIGHT
-        }
-        .to_string()
     } else {
-        // Same column but can't fire (out of band / facing away) → close N
-        // toward the back-row enemies.
-        SYNTHETIC_MOVE_UP.to_string()
+        match no_strafe_maneuver_toward(pfacing, ppos, epos) {
+            Some(id) => id.to_string(),
+            None => return, // co-located edge — nothing useful to queue
+        }
     };
 
     if let Some(p) = board.cells[ppos.to_index()].as_mut() {
         p.queue = vec![action];
     }
+}
+
+/// (#167 no-strafe) Next maneuver id to engage `epos` from `ppos`/`pfacing` under
+/// the rotate-then-forward model (NO lateral strafe — resolver-gated). Same shape
+/// as `run_loop.rs`'s pilot (the `ai.rs` helpers are private, so this is inlined
+/// over the public grid API): if the enemy shares the player's row OR column,
+/// turn the bow to point along that shared axis (a straight bow ray then bears,
+/// and the fire-gate fires next turn); otherwise the enemy is diagonal — face its
+/// dominant cardinal and advance forward (when aligned) to collapse the bigger
+/// delta until an axis is shared. Resolver-served ids (`__move_*` / `__rotate_*`),
+/// no `Content` entry needed. `None` only if `ppos == epos`.
+fn no_strafe_maneuver_toward(pfacing: Facing, ppos: Pos, epos: Pos) -> Option<&'static str> {
+    use broadside_engine::input::{
+        SYNTHETIC_MOVE_DOWN, SYNTHETIC_MOVE_LEFT, SYNTHETIC_MOVE_RIGHT, SYNTHETIC_MOVE_UP,
+        SYNTHETIC_ROTATE_LEFT, SYNTHETIC_ROTATE_RIGHT,
+    };
+
+    let bow = match pfacing {
+        Facing::Bow(d) => d,
+        Facing::Broadside(axis) => axis.dirs().0,
+    };
+    let move_id = |want: Dir4| match want {
+        Dir4::N => SYNTHETIC_MOVE_UP,
+        Dir4::S => SYNTHETIC_MOVE_DOWN,
+        Dir4::E => SYNTHETIC_MOVE_RIGHT,
+        Dir4::W => SYNTHETIC_MOVE_LEFT,
+    };
+    let face_or_advance = |want: Dir4| -> &'static str {
+        if bow == want {
+            move_id(want)
+        } else if bow.rotate_cw() == want {
+            SYNTHETIC_ROTATE_RIGHT
+        } else if bow.rotate_ccw() == want {
+            SYNTHETIC_ROTATE_LEFT
+        } else {
+            SYNTHETIC_ROTATE_RIGHT
+        }
+    };
+
+    let dcol = epos.col as i32 - ppos.col as i32;
+    let drow = epos.row as i32 - ppos.row as i32;
+    if dcol == 0 && drow == 0 {
+        return None;
+    }
+    if dcol == 0 {
+        return Some(face_or_advance(if drow > 0 { Dir4::S } else { Dir4::N }));
+    }
+    if drow == 0 {
+        return Some(face_or_advance(if dcol > 0 { Dir4::E } else { Dir4::W }));
+    }
+    let want = if dcol.abs() >= drow.abs() {
+        if dcol > 0 {
+            Dir4::E
+        } else {
+            Dir4::W
+        }
+    } else if drow > 0 {
+        Dir4::S
+    } else {
+        Dir4::N
+    };
+    Some(face_or_advance(want))
 }
 
 fn enemies_left(b: &broadside_engine::types::Board) -> usize {

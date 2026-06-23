@@ -2017,9 +2017,10 @@ impl ApplicationHandler for App {
                 if matches!(demo_state, DemoState::Playing) {
                     push_salvage_hud(&mut instances, salvage);
                     // (#70) Live player POS + FACING readout (top-right under
-                    // SALVAGE) — ground truth for the strafe/reorient controls so
-                    // Bruce + lead read the real (col,row,facing), no capture
-                    // guessing. Pulled fresh from the board each frame.
+                    // SALVAGE) — ground truth for the movement / rotation controls
+                    // (#167 no-strafe: forward/reverse + rotate) so Bruce + lead read
+                    // the real (col,row,facing), no capture guessing. Pulled fresh
+                    // from the board each frame.
                     if let Some(p) = self
                         .board
                         .cells
@@ -2288,15 +2289,18 @@ mod tests {
         render_example_board()
     }
 
-    /// (#70 strafe verify) REPLAY THE REAL INTENTS against the LIVE spawn board
+    /// (#167 no-strafe) REPLAY THE REAL INTENTS against the LIVE spawn board
     /// (player at Pos(2,3) Bow(N)), exactly as the running game does — do NOT set
-    /// pos/facing directly (that bypass is what masked the bug). Pressing Right
-    /// twice must STRAFE the player to col 4, SAME row, facing UNCHANGED (Bow N).
-    /// This is the ground-truth for "arrows = lateral strafe, facing preserved"
-    /// (Bruce's control model). If this passes, the live render of the moved
-    /// player is bow-on toward the VP at col 4 (== the `f4_c4_n` capture).
+    /// pos/facing directly. Under Bruce's "rotate then move forward" ruling there
+    /// is NO lateral strafe: a `MoveRight` is `Dir4::E`, which is PERPENDICULAR to
+    /// the Bow(N) facing axis, so the resolver's no-strafe gate REJECTS it (no-op,
+    /// like a blocked move). The player therefore stays at its spawn column, same
+    /// row, facing unchanged — pressing arrow-Right does not slide the hull
+    /// sideways. (Note: the live key binding maps arrow-Right to RotateRight now;
+    /// this test drives the raw `MoveRight` intent to pin the resolver gate
+    /// directly, independent of the key map.)
     #[test]
-    fn right_arrow_twice_strafes_to_col4_facing_unchanged() {
+    fn right_move_intent_is_rejected_no_lateral_strafe() {
         use broadside_engine::grid::{Dir4, Facing};
         let mut board = fresh_board();
         let mut content = DemoContent::default();
@@ -2311,9 +2315,10 @@ mod tests {
             .expect("player spawned");
         assert_eq!(spawn.0.col, 2, "spawn col (campaign mid)");
         assert_eq!(spawn.1, Facing::Bow(Dir4::N), "spawn facing bow-N up-lane");
-        let spawn_row = spawn.0.row;
+        let spawn_pos = spawn.0;
 
-        // Replay Right, Right through the SAME apply_intent the keypress uses.
+        // Replay MoveRight twice through the SAME apply_intent the engine uses.
+        // Each is lateral vs Bow(N) -> gated -> no-op.
         apply_intent(Intent::MoveRight, &mut board, &mut content, &fresh_board);
         apply_intent(Intent::MoveRight, &mut board, &mut content, &fresh_board);
 
@@ -2323,15 +2328,14 @@ mod tests {
             .flatten()
             .find(|s| s.faction == Faction::Player)
             .expect("player still on board");
-        assert_eq!(player.pos.col, 4, "Right×2 strafes to col 4 (2→3→4)");
         assert_eq!(
-            player.pos.row, spawn_row,
-            "strafe keeps the SAME row (lateral only)"
+            player.pos, spawn_pos,
+            "lateral MoveRight is rejected — the ship does NOT strafe (stays at spawn)"
         );
         assert_eq!(
             player.facing,
             Facing::Bow(Dir4::N),
-            "strafe must NOT change facing — ship stays bow-on toward the VP"
+            "a rejected move changes nothing — facing unchanged"
         );
     }
 
@@ -2381,12 +2385,13 @@ mod tests {
     }
 
     #[test]
-    fn move_intent_advances_ship_instantly() {
-        // Under SS turn semantics MoveRight is instant — the ship strafes one
-        // cell on the press, the queue is NOT touched, the world phase runs
-        // after. (#70 2-D: the demo board spawns the player at Pos(2,3) facing N,
-        // NOT 1-D cell 0; MoveRight = Dir4::E = col+1, SAME row, facing
-        // unchanged.)
+    fn move_intent_is_instant_but_lateral_is_gated_out() {
+        // Under SS turn semantics a move intent is INSTANT (applied on the press,
+        // queue untouched, world phase runs after). (#167 no-strafe) But the
+        // demo player spawns at Pos(2,3) facing Bow(N), so `MoveRight` = Dir4::E
+        // is PERPENDICULAR to the facing axis — the resolver's no-strafe gate
+        // rejects it. So the instant action lands as a no-op: the ship stays put,
+        // facing unchanged, and (still) nothing is queued.
         use broadside_engine::grid::{Dir4, Facing};
         let mut board = fresh_board();
         let mut content = DemoContent::default();
@@ -2404,16 +2409,18 @@ mod tests {
             .flatten()
             .find(|s| s.faction == Faction::Player)
             .expect("player still on board");
-        assert_eq!(player.pos.col, before.col + 1, "MoveRight strafes col+1");
-        assert_eq!(player.pos.row, before.row, "strafe keeps the row");
+        assert_eq!(
+            player.pos, before,
+            "lateral MoveRight is gated -> ship stays put (no strafe)"
+        );
         assert_eq!(
             player.facing,
             Facing::Bow(Dir4::N),
-            "facing unchanged by strafe"
+            "a gated move changes nothing — facing unchanged"
         );
         assert!(
             player.queue.is_empty(),
-            "instant intent must NOT push to queue"
+            "instant intent must NOT push to queue (gated or not)"
         );
     }
 
@@ -2688,19 +2695,20 @@ mod tests {
             .expect("player spawned");
         apply_intent(Intent::MoveRight, &mut board, &mut content, &fresh_board);
         apply_intent(Intent::CommitTurn, &mut board, &mut content, &fresh_board);
-        // (#70 2-D) the player strafed col+1 (same row) before the round resolved.
+        // (#167 no-strafe) the demo player faces Bow(N), so the lateral MoveRight
+        // is gated out (no-op); the player stays at its spawn pos. CommitTurn then
+        // runs resolve_round on an empty queue without panicking — that, plus the
+        // player surviving on the board, is what this test pins.
         let player = board
             .cells
             .iter()
             .flatten()
             .find(|s| s.faction == Faction::Player)
-            .expect("player on board after thrust+commit");
+            .expect("player on board after move+commit");
         assert_eq!(
-            player.pos.col,
-            before.col + 1,
-            "player strafed col+1 then committed"
+            player.pos, before,
+            "lateral move gated -> player unmoved; commit resolves without panic"
         );
-        assert_eq!(player.pos.row, before.row);
     }
 
     #[test]
@@ -2734,8 +2742,9 @@ mod tests {
         apply_intent(Intent::MoveRight, &mut board, &mut content, &fresh_board);
         apply_intent(Intent::CommitTurn, &mut board, &mut content, &fresh_board);
         apply_intent(Intent::Restart, &mut board, &mut content, &fresh_board);
-        // (#70 2-D) Restart rebuilds the fresh board: the player is back at its
-        // spawn Pos(2,3) (NOT moved to col+1) — i.e. the restart reset the strafe.
+        // (#167 no-strafe) MoveRight is lateral vs the Bow(N) spawn -> gated to a
+        // no-op, so the player never left its spawn cell; Restart then rebuilds the
+        // fresh board, and the player is (still) at its spawn Pos(2,3).
         let fresh = fresh_board();
         let spawn = fresh
             .cells

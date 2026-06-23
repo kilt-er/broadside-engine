@@ -435,30 +435,38 @@ fn fight_to_completion(
 /// Choose + queue the player's action for one round in **2-D** (#25), modelling
 /// a real playstyle against the #72 back-row spread + #71's firing/moving
 /// enemies. The player spawns front-centre (`(2,3)`) bow N, so its Forward gun
-/// bears up its own column; enemies fan across the back rows. The driver:
+/// bears up its own column; enemies fan across the back rows.
+///
+/// (#167 no-strafe) Under Bruce's "rotate then move forward" ruling the player
+/// can no longer slide sideways — a lateral self-move is gated out by the
+/// resolver. So the driver pilots like the #166 enemy AI: ROTATE the bow to
+/// point at the target, then advance FORWARD on-axis. Concretely:
 ///   - **fire** when the `siege_beam` already bears on a hostile cell — gated by
 ///     the SAME single source the shot fires through (`resolve_targeting_2d`),
-///     so "the driver decided to fire" == "the shot connects" (no parallel
-///     aim math that could drift from the engine);
-///   - else **line up the column**: strafe E/W toward the nearest enemy's
-///     column via the resolver-served `__move_left`/`__move_right` (these need
-///     no `Content` entry — `resolver_ai_move` serves them with the right
-///     `direction_2d`);
-///   - else (same column, can't fire = out of band or facing away): **close**
-///     N toward the back rows with `__move_up`, or **flip** if the enemy is
-///     somehow behind (defensive — the spawn layout never puts one there).
+///     so "the driver decided to fire" == "the shot connects";
+///   - else if the enemy shares the player's ROW or COLUMN (a straight bow ray
+///     could hit it): ROTATE the bow toward the enemy along that shared axis, so
+///     next turn the gun bears and the fire branch takes over;
+///   - else (the enemy is off both axes — a diagonal): CLOSE to share an axis by
+///     facing the enemy's dominant cardinal (rotate toward it, or advance
+///     forward if already facing it). This collapses the diagonal to a straight
+///     line, after which the rotate-to-bear branch lines the shot up.
+///
+/// All maneuver ids are resolver-served (`resolver_ai_move`) so they need no
+/// `Content` entry — `__move_*` for the on-axis advance, `__rotate_*` to turn.
 ///
 /// A mountless/idle player (no weapon) is left alone (the defeat path).
 fn queue_player_combat_action(board: &mut Board) {
-    use broadside_engine::input::{SYNTHETIC_MOVE_LEFT, SYNTHETIC_MOVE_RIGHT, SYNTHETIC_MOVE_UP};
     use broadside_engine::resolve::resolve_targeting_2d;
 
-    // Snapshot the player's pos + its first weapon id (the siege_beam).
-    let Some((ppos, weapon_id)) = board.cells.iter().flatten().find_map(|s| {
+    // Snapshot the player's pos + facing + its first weapon id (the siege_beam).
+    let Some((ppos, pfacing, weapon_id)) = board.cells.iter().flatten().find_map(|s| {
         if s.faction != Faction::Player {
             return None;
         }
-        s.mounts.first().map(|m| (s.pos, m.weapon.clone()))
+        s.mounts
+            .first()
+            .map(|m| (s.pos, s.facing, m.weapon.clone()))
     }) else {
         return; // no player, or a mountless/idle player → leave alone
     };
@@ -478,57 +486,113 @@ fn queue_player_combat_action(board: &mut Board) {
     // FIRE-GATE (single source): does the weapon already bear on a hostile?
     // resolve_targeting_2d returns the cells the shot would hit from ppos; if
     // any is a non-player ship, firing connects this round.
-    let action: String = if let Some(weapon) = LoopContent::new().0.get(&weapon_id) {
-        let targets = resolve_targeting_2d(weapon, board, ppos);
-        let bears_on_hostile = targets.iter().any(|&p| {
-            board
-                .cells
-                .get(p.to_index())
-                .and_then(|c| c.as_ref())
-                .is_some_and(|s| s.faction != Faction::Player)
-        });
-        if bears_on_hostile {
-            weapon_id.clone()
-        } else if epos.col != ppos.col && ppos.row <= epos.row + 1 {
-            // Wrong column but already row-adjacent to the enemy's rank → strafe
-            // laterally to line up its column. (Only strafe once close: see the
-            // close-first branch below.)
-            if epos.col < ppos.col {
-                SYNTHETIC_MOVE_LEFT
-            } else {
-                SYNTHETIC_MOVE_RIGHT
-            }
-            .to_string()
-        } else if epos.row < ppos.row {
-            // Enemy ahead (lower row) and out of band — close N. This runs BEFORE
-            // a far-column strafe so the player drives up onto the enemy's rank
-            // instead of mirroring its lateral dodge from the back row forever (a
-            // lone surviving straggler that strafes col-to-col would otherwise
-            // chase-livelock a back-row player — the #41 winnability canary's
-            // stall). Closing onto the enemy's row makes occupancy + adjacency
-            // force a resolution: the dodging enemy runs out of room and the beam
-            // bears. (Content-owned harness tweak; the engine model is unchanged.)
-            SYNTHETIC_MOVE_UP.to_string()
-        } else if epos.col != ppos.col {
-            // Same row as the enemy, wrong column → strafe to line up.
-            if epos.col < ppos.col {
-                SYNTHETIC_MOVE_LEFT
-            } else {
-                SYNTHETIC_MOVE_RIGHT
-            }
-            .to_string()
-        } else {
-            // Same column, enemy BEHIND (higher row) — face it. (Defensive: the
-            // spawn layout keeps enemies in the back rows, so this is unreached.)
-            "flip".to_string()
-        }
-    } else {
+    let Some(weapon) = LoopContent::new().0.get(&weapon_id).cloned() else {
         return; // weapon not in the loop kit → leave alone
+    };
+    let bears_on_hostile = resolve_targeting_2d(&weapon, board, ppos).iter().any(|&p| {
+        board
+            .cells
+            .get(p.to_index())
+            .and_then(|c| c.as_ref())
+            .is_some_and(|s| s.faction != Faction::Player)
+    });
+
+    let action = if bears_on_hostile {
+        weapon_id
+    } else {
+        // No-strafe maneuver toward the enemy (rotate-then-forward).
+        match no_strafe_maneuver_toward(pfacing, ppos, epos) {
+            Some(id) => id.to_string(),
+            None => return, // co-located edge — nothing useful to queue
+        }
     };
 
     if let Some(p) = board.cells[ppos.to_index()].as_mut() {
         p.queue = vec![action];
     }
+}
+
+/// (#167 no-strafe) The next maneuver id for a player at `ppos` facing `pfacing`
+/// to engage the enemy at `epos`, under the rotate-then-forward model (NO
+/// lateral strafe — the resolver gates it). Mirrors the #166 enemy-AI discipline
+/// but expressed over the public grid API (the `ai.rs` helpers are private):
+///   1. If the enemy shares the player's row OR column, a straight bow ray can
+///      reach it — turn the bow to point along that shared axis toward the enemy
+///      (or, if already facing it, the fire-gate upstream already took over).
+///   2. Otherwise the enemy is diagonal — pick the dominant-axis cardinal toward
+///      it and either advance forward (if the bow already points that way) or
+///      rotate toward it. Advancing collapses the bigger delta until the enemy
+///      shares an axis, then step 1 lines the shot up.
+///
+/// Returns a resolver-served synthetic id (`__move_*` / `__rotate_*`), or `None`
+/// only if `ppos == epos` (degenerate; never happens with a live enemy).
+fn no_strafe_maneuver_toward(pfacing: Facing, ppos: Pos, epos: Pos) -> Option<&'static str> {
+    use broadside_engine::input::{
+        SYNTHETIC_MOVE_DOWN, SYNTHETIC_MOVE_LEFT, SYNTHETIC_MOVE_RIGHT, SYNTHETIC_MOVE_UP,
+        SYNTHETIC_ROTATE_LEFT, SYNTHETIC_ROTATE_RIGHT,
+    };
+
+    // The player's forward (bow) cardinal — the axis it may move/fire along.
+    let bow = match pfacing {
+        Facing::Bow(d) => d,
+        Facing::Broadside(axis) => axis.dirs().0,
+    };
+
+    // The absolute-move synthetic id for a cardinal we WANT to face/advance.
+    // (We only ever advance when `want == bow`, so the move is on-axis and the
+    // resolver gate accepts it.)
+    let move_id = |want: Dir4| match want {
+        Dir4::N => SYNTHETIC_MOVE_UP,
+        Dir4::S => SYNTHETIC_MOVE_DOWN,
+        Dir4::E => SYNTHETIC_MOVE_RIGHT,
+        Dir4::W => SYNTHETIC_MOVE_LEFT,
+    };
+    // Rotate the bow the shortest quarter-turn toward `want`; advance forward
+    // once aligned. (180°-off picks rotate-right; next turn finishes the turn.)
+    let face_or_advance = |want: Dir4| -> &'static str {
+        if bow == want {
+            move_id(want)
+        } else if bow.rotate_cw() == want {
+            SYNTHETIC_ROTATE_RIGHT
+        } else if bow.rotate_ccw() == want {
+            SYNTHETIC_ROTATE_LEFT
+        } else {
+            SYNTHETIC_ROTATE_RIGHT
+        }
+    };
+
+    let dcol = epos.col as i32 - ppos.col as i32;
+    let drow = epos.row as i32 - ppos.row as i32;
+
+    if dcol == 0 && drow == 0 {
+        return None; // co-located
+    }
+
+    // 1. Shared column -> face N/S toward the enemy (a vertical bow ray reaches
+    //    it). Shared row -> face E/W. When the enemy is on exactly one shared
+    //    axis we turn the bow onto it; once aligned the fire-gate fires.
+    if dcol == 0 {
+        return Some(face_or_advance(if drow > 0 { Dir4::S } else { Dir4::N }));
+    }
+    if drow == 0 {
+        return Some(face_or_advance(if dcol > 0 { Dir4::E } else { Dir4::W }));
+    }
+
+    // 2. Diagonal: close along the DOMINANT axis (ties -> the column/E-W axis, so
+    //    we line up the column the player can't strafe to). Face that cardinal;
+    //    advancing forward when aligned shrinks the delta until an axis is shared.
+    let want = if dcol.abs() >= drow.abs() {
+        if dcol > 0 {
+            Dir4::E
+        } else {
+            Dir4::W
+        }
+    } else if drow > 0 {
+        Dir4::S
+    } else {
+        Dir4::N
+    };
+    Some(face_or_advance(want))
 }
 
 /* =========================================================================
