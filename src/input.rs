@@ -140,19 +140,28 @@ pub enum Intent {
 
 /// Canonical key bindings for the Phase 1+2 demo (tasks #43, #63).
 ///
-/// | Key            | Intent                                       |
-/// |----------------|----------------------------------------------|
-/// | `Left`         | [`Intent::MoveLeft`]                         |
-/// | `Right`        | [`Intent::MoveRight`]                        |
-/// | `Up`           | [`Intent::MoveUp`] (N, toward the enemies)   |
-/// | `Down`         | [`Intent::MoveDown`] (S, toward the player)  |
-/// | `Tab`          | [`Intent::ReorientFlip`]                     |
-/// | `V`            | [`Intent::Vent`]                             |
-/// | `W`            | [`Intent::Wait`] (pass the turn)             |
+/// (#165 Bruce) TANK CONTROLS — movement is bow-relative, NOT absolute strafe:
+///
+/// | Key            | Intent                                                   |
+/// |----------------|----------------------------------------------------------|
+/// | `Up`           | move FORWARD along the bow (absolute move = `ship`'s bow Dir4) |
+/// | `Down`         | move REVERSE (opposite the bow)                          |
+/// | `Left`         | [`Intent::RotateLeft`] (rotate bow CCW — same as `Q`)    |
+/// | `Right`        | [`Intent::RotateRight`] (rotate bow CW — same as `E`)    |
+/// | `Q` / `E`      | [`Intent::RotateLeft`] / [`Intent::RotateRight`]         |
+/// | `Tab`          | [`Intent::ReorientFlip`]                                 |
+/// | `V`            | [`Intent::Vent`]                                         |
+/// | `W`            | [`Intent::Wait`] (pass the turn)                         |
 /// | `D1` / `D2` / `D3` | [`Intent::QueueAction`] of `ship.mounts[N].weapon`, **only if** `N < mounts.len()`. `None` otherwise. |
 /// | `D5` / `D6` / `D7` | [`Intent::PlayCard`] of the Nth card id in the ship's [`crate::cards::FieldKit`], **only if** that slot exists in `content`. `None` otherwise. |
-/// | `R`, `Space`   | [`Intent::CommitTurn`]                       |
-/// | `Enter`        | [`Intent::Restart`]                          |
+/// | `R`, `Space`   | [`Intent::CommitTurn`]                                   |
+/// | `Enter`        | [`Intent::Restart`]                                      |
+///
+/// There is NO lateral strafe: to change column you ROTATE then move FORWARD
+/// (Bruce's tank-controls ruling). Forward/reverse resolve to one of the absolute
+/// `Move{Up,Down,Left,Right}` intents picked from the ship's current bow facing, so
+/// the resolver path (`SYNTHETIC_MOVE_*` → `resolve_self_move_2d`) is unchanged — only
+/// WHICH cardinal a forward/reverse press maps to depends on facing.
 ///
 /// Returns `None` for an unbound key OR for a digit key past the ship's
 /// mount / card count. `content` is queried for the ship's card inventory
@@ -160,13 +169,13 @@ pub enum Intent {
 /// `Ship::field_kit`); ship is still consulted for mounts.
 pub fn key_to_intent(key: Key, ship: &Ship, content: &dyn Content) -> Option<Intent> {
     match key {
-        Key::Left => Some(Intent::MoveLeft),
-        Key::Right => Some(Intent::MoveRight),
-        Key::Up => Some(Intent::MoveUp),
-        Key::Down => Some(Intent::MoveDown),
+        // (#165) Tank controls: Up = forward along the bow, Down = reverse.
+        Key::Up => Some(move_intent_for_dir4(forward_dir4(ship.facing))),
+        Key::Down => Some(move_intent_for_dir4(forward_dir4(ship.facing).opposite())),
+        // Left/Right now ROTATE (no strafe); same as Q/E.
+        Key::Left | Key::Q => Some(Intent::RotateLeft),
+        Key::Right | Key::E => Some(Intent::RotateRight),
         Key::Tab => Some(Intent::ReorientFlip),
-        Key::Q => Some(Intent::RotateLeft),
-        Key::E => Some(Intent::RotateRight),
         Key::V => Some(Intent::Vent),
         Key::W => Some(Intent::Wait),
         Key::D1 => mount_action(ship, 0).map(Intent::QueueAction),
@@ -177,6 +186,33 @@ pub fn key_to_intent(key: Key, ship: &Ship, content: &dyn Content) -> Option<Int
         Key::D7 => content.card_at(&ship.id, 2).map(Intent::PlayCard),
         Key::R | Key::Space => Some(Intent::CommitTurn),
         Key::Enter => Some(Intent::Restart),
+    }
+}
+
+/// (#165 tank controls) The Dir4 a ship moves when it goes FORWARD — its bow
+/// direction. A `Bow(dir)` faces `dir`; a `Broadside(axis)` hull has no single bow,
+/// so forward defaults to the axis's canonical positive cardinal (N for NS, E for EW)
+/// — a safe total fallback (the player only ever holds a cardinal `Bow` facing via
+/// the rotate controls; Broadside is the enemy flank stance). Reverse is `.opposite()`.
+const fn forward_dir4(facing: crate::grid::Facing) -> crate::grid::Dir4 {
+    use crate::grid::{Axis, Dir4, Facing};
+    match facing {
+        Facing::Bow(dir) => dir,
+        Facing::Broadside(Axis::NorthSouth) => Dir4::N,
+        Facing::Broadside(Axis::EastWest) => Dir4::E,
+    }
+}
+
+/// (#165) Map a movement [`crate::grid::Dir4`] to the absolute-move [`Intent`] that
+/// steps that way — so a facing-relative forward/reverse press reuses the existing
+/// `SYNTHETIC_MOVE_*` → `resolve_self_move_2d` path (only the CHOSEN cardinal varies).
+const fn move_intent_for_dir4(dir: crate::grid::Dir4) -> Intent {
+    use crate::grid::Dir4;
+    match dir {
+        Dir4::N => Intent::MoveUp,
+        Dir4::E => Intent::MoveRight,
+        Dir4::S => Intent::MoveDown,
+        Dir4::W => Intent::MoveLeft,
     }
 }
 
@@ -983,14 +1019,39 @@ mod tests {
     }
 
     #[test]
-    fn key_to_intent_left_is_move_left() {
-        let p = player_with_mounts(0);
+    fn key_to_intent_is_tank_controls() {
+        // (#165) Tank controls: Left/Right ROTATE (no strafe); Up/Down are FORWARD/
+        // REVERSE along the ship's bow (facing-relative).
         let c = DemoContent::default();
-        assert_eq!(key_to_intent(Key::Left, &p, &c), Some(Intent::MoveLeft));
-        assert_eq!(key_to_intent(Key::Right, &p, &c), Some(Intent::MoveRight));
-        // #18: N/S movement keys.
-        assert_eq!(key_to_intent(Key::Up, &p, &c), Some(Intent::MoveUp));
-        assert_eq!(key_to_intent(Key::Down, &p, &c), Some(Intent::MoveDown));
+        let mut p = player_with_mounts(0);
+
+        // Left/Right rotate regardless of facing (same as Q/E).
+        assert_eq!(key_to_intent(Key::Left, &p, &c), Some(Intent::RotateLeft));
+        assert_eq!(key_to_intent(Key::Right, &p, &c), Some(Intent::RotateRight));
+        assert_eq!(key_to_intent(Key::Q, &p, &c), Some(Intent::RotateLeft));
+        assert_eq!(key_to_intent(Key::E, &p, &c), Some(Intent::RotateRight));
+
+        // Forward/reverse follow the bow. Cover all four cardinals: Up = move toward
+        // the bow's Dir4, Down = the opposite.
+        use crate::grid::{Dir4, Facing};
+        for (bow, fwd, rev) in [
+            (Dir4::N, Intent::MoveUp, Intent::MoveDown),
+            (Dir4::S, Intent::MoveDown, Intent::MoveUp),
+            (Dir4::E, Intent::MoveRight, Intent::MoveLeft),
+            (Dir4::W, Intent::MoveLeft, Intent::MoveRight),
+        ] {
+            p.facing = Facing::Bow(bow);
+            assert_eq!(
+                key_to_intent(Key::Up, &p, &c),
+                Some(fwd),
+                "bow {bow:?} forward"
+            );
+            assert_eq!(
+                key_to_intent(Key::Down, &p, &c),
+                Some(rev),
+                "bow {bow:?} reverse"
+            );
+        }
     }
 
     #[test]

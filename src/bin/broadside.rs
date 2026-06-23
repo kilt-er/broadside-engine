@@ -11,8 +11,8 @@
 //! |-----|--------|--------|
 //! | `1` / `2` / `3` | `QueueAction` from `mounts[0/1/2]` | Append weapon action id to `player.queue` |
 //! | `5` / `6` / `7` | `PlayCard` from `field_kit.cards[0/1/2]` | Decrement charge + queue synthetic card action |
-//! | `←` / `→` | `MoveLeft` / `MoveRight` | Queue synthetic `__move_left` / `__move_right` |
-//! | `↑` / `↓` | `MoveUp` / `MoveDown` | Queue synthetic `__move_up` / `__move_down` (N / S) |
+//! | `↑` / `↓` | `Move` FORWARD / REVERSE along the bow (#165 tank controls) | Facing-relative: forward = a synthetic absolute `__move_*` matching the player's bow Dir4, reverse = its opposite. NO lateral strafe — rotate then move forward to change column. |
+//! | `←` / `→` | `RotateLeft` / `RotateRight` (#165) | Rotate the bow a quarter-turn ccw / cw — SAME as `Q` / `E` (the old Left/Right strafe was removed) |
 //! | `Q` / `E` | `RotateLeft` / `RotateRight` (#75) | Turn the player's FACING a quarter-turn ccw / cw (`__rotate_left` / `__rotate_right`); render + firing arcs follow |
 //! | `Tab` | `ReorientFlip` (#75) | 180° about-face: the bin overrides the synthetic to two `RotateRight` (reverses the bow N↔S / E↔W) so the hull visibly turns |
 //! | `V` | `Vent` | Queue synthetic `__vent` |
