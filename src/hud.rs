@@ -1707,11 +1707,14 @@ fn push_ship_2d(
             let h = w / LOFT_TEXTURE_ASPECT;
             let (l, r) = (center[0] - w * 0.5, center[0] + w * 0.5);
             let (t, b) = (center[1] - h * 0.5, center[1] + h * 0.5);
-            // (#153) Render at the PLAYER's forward-axis yaw (up-lane / toward the
-            // vanishing point = 0°), NOT the enemy's own Bow(S)=180 and NOT the old
-            // +28° three-quarter offset — so every ship (player + enemies) points the
-            // SAME forward direction Bruce asked for, sterns toward the camera.
-            let enemy_yaw = loft_facing_ground_yaw(Facing::Bow(Dir4::N));
+            // (#164 Bruce "they're facing the wrong way") Render the enemy at ITS OWN
+            // facing, NOT the forced up-lane yaw the #153 snap used. `facing_yaw_deg`
+            // (computed above) is loft_facing_ground_yaw(ship.facing), interpolated mid-
+            // turn — so an enemy spawned Bow(S) faces the player (bow toward camera =
+            // 180), Bow(E/W) shows its flank, and it ROTATES smoothly when it reorients.
+            // This is the per-ship facing the rotate-to-turn movement model needs to read
+            // (each ship points where its bow points; you turn by rotating). Scale stays
+            // 1.0x (the #153 uniform size is unchanged; only the wrong forced yaw is fixed).
             out.push(DrawCommand::LoftShip(LoftShipInstance {
                 p0: [l, t],
                 p1: [r, t],
@@ -1720,7 +1723,7 @@ fn push_ship_2d(
                 ship_id: SpriteSlug::new(&ship.id),
                 kind: loft_kind,
                 aim_at: center,
-                facing_yaw_deg: enemy_yaw,
+                facing_yaw_deg,
             }));
             // (#112) NO per-enemy overlay (no arrow/pips/bars/telegraph) — the
             // decluttered hull + the separate threat-cell outline carry the read.
