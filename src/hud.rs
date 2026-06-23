@@ -3589,11 +3589,12 @@ pub fn push_res_readout(out: &mut Vec<DrawCommand>, ship: (u32, u32), scene: (u3
     // the gfx global. Placed at h-40, ABOVE the POS/FACE line (h-30, push_player_readout)
     // so the bottom-right debug stack doesn't overlap. Only shown when pitched off the
     // default, so normal play stays uncluttered.
-    // (#140/#142) GRID MODE tag folded into the PITCH line so it stays one line at
-    // h-40 (no extra collision): "PITCH n/8", "... STRETCH" (curved), or "... STRAIGHT".
+    // (#140/#142/#169) GRID MODE tag folded into the PITCH line so it stays one line at
+    // h-40 (no extra collision): "PITCH n/8", "... STRETCH" (curved), "... STEPPED"
+    // (per-cell kinked, mode 2), or "... STRAIGHT" (continuous, mode 3 = boot default).
     // The line shows whenever pitched OR a stretch mode is active, so Bruce sees both.
     let pitch = crate::gfx::grid_pitch_step();
-    let mode_tag = crate::gfx::grid_mode_tag(); // "" / "STRETCH" / "STRAIGHT"
+    let mode_tag = crate::gfx::grid_mode_tag(); // "" / "STRETCH" / "STEPPED" / "STRAIGHT"
     if pitch > 0 || !mode_tag.is_empty() {
         let tag = if mode_tag.is_empty() {
             String::new()

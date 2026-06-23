@@ -136,11 +136,17 @@ pub fn cycle_grid_pitch() -> u32 {
 /// perspective base), so the step-0 no-regression gate holds in every mode.
 static GRID_MODE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(BOOT_GRID_MODE);
 
-/// (#165 Bruce) The grid MODE the game BOOTS at. Bruce's pick: mode 2 = STRETCH-
-/// STRAIGHT (stepped) — combined with [`BOOT_GRID_PITCH_STEP`] = 2 the board boots
-/// reading "PITCH 2/8 STRAIGHT" (partway tilted, straight grid lines), not the flat
-/// drawbridge (mode 0). `T` still cycles all four modes from here.
-pub const BOOT_GRID_MODE: u32 = 2;
+/// (#165/#169 Bruce) The grid MODE the game BOOTS at. Bruce's pick: mode 3 =
+/// STRETCH-CONTINUOUS (the "STRAIGHT+" tag) — each depth line is ONE straight
+/// front-to-back line that converges cleanly to the vanishing point, with NO
+/// per-cell kinks at the row boundaries. Mode 2 (stepped STRAIGHT) was the prior
+/// boot pick but its column edges visibly KINK at each row line ("everything is
+/// called straight … I want straight lines not stepped"); both modes 2 and 3 carry
+/// "STRAIGHT" in the readout, which is why the two looked indistinguishable by tag.
+/// Combined with [`BOOT_GRID_PITCH_STEP`] = 2 the board boots reading
+/// "PITCH 2/8 STRAIGHT+" (partway tilted, truly straight converging lines). `T`
+/// still cycles all four modes from here.
+pub const BOOT_GRID_MODE: u32 = 3;
 
 /// Number of grid modes the `T` key cycles through (drawbridge / stretch-curved /
 /// stretch-straight-stepped / stretch-continuous).
@@ -171,13 +177,18 @@ pub fn cycle_grid_mode() -> u32 {
     next
 }
 
-/// (#142/#151) A short tag for the active grid mode, for the debug readout: "" (draw-
-/// bridge), "STRETCH" (curved), "STRAIGHT" (stepped), or "STRAIGHT+" (continuous).
+/// (#142/#151/#169) A short tag for the active grid mode, for the debug readout:
+/// "" (drawbridge), "STRETCH" (curved), "STEPPED" (per-cell kinked straight, mode 2),
+/// or "STRAIGHT" (continuous front-to-back lines, mode 3). Modes 2 and 3 used to BOTH
+/// read "STRAIGHT" / "STRAIGHT+", which made them indistinguishable at a glance
+/// (Bruce: "both are called straight"); mode 3 is the TRUE straight one (and the boot
+/// default) so it now owns the clean "STRAIGHT" name, and mode 2 reads "STEPPED" to
+/// name its kink. Display-only — no logic keys on this string.
 pub fn grid_mode_tag() -> &'static str {
     match grid_mode() {
         1 => "STRETCH",
-        2 => "STRAIGHT",
-        3 => "STRAIGHT+",
+        2 => "STEPPED",
+        3 => "STRAIGHT",
         _ => "",
     }
 }
