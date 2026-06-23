@@ -91,7 +91,13 @@ pub fn scene_h() -> u32 {
 /// the scene size so every `ProjectorConfig::for_scene(..).with_pitch(grid_pitch_t())`
 /// call site (grid, cells, movement, threats, ordnance) shares ONE pitch — the
 /// projector is the single spatial source, so they all reproject together.
-static GRID_PITCH_STEP: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+static GRID_PITCH_STEP: std::sync::atomic::AtomicU32 =
+    std::sync::atomic::AtomicU32::new(BOOT_GRID_PITCH_STEP);
+
+/// (#165 Bruce) The grid pitch step the game BOOTS at. Bruce's pick: step 2 of 8 —
+/// the board starts tilted partway toward top-down rather than the flat chase-cam
+/// (step 0). `G` still cycles the full 0..=8 arc from here.
+pub const BOOT_GRID_PITCH_STEP: u32 = 2;
 
 /// Number of pitch steps from chase-cam (step 0) to near-top-down (the last step).
 /// ~5° each toward overhead; 8 steps ≈ a 40° swing past the ~20° base.
@@ -128,7 +134,13 @@ pub fn cycle_grid_pitch() -> u32 {
 ///       front-to-back line, no kinks (Bruce's continuous-straight ask, #151).
 /// At pitch step 0 all four are byte-identical to the chase-cam (each reduces to the
 /// perspective base), so the step-0 no-regression gate holds in every mode.
-static GRID_MODE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+static GRID_MODE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(BOOT_GRID_MODE);
+
+/// (#165 Bruce) The grid MODE the game BOOTS at. Bruce's pick: mode 2 = STRETCH-
+/// STRAIGHT (stepped) — combined with [`BOOT_GRID_PITCH_STEP`] = 2 the board boots
+/// reading "PITCH 2/8 STRAIGHT" (partway tilted, straight grid lines), not the flat
+/// drawbridge (mode 0). `T` still cycles all four modes from here.
+pub const BOOT_GRID_MODE: u32 = 2;
 
 /// Number of grid modes the `T` key cycles through (drawbridge / stretch-curved /
 /// stretch-straight-stepped / stretch-continuous).
