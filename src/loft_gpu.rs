@@ -1230,8 +1230,10 @@ pub const CHASE_CAM_BASE_YAW_DEG: f32 = 270.0;
 ///   - [`CHASE_CAM_BASE_YAW_DEG`] (270 = stern-on, bow up-lane),
 ///   - `facing_yaw_deg` — the tactical-facing offset (`N`=0 / `E`=+90 / `S`=180
 ///     / `W`=−90), so the four cardinals read as distinct flat poses,
-///   - the **grid-parallel lean** `psi`, so the bow runs PARALLEL to the cell's
-///     own lane lines on screen instead of straight up the screen frame.
+///   - the **grid-parallel lean** (`psi` scaled by `cos(facing)`), so an UP-LANE
+///     (N/S) bow runs parallel to the cell's own column lines on screen instead of
+///     straight up the screen frame — while a BROADSIDE (E/W) hull stays horizontal
+///     (the row lines ARE horizontal on screen), so the lean must not tilt it (#172).
 ///
 /// (#171 Bruce) ORTHOGONAL TO THE GRID, not the screen. The hull blits onto an
 /// axis-aligned screen rect, so with no lean an N-facing ship points straight UP
@@ -1271,7 +1273,15 @@ pub fn chase_cam_ground_yaw_deg(
     // Ground yaw whose projected bow lands on screen-direction `alpha` (the lane):
     // δ = atan(tan(alpha)·sin pitch). At a centred cell alpha == 0 ⇒ no lean.
     let psi = (alpha.tan() * pitch.sin()).atan();
-    CHASE_CAM_BASE_YAW_DEG + facing_yaw_deg + psi.to_degrees()
+    // (#172 Bruce) The lane lean applies ONLY to the UP-LANE (N/S) axis. The grid's
+    // ROW lines run HORIZONTAL on screen (constant depth ⇒ constant screen-y), so a
+    // BROADSIDE (E/W) hull's long axis is already grid-aligned when it's screen-
+    // horizontal — Bruce: "horizontal on the grid is the same as horizontal on the
+    // screen". Applying the column lean to a broadside hull wrongly TILTS it off that
+    // horizontal. Scale the lean by cos(facing): full for N (0°)/S (180°), zero for
+    // E/W (±90°) ⇒ broadside hulls stay horizontal, up-lane hulls follow their column.
+    let lean = psi * facing_yaw_deg.to_radians().cos();
+    CHASE_CAM_BASE_YAW_DEG + facing_yaw_deg + lean.to_degrees()
 }
 
 fn normalize3(v: [f32; 3]) -> [f32; 3] {
@@ -1630,14 +1640,29 @@ mod tests {
                         dy < -1e-3,
                         "col {col} S: bow must be BELOW centre (toward camera); dy={dy:.4}"
                     ),
-                    Facing::Bow(Dir4::E) => assert!(
-                        dx > 1e-3,
-                        "col {col} E: bow must be screen-RIGHT of centre; dx={dx:.4}"
-                    ),
-                    Facing::Bow(Dir4::W) => assert!(
-                        dx < -1e-3,
-                        "col {col} W: bow must be screen-LEFT of centre; dx={dx:.4}"
-                    ),
+                    Facing::Bow(Dir4::E) => {
+                        assert!(
+                            dx > 1e-3,
+                            "col {col} E: bow must be screen-RIGHT of centre; dx={dx:.4}"
+                        );
+                        // (#172) BROADSIDE hulls stay HORIZONTAL on screen (the grid's
+                        // row lines are horizontal), so the lane lean must NOT tilt them:
+                        // the bow has ~no vertical component in EVERY column.
+                        assert!(
+                            dy.abs() < 1e-3,
+                            "col {col} E: broadside bow must be horizontal (no tilt); dy={dy:.4}"
+                        );
+                    }
+                    Facing::Bow(Dir4::W) => {
+                        assert!(
+                            dx < -1e-3,
+                            "col {col} W: bow must be screen-LEFT of centre; dx={dx:.4}"
+                        );
+                        assert!(
+                            dy.abs() < 1e-3,
+                            "col {col} W: broadside bow must be horizontal (no tilt); dy={dy:.4}"
+                        );
+                    }
                     _ => unreachable!(),
                 }
             }
