@@ -2399,19 +2399,19 @@ impl Gfx {
                     // on the grid (Bruce's requirement: no barrel-roll) and only its
                     // heading turns. Composes the stern-on base (270) + the tactical
                     // facing offset (`q.facing_yaw_deg`: N=0 / E=+90 / S=180 / W=−90).
-                    // (#170 Bruce) The lane-aim convergence term is REMOVED — the hull
-                    // renders perpendicular/parallel to the grid lines at ALL times
-                    // (square to the lane), since combat is now orthogonal (tank
-                    // controls); a bow banked toward the vanishing point no longer
-                    // matched the orthogonally-directed combat lines. The yaw formula
-                    // lives in ONE pure, CPU-tested place
+                    // (#173 Bruce FINAL ruling — concludes the #170→#171→#172 lean arc)
+                    // NO perspective lane-lean, ever: every ship sits at its clean
+                    // CARDINAL pose, player + enemies, all facings, every column. Reason:
+                    // combat is read by FIRING CAPABILITY (front/side bears on a target),
+                    // and any lean tilted off-centre hulls off-cardinal, which muddied
+                    // that read (an off-centre bow-on enemy looked like it was aiming).
+                    // The yaw formula lives in ONE pure, CPU-tested place
                     // (`chase_cam_ground_yaw_deg`), gated by a bow test that replicates
                     // THIS ortho loft camera (not the scene-space pinhole the earlier
                     // oracle wrongly tested). `cfg` + the live loft pitch are still
-                    // passed (the function keeps them in its signature in case the
-                    // convergence is ever revived) but no longer affect the pose; the
-                    // cfg also still drives `loft_quads`/`q.aim_at` elsewhere, so it's
-                    // built from the live scene size + grid mode regardless.
+                    // passed (the function keeps them in its signature) but no longer
+                    // affect the pose; the cfg also still drives `loft_quads`/`q.aim_at`
+                    // elsewhere, so it's built from the live scene size + grid mode.
                     let base = crate::projector::ProjectorConfig::for_scene(
                         scene_w() as f32,
                         scene_h() as f32,

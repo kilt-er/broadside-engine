@@ -1226,62 +1226,35 @@ pub const CHASE_CAM_BASE_YAW_DEG: f32 = 270.0;
 ///
 /// The hull renders FLAT on the grid (Bruce's hard requirement: no barrel-roll);
 /// only its ground-plane heading turns, via this yaw fed to the ortho loft
-/// camera. Composes three flat terms:
+/// camera. Composes two flat terms:
 ///   - [`CHASE_CAM_BASE_YAW_DEG`] (270 = stern-on, bow up-lane),
 ///   - `facing_yaw_deg` — the tactical-facing offset (`N`=0 / `E`=+90 / `S`=180
-///     / `W`=−90), so the four cardinals read as distinct flat poses,
-///   - the **grid-parallel lean** (`psi` scaled by `cos(facing)`), so an UP-LANE
-///     (N/S) bow runs parallel to the cell's own column lines on screen instead of
-///     straight up the screen frame — while a BROADSIDE (E/W) hull stays horizontal
-///     (the row lines ARE horizontal on screen), so the lean must not tilt it (#172).
+///     / `W`=−90), so the four cardinals read as distinct flat poses.
 ///
-/// (#171 Bruce) ORTHOGONAL TO THE GRID, not the screen. The hull blits onto an
-/// axis-aligned screen rect, so with no lean an N-facing ship points straight UP
-/// the SCREEN — but the perspective grid's column (depth) lines SLANT toward the
-/// vanishing point, so a screen-upright hull looks skewed to its own lane (Bruce's
-/// screenshot: the bow doesn't follow the slanted lane it sits in). The lean fixes
-/// that: the grid's column lines all converge to the [`crate::projector::vanishing_point`],
-/// so the lane direction THROUGH any cell points at the VP; we render the bow along
-/// that screen direction. NOTE this term was added (#73), removed (#170, when the
-/// brief was "square to the screen"), and re-added here (#171, "square to the GRID")
-/// — same maths, opposite reading of "orthogonal"; the on-screen result is the bow
-/// running up the lane, parallel to the column lines.
+/// (#173 Bruce FINAL ruling — concludes the #170→#171→#172 lean arc) NO perspective
+/// lean, EVER: every ship sits at its clean CARDINAL orientation — player AND enemies,
+/// all facings, every column. The yaw is a pure function of `facing_yaw_deg`.
 ///
-/// MATHS: a flat ground-yaw offset `δ` projects (through this ortho camera at pitch
-/// `p`) to a SCREEN bow angle `atan(tan(δ)/sin p)` off vertical. To land the bow on
-/// the screen direction `alpha` (cell-centre → VP) we invert that:
-/// `δ = atan(tan(alpha)·sin p)`. `alpha > 0` when the cell is LEFT of the VP
-/// (`vp.x − ax > 0`); decreasing the camera yaw banks the bow LEFT, so a left-of-VP
-/// cell (`alpha > 0`) needs `+δ` to bank RIGHT toward the VP — hence `+psi`.
+/// WHY (makes it final): combat is read by FIRING CAPABILITY — a ship can hit only
+/// when its FRONT (`Forward` arc) or its SIDE (`BroadsideArc`) is pointed at an enemy.
+/// Any lane-lean tilts an off-centre hull off its cardinal, which muddied that read
+/// (an off-centre bow-on enemy looked like it was aiming down-lane at the player). A
+/// clean cardinal pose makes "is my front / side on that ship?" legible, which wins
+/// over perspective-parallelism. This is geometrically the #170 no-`psi` state, but
+/// it is now Bruce's DELIBERATE call for firing-read clarity, not the rejected #170.
 ///
-/// `aim_at` is the ship's CELL-centre screen point (virtual px) — the anchor the
-/// lean is measured FROM (not the dragged-down hero quad). `pitch_deg` is the LIVE
-/// loft-camera pitch (since #140 the hull pitches with the grid, 20→82), so the
-/// inverse uses the live angle, keeping the bow lane-parallel at every tilt step.
+/// `aim_at` / `cfg` / `pitch_deg` stay in the signature (the live render + the bow
+/// gate pass them) but no longer affect the result.
 pub fn chase_cam_ground_yaw_deg(
     aim_at: [f32; 2],
     facing_yaw_deg: f32,
     cfg: &crate::projector::ProjectorConfig,
     pitch_deg: f32,
 ) -> f32 {
-    let vp = crate::projector::vanishing_point(cfg);
-    let (ax, ay) = (aim_at[0], aim_at[1]);
-    // Screen angle straight-up → VP, measured from the cell centre. `alpha > 0`
-    // when the cell is LEFT of the VP (vp.x − ax > 0), `< 0` when RIGHT.
-    let alpha = (vp.x - ax).atan2(ay - vp.y);
-    let pitch = pitch_deg.to_radians();
-    // Ground yaw whose projected bow lands on screen-direction `alpha` (the lane):
-    // δ = atan(tan(alpha)·sin pitch). At a centred cell alpha == 0 ⇒ no lean.
-    let psi = (alpha.tan() * pitch.sin()).atan();
-    // (#172 Bruce) The lane lean applies ONLY to the UP-LANE (N/S) axis. The grid's
-    // ROW lines run HORIZONTAL on screen (constant depth ⇒ constant screen-y), so a
-    // BROADSIDE (E/W) hull's long axis is already grid-aligned when it's screen-
-    // horizontal — Bruce: "horizontal on the grid is the same as horizontal on the
-    // screen". Applying the column lean to a broadside hull wrongly TILTS it off that
-    // horizontal. Scale the lean by cos(facing): full for N (0°)/S (180°), zero for
-    // E/W (±90°) ⇒ broadside hulls stay horizontal, up-lane hulls follow their column.
-    let lean = psi * facing_yaw_deg.to_radians().cos();
-    CHASE_CAM_BASE_YAW_DEG + facing_yaw_deg + lean.to_degrees()
+    // (#173) No lane-lean — clean cardinal yaw for every ship. Args retained for the
+    // signature (live render + bow gate) but intentionally unused; see the doc-comment.
+    let _ = (aim_at, cfg, pitch_deg);
+    CHASE_CAM_BASE_YAW_DEG + facing_yaw_deg
 }
 
 fn normalize3(v: [f32; 3]) -> [f32; 3] {
@@ -1579,10 +1552,9 @@ mod tests {
     #[test]
     fn live_loft_bow_points_correctly_all_facings_and_columns() {
         use crate::grid::{Dir4, Facing, Pos, COLS, ROWS};
-        use crate::projector::{grid_cell_quad, vanishing_point, ProjectorConfig};
+        use crate::projector::{grid_cell_quad, ProjectorConfig};
 
         let cfg = ProjectorConfig::default();
-        let vp = vanishing_point(&cfg);
         let bow_local = [3.0_f32, 0.0, 0.0]; // prow +X, ~half hull length
         let ctr_local = [0.0_f32, 0.0, 0.0];
         let row = ROWS - 1; // the player's front row
@@ -1616,25 +1588,13 @@ mod tests {
                             dy > 1e-3,
                             "col {col} N: bow must be ABOVE centre (up-lane); dy={dy:.4}"
                         );
-                        // (#171) Banked toward the VP (parallel to the lane), never
-                        // toward the screen edge. aim_at.x < vp.x (col left of centre)
-                        // ⇒ bow leans RIGHT (dx>0) toward the VP; aim_at.x > vp.x ⇒ LEFT.
-                        if aim_at[0] < vp.x - 1e-3 {
-                            assert!(
-                                dx > 1e-4,
-                                "col {col} N (left of VP): bow must bank RIGHT toward VP; dx={dx:.4}"
-                            );
-                        } else if aim_at[0] > vp.x + 1e-3 {
-                            assert!(
-                                dx < -1e-4,
-                                "col {col} N (right of VP): bow must bank LEFT toward VP; dx={dx:.4}"
-                            );
-                        } else {
-                            assert!(
-                                dx.abs() < 1e-3,
-                                "centre col N: bow must be straight up (no lean); dx={dx:.4}"
-                            );
-                        }
+                        // (#173 Bruce FINAL) NO lean, ever: the bow is dead-straight up
+                        // the screen in EVERY column — clean cardinal pose for firing-read
+                        // clarity, never banked toward the VP.
+                        assert!(
+                            dx.abs() < 1e-3,
+                            "col {col} N: bow must be STRAIGHT up (no lean, cardinal pose); dx={dx:.4}"
+                        );
                     }
                     Facing::Bow(Dir4::S) => assert!(
                         dy < -1e-3,
@@ -1719,37 +1679,27 @@ mod tests {
                          (lane-aim VP must scale WITH aim_at — the ship must NOT rotate on a scene-res toggle)"
                     );
                 }
-                // (#171) The CENTRED column must be exactly the base+facing yaw (the
-                // lane is vertical there ⇒ no lean); off-centre columns carry the
-                // lane-parallel lean, asserted invariant across presets above.
-                if col == COLS / 2 {
-                    let base = CHASE_CAM_BASE_YAW_DEG + facing_yaw(facing);
-                    assert!(
-                        (ref_yaw - base).abs() < 1e-2,
-                        "centred col {facing:?}: yaw {ref_yaw:.4} should be the base {base:.4} (no lean)"
-                    );
-                }
+                // (#173 Bruce FINAL) EVERY column must read exactly the base+facing
+                // yaw — no lean anywhere, the clean cardinal pose.
+                let base = CHASE_CAM_BASE_YAW_DEG + facing_yaw(facing);
+                assert!(
+                    (ref_yaw - base).abs() < 1e-2,
+                    "col {col} {facing:?}: yaw {ref_yaw:.4} should be the base {base:.4} (no lean, cardinal)"
+                );
             }
         }
     }
 
-    /// (#171 Bruce, supersedes the #170 square-to-screen test) The rendered bow LEANS
-    /// up its LANE — "orthogonal to the GRID, not the screen frame" — at ALL columns
-    /// AND all grid-pitch steps. The grid's column lines converge to the
-    /// [`crate::projector::vanishing_point`], so the lane through a cell leans toward
-    /// the VP; this PINS the bow leans the SAME way (toward the VP, never up the bare
-    /// screen — #170's bug — and never away toward the screen edge). The centre column
-    /// has a vertical lane ⇒ the bow is straight up (no lean).
-    ///
-    /// NOTE this guards DIRECTION + the no-lean centre, not an exact angle: the bow's
-    /// rendered screen-lean tracks the lane sign but its precise magnitude is set by
-    /// the ortho-camera projection (`atan(tan(alpha)·sin pitch)` ground yaw), which is
-    /// close to but not pixel-identical with the centre→VP screen angle. Exact-parallel
-    /// is a possible follow-up (numeric yaw solve) if Bruce wants it tighter.
+    /// (#173 Bruce FINAL, supersedes the #171 lane-lean test) The rendered bow is
+    /// STRAIGHT up the screen — NO lean — in EVERY column AND at every grid-pitch step.
+    /// Bruce's final ruling concludes the lean arc: every ship sits at its clean
+    /// cardinal pose for firing-read clarity (front/side bears = legible), so an
+    /// up-lane (N) bow has ZERO screen-x deflection regardless of column or tilt — the
+    /// off-centre lean that read as "aiming" is gone.
     #[test]
-    fn hull_bow_leans_up_its_lane_all_columns_and_pitches() {
+    fn hull_bow_is_straight_no_lean_all_columns_and_pitches() {
         use crate::grid::{Pos, COLS, ROWS};
-        use crate::projector::{grid_cell_quad, vanishing_point, ProjectorConfig};
+        use crate::projector::{grid_cell_quad, ProjectorConfig};
 
         let row = ROWS - 1; // the player's front row
         let facing_yaw = 0.0_f32; // N, up-lane
@@ -1763,28 +1713,16 @@ mod tests {
                 // The SAME pitched projector the hud builds (drawbridge mode = with_pitch).
                 let cfg = ProjectorConfig::for_scene(480.0, 270.0).with_pitch(t);
                 let q = grid_cell_quad(Pos::new(col, row), &cfg);
-                let vp = vanishing_point(&cfg);
                 let yaw = chase_cam_ground_yaw_deg(q.center, facing_yaw, &cfg, loft_pitch(t));
-                // Lane lean sign through the cell centre: >0 VP is screen-right of the cell.
-                let lane_dx = vp.x - q.center[0];
                 // Rendered bow's screen-x lean at the live pitch (NDC-x == screen-x sign).
                 let (bx, _) = bow_loft_ndc_pitched(yaw, [3.0, 0.0, 0.0], loft_pitch(t));
                 let (cx, _) = bow_loft_ndc_pitched(yaw, [0.0, 0.0, 0.0], loft_pitch(t));
                 let bow_dx = bx - cx;
-                if lane_dx.abs() < 1e-3 {
-                    // Centre column: lane is vertical ⇒ bow straight up (no lean).
-                    assert!(
-                        bow_dx.abs() < 1e-3,
-                        "centre col step {step}: bow must be straight up (no lean); dx={bow_dx:.4}"
-                    );
-                } else {
-                    // Off-centre: bow leans the SAME screen side as the VP (up its lane).
-                    assert!(
-                        bow_dx.signum() == lane_dx.signum(),
-                        "col {col} step {step} t={t:.2}: bow must lean TOWARD the VP (up its lane) — \
-                         bow_dx {bow_dx:.4} vs VP-side {lane_dx:.1}"
-                    );
-                }
+                // Every column, every pitch: dead-straight up, no lean.
+                assert!(
+                    bow_dx.abs() < 1e-3,
+                    "col {col} step {step} t={t:.2}: bow must be STRAIGHT up (no lean, cardinal); dx={bow_dx:.4}"
+                );
             }
         }
     }
