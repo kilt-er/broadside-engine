@@ -741,8 +741,14 @@ impl Default for DemoContent {
         // exactly (no invented numbers): archetype broadside, heat 3 / cd 4,
         // band close, pattern BROADSIDE, arc broadsideArc; DAMAGE amount = the
         // loader's derivation for a heat-3 broadside gun (`heat + 2` = 5, see
-        // catalog_canonical::inflate_effect). 2-D band: close → Near (#28
-        // mapping). DemoContent must serve it or key 3 queues an unknown id and
+        // catalog_canonical::inflate_effect). 2-D band: close → [Adjacent, Near]
+        // (#176 fix; matches the catalog `close` derive in
+        // `catalog::expand_band_2d` / `catalog_canonical::derive_range_2d_set`).
+        // This was Near-ONLY (distance 2), which made the broadside WHIFF on a
+        // side-on enemy at distance 1 (adjacent) — the arc bore correctly but the
+        // band excluded the touching cell, so a flank-on adjacent enemy took 0
+        // damage. `close` is "touching out to near", so Adjacent must be in the
+        // set. DemoContent must serve it or key 3 queues an unknown id and
         // no-ops — this is the Content half of #49 (the mount is in
         // broadside.rs::player_ship).
         c.insert(Action {
@@ -758,8 +764,10 @@ impl Default for DemoContent {
                 pattern: TargetingPattern::BROADSIDE,
                 band: vec![RangeBand::Close],
                 optimal_band: RangeBand::Close,
-                range_band: vec![crate::grid::Range::Near],
-                optimal_range: crate::grid::Range::Near,
+                // #176: close → [Adjacent, Near] (was [Near] only, which whiffed
+                // on a flank-on enemy at distance 1). Mirror of the catalog derive.
+                range_band: vec![crate::grid::Range::Adjacent, crate::grid::Range::Near],
+                optimal_range: crate::grid::Range::Adjacent,
                 requires_arc: Some(TArc::BroadsideArc),
                 facing_relative: true,
                 hits_all: false,
@@ -1203,6 +1211,70 @@ mod tests {
         assert!(c.action("torpedo").is_some());
         // #49: the broadside-arc 3rd mount must be served or key 3 no-ops.
         assert!(c.action("broadside_battery").is_some());
+    }
+
+    /// (#176 repro) The player's `broadside_battery` must bear on a flank-on
+    /// enemy at distance 1 (Adjacent), not just distance 2 (Near). Bruce: "if
+    /// the SIDE of my ship is pointed right at enemies I am doing no damage."
+    /// Root cause was `range_band: [Near]` (distance exactly 2) on the `DemoContent`
+    /// def — the arc bore the perpendicular flank correctly, but the band excluded
+    /// the adjacent (touching) cell, so a side-on enemy at distance 1 yielded an
+    /// EMPTY target set (0 damage). The fix widens the band to `[Adjacent, Near]`
+    /// (the catalog `close` derive). This pins that a Bow(N) player at (2,2) now
+    /// targets a due-EAST enemy at (3,2) (Chebyshev distance 1).
+    #[test]
+    fn broadside_battery_bears_on_adjacent_flank_enemy_176() {
+        use crate::grid::{Dir4, Facing, Pos};
+        use crate::resolve::resolve_targeting_2d;
+        use crate::types::{Board, EventBus};
+
+        let content = DemoContent::default();
+        let action = content
+            .action("broadside_battery")
+            .expect("broadside_battery served by DemoContent")
+            .clone();
+
+        // Player Bow(N) at (2,2): the broadside fires out the E/W flanks (the
+        // cardinals perpendicular to the bow). Mount arc is BroadsideArc so the
+        // gate matches firing.
+        let mut player = player_with_mounts(0);
+        player.pos = Pos::new(2, 2);
+        player.cell = Pos::new(2, 2).to_index();
+        player.facing = Facing::Bow(Dir4::N);
+
+        // Enemy due EAST at distance 1 (adjacent / touching the player's flank).
+        let mut enemy = player_with_mounts(0);
+        enemy.id = "e".into();
+        enemy.faction = Faction::Enemy;
+        enemy.pos = Pos::new(3, 2);
+        enemy.cell = Pos::new(3, 2).to_index();
+        enemy.facing = Facing::Bow(Dir4::W);
+
+        // 20-cell (5x4) board; place both ships at their flat indices.
+        let (player_idx, enemy_idx) = (player.cell, enemy.cell);
+        let mut cells: Vec<Option<Ship>> = (0..crate::grid::CELLS).map(|_| None).collect();
+        cells[player_idx] = Some(player);
+        cells[enemy_idx] = Some(enemy);
+        let board = Board {
+            size: crate::grid::COLS,
+            cells,
+            ordnance: vec![],
+            hazards: (0..crate::grid::CELLS).map(|_| vec![]).collect(),
+            patrol: 1,
+            level: 0,
+            threats: Vec::new(),
+            bus: EventBus::default(),
+            destroys_this_window: 0,
+            fire_events: vec![],
+        };
+
+        let hit = resolve_targeting_2d(&action, &board, Pos::new(2, 2));
+        assert_eq!(
+            hit,
+            vec![Pos::new(3, 2)],
+            "broadside_battery must bear on the adjacent (dist-1) flank enemy due E; \
+             before #176 the [Near]-only band returned EMPTY here",
+        );
     }
 
     #[test]
