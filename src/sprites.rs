@@ -78,6 +78,14 @@ pub enum LoftMeshKind {
     /// [`Self::EnemyCad`] when installed. Enemies face the player (bow-on), so the
     /// hull renders oncoming — see the `loft_facing_ground_yaw` Bow(S)=180 case.
     EnemyLoft,
+    /// (#187) A SECOND enemy hull mesh, so the enemy fleet renders a MIX of two
+    /// ship-classes for variety (Bruce: "one of the other two ships can be the old
+    /// player ship") — the new player is `broadside-ship_03.glb`, so the old player
+    /// hull (`broadside-ship_01.glb`) is reused here as a second enemy alongside
+    /// [`Self::EnemyLoft`] (`broadside-ship_02.glb`). Same enemy tint; the renderer
+    /// picks per-ship between the two by a deterministic `ship_id` hash (see
+    /// `loft_kind`). Falls back to [`Self::EnemyLoft`] when only the one is installed.
+    EnemyLoftB,
 }
 
 /// A decoded sprite ready to upload to the GPU.

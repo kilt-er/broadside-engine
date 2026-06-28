@@ -157,26 +157,37 @@ fn main() {
     let loaded = gfx.try_load_ship_sprites(std::path::Path::new("assets"));
     log::info!("capture: loaded {loaded} ship sprite(s)");
 
-    // (#149) Install the player's GLB exactly as the playable bin does (broadside.rs
-    // install_player_glb) so the capture faithfully shows the LIVE-3D player ship. The
-    // player hull is now broadside-ship_01.glb (Bruce's 2nd-editor ship, contract-
-    // conformant), matching the live swap.
-    const PLAYER_GLB: &[u8] = include_bytes!("../../assets/ships/broadside-ship_01.glb");
-    match gfx.install_player_glb(PLAYER_GLB) {
-        Ok(()) => log::info!("capture: player hull installed from broadside-ship_01.glb"),
+    // (#149/#187) Install the player's GLB exactly as the playable bin does
+    // (broadside.rs install_player_glb) so the capture faithfully shows the LIVE-3D
+    // player ship. The player hull is now broadside-ship_03.glb (Bruce's new hero),
+    // whose prow is authored at −X → install with flip_prow=true to match the live bin.
+    const PLAYER_GLB: &[u8] = include_bytes!("../../assets/ships/broadside-ship_03.glb");
+    match gfx.install_player_glb(PLAYER_GLB, true) {
+        Ok(()) => {
+            log::info!("capture: player hull installed from broadside-ship_03.glb (prow-flipped)");
+        }
         Err(e) => log::warn!(
-            "capture: broadside-ship_01.glb import failed ({e}); player falls back to sprite/flat-box"
+            "capture: broadside-ship_03.glb import failed ({e}); player falls back to sprite/flat-box"
         ),
     }
-    // (#163) ENEMIES = broadside-ship_02.glb, tinted (matches the live bin's ENEMY_TINT)
-    // so the capture shows the oncoming enemy hulls, not flat boxes. Matches the live
-    // enemy-mesh swap (player stays broadside-ship_01.glb).
+    // (#163/#187) ENEMY FLEET = a MIX of broadside-ship_02.glb (EnemyLoft) + the old
+    // player hull broadside-ship_01.glb (EnemyLoftB), both enemy-tinted, matching the
+    // live bin so the capture shows both enemy classes (loft_kind picks per-id).
     const ENEMY_GLB: &[u8] = include_bytes!("../../assets/ships/broadside-ship_02.glb");
     match gfx.install_enemy_glb(ENEMY_GLB) {
-        Ok(()) => log::info!("capture: enemy hull installed from broadside-ship_02.glb"),
+        Ok(()) => log::info!("capture: enemy hull A installed from broadside-ship_02.glb"),
         Err(e) => {
             log::warn!(
                 "capture: broadside-ship_02.glb import failed ({e}); enemies fall back to CAD/2D"
+            );
+        }
+    }
+    const ENEMY_GLB_B: &[u8] = include_bytes!("../../assets/ships/broadside-ship_01.glb");
+    match gfx.install_enemy_glb_b(ENEMY_GLB_B, false) {
+        Ok(()) => log::info!("capture: enemy hull B installed from broadside-ship_01.glb"),
+        Err(e) => {
+            log::warn!(
+                "capture: broadside-ship_01.glb import failed ({e}); enemy fleet uses the single hull"
             );
         }
     }

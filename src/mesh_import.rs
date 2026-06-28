@@ -295,6 +295,30 @@ pub fn load_glb(bytes: &[u8]) -> Result<ImportedShip, ImportError> {
     })
 }
 
+/// (#187) Rotate an imported hull 180° about the vertical (`Y`) axis, in place:
+/// `x → −x`, `z → −z`, `y` unchanged, for both positions AND normals. The render
+/// contract puts the PROW at `+X` (the longest axis), and the shared chase-cam yaw
+/// math ([`crate::loft_gpu::chase_cam_ground_yaw_deg`]) assumes that. A GLB whose
+/// prow sits at `−X` (e.g. `broadside-ship_03.glb`, confirmed by tip-width probe)
+/// would otherwise render 180° off its facing at every cardinal. Apply this once
+/// at install so the mesh presents a `+X` prow to the yaw math; geometry is
+/// otherwise untouched (group ranges / materials / light unaffected — the half-turn
+/// is symmetric in Y, so the bbox-centre `center_y` the upload computes is the same).
+/// Explicit (opt-in by the caller) rather than auto-detected, so which mesh is
+/// flipped is deterministic and visible, not at the mercy of a heuristic.
+#[must_use]
+pub fn with_prow_flipped_180(mut ship: ImportedShip) -> ImportedShip {
+    for p in &mut ship.mesh.positions {
+        p[0] = -p[0];
+        p[2] = -p[2];
+    }
+    for n in &mut ship.mesh.normals {
+        n[0] = -n[0];
+        n[2] = -n[2];
+    }
+    ship
+}
+
 /// Pull a [`MeshMaterial`] from a primitive, returning its index in
 /// `materials` (deduplicated so two primitives sharing a glTF material share
 /// one [`MeshMaterial`]).

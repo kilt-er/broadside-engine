@@ -1426,31 +1426,47 @@ impl ApplicationHandler for App {
         // materials + the unlit glow. push_ship_2d emits a LoftShip for the player when
         // this is installed (the loft 3D pass renders it lit, chase-cam posed, then
         // blits into the lane), else falls back to the sprite/flat-box.
-        const PLAYER_GLB: &[u8] = include_bytes!("../../assets/ships/broadside-ship_01.glb");
-        match gfx.install_player_glb(PLAYER_GLB) {
+        // (#187 Bruce) PLAYER = broadside-ship_03.glb, the new hero hull, tinted RED.
+        // Its prow is authored at −X (confirmed by tip-width probe) — the OPPOSITE of
+        // the +X render contract 01/02 follow — so install with flip_prow=true to
+        // half-turn it about Y at import, presenting a +X prow to the chase-cam yaw
+        // math (else it'd render 180° off its facing at every cardinal).
+        const PLAYER_GLB: &[u8] = include_bytes!("../../assets/ships/broadside-ship_03.glb");
+        match gfx.install_player_glb(PLAYER_GLB, true) {
             Ok(()) => log::info!(
-                "loft: player hull installed from broadside-ship_01.glb ({} bytes)",
+                "loft: player hull installed from broadside-ship_03.glb ({} bytes, prow-flipped)",
                 PLAYER_GLB.len()
             ),
             Err(e) => log::warn!(
-                "loft: broadside-ship_01.glb import failed ({e}); player falls back to sprite/flat-box"
+                "loft: broadside-ship_03.glb import failed ({e}); player falls back to sprite/flat-box"
             ),
         }
-        // (#163 Bruce) ENEMIES = broadside-ship_02.glb, the distinct enemy hull from
-        // Bruce's editor (verified to our GLB contract: hull length on +X = 12, bow +X,
-        // beam on Z, unlit engine glow + scene laz/lel — a chunkier cruiser silhouette
-        // vs the player's ship_01). Replaces Aegis.glb as the enemy loft mesh; tinted
-        // (ENEMY_TINT) so the fleet reads hostile. loft_kind prefers EnemyLoft once
-        // installed. Player stays on broadside-ship_01.glb (above).
+        // (#163/#187 Bruce) ENEMY FLEET renders a MIX of two hulls for variety:
+        // broadside-ship_02.glb (the chunkier cruiser, EnemyLoft) AND the OLD player
+        // hull broadside-ship_01.glb (now a second enemy, EnemyLoftB). Both verified to
+        // the GLB contract (+X prow → no flip) and enemy-tinted (ENEMY_TINT). loft_kind
+        // picks per-enemy by a deterministic id hash, so the fleet shows both classes.
         const ENEMY_GLB: &[u8] = include_bytes!("../../assets/ships/broadside-ship_02.glb");
         match gfx.install_enemy_glb(ENEMY_GLB) {
             Ok(()) => log::info!(
-                "loft: enemy hull installed from broadside-ship_02.glb ({} bytes)",
+                "loft: enemy hull A installed from broadside-ship_02.glb ({} bytes)",
                 ENEMY_GLB.len()
             ),
             Err(e) => {
                 log::warn!(
                     "loft: broadside-ship_02.glb import failed ({e}); enemies fall back to CAD/2D"
+                );
+            }
+        }
+        const ENEMY_GLB_B: &[u8] = include_bytes!("../../assets/ships/broadside-ship_01.glb");
+        match gfx.install_enemy_glb_b(ENEMY_GLB_B, false) {
+            Ok(()) => log::info!(
+                "loft: enemy hull B installed from broadside-ship_01.glb ({} bytes)",
+                ENEMY_GLB_B.len()
+            ),
+            Err(e) => {
+                log::warn!(
+                    "loft: broadside-ship_01.glb import failed ({e}); enemy fleet uses the single hull"
                 );
             }
         }

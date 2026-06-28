@@ -1023,7 +1023,7 @@ impl crate::sprites::SpriteRegistry for Gfx {
         Self::has_facing_sprite(self, class, index)
     }
 
-    fn loft_kind(&self, _ship_id: &str, is_player: bool) -> Option<crate::sprites::LoftMeshKind> {
+    fn loft_kind(&self, ship_id: &str, is_player: bool) -> Option<crate::sprites::LoftMeshKind> {
         use crate::sprites::LoftMeshKind;
         if is_player {
             // Player → the lofted Aegis-class hull if installed (preferred), else
@@ -1035,13 +1035,31 @@ impl crate::sprites::SpriteRegistry for Gfx {
                 .has_loft_mesh(LoftMeshKind::PlayerCad)
                 .then_some(LoftMeshKind::PlayerCad);
         }
-        // Enemies → the RED-tinted Aegis hull if installed (preferred, Bruce's
+        // Enemies → the enemy-tinted GLB hull(s) if installed (preferred, Bruce's
         // ask), else the authored-colour CAD hull, else 2D silhouette.
-        if self.has_loft_mesh(LoftMeshKind::EnemyLoft) {
-            return Some(LoftMeshKind::EnemyLoft);
+        // (#187) When BOTH enemy meshes are installed, pick per-ship for fleet
+        // variety: a deterministic id-byte fold → parity selects EnemyLoft vs
+        // EnemyLoftB, so a given enemy ALWAYS draws the same hull (stable across
+        // frames) but the fleet shows a mix. Only one installed → every enemy uses it.
+        let has_a = self.has_loft_mesh(LoftMeshKind::EnemyLoft);
+        let has_b = self.has_loft_mesh(LoftMeshKind::EnemyLoftB);
+        match (has_a, has_b) {
+            (true, true) => {
+                let fold = ship_id
+                    .bytes()
+                    .fold(0u32, |acc, b| acc.wrapping_add(u32::from(b)));
+                Some(if fold % 2 == 0 {
+                    LoftMeshKind::EnemyLoft
+                } else {
+                    LoftMeshKind::EnemyLoftB
+                })
+            }
+            (true, false) => Some(LoftMeshKind::EnemyLoft),
+            (false, true) => Some(LoftMeshKind::EnemyLoftB),
+            (false, false) => self
+                .has_loft_mesh(LoftMeshKind::EnemyCad)
+                .then_some(LoftMeshKind::EnemyCad),
         }
-        self.has_loft_mesh(LoftMeshKind::EnemyCad)
-            .then_some(LoftMeshKind::EnemyCad)
     }
 }
 
@@ -1505,11 +1523,22 @@ impl Gfx {
     /// the GLB pipeline carries the real mesh. Idempotent; per-ship pose created
     /// lazily by [`Self::sync_loft_pose`]. Returns the import error if the bytes
     /// don't parse (caller logs + falls back to 2D / sprite).
+    ///
+    /// (#187) `flip_prow`: when the GLB's prow sits at `−X` instead of the contract
+    /// `+X` (e.g. `broadside-ship_03.glb`, confirmed by tip-width probe), pass `true`
+    /// to half-turn the mesh about `Y` at install via
+    /// [`crate::mesh_import::with_prow_flipped_180`] so it presents a `+X` prow to the
+    /// shared chase-cam yaw math and renders bow-correct at every facing. A contract-
+    /// conformant `+X` GLB passes `false` (no-op).
     pub fn install_player_glb(
         &mut self,
         glb_bytes: &[u8],
+        flip_prow: bool,
     ) -> Result<(), crate::mesh_import::ImportError> {
-        let ship = crate::mesh_import::load_glb(glb_bytes)?;
+        let mut ship = crate::mesh_import::load_glb(glb_bytes)?;
+        if flip_prow {
+            ship = crate::mesh_import::with_prow_flipped_180(ship);
+        }
         let hull = self
             .loft
             .upload_imported_tinted(&self.device, &ship, Self::PLAYER_RED_TINT);
@@ -1608,6 +1637,39 @@ impl Gfx {
             .upload_imported_tinted(&self.device, &ship, Self::ENEMY_TINT);
         self.loft_meshes.insert(
             crate::sprites::LoftMeshKind::EnemyLoft,
+            LoftMesh {
+                vbuf: hull.vbuf,
+                vcount: hull.vcount,
+                center_y: hull.center_y,
+            },
+        );
+        Ok(())
+    }
+
+    /// (#187) Install a SECOND enemy hull from `.glb` bytes as
+    /// [`crate::sprites::LoftMeshKind::EnemyLoftB`], enemy-tinted like
+    /// [`Self::install_enemy_glb`], so the fleet renders a MIX of two ship-classes
+    /// for variety (Bruce: reuse the old player hull `broadside-ship_01.glb` as a
+    /// second enemy alongside `broadside-ship_02.glb`). [`Self::loft_kind`] picks
+    /// between `EnemyLoft` and `EnemyLoftB` per ship deterministically; when only one
+    /// is installed every enemy falls back to it, so this is purely additive. Same
+    /// `flip_prow` contract as [`Self::install_player_glb`] (01/02 are `+X`-prow → no
+    /// flip needed; pass `true` only for a `−X`-prow hull). Idempotent; returns the
+    /// import error if the bytes don't parse (caller logs + keeps the single mesh).
+    pub fn install_enemy_glb_b(
+        &mut self,
+        glb_bytes: &[u8],
+        flip_prow: bool,
+    ) -> Result<(), crate::mesh_import::ImportError> {
+        let mut ship = crate::mesh_import::load_glb(glb_bytes)?;
+        if flip_prow {
+            ship = crate::mesh_import::with_prow_flipped_180(ship);
+        }
+        let hull = self
+            .loft
+            .upload_imported_tinted(&self.device, &ship, Self::ENEMY_TINT);
+        self.loft_meshes.insert(
+            crate::sprites::LoftMeshKind::EnemyLoftB,
             LoftMesh {
                 vbuf: hull.vbuf,
                 vcount: hull.vcount,
