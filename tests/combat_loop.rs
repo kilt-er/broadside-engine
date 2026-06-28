@@ -675,32 +675,54 @@ fn live_pulse_laser() -> Option<Action> {
     cat.actions.into_iter().find(|a| a.id == "pulse_laser")
 }
 
+/// Content serving a set of weapons by id (from the live catalog). Used by the
+/// multi-weapon overheat test, which fires DIFFERENT weapons in one turn.
+struct MultiWeapon {
+    actions: HashMap<String, Action>,
+}
+impl Content for MultiWeapon {
+    fn action(&self, id: &str) -> Option<&Action> {
+        self.actions.get(id)
+    }
+    fn spawn_projectile(&self, _: &str, _: &Ship) -> Projectile {
+        panic!("multi-weapon heat scenario fires beams, not ordnance");
+    }
+}
+
+/// Load one live action by id from the committed catalog asset (None if absent).
+fn live_action(id: &str) -> Option<Action> {
+    let path = std::path::Path::new("assets/broadside.catalog.json");
+    if !path.exists() {
+        return None;
+    }
+    let cat = broadside_engine::catalog::load_from_path(path).expect("catalog loads");
+    cat.actions.into_iter().find(|a| a.id == id)
+}
+
 #[test]
-fn pulse_laser_sustained_fire_is_cooldown_limited_never_overheats() {
-    let Some(pulse) = live_pulse_laser() else {
+fn multi_weapon_alpha_overheats_into_lockout_then_recovers() {
+    // #184 RE-POINT (supersedes the old #73 single-pulse heat-spam premise):
+    // pulse_laser is now cd 2, so ONE weapon can no longer spam itself into
+    // overheat. Heat->lockout is still a real mechanic, reached by firing
+    // DIFFERENT weapons in one turn. This keeps the heat / lockout / recover
+    // coverage alive on the live catalog path.
+    //
+    // pulse_laser (heat 2, band close -> [Adjacent, Near]) + beam_cannon (heat 2,
+    // band mid -> [Near, Far]) BOTH bear at distance 2 (Near). A 2-mount ship
+    // firing both in one turn spends 2 + 2 = 4 heat. With heat_max 4 that hits
+    // the lockout line exactly: queue both, fire both, the ship locks out. Then,
+    // idle (no fire) -> passive cooling (-1/turn) drops heat below max and clears
+    // the lock, so the ship can fire again ("overheat -> forced cool -> resume").
+    let (Some(pulse), Some(beam)) = (live_action("pulse_laser"), live_action("beam_cannon")) else {
         eprintln!("[heat-gate test] catalog asset absent; skipping");
         return;
     };
-    // #184 (supersedes the old #73 cd-0 heat-spam premise): pulse_laser is now
-    // the load-and-fire baseline — heat 2, cooldown 2. The ANTI-SPAM gate is now
-    // the COOLDOWN, not heat. A player who re-queues pulse every turn fires it
-    // every OTHER turn (one reload turn between shots), so heat goes +2 on a fire
-    // turn then -1, -1 across the fire turn's and the reload turn's EOTs = net 0
-    // over each 2-turn cycle. Sustained pulse fire therefore NEVER overheats: the
-    // cooldown rate-limits it long before heat could climb to heat_max.
-    assert_eq!(
-        pulse.cost.heat, 2,
-        "pulse_laser heat is 2 (the per-shot heat)"
-    );
-    assert_eq!(
-        pulse.cost.cooldown_max, 2,
-        "#184: pulse_laser is cd 2 (load-and-fire) — cooldown is the anti-spam gate, not heat"
-    );
+    assert_eq!(pulse.cost.heat, 2, "pulse_laser heat 2");
+    assert_eq!(beam.cost.heat, 2, "beam_cannon heat 2");
 
-    // REAL 2-D fixture (invariant A): player (0,0) Bow(E) bears East; dummy at
-    // (2,0) is distance 2 = Near, in pulse_laser's band, so each shot connects.
-    // Anchored + weaponless dummy holds the cell and never fires back, isolating
-    // the player's heat/cooldown cycle.
+    // REAL 2-D fixture (invariant A): player (0,0) Bow(E) with TWO forward mounts;
+    // dummy at (2,0) = distance 2 (Near), where BOTH weapons bear. Anchored +
+    // weaponless dummy holds the cell and never fires back.
     let mut player = common::ship_2d(
         "p",
         Faction::Player,
@@ -710,7 +732,13 @@ fn pulse_laser_sustained_fire_is_cooldown_limited_never_overheats() {
         Arc::Forward,
         "pulse_laser",
     );
-    player.heat_max = 6;
+    // Second mount: beam_cannon, same forward arc.
+    player.mounts.push(Mount {
+        id: "p-m2".into(),
+        arc: Arc::Forward,
+        weapon: "beam_cannon".into(),
+    });
+    player.heat_max = 4;
     player.heat = 0;
     let mut dummy = common::dummy_2d(
         "d",
@@ -721,68 +749,43 @@ fn pulse_laser_sustained_fire_is_cooldown_limited_never_overheats() {
     );
     dummy.traits = vec![Trait::Anchored];
     let mut b = common::board_2d(vec![player, dummy]);
-    let content = OneWeapon {
-        id: "pulse_laser".into(),
-        action: pulse,
+    let content = MultiWeapon {
+        actions: HashMap::from([("pulse_laser".into(), pulse), ("beam_cannon".into(), beam)]),
     };
 
-    // Re-queue + resolve a FULL round every turn for many turns. Each round fires
-    // the queue (if the cooldown allows) then runs end_of_turn (cooldown + heat
-    // tick). Track the player's peak heat and whether it ever locked out.
-    let mut fired_turns = 0;
-    let mut max_heat = 0;
-    let mut ever_locked = false;
-    for _ in 0..12 {
-        // Snapshot the target's hull before the round; a drop means a shot landed.
-        let hull_before = b
-            .cells
-            .iter()
-            .flatten()
-            .find(|s| s.id == "d")
-            .map_or(0, |s| s.hull);
-        if let Some(c) = b
-            .cells
-            .iter()
-            .position(|c| c.as_ref().is_some_and(|s| s.id == "p"))
-        {
-            b.cells[c]
-                .as_mut()
-                .unwrap()
-                .queue
-                .push("pulse_laser".into());
-        }
-        resolve_round(&mut b, &content);
-        let p = b.cells.iter().flatten().find(|s| s.id == "p").unwrap();
-        max_heat = max_heat.max(p.heat);
-        ever_locked |= p.locked_out;
-        let hull_after = b
-            .cells
-            .iter()
-            .flatten()
-            .find(|s| s.id == "d")
-            .map_or(0, |s| s.hull);
-        if hull_after < hull_before {
-            fired_turns += 1;
-        }
+    // Queue BOTH weapons and fire them in ONE turn. Fire only (no end_of_turn) so
+    // we read the PEAK heat: pulse (heat 0 -> 2) then beam_cannon (2 -> 4 = max),
+    // which trips lockout on the spot.
+    if let Some(c) = b
+        .cells
+        .iter()
+        .position(|c| c.as_ref().is_some_and(|s| s.id == "p"))
+    {
+        let s = b.cells[c].as_mut().unwrap();
+        s.queue = vec!["pulse_laser".into(), "beam_cannon".into()];
     }
+    broadside_engine::resolve::fire_player_queue("p", &mut b, &content);
+    let p = b.cells.iter().flatten().find(|s| s.id == "p").unwrap();
+    assert_eq!(
+        p.heat, 4,
+        "two different weapons (heat 2 + 2) spend 4 heat in one turn"
+    );
+    assert!(
+        p.locked_out,
+        "a 2-weapon alpha reaching heat_max (4) locks the ship out"
+    );
 
-    // The cooldown gate rate-limits pulse to every other turn: over 12 turns it
-    // fires ~6 times, NOT 12 (that would be the old cd-0 spam).
+    // Recovery: idle turns (no fire) cool -1/turn and clear the lock once heat
+    // drops below heat_max -- the "overheat then resume" loop.
+    for _ in 0..6 {
+        run_world_phase(&mut b, &content);
+    }
+    let p = b.cells.iter().flatten().find(|s| s.id == "p").unwrap();
     assert!(
-        (5..=6).contains(&fired_turns),
-        "#184: cd-2 pulse fires every other turn (~6 shots in 12 turns), not every turn; fired {fired_turns}",
+        !p.locked_out,
+        "passive cooling clears the lockout so the ship can fire again"
     );
-    // And because of that reload gap, heat never climbs into lockout — the
-    // cooldown, not heat, is what keeps sustained fire in check.
-    assert!(
-        !ever_locked,
-        "#184: cooldown-limited pulse never overheats into lockout (heat peaked at {max_heat}/{}; the reload gap caps it)",
-        6,
-    );
-    assert!(
-        max_heat <= 3,
-        "#184: sustained pulse heat stays low (peak {max_heat}) — +2 on a fire turn, then -1/-1 over the fire+reload EOTs",
-    );
+    assert_eq!(p.heat, 0, "idle cooling drains heat back to 0");
 }
 
 #[test]
