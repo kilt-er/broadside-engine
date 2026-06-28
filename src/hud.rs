@@ -3203,7 +3203,18 @@ pub fn push_player_queue_panel_2d(out: &mut Vec<DrawCommand>, tiles: &[AbilityTi
     for (k, t) in queued.iter().enumerate() {
         // k = 0 (head) -> BOTTOM cell; higher k stacks UP.
         let cy = bottom_y - cell * 0.5 - k as f32 * cell;
-        // Amber frame chip (QUEUED) behind the icon — same cue as the bottom tiles.
+        // (#174 Bruce) HIT CUE: a queued weapon that WILL connect from the player's
+        // current pose (its bow/broadside bears on >=1 enemy) gets the bright AMBER
+        // chip; one that WON'T (can't_fire — the bin sets `can_fire` from
+        // `resolve_targeting_2d(..).is_empty()`, the single fire-gate, so this is
+        // "in-arc AND can-fire-at-band", indifferent to damage degradation) goes GREY,
+        // same grey=can't-fire convention as the bottom resting tiles. So the committed
+        // queue shows at a glance which shots land from here vs which are dead.
+        let (chip, ink) = if t.can_fire {
+            (TILE_QUEUED, TILE_BG)
+        } else {
+            (TILE_DISABLED_BORDER, TILE_DISABLED_INK)
+        };
         push_polygon(
             out,
             PolygonInstance::flat(
@@ -3213,17 +3224,17 @@ pub fn push_player_queue_panel_2d(out: &mut Vec<DrawCommand>, tiles: &[AbilityTi
                     [fx + half, cy + half],
                     [fx - half, cy + half],
                 ],
-                TILE_QUEUED,
+                chip,
                 atlas::cell_uvs(atlas::SOLID_WHITE),
             ),
         );
-        // Weapon icon centered on the chip.
+        // Weapon icon centered on the chip (dim grey ink when it won't connect).
         push_sprite(
             out,
             SpriteInstance::axis_aligned(
                 [fx, cy],
                 [icon, icon],
-                TILE_BG,
+                ink,
                 atlas::cell_uvs(t.icon.atlas_cell()),
             ),
         );
