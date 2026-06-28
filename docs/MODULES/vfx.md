@@ -78,11 +78,6 @@ exactly what was tuned. The schema itself lives in [`src/effects.rs`](effects.md
 literal, none of this changes a pixel until someone authors a non-default catalog. The
 `effects` module's `defaults_match_vfx_constants` test is the cross-module pin.
 
-> **Stale-doc flag (out of scope here):** the #178 *real-time* VFX pass (expanding
-> wall-clock explosion, animated beam travel, torpedo cell-to-cell lerp + exhaust
-> trail; commits `e910571` / `7d4f34c` / `5c50037`) is not yet reflected in the
-> per-function walkthrough below — a separate doc-update item.
-
 ## `struct Snapshot` (src/vfx.rs:83)
 
 The per-frame diff baseline: `ships: HashMap<id → (hull, cell, faction)>` +
@@ -122,12 +117,15 @@ from the exact `ShotBeam` above, so the diff no longer fabricates a beam from a 
 attacker); a vanished `id` → `Explosion` at its last known cell. Ordnance: a projectile
 whose cell changed → `Trail` along the step.
 
-### `fn advance(&mut self, dt) -> bool` (src/vfx.rs:196) + `is_active` (src/vfx.rs:205)
+### `fn advance(&mut self, dt) -> bool` (src/vfx.rs:314) + `is_active` (src/vfx.rs:323)
 
-`advance` ages every effect, drops expired, returns `true` while any survive (the
-redraw-keepalive signal so the caller keeps the loop running until the juice
-settles); `is_active` is the read-only twin. `advance_expires_effects`
-(src/vfx.rs:437) pins the lifetime cull.
+`advance` ages every effect **by the measured wall-clock `dt`** (the #178 measured-dt
+seam — the bin passes the real elapsed seconds since the last frame, not a per-turn
+beat), drops expired, and returns `true` while any survive (the redraw-keepalive signal
+so the caller keeps the loop running until the juice settles). This is what makes the
+animated beam travel and the expanding explosion (below) play out over *real seconds*
+regardless of how fast the turn resolves. `is_active` is the read-only twin.
+`advance_expires_effects` (src/vfx.rs:1006) pins the lifetime cull.
 
 ### `fn emit(&self, out, board, lane)` (src/vfx.rs:213)
 
@@ -146,34 +144,78 @@ design** is the deliberate counterpart to the resolver's EventBus invariant
 
 ---
 
-## Draw helpers (src/vfx.rs:258–320)
+## Draw helpers (src/vfx.rs:399–667)
 
-All render as flat-colour quads via the atlas's `SOLID_WHITE` cell:
-- `emit_beam` (src/vfx.rs:258) — a thin rotated rectangle from `from`→`to` along the
-  lane (`rotation_rad = atan2(dy, dx)`), fading + thinning over its life. Used for
-  both `ShotBeam` and `Trail`.
-- `emit_flash` (src/vfx.rs:287) — an expanding (ease-out grow), fading axis-aligned
-  square centred on a cell; `peak` size differs for hit (16) vs explosion (30).
-- `emit_telegraph` (src/vfx.rs:310) — a small red marker well above the ship
-  silhouette (`lane.center_y − 96`); first-pass chevron-bar, the per-intent icon set
-  is a later art pass.
+All render as flat-colour quads via the atlas's `SOLID_WHITE` cell. Each takes the
+effect's eased lifetime `t = age/dur` (so #178's wall-clock `advance` drives the
+animation) plus the matching [`effects`](effects.md) cfg struct:
 
-**Worked examples:** `hull_drop_spawns_hit_flash_only` (src/vfx.rs:569 — the diff now
-spawns the impact flash only, no fabricated beam), `fire_event_spawns_exact_shot_beam`
-(src/vfx.rs:585 — a `board.fire_events` entry latches into a `ShotBeam`),
-`vanished_ship_spawns_explosion` (src/vfx.rs:634), `ordnance_step_spawns_trail`
-(src/vfx.rs:645), `first_observe_spawns_nothing` (src/vfx.rs:556).
+- `emit_beam` (src/vfx.rs:403) — a thin rotated rectangle from `from`→`to` along the
+  lane (`rotation_rad = atan2(dy, dx)`), fading + thinning over its life. Used for the
+  **`Trail`** (ordnance exhaust streak).
+- **`emit_shot_beam` (src/vfx.rs:479) — #178 step 2, animated beam travel.** Two phases
+  over wall-clock `t`: **TRAVEL** (`t < cfg.travel_frac`) eases a bright bolt-HEAD from
+  muzzle→target (ease-out), drawing muzzle→head as the body plus an over-bright leading
+  **tip** (`tip_len_frac` / `tip_thickness_mul`), so the shot visibly *crosses* the
+  lane; **STRIKE+FADE** (`t ≥ travel_frac`) draws the full attacker→target beam and
+  fades+thins it over the remaining life. Archetype `thickness` + faction `color`; a
+  miss (`dim`) renders at `miss_alpha` instead of `hit_alpha`.
+- `emit_flash` (src/vfx.rs:547) — the hit spark: an ease-out-growing, fading
+  axis-aligned square centred on a cell (`peak_px` 16 by default).
+- **`emit_explosion` (src/vfx.rs:574) — #178 step 1, expanding wall-clock explosion.**
+  Three eased `SOLID_WHITE` layers over `t`: an **expanding orange shell** (the blast
+  front, grows `shell_grow_base`→`+span` ease-out while fading), a **hot yellow core**
+  (smaller, shrinks+fades ~2× faster, cut off at `core_life_frac`), and a brief white
+  **ignition flash** (over-bright, gone by `flash_life_frac` ≈ 0.25). Bruce's "an
+  explosion can run in real time," replacing the old static pop. The `ParticlePool`
+  burst the bin seeds on the same kill layers debris on top.
+- `emit_telegraph_fire` (src/vfx.rs:628) — #70 discharge pop: a quick expanding red
+  flash at the telegraph slot (`lane.center_y + slot_offset_px`) when an enemy spends
+  its readied action. (Keeps its own literal `[1.0,0.42,0.38]` tint, distinct from the
+  steady cue's `TelegraphFire.color`.)
+- `emit_telegraph` (src/vfx.rs:652) — the steady red marker above an enemy holding a
+  queued action; first-pass bar, per-intent icon set is a later art pass.
+
+### `struct ParticlePool` (src/vfx.rs:710) — screen-space debris
+
+A separate, screen-space spray the bin seeds on kills (layered over `emit_explosion`).
+`spawn_burst(center, n, color, dur)` (src/vfx.rs:742) seeds `n` particles flying
+outward with a **deterministic** radial spread (an FNV-style fold of a per-particle
+counter — no RNG dependency, so headless capture/tests are reproducible, same trick as
+`fire_events_sig`); speed/size/jitter ranges come from the [`ParticleBurst`](effects.md)
+cfg. `advance(dt)` (src/vfx.rs:778) integrates `pos += vel·dt`, ages, applies a light
+`drag` so the spray settles, and drops the expired. `emit` (src/vfx.rs:795) pushes one
+shrinking, fading `SOLID_WHITE` quad per live particle. `with_config` (src/vfx.rs:731)
+is the editor-injection twin of `CombatVfx::with_config`.
+
+> **Torpedo cell-to-cell lerp (#178 step 3) lives in [`hud`](hud.md), not here.** The
+> ordnance *exhaust* is the `Trail` effect above, but the projectile **sprite** itself
+> is eased between its previous and current cell over a ~lerp window by
+> `hud::lerp_cell_quad` (hud.rs:455) / the per-projectile interpolated draw centre
+> (hud.rs:441), drawn at hud.rs:1329. See [`hud.md`](hud.md).
+
+**Worked examples:** `hull_drop_spawns_hit_flash_only` (the diff spawns the impact
+flash only, no fabricated beam), `fire_event_spawns_exact_shot_beam` (a
+`board.fire_events` entry latches into a `ShotBeam`), `vanished_ship_spawns_explosion`,
+`ordnance_step_spawns_trail`, `first_observe_spawns_nothing`, `advance_expires_effects`,
+plus the `ParticlePool` set (`spawn_burst` seeds exactly N, deterministic spread,
+`advance` expiry) in `#[cfg(test)] mod tests` (src/vfx.rs:1006+).
 
 ---
 
 ## Status / drift
 
-First-pass plumbing (#51), upgraded by #59. The beam is now the resolver's **exact**
-attacker→target shot (`board.fire_events` → `ShotBeam`), not the old nearest-opponent
-guess — that heuristic guessed the attacker, couldn't draw multi-target fan-out, and
-missed shield-fully-absorbed hits; #59 makes it always correct. The flat-quad look is
-still placeholder pending bruce's art iteration. The event-sourcing-by-state-diff (vs a
-resolver hook) remains the durable architectural decision — note `ShotBeam` is **read
-from** `board.fire_events`, still NOT an EventBus subscription, so the "no chained emit"
-property holds. The `FireEvent.hit` flag is wired through to `dim` but is always `true`
-today (reserved for the #81 dodge-whiff miss path).
+First-pass plumbing (#51), upgraded by #59 (exact shots) and **#178 (real-time
+animation)**. The beam is the resolver's **exact** attacker→target shot
+(`board.fire_events` → `ShotBeam`), not the old nearest-opponent guess — that heuristic
+guessed the attacker, couldn't draw multi-target fan-out, and missed
+shield-fully-absorbed hits; #59 makes it always correct. **#178** then made the look
+*move*: the beam travels (TRAVEL→STRIKE), the explosion expands over wall-clock seconds,
+and ordnance lerps cell-to-cell with an exhaust trail — all driven by the measured-`dt`
+`advance` seam, none of it tied to the turn beat. The flat-quad palette is still
+placeholder pending bruce's art iteration, but it is no longer static. The
+event-sourcing-by-state-diff (vs a resolver hook) remains the durable architectural
+decision — `ShotBeam` is **read from** `board.fire_events`, still NOT an EventBus
+subscription, so the "no chained emit" property holds. The `FireEvent.hit` flag is
+wired through to `dim` but is always `true` today (reserved for the #81 dodge-whiff miss
+path).
