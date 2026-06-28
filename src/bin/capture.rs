@@ -159,12 +159,13 @@ fn main() {
 
     // (#149/#187) Install the player's GLB exactly as the playable bin does
     // (broadside.rs install_player_glb) so the capture faithfully shows the LIVE-3D
-    // player ship. The player hull is now broadside-ship_03.glb (Bruce's new hero),
-    // whose prow is authored at −X → install with flip_prow=true to match the live bin.
+    // player ship. The player hull is broadside-ship_03.glb (Bruce's new hero);
+    // flip_prow=false (Bruce confirmed the un-flipped pose is bow-forward), matching the
+    // live bin — the tip-width heuristic had mis-flagged it.
     const PLAYER_GLB: &[u8] = include_bytes!("../../assets/ships/broadside-ship_03.glb");
-    match gfx.install_player_glb(PLAYER_GLB, true) {
+    match gfx.install_player_glb(PLAYER_GLB, false) {
         Ok(()) => {
-            log::info!("capture: player hull installed from broadside-ship_03.glb (prow-flipped)");
+            log::info!("capture: player hull installed from broadside-ship_03.glb (no flip)");
         }
         Err(e) => log::warn!(
             "capture: broadside-ship_03.glb import failed ({e}); player falls back to sprite/flat-box"

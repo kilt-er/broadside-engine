@@ -1427,14 +1427,13 @@ impl ApplicationHandler for App {
         // this is installed (the loft 3D pass renders it lit, chase-cam posed, then
         // blits into the lane), else falls back to the sprite/flat-box.
         // (#187 Bruce) PLAYER = broadside-ship_03.glb, the new hero hull, tinted RED.
-        // Its prow is authored at −X (confirmed by tip-width probe) — the OPPOSITE of
-        // the +X render contract 01/02 follow — so install with flip_prow=true to
-        // half-turn it about Y at import, presenting a +X prow to the chase-cam yaw
-        // math (else it'd render 180° off its facing at every cardinal).
+        // flip_prow=FALSE: the tip-width prow heuristic mis-read this hull (guessed −X),
+        // so the #187 flip rendered it BACKWARDS; Bruce confirmed the un-flipped (flipOFF)
+        // pose is bow-forward. ship_03's prow is effectively +X like 01/02 — no flip.
         const PLAYER_GLB: &[u8] = include_bytes!("../../assets/ships/broadside-ship_03.glb");
-        match gfx.install_player_glb(PLAYER_GLB, true) {
+        match gfx.install_player_glb(PLAYER_GLB, false) {
             Ok(()) => log::info!(
-                "loft: player hull installed from broadside-ship_03.glb ({} bytes, prow-flipped)",
+                "loft: player hull installed from broadside-ship_03.glb ({} bytes, no flip)",
                 PLAYER_GLB.len()
             ),
             Err(e) => log::warn!(
