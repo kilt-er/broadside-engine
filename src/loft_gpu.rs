@@ -1177,12 +1177,23 @@ fn make_loft_targets(
 // Column-major mat4 (`c*4 + r`); right-handed; clip z in 0..1 for wgpu.
 // ---------------------------------------------------------------------------
 
-/// Orthographic ¾ view-projection with the ortho half-height (framing zoom) a
-/// parameter. Gameplay passes [`HALF_EXTENT`] (the worst-case-stance zoom: one
-/// fixed value across all ships so scale is preserved and a ship doesn't pop
-/// size on reorient, sized so the perpendicular broadside ship's 12u length
-/// clears the box vertically — #49, half=7 → 14u tall box); the dynamic-lighting
-/// test frames a single hull tighter.
+/// PERSPECTIVE ¾ view-projection — the chase-cam bake that SEATS the hull in the
+/// grid's perspective. Ports Bruce's `ShipEditor` ground truth
+/// (`broadside-loft-editor`: `SHIP_PERSP = { pitch:20, fov:34 }`, a
+/// `THREE.PerspectiveCamera` at distance `D` from the look-at along the pitch
+/// direction). The engine previously baked this with an ORTHOGRAPHIC camera at
+/// the same pitch — same look-down angle, but NO foreshortening, so the hull read
+/// upright/flat and never converged into the grid (the long-standing seating bug:
+/// the grid is drawn in perspective by [`crate::projector`], the hull was not).
+///
+/// `half` is reinterpreted from the old ortho half-height into a framing target:
+/// the camera distance `D = half / tan(fov/2)` places the look-at plane so a
+/// `2·half`-tall hull fills the frame exactly as the ortho `half` did — so every
+/// downstream blit/seat (the fixed-aspect dest quad in [`crate::hud`]) needs NO
+/// retune. Gameplay passes [`HALF_EXTENT`] (one fixed value across all ships so
+/// scale is preserved); the dynamic-lighting test frames a single hull tighter.
+/// The camera orbits the look-AT point `(0, target_y, 0)` by `yaw_rad` about `+Y`
+/// (the stance system is unchanged — only the projection type changed).
 fn camera_view_proj_zoom(
     yaw_rad: f32,
     pitch_rad: f32,
@@ -1190,19 +1201,31 @@ fn camera_view_proj_zoom(
     target_y: f32,
     half: f32,
 ) -> [f32; 16] {
-    let r = 30.0;
+    let fov_y = SHIP_BAKE_FOV_DEG.to_radians();
+    // Distance so the look-at plane shows a 2·half-tall window — matches the old
+    // ortho framing (the hull fills the frame identically), now WITH perspective
+    // foreshortening across the hull's depth.
+    let d = half / (fov_y * 0.5).tan();
     // Orbit the camera around the look-AT point (0, target_y, 0), not the world
     // origin, so a hull whose mass doesn't straddle y=0 still frames centred.
     let target = [0.0, target_y, 0.0];
     let eye = [
-        r * pitch_rad.cos() * yaw_rad.sin(),
-        target_y + r * pitch_rad.sin(),
-        r * pitch_rad.cos() * yaw_rad.cos(),
+        d * pitch_rad.cos() * yaw_rad.sin(),
+        target_y + d * pitch_rad.sin(),
+        d * pitch_rad.cos() * yaw_rad.cos(),
     ];
     let view = look_at(eye, target, [0.0, 1.0, 0.0]);
-    let proj = ortho(-half * aspect, half * aspect, -half, half, 0.1, 100.0);
+    // Near/far bracket the hull about the look-at plane (depth ≈ ±a few half).
+    let near = (d - half * 4.0).max(0.5);
+    let far = d + half * 6.0;
+    let proj = perspective(fov_y, aspect, near, far);
     mul4(proj, view)
 }
+
+/// (`ShipEditor` parity) Vertical field of view (degrees) of the perspective
+/// chase-cam bake — Bruce's `SHIP_PERSP.fov = 34`. The pitch is the separate
+/// [`CAMERA_PITCH_DEG`] (`= 20`, also matching `SHIP_PERSP.pitch`).
+const SHIP_BAKE_FOV_DEG: f32 = 34.0;
 
 /// Ortho half-height (world units) — the gameplay framing zoom. See
 /// [`camera_view_proj_zoom`]. 7.0 clears the broadside ship's vertical
@@ -1309,27 +1332,35 @@ fn look_at(eye: [f32; 3], center: [f32; 3], up: [f32; 3]) -> [f32; 16] {
     ]
 }
 
-fn ortho(left: f32, right: f32, bottom: f32, top: f32, near: f32, far: f32) -> [f32; 16] {
-    let rl = right - left;
-    let tb = top - bottom;
-    let fln = far - near;
+/// Right-handed PERSPECTIVE projection (column-major, clip-z in `0..1`, near→0 /
+/// far→1, looking down `-z`) — the SAME convention as [`ortho`] so it composes
+/// with the identical [`look_at`] view. `fov_y_rad` is the vertical field of
+/// view. This is what makes the lofted hull foreshorten — bow up-lane shrinks,
+/// stern toward camera grows — so it SEATS in the grid's perspective instead of
+/// reading as a flat ortho silhouette. Matches Bruce's `ShipEditor` chase-cam bake
+/// (`broadside-loft-editor`: `SHIP_PERSP = { pitch:20, fov:34 }` — a
+/// `THREE.PerspectiveCamera`, NOT an ortho one), the ground-truth render the hull
+/// must agree with.
+fn perspective(fov_y_rad: f32, aspect: f32, near: f32, far: f32) -> [f32; 16] {
+    let f = 1.0 / (fov_y_rad * 0.5).tan();
+    let nf = near - far; // < 0
     [
-        2.0 / rl,
+        f / aspect,
         0.0,
         0.0,
         0.0,
         0.0,
-        2.0 / tb,
+        f,
         0.0,
         0.0,
         0.0,
         0.0,
-        -1.0 / fln,
+        far / nf, // = -far/(far-near)
+        -1.0,
         0.0,
-        -(right + left) / rl,
-        -(top + bottom) / tb,
-        -near / fln,
-        1.0,
+        0.0,
+        (far * near) / nf, // = -(far·near)/(far-near)
+        0.0,
     ]
 }
 
