@@ -70,7 +70,7 @@ use broadside_engine::runs::{
 use broadside_engine::subsystems::{HEAT_SINK, POINT_BLANK_DOCTRINE};
 use broadside_engine::types::{
     Arc as TArc, Board, Effect, EventBus, Faction, LaneEnd, Mount, Orientation, ReorientTo, Run,
-    Sector, ShieldFace, ShieldProfile, Ship, WeaponArchetype,
+    Sector, Ship, WeaponArchetype,
 };
 
 /* =============================================================================
@@ -695,12 +695,17 @@ fn render_example_board() -> Board {
 
 fn player_ship(pos: broadside_engine::grid::Pos, facing: broadside_engine::grid::Facing) -> Ship {
     let mut player = make_ship("player", Faction::Player, pos, facing);
-    player.shield_profile = ShieldProfile {
-        bow: ShieldFace {
-            armour: 2,
-            charge: 1,
-        },
-        ..default_shield_profile()
+    // (Bruce) Shields START FULL: charge == armour (capacity) on every face. The pool
+    // model (#103) regens +1/turn toward capacity, but the player should boot at full
+    // protection, not spend the opening turns charging up. Capacities are the Frigate
+    // default (bow 2 / flanks 1 / stern 0); each face's charge is pinned to its own
+    // capacity so the shape stays the default while the pool starts topped off.
+    player.shield_profile = {
+        let mut p = default_shield_profile();
+        for f in p.faces_mut() {
+            f.charge = f.armour;
+        }
+        p
     };
     player.mounts = vec![
         Mount {
