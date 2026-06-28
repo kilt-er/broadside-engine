@@ -670,13 +670,24 @@ impl Default for DemoContent {
         c.card_catalog = crate::cards::placeholder_catalog();
 
         // pulse_laser — close-range forward beam.
+        // #184: cooldown 2 (was 0). Every real weapon must load-and-fire: a
+        // cd-0 gun re-queues and fires every single turn (the AI lasered the
+        // player to death with no reload window). The value MUST be 2, not 1:
+        // one round is fire THEN end_of_turn, and end_of_turn decrements every
+        // cooldown the SAME round (resolve.rs), so cd 1 ticks straight back to 0
+        // and re-fires next turn (the bug, unchanged). cd 2 leaves the cooldown
+        // at 1 after that round's EOT, so the NEXT round's fire-gate blocks it —
+        // fire, one reload turn, fire = every other turn. A weapon here fires
+        // once every cooldown_max turns. The synthetic maneuvers (__move_*/
+        // __rotate_*/__vent, via `zero_cost`) keep cd 0 — they are not weapons.
+        // Mirrors the catalog `pulse_laser` cd.
         c.insert(Action {
             id: "pulse_laser".into(),
             name: "Pulse Laser".into(),
             archetype: WeaponArchetype::Beam,
             cost: ActionCost {
                 heat: 1,
-                cooldown_max: 0,
+                cooldown_max: 2,
                 advances_turn: true,
             },
             targeting: Targeting {

@@ -241,7 +241,7 @@ const ENEMY_DAMAGE_CAP: i32 = 4;
 /// from [`ENEMY_DAMAGE_CAP`] — a "very-long-cooldown ability" that may deal a
 /// big telegraphed hit (#177 exception). Chosen so the alpha-strike guns
 /// (`particle_lance` cd 5, `railgun_broadside` cd 6) keep full damage while the
-/// sustained/standard guns (`pulse_laser` cd 0, `point_defense` cd 2,
+/// sustained/standard guns (`pulse_laser` cd 1, `point_defense` cd 2,
 /// `beam_cannon` cd 3, `broadside_battery`/`scatter_laser` cd 4) are capped.
 /// Bruce-tunable.
 const ENEMY_DAMAGE_CAP_CD_EXEMPT: i32 = 5;

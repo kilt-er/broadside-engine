@@ -675,104 +675,32 @@ fn live_pulse_laser() -> Option<Action> {
     cat.actions.into_iter().find(|a| a.id == "pulse_laser")
 }
 
-/// Fire the player's `pulse_laser` once, then apply end-of-turn heat dissipation
-/// — the player's per-turn heat cycle. Returns the player's (heat, `locked_out`)
-/// after the turn.
-///
-/// We fire via the REAL resolver (`fire_player_queue` → `run_action` does the
-/// heat += cost.heat + lockout-at-heat_max bookkeeping) so the accumulate side
-/// is genuine, then apply the canonical -1/turn dissipation DIRECTLY to the
-/// player (mirroring resolve.rs:611 `heat = (heat-1).max(0)` + unlock when
-/// `heat < heat_max`). We deliberately do NOT call `run_world_phase`: that
-/// would also run the dummy's enemy AI, whose close-move slides the target out
-/// of the `pulse_laser`'s [Close] band (distance 2) so the player can no longer
-/// bear — which would silently stop the fire and defeat the heat test. Pinning
-/// the target stationary isolates the heat curve, which is what we're verifying.
-fn fire_once_then_cool(b: &mut Board, content: &dyn OneWeaponLike) -> (i32, bool) {
-    let pid = find_player_id(b).expect("player present");
-    let pcell = b
-        .cells
-        .iter()
-        .position(|c| c.as_ref().is_some_and(|s| s.id == pid))
-        .unwrap();
-    // Queue the shot only if not locked out (a locked ship can't fire — the
-    // resolver's lockout gate at resolve.rs:407 would no-op it anyway).
-    if !b.cells[pcell].as_ref().unwrap().locked_out {
-        b.cells[pcell]
-            .as_mut()
-            .unwrap()
-            .queue
-            .push("pulse_laser".into());
-    }
-    broadside_engine::resolve::fire_player_queue(&pid, b, content.as_content());
-    // Capture lockout at PEAK (post-fire, pre-dissipation): firing is what
-    // trips it, and the canonical -1 EOT cooling immediately drops heat back
-    // below heat_max and clears the flag (resolve.rs:611-613). The peak is the
-    // "did this shot overheat me" signal the test cares about.
-    let locked_at_peak = b
-        .cells
-        .iter()
-        .flatten()
-        .find(|s| s.id == pid)
-        .is_some_and(|s| s.locked_out);
-    // Canonical end-of-turn dissipation, applied only to the player (no world
-    // phase → the target never maneuvers out of band).
-    if let Some(c) = b
-        .cells
-        .iter()
-        .position(|c| c.as_ref().is_some_and(|s| s.id == pid))
-    {
-        if let Some(s) = b.cells[c].as_mut() {
-            s.heat = (s.heat - 1).max(0);
-            if s.heat < s.heat_max {
-                s.locked_out = false;
-            }
-        }
-    }
-    let heat = b
-        .cells
-        .iter()
-        .flatten()
-        .find(|s| s.id == pid)
-        .map_or(0, |s| s.heat);
-    (heat, locked_at_peak)
-}
-
-/// Tiny trait so the helper can take the concrete `OneWeapon` by reference while
-/// still handing the resolver a `&dyn Content`.
-trait OneWeaponLike {
-    fn as_content(&self) -> &dyn Content;
-}
-impl OneWeaponLike for OneWeapon {
-    fn as_content(&self) -> &dyn Content {
-        self
-    }
-}
-
 #[test]
-fn pulse_laser_sustained_fire_overheats_into_lockout() {
+fn pulse_laser_sustained_fire_is_cooldown_limited_never_overheats() {
     let Some(pulse) = live_pulse_laser() else {
         eprintln!("[heat-gate test] catalog asset absent; skipping");
         return;
     };
-    // Sanity: the catalog value the spam-fix depends on. If a future export
-    // drops this back to 1, THIS is the assertion that catches it.
+    // #184 (supersedes the old #73 cd-0 heat-spam premise): pulse_laser is now
+    // the load-and-fire baseline — heat 2, cooldown 2. The ANTI-SPAM gate is now
+    // the COOLDOWN, not heat. A player who re-queues pulse every turn fires it
+    // every OTHER turn (one reload turn between shots), so heat goes +2 on a fire
+    // turn then -1, -1 across the fire turn's and the reload turn's EOTs = net 0
+    // over each 2-turn cycle. Sustained pulse fire therefore NEVER overheats: the
+    // cooldown rate-limits it long before heat could climb to heat_max.
     assert_eq!(
         pulse.cost.heat, 2,
-        "#73: pulse_laser heat must be 2 (the spam-gate value)"
+        "pulse_laser heat is 2 (the per-shot heat)"
     );
     assert_eq!(
-        pulse.cost.cooldown_max, 0,
-        "#73: pulse_laser stays cd 0 (bruce's baseline-shot constraint)"
+        pulse.cost.cooldown_max, 2,
+        "#184: pulse_laser is cd 2 (load-and-fire) — cooldown is the anti-spam gate, not heat"
     );
 
-    // v2 (#22 restore, unblocked by #28): REAL 2-D fixture. #28 derives the 2-D
-    // band from the 1-D catalog band — pulse_laser is "close" → Near → fires at
-    // Chebyshev distance 2. So player at (0,0) Bow(E) (forward gun bears East) +
-    // dummy at (2,0): distance 2 = Near, in band → the shot bears and spends
-    // heat. heat_max 6 (the canonical default the curve is tuned to). Same #73
-    // heat-gate assertion, now on an invariant-A board (the stale pos-(0,0)
-    // fixture couldn't target).
+    // REAL 2-D fixture (invariant A): player (0,0) Bow(E) bears East; dummy at
+    // (2,0) is distance 2 = Near, in pulse_laser's band, so each shot connects.
+    // Anchored + weaponless dummy holds the cell and never fires back, isolating
+    // the player's heat/cooldown cycle.
     let mut player = common::ship_2d(
         "p",
         Faction::Player,
@@ -784,8 +712,6 @@ fn pulse_laser_sustained_fire_overheats_into_lockout() {
     );
     player.heat_max = 6;
     player.heat = 0;
-    // Anchored + weaponless dummy: can't fire, won't maneuver → holds (2,0)
-    // (Near band) every turn, a stable firing target.
     let mut dummy = common::dummy_2d(
         "d",
         Faction::Enemy,
@@ -800,47 +726,83 @@ fn pulse_laser_sustained_fire_overheats_into_lockout() {
         action: pulse,
     };
 
-    // Per-turn: +2 heat on fire, -1 on EOT → net +1/turn. Heat after turn N:
-    // T1=1, T2=2, T3=3, T4=4, T5 fires at 4→6 = LOCKOUT (then EOT →5).
-    let mut locked_turn = None;
-    for turn in 1..=5 {
-        let (_heat, locked) = fire_once_then_cool(&mut b, &content);
-        if locked && locked_turn.is_none() {
-            locked_turn = Some(turn);
+    // Re-queue + resolve a FULL round every turn for many turns. Each round fires
+    // the queue (if the cooldown allows) then runs end_of_turn (cooldown + heat
+    // tick). Track the player's peak heat and whether it ever locked out.
+    let mut fired_turns = 0;
+    let mut max_heat = 0;
+    let mut ever_locked = false;
+    for _ in 0..12 {
+        // Snapshot the target's hull before the round; a drop means a shot landed.
+        let hull_before = b
+            .cells
+            .iter()
+            .flatten()
+            .find(|s| s.id == "d")
+            .map_or(0, |s| s.hull);
+        if let Some(c) = b
+            .cells
+            .iter()
+            .position(|c| c.as_ref().is_some_and(|s| s.id == "p"))
+        {
+            b.cells[c]
+                .as_mut()
+                .unwrap()
+                .queue
+                .push("pulse_laser".into());
+        }
+        resolve_round(&mut b, &content);
+        let p = b.cells.iter().flatten().find(|s| s.id == "p").unwrap();
+        max_heat = max_heat.max(p.heat);
+        ever_locked |= p.locked_out;
+        let hull_after = b
+            .cells
+            .iter()
+            .flatten()
+            .find(|s| s.id == "d")
+            .map_or(0, |s| s.hull);
+        if hull_after < hull_before {
+            fired_turns += 1;
         }
     }
-    // Sustained fire is NOT infinite — it overheats. With heat 2 / max 6 the
-    // 5th sustained shot trips lockout (it pushed heat to 6 before EOT cooled
-    // it to 5). "~5-6 shots then forced vent," as bruce asked.
-    assert_eq!(
-        locked_turn,
-        Some(5),
-        "#73: sustained pulse_laser fire overheats into lockout on the 5th shot (not infinite spam)",
-    );
 
-    // After lockout, the ship can't fire; passive cooling (-1/turn) brings
-    // heat back below max and clears the lock so firing resumes — the
-    // "vent then resume" loop. Idle a few turns (no fire) and confirm.
-    for _ in 0..6 {
-        run_world_phase(&mut b, content.as_content());
-    }
-    let p = b.cells.iter().flatten().find(|s| s.id == "p").unwrap();
+    // The cooldown gate rate-limits pulse to every other turn: over 12 turns it
+    // fires ~6 times, NOT 12 (that would be the old cd-0 spam).
     assert!(
-        !p.locked_out,
-        "#73: passive cooling clears the lockout so the ship can fire again"
+        (5..=6).contains(&fired_turns),
+        "#184: cd-2 pulse fires every other turn (~6 shots in 12 turns), not every turn; fired {fired_turns}",
     );
-    assert_eq!(p.heat, 0, "idle cooling drains heat back to 0");
+    // And because of that reload gap, heat never climbs into lockout — the
+    // cooldown, not heat, is what keeps sustained fire in check.
+    assert!(
+        !ever_locked,
+        "#184: cooldown-limited pulse never overheats into lockout (heat peaked at {max_heat}/{}; the reload gap caps it)",
+        6,
+    );
+    assert!(
+        max_heat <= 3,
+        "#184: sustained pulse heat stays low (peak {max_heat}) — +2 on a fire turn, then -1/-1 over the fire+reload EOTs",
+    );
 }
 
 #[test]
-fn pulse_laser_three_shot_alpha_locks_out_instantly() {
+fn pulse_laser_same_weapon_cannot_fire_three_times_in_one_turn() {
     let Some(pulse) = live_pulse_laser() else {
         eprintln!("[heat-gate test] catalog asset absent; skipping");
         return;
     };
-    // Three pulse_laser shots queued in ONE turn = 3 × heat 2 = +6 = heat_max,
-    // which trips lockout immediately (a 3-laser broadside alpha overheats on
-    // the spot, before any dissipation). Hull-99 dummy so nobody dies.
+    // #184 (supersedes the old #73 cd-0 "3-laser alpha" premise): pulse_laser is
+    // now cd 2 (load-and-fire). Queuing the SAME weapon three times in one turn
+    // no longer fires three times — the FIRST shot sets the cooldown and the
+    // run_action fire-gate (resolve.rs ~596) blocks the 2nd + 3rd in that same
+    // turn. So only ONE shot lands: heat climbs by exactly 2 (not 6), the ship
+    // does NOT lock out, and the cooldown is left at cooldown_max (2). This is
+    // the regression guard that one weapon cannot be spammed within a turn.
+    // (You can still alpha by queuing DIFFERENT weapons; that path is unchanged.)
+    assert_eq!(
+        pulse.cost.cooldown_max, 2,
+        "#184: pulse_laser is cd 2 (load-and-fire); guards against same-turn spam"
+    );
     // v2 (#22 restore, unblocked by #28): REAL 2-D fixture — player (0,0) Bow(E),
     // dummy (2,0) = Near band (pulse_laser "close" → Near, dist 2), so each shot
     // bears and spends heat.
@@ -876,14 +838,18 @@ fn pulse_laser_three_shot_alpha_locks_out_instantly() {
     broadside_engine::resolve::fire_player_queue("p", &mut b, &content);
 
     let p = b.cells.iter().flatten().find(|s| s.id == "p").unwrap();
-    assert!(
-        p.heat >= p.heat_max,
-        "3 × heat-2 alpha reaches heat_max ({} >= {})",
-        p.heat,
-        p.heat_max
+    // Only the first of the three queued shots fired: +2 heat, well under max.
+    assert_eq!(
+        p.heat, 2,
+        "only ONE pulse fired (cooldown gate blocked the 2nd + 3rd same-turn): heat 0 + 2"
     );
     assert!(
-        p.locked_out,
-        "#73: a 3-laser alpha (+6) locks out instantly"
+        !p.locked_out,
+        "#184: one pulse (+2) is far from heat_max (6) — no instant lockout, because the weapon can't triple-fire in a turn"
+    );
+    assert_eq!(
+        p.cooldowns.get("pulse_laser").copied(),
+        Some(2),
+        "#184: the single shot left pulse_laser on cooldown (cooldown_max 2)"
     );
 }

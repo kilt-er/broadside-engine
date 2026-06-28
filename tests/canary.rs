@@ -829,6 +829,11 @@ fn shield_pool_recharges_when_a_face_stops_taking_fire() {
  * and the player must close first. This is the regression guard for Bruce's
  * "my weapons do nothing to enemies" report — if catalog damage ever stops
  * landing through the live path, this fails loudly.
+ *
+ * #184: pulse_laser now load-and-fires (catalog cd 2), so the kill spans a
+ * RELOAD turn: commit 1 hits, commit 2 is a no-fire reload (enemy unchanged),
+ * commit 3 lands the kill. This doubles as the live-path guard that the weapon
+ * is NOT continuous (every-other-turn cadence).
  * ====================================================================== */
 #[test]
 fn real_pulse_laser_kills_an_in_range_enemy_via_the_live_catalog_path() {
@@ -916,7 +921,13 @@ fn real_pulse_laser_kills_an_in_range_enemy_via_the_live_catalog_path() {
         "commit 1: pool 2 soaks 2 of the 4, 2 overflows to hull (3 -> 1)"
     );
 
-    // Commit 2: pool 0 -> full 4 to hull -> enemy dies.
+    // Commit 2 = RELOAD turn (#184): pulse_laser is cd 2, so after commit 1's
+    // fire (cd -> 2) its end_of_turn left the cooldown at 1. This commit's
+    // fire-gate sees cd 1 > 0 and SKIPS the shot -> the enemy takes NO damage,
+    // hull stays 1. It was not under fire this turn, so its bow pool regens by
+    // SHIELD_REGEN_PER_TURN (0 -> 1). This is the load-and-fire gap on the LIVE
+    // catalog path: the player cannot pulse every turn. (At the old cd 0 — or a
+    // mistaken cd 1 — this commit would re-fire and kill the enemy here.)
     board
         .cells
         .iter_mut()
@@ -925,7 +936,24 @@ fn real_pulse_laser_kills_an_in_range_enemy_via_the_live_catalog_path() {
         .unwrap()
         .queue = vec!["pulse_laser".into()];
     resolve_round(&mut board, &content);
-    assert!(estate(&board).is_none(), "commit 2: the empty-pool hull takes the full 4 -> enemy destroyed (live path damage is REAL)");
+    assert_eq!(
+        estate(&board),
+        Some((1, 1)),
+        "commit 2 is a reload turn: weapon on cooldown -> no hit (hull stays 1); \
+         bow pool regens 0 -> 1 (not under fire)"
+    );
+
+    // Commit 3: cooldown has ticked back to 0 (commit 2's EOT), so the player
+    // fires again -> 4 dmg, pool 1 soaks 1, 3 overflow to hull 1 -> enemy dies.
+    board
+        .cells
+        .iter_mut()
+        .flatten()
+        .find(|s| s.id == "p")
+        .unwrap()
+        .queue = vec!["pulse_laser".into()];
+    resolve_round(&mut board, &content);
+    assert!(estate(&board).is_none(), "commit 3: reloaded, the shot lands (pool 1 soaks 1, 3 to hull) -> enemy destroyed (live path damage is REAL)");
 
     // The spawn-range fact: front-row player -> back-row enemy is Chebyshev 3 =
     // Far, which is OUTSIDE pulse's [Adjacent, Near] band set, so the player must
@@ -1172,7 +1200,10 @@ fn live_enemy_ids_lists_enemies_only() {
  * THEN telegraphs, THEN fires — and CANNOT fire on turn 1 (#67 telegraph-one-
  * ahead + out of range). Observed rhythm (verified): T1 telegraph `__move_down`
  * (no fire); T2 moved to dist-2, telegraph `pulse_laser` (no fire); T3 fires
- * (player hull drops); T4+ re-fires (cd-free pulse).
+ * (player hull drops). #184: pulse_laser is now cd 2 (load-and-fire), so it
+ * re-fires every OTHER turn from there (T3, T5, ...) with a reload turn between
+ * — not the old cd-0 every-turn spam. The test only asserts the enemy closes +
+ * cannot fire on T1 (first hit turn > 1), which holds under either cadence.
  * ====================================================================== */
 #[test]
 fn turn_based_enemy_moves_then_telegraphs_then_fires() {

@@ -3318,7 +3318,12 @@ mod tests {
             archetype: WeaponArchetype::Beam,
             cost: ActionCost {
                 heat: 1,
-                cooldown_max: 0,
+                // #184: cd 2 mirrors the production pulse_laser (DemoContent /
+                // catalog). Every real weapon load-and-fires; a cd-0 gun fires
+                // every turn with no reload window. 2 (not 1) because a round is
+                // fire THEN end_of_turn-decrement, so cd 1 ticks back to 0 the
+                // same round and re-fires; cd 2 = fire, one reload turn, fire.
+                cooldown_max: 2,
                 advances_turn: true,
             },
             targeting: Targeting {
@@ -3575,11 +3580,14 @@ mod tests {
         assert_eq!(board.destroys_this_window, 1);
     }
 
-    /// Heat accumulates and lockout fires at heatMax. Cooldown is reset
-    /// unconditionally on the firing action. (#20 2-D fixture: attacker at
-    /// (2,1) Bow(S), scout directly ahead at (2,2) — distance 1 (Adjacent), in
-    /// `pulse_laser`'s band, on the bearing ray, so the shot connects and the
+    /// Heat accumulates and lockout fires at heatMax. Cooldown is set to the
+    /// action's `cooldown_max` on the firing action. (#20 2-D fixture: attacker
+    /// at (2,1) Bow(S), scout directly ahead at (2,2) — distance 1 (Adjacent),
+    /// in `pulse_laser`'s band, on the bearing ray, so the shot connects and the
     /// heat/lockout/cooldown bookkeeping runs through the live 2-D fire path.)
+    /// #184: this asserts the cooldown lands at 2 (`pulse_laser`'s `cooldown_max`)
+    /// right after firing — `fire_player_queue` does NOT run end-of-turn, so there
+    /// is no tick-down; the reload gap is what stops continuous fire.
     #[test]
     fn execute_queue_overheats_and_records_cooldown() {
         let mut attacker = armed_ship_2d(
@@ -3622,10 +3630,121 @@ mod tests {
             .unwrap();
         assert_eq!(p.heat, 6, "heat should be 5 + 1");
         assert!(p.locked_out, "heat at heat_max triggers lockout");
-        assert_eq!(p.cooldowns.get("pulse_laser").copied(), Some(0));
+        // #184: cooldown is set to cooldown_max (2) on fire. No end-of-turn ran
+        // here, so it stays at 2 — the loaded-and-fired weapon is on its reload.
+        assert_eq!(p.cooldowns.get("pulse_laser").copied(), Some(2));
         assert!(
             p.queue.is_empty(),
             "queue should be cleared after execution"
+        );
+    }
+
+    /// #184 regression: a weapon must LOAD-AND-FIRE — fire, then a RELOAD turn
+    /// where it CANNOT fire, then fire again (every other turn). Pre-fix
+    /// `pulse_laser` had `cooldown_max: 0`, so the fire-gate never saw a cooldown
+    /// and the AI (and player) re-queued + fired it every single turn with no
+    /// reload window — the enemy "lasered the player away until dead."
+    ///
+    /// This drives FULL `resolve_round`s (fire THEN `end_of_turn`) on purpose: a
+    /// round is fire-then-EOT-decrement, so `cooldown_max` must be 2, not 1 — at
+    /// cd 1 the same round's EOT ticks the cooldown 1 -> 0 and the next round
+    /// re-fires (the bug, unchanged). A `fire_player_queue`-only test (no EOT)
+    /// would FALSELY pass at cd 1, so it must NOT be written that way. With cd 2:
+    ///   R1 fire (target 14 -> 10, cd -> 2), EOT (cd 2 -> 1)
+    ///   R2 reload: gate blocks (cd 1 > 0), target STAYS 10, EOT (cd 1 -> 0)
+    ///   R3 fire (target 10 -> 6, cd -> 2), EOT (cd -> 1)
+    /// => fires R1, R3 (every other turn). At cd 1 the target would be 6 after
+    /// R2 and this fails — exactly the regression we are guarding.
+    ///
+    /// Geometry: shooter (player) at (2,1) Bow(S), target directly ahead at
+    /// (2,2) — distance 1 (Adjacent), `pulse_laser`'s optimal range, so the
+    /// 4-damage shot lands raw (`naked` shields). The target is UNARMED +
+    /// Anchored so the enemy phase of `resolve_round` neither shoots back nor
+    /// moves: the only mutations to its hull are the shooter's pulse.
+    #[test]
+    fn pulse_laser_reloads_fires_every_other_turn_through_resolve_round() {
+        let shooter = armed_ship_2d(
+            "shooter",
+            Faction::Player,
+            crate::grid::Pos::new(2, 1),
+            10,
+            crate::grid::Facing::Bow(crate::grid::Dir4::S),
+            Arc::Forward,
+            "pulse_laser",
+            default_shield_profile(),
+        );
+        let mut target = armed_ship_2d(
+            "target",
+            Faction::Enemy,
+            crate::grid::Pos::new(2, 2),
+            14,
+            crate::grid::Facing::Bow(crate::grid::Dir4::N),
+            Arc::Forward,
+            "pulse_laser",
+            naked(),
+        );
+        // Unarmed + Anchored: the enemy world-phase can't fire back or reposition,
+        // so the target's hull only ever changes from the shooter's pulse.
+        target.mounts.clear();
+        target.traits = vec![crate::types::Trait::Anchored];
+        let mut board = armed_board_2d(vec![shooter, target]);
+        struct OneAction(Action);
+        impl Content for OneAction {
+            fn action(&self, id: &str) -> Option<&Action> {
+                (id == "pulse_laser").then_some(&self.0)
+            }
+            fn spawn_projectile(&self, _: &str, _: &Ship) -> Projectile {
+                unreachable!()
+            }
+        }
+        let content = OneAction(pulse_laser());
+        let target_pos = crate::grid::Pos::new(2, 2).to_index();
+        let shooter_pos = crate::grid::Pos::new(2, 1).to_index();
+        let target_hull = |b: &Board| b.cells[target_pos].as_ref().unwrap().hull;
+        let shooter_cd = |b: &Board| {
+            b.cells[shooter_pos]
+                .as_ref()
+                .unwrap()
+                .cooldowns
+                .get("pulse_laser")
+                .copied()
+                .unwrap_or(0)
+        };
+        // Re-queue every round: fire_player_queue drains the queue after each.
+        let queue_pulse = |b: &mut Board| {
+            find_cell_by_id_mut(b, "shooter").unwrap().1.queue = vec!["pulse_laser".into()];
+        };
+
+        // R1: fires. target 14 -> 10; cooldown set to 2 then EOT ticks it to 1.
+        queue_pulse(&mut board);
+        resolve_round(&mut board, &content);
+        assert_eq!(target_hull(&board), 10, "R1: pulse connects (14 -> 10)");
+        assert_eq!(
+            shooter_cd(&board),
+            1,
+            "R1: cd set to 2 on fire, EOT -> 1 (the reload turn pending)"
+        );
+
+        // R2: RELOAD turn. cd is 1 at fire time -> gate blocks -> NO hit. Target
+        // stays 10. EOT ticks cd 1 -> 0. (At cd 1 this round would re-fire and
+        // the target would drop to 6 — the bug this guards.)
+        queue_pulse(&mut board);
+        resolve_round(&mut board, &content);
+        assert_eq!(
+            target_hull(&board),
+            10,
+            "R2 is a reload turn: the weapon is on cooldown, so NO second hit"
+        );
+        assert_eq!(shooter_cd(&board), 0, "R2: EOT ticks the reload cd 1 -> 0");
+
+        // R3: charged again -> fires. target 10 -> 6. Confirms the every-other-
+        // turn cadence (fired R1 + R3, skipped R2).
+        queue_pulse(&mut board);
+        resolve_round(&mut board, &content);
+        assert_eq!(
+            target_hull(&board),
+            6,
+            "R3: reloaded, pulse connects again (10 -> 6) = every other turn"
         );
     }
 
@@ -3908,10 +4027,11 @@ mod tests {
             p.queue.is_empty(),
             "resolve_round should drain the player queue"
         );
-        // pulse_laser sets cooldown to 0 (cooldown_max=0), EOT subtracts 1
-        // floored at 0, so still 0. But the key is the queue drained AND
-        // the world ran (i.e. heat dissipated by 1 too). Pulse_laser
-        // costs 1 heat; EOT subtracts 1; final heat = 0.
+        // #184: pulse_laser fires, setting cooldown to cooldown_max (2); EOT
+        // then subtracts 1, leaving it at 1 (the reload turn). This test asserts
+        // the queue drained AND the world ran (heat dissipated by 1 too):
+        // pulse_laser costs 1 heat; EOT subtracts 1; final heat = 0. The reload
+        // gap itself is proved by pulse_laser_reloads_cannot_fire_twice_*.
         assert_eq!(p.heat, 0, "heat +1 from pulse_laser, -1 from EOT");
     }
 
@@ -6028,54 +6148,60 @@ mod tests {
             default_shield_profile(),
         );
         e2.heat_max = 99;
+        // #184: pre-TELEGRAPH both enemies (queue their pulse) so they FIRE on
+        // the SAME round as the player. tick_enemy is fire-then-decide, so a
+        // pre-seeded queue fires this round. This makes ONE round a genuine
+        // multi-ship-fire round without relying on the player firing on two
+        // consecutive turns — which it now CANNOT do (pulse_laser is cd 2:
+        // load-and-fire, so it reloads every other turn). All three guns are at
+        // cd 0 entering round 1, so all three fire together.
+        e1.queue = vec!["pulse_laser".into()];
+        e2.queue = vec!["pulse_laser".into()];
+        let e1_idx = crate::grid::Pos::new(2, 2).to_index();
+        let e2_idx = crate::grid::Pos::new(2, 1).to_index();
         let mut board = armed_board_2d(vec![player, e1, e2]);
         let content = AiContent {
             actions: HashMap::from([("pulse_laser".into(), pulse_laser())]),
         };
 
-        // First resolve_round: enemies fire-then-decide, so this round they
-        // only TELEGRAPH (their queues were empty). The player fires its queued
-        // pulse at e1. So fire_events should hold the player's shot this round.
+        // Round 1: player fires its queued pulse AND both enemies fire their
+        // pre-seeded telegraphs. fire_events must hold beams from ALL THREE
+        // distinct shooters — proving accumulation across the round (no per-enemy
+        // wipe that would keep only the last ship's beam).
         resolve_round(&mut board, &content);
         let after_first: Vec<_> = board.fire_events.clone();
-        assert!(
-            after_first.iter().any(|f| f.from_cell == p_idx),
-            "player's fired pulse produced a FireEvent from the player's cell; got {after_first:?}",
-        );
-
-        // Re-arm the player and run a SECOND round: now the enemies have a
-        // telegraphed shot to fire (from round 1's decide). The player fires
-        // again. fire_events must contain the player's shot AND BOTH enemies'
-        // shots — proving accumulation (no per-enemy wipe) and the
-        // start-of-round clear (no carryover of round-1 events).
-        if let Some(c) = board
-            .cells
-            .iter()
-            .position(|s| s.as_ref().is_some_and(|s| s.id == "p"))
-        {
-            if let Some(s) = board.cells[c].as_mut() {
-                s.queue.push("pulse_laser".into());
-            }
-        }
-        resolve_round(&mut board, &content);
-        let after_second = &board.fire_events;
-
-        // No round-1 carryover: every event's attacker still exists this round
-        // (we only assert the count grew to include multiple distinct shooters).
         let distinct_shooters: std::collections::HashSet<usize> =
-            after_second.iter().map(|f| f.from_cell).collect();
+            after_first.iter().map(|f| f.from_cell).collect();
         assert!(
-            distinct_shooters.len() >= 2,
-            "a multi-ship-fire round records beams from >=2 distinct attackers (player + enemies), not just the last; \
+            distinct_shooters.len() >= 3,
+            "a multi-ship-fire round records beams from all 3 distinct attackers (player + both enemies), not just the last; \
              got {} distinct from {:?}",
             distinct_shooters.len(),
-            after_second,
+            after_first,
         );
-        // And the player is among them — its shot wasn't wiped by the enemies'
+        // The player is among them — its shot wasn't wiped by the enemies'
         // subsequent fire_player_queue calls.
         assert!(
-            after_second.iter().any(|f| f.from_cell == p_idx),
-            "the player's beam survives the enemies' fires in the same round; got {after_second:?}",
+            after_first.iter().any(|f| f.from_cell == p_idx),
+            "the player's beam survives the enemies' fires in the same round; got {after_first:?}",
+        );
+        // Both enemies too.
+        assert!(
+            after_first.iter().any(|f| f.from_cell == e1_idx)
+                && after_first.iter().any(|f| f.from_cell == e2_idx),
+            "both enemies' beams are recorded in the same round; got {after_first:?}",
+        );
+
+        // Round 2 proves the START-OF-ROUND CLEAR: every gun fired in round 1,
+        // so all are on cooldown 1 now (fire -> cd 2, EOT -> 1) and NONE can fire
+        // this round. `resolve_round` clears `fire_events` at entry, so with no
+        // new shots the buffer is empty — round-1 beams did NOT carry over.
+        resolve_round(&mut board, &content);
+        assert!(
+            board.fire_events.is_empty(),
+            "fire_events is cleared at resolve_round start: with every gun reloading, \
+             no round-1 beams carry over; got {:?}",
+            board.fire_events,
         );
     }
 
