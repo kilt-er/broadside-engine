@@ -26,8 +26,10 @@ Three things to know up front:
 
 1. **The TS is canonical** when this port disagrees, but the Rust port also fills in
    several TS TODO bodies (`apply_modifiers`, `resolve_self_move`,
-   `resolve_target_move`, `decide_enemy_action`) with implementations that match
-   the analysis-doc intent. Those are documented as Drift notes.
+   `resolve_target_move`) with implementations that match the analysis-doc intent.
+   Those are documented as Drift notes. (The `decide_enemy_action` body was also
+   filled here, then **extracted to [`src/ai.rs`](ai.md)** at commit `1654e67` — the
+   resolver only *calls* it now.)
 2. **The damage pipeline is load-bearing**. Five steps in a fixed order:
    band falloff → modifiers → target-lock ×2 → directional shield → hull. Every
    balance lever plugs into one of these slots; **do not reorder**.
@@ -405,6 +407,17 @@ when the surrounding `execute_queue` completes.
 ---
 
 ## The AI loop (decide_enemy_action)
+
+> **Relocated + superseded — read [`ai.md`](ai.md) instead.** As of commit `1654e67`
+> `decide_enemy_action` was extracted from `resolve.rs` into its own
+> [`src/ai.rs`](ai.md) module and rewritten as the **2-D ladder** (FIRE →
+> CLOSE/HOLD-RANGE → REORIENT → VENT → empty, with the threat-spread tie-breaker, the
+> over-extension deadzone, and the #166 no-strafe rotate-then-forward maneuver). The
+> resolver's world phase still *calls* `ai::decide_enemy_action` once per enemy in
+> `enemy_initiative` order, but the algorithm below describes the **old 1-D model**
+> (`+6` lane-end diversity, lateral `__move_left`/`__move_right` closes) and is kept
+> only as design history. For the live behaviour see [`ai.md`](ai.md) /
+> [`LINE_BY_LINE.md` § `src/ai.rs`](../LINE_BY_LINE.md#srcairs).
 
 `decide_enemy_action(enemy_cell, board, content)` picks one action and pushes it onto
 the enemy's queue. The resolver then runs the queue through `execute_queue`

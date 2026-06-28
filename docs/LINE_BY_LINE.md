@@ -27,7 +27,8 @@ glance what is documented vs. what is pending.*
 - [`src/types.rs`](#srctypesrs) — every type, no logic
 - [`src/geometry.rs`](#srcgeometryrs) — pure geometry: bands, arcs, facings, shields
 - [`src/perspective.rs`](#srcperspectivers) — flat screen-space lane: cell-to-pixel transform, ship dims, view-angle stance
-- [`src/resolve.rs`](#srcresolvers) — the four-phase round, queue gate, damage pipeline, effect dispatch, all movement/AI/modifier bodies
+- [`src/resolve.rs`](#srcresolvers) — the four-phase round, queue gate, damage pipeline, effect dispatch, all movement/modifier bodies
+- [`src/ai.rs`](#srcairs) — enemy-AI decision layer: the 2-D ladder (FIRE → close/hold → reorient → vent), extracted from `resolve.rs`
 - [`src/catalog.rs`](#srccatalogrs) — catalog loader + `LoadError` + strict/canonical format auto-detect
 - [`src/catalog_canonical.rs`](#srccatalog_canonicalrs) — canonical (design-doc) → strict catalog transformer
 - [`src/runs.rs`](#srcrunsrs) — Phase 3 run-loop: encounter outcome, run advancement, board materialization, placeholder sectors
@@ -3729,7 +3730,7 @@ truthful after this enemy's decision.
 
 This is the rule that makes the player see a shot coming one turn before it lands (#67).
 **Cross-references:** calls [`fire_player_queue`](#phase-1--3--fn-fire_player_queuesship_id-board-content-srcresolversr242),
-[`ai::decide_enemy_action`](#srcairs-folded-into-resolve-and-ai), and `paint_threats`;
+[`ai::decide_enemy_action`](#srcairs), and `paint_threats`;
 called by `run_world_phase`.
 
 ### `fn tick_world(board, content)` (resolve.rs:422) — retained #124 seam, not driven live
@@ -4373,70 +4374,25 @@ override the trait method.
 
 ---
 
-### `fn decide_enemy_action(enemy_cell, board, content)` (line 1857)
+### `fn decide_enemy_action(enemy_cell, board, content)` — moved to `src/ai.rs`
 
-**Mirrors:** `resolve.ts:395` (stub). Filled in per task #6 / commit `da243be`; the
-fire-vs-maneuver rewrite is #71 (`2182aa3`) + #74 (`f401ede`).
-**Design anchor:** HTML Part IV closing paragraph — the AI maximises lane-end
-diversity to force player stance flips. **Note (#74):** that diversity *intent* is now
-served by the maneuver step (geometry-emergent), NOT by any scoring term.
-**Intent:** Pick one action for this enemy and push it onto `ship.queue`. The
-resolver runs the queue through `execute_queue` unchanged — the AI never bypasses
-the pipeline.
+> **Relocated.** As of commit `1654e67` the enemy-AI decision layer was **extracted
+> out of `resolve.rs` into its own [`src/ai.rs`](#srcairs) module** (so the resolver
+> lane and the content/AI lane stop colliding on one file). The four-phase round's
+> world phase still *calls* `ai::decide_enemy_action(enemy_cell, board, content)` once
+> per living enemy in `enemy_initiative` order — that call site is unchanged — but the
+> full walkthrough of the **2-D ladder** (FIRE → CLOSE/HOLD-RANGE → REORIENT → VENT →
+> empty), the threat-spread tie-breaker, the over-extension deadzone, and the
+> no-strafe rotate-then-forward maneuver now lives in the **[`src/ai.rs`](#srcairs)**
+> section below (companion [`docs/MODULES/ai.md`](MODULES/ai.md)). The old 1-D
+> fire-vs-maneuver write-up here (the `+6` diversity bonus, `queue_purposeful_maneuver`,
+> `__move_left`/`__move_right` lateral closes) described the pre-2-D body and is
+> superseded by that section.
 
-The current rule (#71): **if any in-band, bearing, affordable, hostile-targeting
-action exists, FIRE it; otherwise CLOSE toward the player** (then reorient, then
-vent). The doc comment at lines 1804–1856 is the algorithm description (note: that
-comment's score-list still mentions the removed `+6` — see the Drift note below; the
-*body* no longer adds it). Summary against the body:
-
-1. **Find the player** (lines 1864–1868). No player → return.
-2. **Snapshot gating state** (lines 1872–1884). The scoring loop borrows the board
-   read-only for `resolve_targeting`, so we copy out heat / cooldowns / mounts /
-   traits up front.
-3. **Enumerate + score available actions** (lines 1905–1979). For each mount's
-   weapon: gate by cooldown, lockout (locked-out → zero-heat only), heat-budget
-   (skip if firing would push more than 1 above `heat_max`), arc/band via
-   `resolve_targeting`, and a friendly-fire filter (#49 — drop actions whose target
-   set is all-empty/all-ally). Score (selects WHICH weapon, not WHETHER to fire):
-   - `+10` if a hit cell contains the player.
-   - `+raw_damage` (sum of `Effect::DAMAGE` amounts).
-   - `-heat` cost (halved for `BurnHard` ships).
-   - `+2` for `Pursuit` ships that hit the player (line ~1972 — live but currently
-     unreachable; see Drift note).
-4. **FIRE the best** (lines 1998–2003). If any action scored, push it and return —
-   **unconditionally** (the #71 change: no covered-end fire-suppression).
-5. **Maneuver → reorient → vent** (lines 2005–2054). When nothing can fire:
-   - **Close** via `queue_purposeful_maneuver` (line 2083) — queues a synthetic
-     lane-relative move (`__move_left`/`__move_right`) toward the player; skipped when
-     locked out (vent first). #68 anti-camp / #41 "optimal position".
-   - **Reorient** — any `REORIENT` action (flip may bring the player into arc next).
-   - **Vent** — any `VENT_HEAT` action (clears heat for next round).
-   - Else leave the queue empty (unreachable for a well-configured enemy).
-
-**Drift note (#71/#74) — the doc comment and a removed scoring term.**
-- **#71 dropped the covered-end fire-suppression.** An earlier design (#41) made an
-  enemy *reposition instead of firing* if its lane-end was already covered by an ally.
-  With the live spawn shape (all enemies one side of the player) every enemy after the
-  first saw "covered", so all marched in a line and died without firing — bruce's
-  "they never shoot" bug. Fire-when-in-position now wins unconditionally.
-- **#74 removed the `+6` lane-end-diversity bonus** as vestigial: `my_end_from_player`
-  is constant across one enemy's own candidates, so the bonus never changed that
-  enemy's argmax (the queued pick); with #71's suppression gone it had zero behavioral
-  effect. **True cross-enemy coordination (an initiative pass assigning enemies to
-  distinct ends) was never built — lane-end diversity is emergent from geometry.** The
-  source body no longer adds `+6`; the function's own `///` score-list comment
-  (lines ~1837-1838) still lists it and is mildly stale — that's the resolver's doc
-  comment to fix, flagged to them, not edited here.
-- **`Pursuit` +2 is live but currently unreachable.** It's real in the math and CAN
-  flip a pick, but it's conditional on `hits_player`, so it only races a candidate
-  that does NOT hit the player — which never arises on a single-player board (every
-  fireable candidate hits the same lone player). Document as live-but-unreachable, not
-  inert.
-
-**Visible-threat invariant.** Every successful AI turn produces a queued action — fire
-OR a fallback (close / reorient / vent), each itself a visible telegraph. The renderer
-draws queue contents over each ship, so any pushed id makes the intent legible.
+**Visible-threat invariant** (still resolver-relevant): every successful AI turn
+produces a queued action — fire OR a fallback (close / reorient / vent), each itself a
+visible telegraph. The world phase leaves it **un-fired** for the player to read; the
+renderer draws queue contents over each ship, so any pushed id makes the intent legible.
 
 ---
 
@@ -4536,6 +4492,159 @@ No open items.
 
 ---
 
+## `src/ai.rs`
+
+*Enemy-AI decision layer — the 2-D ladder. Companion:
+[`docs/MODULES/ai.md`](MODULES/ai.md).*
+
+**Mirrors:** `resolve.ts:395` in origin (the `decide_enemy_action` stub), but the 2-D
+ladder is a Rust-side rewrite with no faithful TS counterpart. **Extracted** from
+`resolve.rs` at commit `1654e67` (blueprint C1) so the resolver lane (R4/R5/R7/R8) and
+the content/AI lane stop editing one file.
+
+**Design anchor:** `docs/design/C1_AI_LADDER_2D.md`. HTML Part IV's "maximise lane-end
+diversity" intent is now served by *geometry-emergent* maneuvering, not a scoring term
+(the `+6` bonus #74 removed).
+
+**Intent:** Pick exactly one action for one enemy and **push it onto `enemy.queue`** —
+nothing more. The AI is a *decision layer*: it never bypasses `execute_queue` or the
+damage pipeline (hard boundary). Whatever it queues stays un-fired until the **next**
+world phase, so on the player's turn the renderer always has a telegraph to show (the
+read-and-react loop).
+
+### The single-source fire-gate (the V4 invariant)
+
+The whole module's correctness rests on one rule: the "can I fire?" / "does my arc
+bear?" test is **always** [`resolve::resolve_targeting_2d`](#srcresolvers) — the SAME
+2-D path the shot actually fires through and the `ThreatMap` (R8) caches. There is **no
+second targeting path** (the 1-D `resolve_targeting` is never called here; reviewer V4
+greps this file and must find zero). So *what the AI elects to fire == what the
+telegraph paints == where the shot lands*. This also yields over-extension **for free**:
+a Far weapon's `range_band` excludes `Adjacent`, so once the player closes to distance
+1 the gate returns empty and the enemy is correctly inert (blueprint decision #7) —
+Rung 2 then backs it off rather than charging in.
+
+### `fn decide_enemy_action(enemy_cell, board, content)` (ai.rs:56)
+
+**Intent:** Run the five-rung ladder for the enemy at `enemy_cell`; first match wins.
+
+Line 56: the entry point keeps a `usize` cell (not a `Pos`) **so the resolver's
+`run_world_phase` call site is unchanged** — no `resolve.rs` co-edit. Line 58:
+`Pos::from_index(enemy_cell)` recovers the 2-D position under board **invariant A**
+(`slot == pos.to_index()`); everything downstream works in `Pos`/`Dir8`. Lines 63-68:
+find the player's `Pos` (scan `board.cells` for the `Faction::Player` ship); no player
+→ return. Lines 72-85: **snapshot** the enemy's gating state — `heat`, `heat_max`,
+`locked_out`, a clone of `cooldowns`, the `mount_weapons` ids, `traits`, and (#166)
+the current `facing`. This read-only borrow is released **before** the scoring loop,
+which re-borrows the board for `resolve_targeting_2d`. Lines 88-90 lift three trait
+flags: `burn_hard` (heat costs count half), `pursuit` (+2 on a player hit), `anchored`
+(skips all self-movement rungs).
+
+**RUNG 1 — FIRE (ai.rs:106-179).** Line 106 computes `spread_set` =
+[`allies_threatened_cells`](#srcairs) (the C2 tie-breaker context, below). Lines
+108-172 score every mount weapon and keep the best:
+- Gate by **cooldown** (line 113, skip if > 0), **lockout/heat** (lines 118-123:
+  locked-out → only zero-heat weapons; never push more than 1 past `heat_max`, or a
+  whole turn is lost to venting), then **arc + band + deadzone** via the single source
+  `resolve_targeting_2d` (line 125; empty result = can't fire). Line 130-137 is the
+  **friendly-fire filter** (#49): the target set must contain ≥1 non-enemy.
+- **Score** (lines 139-168, picks WHICH weapon, never WHETHER to fire): `+10` if a hit
+  cell holds the player, `+raw_damage` (summed `Effect::DAMAGE`), `−heat` (halved for
+  `BurnHard`), `+2` for `Pursuit` on a player hit, and `−1` per target cell that
+  overlaps `spread_set` (the C2 spread; `SPREAD_OVERLAP_PENALTY`, ai.rs:47). The spread
+  term is deliberately tiny — it separates otherwise-comparable shots so a squad fans
+  its threat across distinct cells, but is dominated by `+10`/damage and **never gates
+  firing** (the #41/#71 lesson: diversity must not cause "march, don't shoot").
+- Lines 174-179: if anything scored, **push the best id and return** — fire is
+  unconditional (#71: "fire when in position" beats holding).
+
+**RUNG 2 — CLOSE / HOLD-RANGE (ai.rs:199-230).** Only if we couldn't fire, aren't
+locked out (a locked-out ship prefers to VENT), and aren't `Anchored`.
+[`choose_maneuver_dir`](#srcairs) owns the **band** decision (close / open / hold), but
+under Bruce's **no-strafe** ruling (#166) the ship never slides sideways. So lines
+208-221: derive the **dominant cardinal** of the enemy→player delta
+([`dominant_cardinal`](#srcairs)), flip it to its opposite when *opening* range; if that
+cardinal lies on the bow axis (== forward or its reverse) queue the on-axis
+forward/reverse step ([`synthetic_move_for_dir`](#srcairs)); otherwise queue a
+**ROTATE** toward it ([`rotate_toward_cardinal`](#srcairs)) so next phase the bow points
+right and the ship advances forward. Rotate-then-forward, never a free lateral step —
+mirroring the resolver's forward-only self-move gate (#167).
+
+**RUNG 3 — REORIENT (ai.rs:236-279).** 3a (lines 236-256): if a mounted weapon *itself*
+reorients (e.g. a sweep with an `Effect::REORIENT`), fire it. 3b (lines 270-279, the
+#92 **arc-agnostic rotate-to-bear**): queue a synthetic ROTATE toward the facing from
+which the enemy's own weapon BEARS on the player — bow-on for a Forward gun, side-on
+for a `BroadsideArc` gun — via [`rotate_to_make_weapon_bear`](#srcairs), which probes
+each candidate facing through `resolve_targeting_2d` (no bow-vs-broadside hardcode).
+This kills the "camp + never fire" bug where a mis-oriented hull would close forever
+without turning its gun to bear. Skipped for locked-out (prefers VENT) and `Anchored`.
+
+**RUNG 3.5 — FALLBACK CLOSE (ai.rs:311-326).** Reached when we couldn't fire, Rung 2
+held (it returns `None` for "in band but blocked by arc/heat/cooldown"), and no
+`REORIENT` exists. Pre-fix the ladder fell through to empty here and the enemy
+**camped** (Bruce's "enemies just sit there"). So close one step toward the player with
+the **same rotate-then-forward discipline** as Rung 2 (the sense is always "toward").
+**Gated on having ≥1 mount** (line 311): a mountless hull has no gun to bring to bear,
+so it holds still — both correct (no maneuver intent) and the fix that keeps the
+no-strafe winnability canary converging (a wandering mountless "target" hull
+chase-livelocked it). No live enemy is mountless; this only affects test harness hulls.
+
+**RUNG 4 — VENT (ai.rs:329-343).** Any mount with an `Effect::VENT_HEAT` — clears heat
+so the ship can fire again next round. **RUNG 5 — empty (ai.rs:345).** Only a
+misconfigured (no valid mount) enemy reaches here; the world phase no-ops the turn.
+
+**Cross-references:** Called by `run_world_phase` ([resolve.rs](#srcresolvers)) in
+`enemy_initiative` order. Calls `resolve_targeting_2d` (the single source) and the
+resolver-served synthetic moves (`__move_*` / `__rotate_*` via `resolver_ai_move`, so
+no `Content`-action dependency). **Worked examples** (tests/ai_2d.rs):
+`ai_skips_out_of_band_action_and_closes` (:360), `ai_closes_via_synthetic_move_when_cannot_fire`
+(:389), `ai_rotates_to_bear_when_misfacing_in_band` (:417),
+`ai_rotates_then_advances_when_approach_is_perpendicular` (:459, the #166 no-strafe
+case), `ai_skips_action_on_cooldown_and_closes` (:551),
+`ai_skips_action_that_overshoots_heat_budget_and_closes` (:579); plus
+`misfacing_broadside_enemy_rotates_flank_to_bear_then_fires` (tests/broadside.rs:195)
+for the arc-agnostic rotate-to-bear.
+
+### Helpers
+
+- **`fn allies_threatened_cells(self_pos, board, content) -> Vec<Pos>`** (ai.rs:372) —
+  the C2 (#35) threat-spread context: the union of cells already threatened by allies
+  who committed **earlier in this decision pass**. The subtlety: `run_world_phase`
+  interleaves fire-then-decide per enemy in `enemy_initiative` order, so at the moment
+  enemy *E* decides, allies **before** *E* hold fresh this-pass intent (count them)
+  while allies **after** *E* hold stale last-phase intent (skip them). Computes each
+  ally's threatened cells via `resolve_targeting_2d` on its queued damaging action (the
+  same single source). Pure read.
+- **`fn choose_maneuver_dir(mount_weapons, enemy_pos, player_pos, content) -> Option<Dir8>`**
+  (ai.rs:430) — the band decision, keyed on the **dominant** (highest summed DAMAGE)
+  weapon. Returns *toward* (player too far — close into band), *away* (player nearer
+  than the weapon's nearest band — the #7 deadzone back-off), or `None` (in band but
+  couldn't fire → an arc problem; hold and let Rung 3 reorient). An empty `range_band`
+  (a not-yet-re-authored EXPAND-window catalog) is treated as "no preference → close",
+  the v1 behaviour. `band_ordinal` (ai.rs:493) ranks `Adjacent < Near < Far`.
+- **`fn synthetic_move_for_dir(dir) -> Option<&str>`** (ai.rs:513) — map a `Dir8` to
+  the resolver-served synthetic move id (`SYNTHETIC_MOVE_LEFT/RIGHT/UP/DOWN`). Since
+  the no-strafe ruling the AI only ever passes a **cardinal** here; the diagonal arms
+  remain only to keep the mapping total over `Dir8`.
+- **`fn dominant_cardinal(from, to) -> Option<Dir4>`** (ai.rs:541) — collapse the
+  enemy→player delta to a **single cardinal** the hull can face (larger axis wins; ties
+  pick the E/W column/dodge axis). Distinct from `grid::from_to`'s 8-way octant — the
+  no-strafe model needs a facing, not a slide direction.
+- **`fn rotate_toward_cardinal(current, target) -> Option<&str>`** (ai.rs:563) — the
+  shortest quarter-turn `__rotate_left`/`__rotate_right` from `current` toward `target`
+  (`None` if aligned; a 180° target picks right and finishes next phase). Same
+  turn-choice convention as `rotate_to_make_weapon_bear`.
+- **`fn rotate_to_make_weapon_bear(mount_weapons, enemy_pos, player_pos, board, content) -> Option<&str>`**
+  (ai.rs:606) — the #92 arc-agnostic rotate-to-bear. Clones the dominant weapon (to
+  drop the `content` borrow), then **probes** each of the four `Bow` cardinals by
+  temporarily setting `facing`, running `resolve_targeting_2d`, checking the player's
+  cell, and **restoring** the facing (pure probe). Picks the bearing facing needing the
+  fewest quarter-turns; `None` if already bearing or none bears. This is why a
+  `BroadsideArc` enemy orients perpendicular and a Forward enemy orients bow-on — all
+  from the one targeting path, never a hardcoded stance rule.
+
+---
+
 ## `src/effects.rs`
 
 *VFX effect data schema. Companion: [`docs/MODULES/effects.md`](MODULES/effects.md).*
@@ -4595,10 +4704,11 @@ beams cannot diverge.
 
 ---
 
-## Content / AI / EventBus — folded into `src/resolve.rs` and `src/types.rs`
+## Content / EventBus — folded into `src/resolve.rs` and `src/types.rs`
 
-*Navigational breadcrumb for readers who came looking for `content.rs`, `ai.rs`, or
-`bus.rs` modules. None of these files exist in the Rust port.*
+*Navigational breadcrumb for readers who came looking for `content.rs` or `bus.rs`
+modules. Neither file exists in the Rust port. (For `ai.rs`, which **does** now exist,
+see the [`src/ai.rs`](#srcairs) section above.)*
 
 - **Content layer** — there is no `src/content.rs`. The runtime content surface is the
   `Content` trait plus its demo implementation, which live alongside the resolver; the
@@ -4606,15 +4716,15 @@ beams cannot diverge.
   [`src/catalog_canonical.rs`](#srccatalog_canonicalrs). The projectile-spawn dispatch
   (`Content::spawn_projectile`) and board-effect dispatch (`Content::apply_board_effect`)
   are documented under the resolver's effect-dispatch entries.
-- **AI** — there is no `src/ai.rs`. `decide_enemy_action` and its scoring helpers are
-  folded into [`src/resolve.rs`](#srcresolvers) (see the "AI" sub-entry: scoring formula
-  + visible-threat fallback ladder). They share the resolver's private helpers, so
-  splitting would force those public for no benefit.
+- **AI** — the enemy AI **was** folded into `resolve.rs`, but as of commit `1654e67` it
+  is its own module: [`src/ai.rs`](#srcairs) (the 2-D ladder). The resolver's world
+  phase calls `ai::decide_enemy_action`; the full walkthrough is the
+  [`src/ai.rs`](#srcairs) section above.
 - **EventBus** — there is no `src/bus.rs`. The `Hook` enum, `HookContext`, and the
   `EventBus` (`on` / `emit`) interface live in [`src/types.rs`](#srctypesrs), documented
   there along with the "no chained emit" invariant (task #26).
 
-These three skeleton headings predated the architecture settling; they're folded here so
+These skeleton headings predated the architecture settling; they're folded here so
 a reader hunting for the old filenames lands somewhere useful.
 
 ---
