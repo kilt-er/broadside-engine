@@ -101,6 +101,11 @@ pub fn load_from_bytes(bytes: &[u8]) -> Result<Catalog, LoadError> {
     // 2-D bands from the 1-D `band` for any action still missing them, so the
     // silent-inert bug can't recur regardless of which shape was loaded.
     normalize_2d_bands(&mut catalog);
+    // #177: cap the DAMAGE of the early-game ("starter") enemies' weapons to
+    // STARTER_DAMAGE_CAP so the opening sectors aren't lethal in ~2 hits. Runs on
+    // BOTH load shapes here (the single chokepoint), so every caller gets the
+    // capped enemies + capped action defs for free via `install_catalog_actions`.
+    cap_starter_enemy_weapons(&mut catalog);
     Ok(catalog)
 }
 
@@ -172,6 +177,138 @@ pub(crate) fn expand_band_2d(b: crate::types::RangeBand) -> Vec<crate::grid::Ran
         RangeBand::Close => vec![Adjacent, Near],
         RangeBand::Mid => vec![Near, Far],
         RangeBand::Long | RangeBand::Extreme => vec![Far],
+    }
+}
+
+/* =========================================================================
+ * #177 — starter-enemy damage cap.
+ *
+ * Bruce playtest: the opening-sector enemies kill in ~2 hits. Their weapons'
+ * DAMAGE comes from the SHARED catalog action (`pulse_laser` -> 3, `beam_cannon`
+ * -> 4, `broadside_battery` -> 5 via the loader's heat-derived `inflate_effect`),
+ * and those same action ids are the PLAYER's weapons — so the damage can't be
+ * lowered on the shared action without also nerfing the player.
+ *
+ * Fix: at load, give each starter enemy a PRIVATE capped copy of any direct-
+ * DAMAGE weapon. The copy keeps the base action's name / archetype / targeting /
+ * arc / cost (so the HUD + AI behave identically) and only differs in `id`
+ * (`<base>__starter`) and the DAMAGE amount (clamped to STARTER_DAMAGE_CAP). The
+ * enemy's weapon ref is rewritten to the capped id; the player never references
+ * it, so the player's loadout is untouched. Ordnance weapons (e.g. the Picket's
+ * Missile Salvo) carry their damage on the spawned projectile, not the launcher
+ * action, and that projectile already deals <= the cap (see
+ * `input::spawn_ordnance`), so they need no change here.
+ * ====================================================================== */
+
+/// The most damage an early-game ("starter") enemy weapon may deal (#177,
+/// Bruce ruling: "at most 1-2"). Bruce-tunable.
+const STARTER_DAMAGE_CAP: i32 = 2;
+
+/// Suffix marking a private, damage-capped weapon variant minted for a starter
+/// enemy (#177). The variant keeps the base action's display name, so it must be
+/// resolved by ID only — [`action_name_to_id`] excludes any id carrying this
+/// suffix so the variant never wins a display-name lookup.
+const STARTER_CAPPED_SUFFIX: &str = "__starter";
+
+/// `true` if `id` is a private starter-capped weapon variant ([`STARTER_CAPPED_SUFFIX`]).
+fn is_starter_capped_id(id: &str) -> bool {
+    id.ends_with(STARTER_CAPPED_SUFFIX)
+}
+
+/// The early-game enemy ids whose weapons are damage-capped (#177). These are the
+/// intro enemies of the first three combat sectors (Drift Belt / Ion Reefs /
+/// Ashen Expanse) — the "weak early-game" ships the player meets first. Capitals
+/// and every mid/late-game enemy are deliberately excluded (their challenge is
+/// intended). Keyed by the catalog `EnemyDef.id`.
+const STARTER_ENEMY_IDS: &[&str] = &["skiff", "lancer", "gunboat", "picket"];
+
+/// Give the [`STARTER_ENEMY_IDS`] enemies private, damage-capped copies of their
+/// direct-DAMAGE weapons (#177). See the module section comment above for the why.
+///
+/// For each starter enemy weapon that resolves to a catalog action carrying a
+/// direct `Effect::DAMAGE` whose amount exceeds [`STARTER_DAMAGE_CAP`]:
+/// 1. ensure a capped clone exists in `catalog.actions` under id `<base>__starter`
+///    (idempotent — shared across enemies that mount the same base weapon), and
+/// 2. rewrite the enemy's weapon ref to that capped id.
+///
+/// Weapons that already deal `<= cap` (or carry no direct DAMAGE — ordnance,
+/// movement, defensive) are left pointing at the base id: no capped copy is made,
+/// so the catalog isn't littered with no-op variants.
+fn cap_starter_enemy_weapons(catalog: &mut Catalog) {
+    // Resolve weapon refs (display name OR id) to action ids up front, using an
+    // immutable snapshot of the name->id map (built before we start pushing the
+    // capped variants, which only add new ids and never shadow a base name).
+    let name_to_id = action_name_to_id(catalog);
+
+    // Collect the capped action defs to append after we finish reading + rewriting
+    // `enemies` (can't push into `catalog.actions` while iterating the same
+    // catalog immutably for the base-action lookup). Keyed by capped id so the
+    // same base weapon shared by two starter enemies yields ONE variant.
+    let mut capped_defs: HashMap<String, crate::types::Action> = HashMap::new();
+
+    for def in &mut catalog.enemies {
+        if !STARTER_ENEMY_IDS.contains(&def.id.as_str()) {
+            continue;
+        }
+        for weapon in &mut def.weapons {
+            let Some(base_id) = resolve_weapon_id(weapon, &name_to_id) else {
+                continue; // unresolved name — synthesis already logs + skips it
+            };
+            // Find the base action's direct DAMAGE (if any). Look in the catalog
+            // first; if the base id isn't a catalog action (e.g. a player-only
+            // DemoContent weapon), skip — the cap is a catalog-data step.
+            let Some(base_action) = catalog.actions.iter().find(|a| a.id == base_id) else {
+                continue;
+            };
+            let Some(base_dmg) = direct_damage_amount(base_action) else {
+                continue; // no direct DAMAGE (ordnance / utility) — nothing to cap
+            };
+            if base_dmg <= STARTER_DAMAGE_CAP {
+                continue; // already within the cap — leave the ref on the base id
+            }
+            // Need a capped variant. Build it once (idempotent across enemies).
+            let capped_id = format!("{base_id}{STARTER_CAPPED_SUFFIX}");
+            capped_defs.entry(capped_id.clone()).or_insert_with(|| {
+                let mut a = base_action.clone();
+                a.id.clone_from(&capped_id);
+                cap_direct_damage(&mut a, STARTER_DAMAGE_CAP);
+                a
+            });
+            // Point the enemy's mount at the capped id (snake_case, so the later
+            // `resolve_weapon_id` at synthesis passes it through unchanged).
+            *weapon = capped_id;
+        }
+    }
+
+    // Append the new capped actions (skip any id a catalog already defines, so a
+    // future explicit `*__starter` entry in the export wins over the synthesized
+    // one). insert-if-absent semantics, mirroring `install_catalog_actions`.
+    for (id, action) in capped_defs {
+        if !catalog.actions.iter().any(|a| a.id == id) {
+            catalog.actions.push(action);
+        }
+    }
+}
+
+/// The amount of an action's FIRST direct [`Effect::DAMAGE`], or `None` if the
+/// action deals no direct damage (ordnance carries it on the projectile;
+/// movement / defensive carry none). Mirrors the `action_damage` direct-DAMAGE
+/// read used by the bin's tile readout.
+fn direct_damage_amount(action: &crate::types::Action) -> Option<i32> {
+    action.effects.iter().find_map(|e| match e {
+        crate::types::Effect::DAMAGE { amount, .. } => Some(*amount),
+        _ => None,
+    })
+}
+
+/// Clamp every [`Effect::DAMAGE`] amount on `action` to at most `cap`, preserving
+/// each effect's `band_falloff`. (An action has at most one DAMAGE today, but the
+/// loop is total in case a future weapon stacks two.)
+fn cap_direct_damage(action: &mut crate::types::Action, cap: i32) {
+    for e in &mut action.effects {
+        if let crate::types::Effect::DAMAGE { amount, .. } = e {
+            *amount = (*amount).min(cap);
+        }
     }
 }
 
@@ -380,10 +517,20 @@ fn enemy_shield_default() -> ShieldProfile {
 /// actions. Mirrors the lookup `catalog_canonical::transform_class` builds
 /// for class set1/set2 normalization, but at synthesis time so it works
 /// whether the catalog arrived via the canonical or the strict load path.
+///
+/// #177: the private `__starter` damage-capped variants (added by
+/// [`cap_starter_enemy_weapons`]) deliberately keep the BASE display name (so the
+/// HUD still reads "Pulse Laser"), so they would COLLIDE on the name key with
+/// their base action. They are resolved by ID only (the starter enemies'
+/// `weapons` were rewritten to the capped id), never by display name, so they
+/// are excluded here — otherwise the last-inserted variant would win the name
+/// key and silently re-map EVERY enemy's "Pulse Laser" to the capped copy
+/// (nerfing non-starter and capital enemies too).
 fn action_name_to_id(catalog: &Catalog) -> HashMap<String, String> {
     catalog
         .actions
         .iter()
+        .filter(|a| !is_starter_capped_id(&a.id))
         .map(|a| (a.name.to_lowercase(), a.id.clone()))
         .collect()
 }
@@ -795,5 +942,154 @@ mod tests {
             vec![Range::Far],
             "#81: a `long` weapon is Far-only (deadzone preserved)"
         );
+    }
+
+    /* ---- #177: starter-enemy damage cap --------------------------------- */
+
+    /// A canonical-shape catalog with one STARTER enemy (gunboat: Beam Cannon 4 +
+    /// Broadside Battery 5) and one NON-starter (monitor: Railgun Broadside 6).
+    /// Loaded via `load_from_bytes` so the post-parse `cap_starter_enemy_weapons`
+    /// pass runs (the embedded-`from_canonical_value` tests above deliberately do
+    /// NOT run it).
+    fn cap_test_catalog_bytes() -> Vec<u8> {
+        serde_json::to_vec(&serde_json::json!({
+            "meta": { "schema": "x", "lane": [5], "newAxes": [], "bands": ["close"] },
+            "actions": [
+                { "id": "pulse_laser", "name": "Pulse Laser", "archetype": "beam",
+                  "heat": 1, "cd": 0, "band": "close", "pattern": "BEAM",
+                  "arc": "forward", "freeplay": false, "effects": ["DAMAGE"] },
+                { "id": "beam_cannon", "name": "Beam Cannon", "archetype": "beam",
+                  "heat": 2, "cd": 3, "band": "mid", "pattern": "BEAM",
+                  "arc": "forward", "freeplay": false, "effects": ["DAMAGE"] },
+                { "id": "broadside_battery", "name": "Broadside Battery", "archetype": "broadside",
+                  "heat": 3, "cd": 4, "band": "close", "pattern": "BROADSIDE",
+                  "arc": "broadsideArc", "freeplay": false, "effects": ["DAMAGE"] },
+                { "id": "railgun_broadside", "name": "Railgun Broadside", "archetype": "broadside",
+                  "heat": 4, "cd": 6, "band": "long", "pattern": "BROADSIDE",
+                  "arc": "broadsideArc", "freeplay": false, "effects": ["DAMAGE"] },
+            ],
+            "mods": [], "subsystems": [], "statuses": [],
+            "enemies": [
+                { "id": "gunboat", "name": "Gunboat", "hull": 4, "hull5": 5,
+                  "traits": [], "sector": "Ion Reefs",
+                  "weapons": ["Beam Cannon", "Broadside Battery"] },
+                { "id": "monitor", "name": "Monitor", "hull": 5, "hull5": 7,
+                  "traits": ["Pursuit"], "sector": "Spindle Port",
+                  "weapons": ["Railgun Broadside"] },
+            ],
+            "patrols": [],
+        }))
+        .expect("catalog json serializes")
+    }
+
+    /// The direct DAMAGE of the action a synthesized mount resolves to, in the
+    /// loaded `cat`. `None` if the mount's weapon id isn't a catalog action or
+    /// the action has no direct DAMAGE.
+    fn mount_damage(cat: &Catalog, mount_weapon_id: &str) -> Option<i32> {
+        cat.actions
+            .iter()
+            .find(|a| a.id == mount_weapon_id)
+            .and_then(direct_damage_amount)
+    }
+
+    #[test]
+    fn starter_enemy_weapons_capped_at_two() {
+        // The gunboat is a starter (#177). After load, each of its mounts resolves
+        // to a capped action dealing <= STARTER_DAMAGE_CAP (Beam Cannon 4 -> 2,
+        // Broadside Battery 5 -> 2). The mount weapon ids point at the private
+        // `__starter` variants, which keep the base name/arc.
+        let cat = load_from_bytes(&cap_test_catalog_bytes()).expect("catalog loads");
+        let gunboat =
+            enemy_ship_from_catalog(&cat, &spawn_at("gunboat", 2)).expect("gunboat in catalog");
+
+        for m in &gunboat.mounts {
+            let dmg = mount_damage(&cat, &m.weapon).unwrap_or_else(|| {
+                panic!("gunboat mount `{}` resolves to a DAMAGE action", m.weapon)
+            });
+            assert!(
+                dmg <= STARTER_DAMAGE_CAP,
+                "starter gunboat weapon `{}` must deal <= {STARTER_DAMAGE_CAP}, got {dmg}",
+                m.weapon,
+            );
+            assert!(
+                m.weapon.ends_with("__starter"),
+                "the capped mount id should be the private `__starter` variant, got `{}`",
+                m.weapon,
+            );
+        }
+    }
+
+    #[test]
+    fn non_starter_enemy_weapons_keep_full_damage() {
+        // The monitor is NOT a starter — its Railgun Broadside keeps full damage
+        // (broadside heat 4 -> amount 6 via inflate) and the base id (no variant).
+        let cat = load_from_bytes(&cap_test_catalog_bytes()).expect("catalog loads");
+        let monitor =
+            enemy_ship_from_catalog(&cat, &spawn_at("monitor", 4)).expect("monitor in catalog");
+
+        let rail = monitor
+            .mounts
+            .iter()
+            .find(|m| m.weapon == "railgun_broadside")
+            .expect("monitor mounts railgun_broadside at its BASE id (not capped)");
+        assert_eq!(
+            mount_damage(&cat, &rail.weapon),
+            Some(6),
+            "non-starter monitor's railgun keeps full damage (heat 4 -> 6)",
+        );
+    }
+
+    #[test]
+    fn capping_starter_does_not_touch_the_shared_base_weapon() {
+        // The base `broadside_battery` / `beam_cannon` actions (the PLAYER's
+        // weapons share these ids) must keep their full damage — the cap only
+        // adds private `__starter` variants. This is the "do NOT touch player
+        // weapons" guarantee made structural.
+        let cat = load_from_bytes(&cap_test_catalog_bytes()).expect("catalog loads");
+        assert_eq!(
+            mount_damage(&cat, "broadside_battery"),
+            Some(5),
+            "base broadside_battery (player weapon) unchanged at 5",
+        );
+        assert_eq!(
+            mount_damage(&cat, "beam_cannon"),
+            Some(4),
+            "base beam_cannon (player weapon) unchanged at 4",
+        );
+        // The capped variants exist alongside, at the cap.
+        assert_eq!(mount_damage(&cat, "broadside_battery__starter"), Some(2));
+        assert_eq!(mount_damage(&cat, "beam_cannon__starter"), Some(2));
+    }
+
+    #[test]
+    fn capped_starter_variant_keeps_base_name_and_arc() {
+        // The HUD reads the action's `name` + the mount's `arc`; the capped variant
+        // must mirror the base so the enemy panel still says "Broadside Battery"
+        // and the broadside still bears on its flanks.
+        let cat = load_from_bytes(&cap_test_catalog_bytes()).expect("catalog loads");
+        let base = cat
+            .actions
+            .iter()
+            .find(|a| a.id == "broadside_battery")
+            .expect("base present");
+        let capped = cat
+            .actions
+            .iter()
+            .find(|a| a.id == "broadside_battery__starter")
+            .expect("capped variant present");
+        assert_eq!(capped.name, base.name, "capped keeps the display name");
+        assert_eq!(
+            capped.archetype, base.archetype,
+            "capped keeps the archetype"
+        );
+        assert_eq!(
+            capped.targeting.requires_arc, base.targeting.requires_arc,
+            "capped keeps the arc (still a broadside)",
+        );
+        assert_eq!(
+            capped.targeting.range_band, base.targeting.range_band,
+            "capped keeps the firing bands",
+        );
+        assert_eq!(capped.cost, base.cost, "capped keeps heat/cooldown cost");
     }
 }
