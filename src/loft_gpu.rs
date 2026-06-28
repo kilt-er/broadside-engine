@@ -1231,14 +1231,21 @@ pub const CHASE_CAM_BASE_YAW_DEG: f32 = 270.0;
 ///   - `facing_yaw_deg` — the tactical-facing offset (`N`=0 / `E`=+90 / `S`=180
 ///     / `W`=−90), so the four cardinals read as distinct flat poses.
 ///
-/// This yaw stays the clean CARDINAL ground pose (no lane-lean) — it sets which way
-/// the hull FACES in 3D, kept facing-correct for the firing read. The 2-D SCREEN
-/// lane-lean Bruce wants (#186 — hull long-axis parallel to the converging column
-/// lines) is applied SEPARATELY as a screen-space roll of the loft BLIT quad, via
-/// [`loft_blit_roll_deg`]; it cannot be done here because the loft camera's shallow
-/// chase pitch caps the achievable on-screen tilt-per-ground-yaw far short of the
-/// steep off-centre lane slopes (a ground yaw big enough to match would swing the
-/// hull toward broadside). See [`loft_blit_roll_deg`] for the geometry.
+/// (#186 Bruce FINAL — reverted the 2-D blit-roll) This yaw is the clean CARDINAL
+/// ground pose: the hull lies FLAT on the grid plane (foreshortened by the loft
+/// camera) exactly like the enemy hulls, bow pointed up its lane, and only its
+/// ground heading turns per facing. Bruce: the player "needs to lie flat on the grid
+/// plane" like the enemies — a flat ground pose, NOT a screen-space roll. The earlier
+/// blit-roll achieved screen-parallelism but BANKED the hull off the deck (read as
+/// rolled on its edge), which he rejected; flat-on-plane wins over pixel-parallel.
+///
+/// Note the FLAT/PARALLEL tension (proven, durable): the loft camera's shallow chase
+/// pitch differs from the grid projector's pitch (the #155 mismatch), so a flat
+/// ground-yaw can only swing the on-screen long-axis ~40° while an off-centre lane is
+/// ~70° off vertical — a flat hull therefore CAN'T be made fully lane-parallel by yaw
+/// alone. The durable way to get flat AND parallel is to render the ship in the SAME
+/// perspective as the grid (unify the pitches); until then the hull is flat + cardinal
+/// (Bruce's stated priority). See the #186 report for the trade-off.
 ///
 /// `aim_at` / `cfg` / `pitch_deg` stay in the signature (the live render + the bow
 /// gate pass them) but no longer affect this ground yaw.
@@ -1250,54 +1257,6 @@ pub fn chase_cam_ground_yaw_deg(
 ) -> f32 {
     let _ = (aim_at, cfg, pitch_deg);
     CHASE_CAM_BASE_YAW_DEG + facing_yaw_deg
-}
-
-/// (#186 Bruce) The 2-D SCREEN-SPACE roll (degrees, clockwise-positive in y-down
-/// screen space) to apply to the loft BLIT quad so the hull's long axis is PIXEL-
-/// PARALLEL to its column's lane lines as they converge to the vanishing point —
-/// "clearly parallel with the lane lines towards the vanishing point". This is the
-/// fix that supersedes #173's no-lean (which drew the hull straight up-screen while
-/// its lane slanted to the VP — the rejected #170 "square to the screen" look).
-///
-/// WHY a 2-D blit roll, not a ground yaw: the lane lines at an off-centre column are
-/// STEEPLY diagonal on screen (e.g. ~70° off vertical at the near-left cell at boot
-/// pitch, since the VP sits only a little above the near row). The ortho loft
-/// camera's shallow chase pitch turns a ground-plane yaw into only a small on-screen
-/// tilt (≈40° of screen slope even at a full 90° ground yaw), so it physically can't
-/// reach the lane slope without rotating the hull most of the way to broadside. A
-/// pure 2-D roll of the finished hull sprite hits the EXACT lane angle and keeps the
-/// hull's flat ground pose (facing stays correct). The hull stays flat on the deck —
-/// this rolls the on-screen silhouette, it does NOT bank the hull off the ground.
-///
-/// Returns the roll for the along-lane N/S facings (`facing_yaw_deg` ≈ 0 or 180) and
-/// ZERO for E/W broadside hulls (#172 — grid rows are screen-horizontal, so an
-/// across-grid hull stays horizontal). The angle is the lane direction's tilt from
-/// vertical (`atan2(lvx, −lvy)` of `lane = vp − aim_at`, scene px y-down); a centred
-/// column has ~zero horizontal lane component → ~0 roll. The SAME angle serves N and
-/// S — S's long axis is the same lane line (the hull image already faces bow-down via
-/// the ground yaw 180), so rolling the whole sprite by the lane tilt keeps it
-/// parallel either way.
-#[must_use]
-pub fn loft_blit_roll_deg(
-    aim_at: [f32; 2],
-    facing_yaw_deg: f32,
-    cfg: &crate::projector::ProjectorConfig,
-) -> f32 {
-    // Only the along-lane N/S facings lean; E/W stay horizontal (#172).
-    let f = facing_yaw_deg.rem_euclid(360.0);
-    let along_lane = f < 1.0 || (f - 180.0).abs() < 1.0 || f > 359.0;
-    if !along_lane {
-        return 0.0;
-    }
-    let vp = crate::projector::vanishing_point(cfg);
-    let (lvx, lvy) = (vp.x - aim_at[0], vp.y - aim_at[1]);
-    if lvx.hypot(lvy) < 1e-4 {
-        return 0.0;
-    }
-    // Lane tilt from straight-UP (screen −y). atan2(x, -y_down) = angle CW from up.
-    // Centre column: lvx≈0 → 0. Left column (lvx>0, toward VP up-right): positive
-    // (roll the bow clockwise/right to point up the slanted lane).
-    lvx.atan2(-lvy).to_degrees()
 }
 
 fn normalize3(v: [f32; 3]) -> [f32; 3] {
@@ -1614,91 +1573,45 @@ mod tests {
             _ => unreachable!("cardinal bow facings only"),
         };
 
+        let _ = vp; // VP no longer used: the hull is flat + cardinal (no lane-lean).
         for &col in &[0usize, COLS / 2, COLS - 1] {
             let pos = Pos::new(col, row);
             let aim_at = grid_cell_quad(pos, &cfg).center;
-            // Lane direction toward the VP, in scene px (y-down).
-            let (lvx, lvy) = (vp.x - aim_at[0], vp.y - aim_at[1]);
             for facing in [
                 Facing::Bow(Dir4::N),
                 Facing::Bow(Dir4::S),
                 Facing::Bow(Dir4::E),
                 Facing::Bow(Dir4::W),
             ] {
-                // The GROUND yaw is the clean cardinal pose (no lean) — it sets which
-                // way the hull FACES in 3D. The screen lane-lean is the separate blit
-                // roll, checked below.
+                // (#186 Bruce FINAL) The hull lies FLAT on the plane (like the enemies),
+                // bow at its clean cardinal heading — NO lean/roll in any column. N up,
+                // S down/toward-camera, E right, W left, dead-straight in every column.
                 let yaw =
                     chase_cam_ground_yaw_deg(aim_at, facing_yaw(facing), &cfg, CAMERA_PITCH_DEG);
                 let (bx, by) = bow_loft_ndc(yaw, bow_local);
                 let (cx, cy) = bow_loft_ndc(yaw, ctr_local);
                 let (dx, dy) = (bx - cx, by - cy);
-                let roll = loft_blit_roll_deg(aim_at, facing_yaw(facing), &cfg);
                 match facing {
-                    Facing::Bow(Dir4::N) => {
-                        assert!(
-                            dy > 1e-3 && dx.abs() < 1e-3,
-                            "col {col} N: ground pose bow straight UP (cardinal); dx={dx:.4} dy={dy:.4}"
-                        );
-                        // (#186) The blit roll, applied to the screen up-vector (0,-1)
-                        // in y-down space, must align with the lane (lvx, lvy): cross ≈ 0.
-                        let (rx, ry) = roll_up_vector(roll);
-                        let crossp = rx * lvy - ry * lvx;
-                        let scale = lvx.hypot(lvy);
-                        assert!(
-                            crossp.abs() < 1e-3 * scale.max(1.0),
-                            "col {col} N: rolled hull must be PARALLEL to lane (roll={roll:.2}, cross={crossp:.5}, lane=({lvx:.2},{lvy:.2}))"
-                        );
-                    }
-                    Facing::Bow(Dir4::S) => {
-                        assert!(
-                            dy < -1e-3 && dx.abs() < 1e-3,
-                            "col {col} S: ground pose bow straight DOWN (cardinal); dx={dx:.4} dy={dy:.4}"
-                        );
-                        // Same lane line as N; roll keeps the long axis parallel.
-                        let (rx, ry) = roll_up_vector(roll);
-                        let crossp = rx * lvy - ry * lvx;
-                        let scale = lvx.hypot(lvy);
-                        assert!(
-                            crossp.abs() < 1e-3 * scale.max(1.0),
-                            "col {col} S: rolled hull must be PARALLEL to lane (roll={roll:.2}, cross={crossp:.5})"
-                        );
-                    }
-                    Facing::Bow(Dir4::E) => {
-                        assert!(
-                            dx > 1e-3,
-                            "col {col} E: bow must be screen-RIGHT of centre; dx={dx:.4}"
-                        );
-                        // (#172) BROADSIDE hulls stay HORIZONTAL — no lane lean, so the
-                        // blit roll is ZERO in every column.
-                        assert!(
-                            roll.abs() < 1e-4,
-                            "col {col} E: broadside blit roll must be 0 (horizontal); roll={roll:.4}"
-                        );
-                    }
-                    Facing::Bow(Dir4::W) => {
-                        assert!(
-                            dx < -1e-3,
-                            "col {col} W: bow must be screen-LEFT of centre; dx={dx:.4}"
-                        );
-                        assert!(
-                            roll.abs() < 1e-4,
-                            "col {col} W: broadside blit roll must be 0 (horizontal); roll={roll:.4}"
-                        );
-                    }
+                    Facing::Bow(Dir4::N) => assert!(
+                        dy > 1e-3 && dx.abs() < 1e-3,
+                        "col {col} N: bow straight UP (flat cardinal, no lean); dx={dx:.4} dy={dy:.4}"
+                    ),
+                    Facing::Bow(Dir4::S) => assert!(
+                        dy < -1e-3 && dx.abs() < 1e-3,
+                        "col {col} S: bow straight DOWN/toward-camera (flat cardinal); dx={dx:.4} dy={dy:.4}"
+                    ),
+                    Facing::Bow(Dir4::E) => assert!(
+                        dx > 1e-3 && dy.abs() < 1e-3,
+                        "col {col} E: bow screen-RIGHT, horizontal (flat cardinal); dx={dx:.4} dy={dy:.4}"
+                    ),
+                    Facing::Bow(Dir4::W) => assert!(
+                        dx < -1e-3 && dy.abs() < 1e-3,
+                        "col {col} W: bow screen-LEFT, horizontal (flat cardinal); dx={dx:.4} dy={dy:.4}"
+                    ),
                     _ => unreachable!(),
                 }
             }
         }
-    }
-
-    /// The screen up-vector `(0, -1)` (y-down) rolled CW by `roll_deg` — the direction
-    /// the rolled hull's bow points on screen. Used to verify [`loft_blit_roll_deg`]
-    /// aligns the hull with the lane.
-    fn roll_up_vector(roll_deg: f32) -> (f32, f32) {
-        let a = roll_deg.to_radians();
-        // CW rotation of (0,-1) in y-down screen space: x = sin a, y = -cos a.
-        (a.sin(), -a.cos())
     }
 
     /// (#76 scene-res POSE BUG regression; #171) The player's chase-cam ground yaw
@@ -1751,69 +1664,28 @@ mod tests {
                          (lane-aim VP must scale WITH aim_at — the ship must NOT rotate on a scene-res toggle)"
                     );
                 }
-                // (#186) The GROUND yaw is the clean cardinal pose in EVERY column —
-                // the screen lane-lean lives in the blit roll, not the ground yaw, so
-                // this stays exactly base+facing (no lean) and scene-res-invariant.
+                // (#186 Bruce FINAL) The hull is FLAT + cardinal in EVERY column — no
+                // lean anywhere (the blit-roll was reverted), so the ground yaw is
+                // exactly base+facing and scene-res-invariant.
                 let base = CHASE_CAM_BASE_YAW_DEG + facing_yaw(facing);
                 assert!(
                     (ref_yaw - base).abs() < 1e-2,
-                    "col {col} {facing:?}: ground yaw {ref_yaw:.4} should be base {base:.4} (cardinal; lean is the blit roll)"
+                    "col {col} {facing:?}: ground yaw {ref_yaw:.4} should be base {base:.4} (flat cardinal, no lean)"
                 );
             }
         }
     }
 
-    /// (#186 Bruce) The blit ROLL (the 2-D screen lean Bruce wants) must be scene-res-
-    /// INVARIANT — a `;`/`'` toggle must not change the hull's on-screen tilt. All
-    /// presets are 16:9 so the lane geometry is similar → identical roll angles.
+    /// (#186 Bruce FINAL, supersedes the blit-roll parallel test) The N hull lies FLAT
+    /// + dead-straight up the screen in EVERY column AND at every grid-pitch step — no
+    /// lean, no roll. Bruce wants the player flat on the plane like the enemies; the
+    /// flat ground pose foreshortens but never tilts off the deck or banks. (The
+    /// flat/parallel tension is documented on `chase_cam_ground_yaw_deg`: a flat hull
+    /// can't be made lane-parallel by yaw alone, and Bruce chose flat over parallel.)
     #[test]
-    fn loft_blit_roll_is_identical_across_scene_presets() {
-        use crate::gfx::SCENE_RES_PRESETS;
+    fn hull_bow_is_flat_straight_all_columns_and_pitches() {
         use crate::grid::{Pos, COLS, ROWS};
         use crate::projector::{grid_cell_quad, ProjectorConfig};
-
-        let row = ROWS - 1;
-        for &col in &[0usize, COLS / 2, COLS - 1] {
-            for facing_yaw in [0.0_f32, 180.0, 90.0, -90.0] {
-                let ref_cfg = ProjectorConfig::for_scene(480.0, 270.0);
-                let ref_aim = grid_cell_quad(Pos::new(col, row), &ref_cfg).center;
-                let ref_roll = loft_blit_roll_deg(ref_aim, facing_yaw, &ref_cfg);
-                for &(w, h) in &SCENE_RES_PRESETS {
-                    let cfg = ProjectorConfig::for_scene(w as f32, h as f32);
-                    let aim = grid_cell_quad(Pos::new(col, row), &cfg).center;
-                    let roll = loft_blit_roll_deg(aim, facing_yaw, &cfg);
-                    assert!(
-                        (roll - ref_roll).abs() < 1e-2,
-                        "scene {w}x{h} col {col} fy={facing_yaw}: roll {roll:.3} != default {ref_roll:.3}"
-                    );
-                }
-                // Centre column along-lane + all E/W = ~0 roll; off-centre along-lane ≠ 0.
-                let is_along = facing_yaw.abs() < 1.0 || (facing_yaw - 180.0).abs() < 1.0;
-                if is_along && col != COLS / 2 {
-                    assert!(
-                        ref_roll.abs() > 1e-2,
-                        "col {col} along-lane: off-centre roll must be nonzero; got {ref_roll:.4}"
-                    );
-                } else {
-                    assert!(
-                        ref_roll.abs() < 1e-2,
-                        "col {col} fy={facing_yaw}: roll must be ~0 (centre col or broadside); got {ref_roll:.4}"
-                    );
-                }
-            }
-        }
-    }
-
-    /// (#186 Bruce, supersedes the #173 no-lean test) The rendered N bow is PIXEL-
-    /// PARALLEL to its column's lane lines (cell-centre → VP) in EVERY column AND at
-    /// every grid-pitch step — "clearly parallel with the lane lines towards the
-    /// vanishing point". The centre column has ~zero lane slope ⇒ ~straight up; an
-    /// off-centre column banks to match its slanted lane. Verified by the 2-D cross of
-    /// the rendered axis (screen y-down) with the lane vector being ~0 at every pitch.
-    #[test]
-    fn hull_bow_is_lane_parallel_all_columns_and_pitches() {
-        use crate::grid::{Pos, COLS, ROWS};
-        use crate::projector::{grid_cell_quad, vanishing_point, ProjectorConfig};
 
         let row = ROWS - 1; // the player's front row
         let facing_yaw = 0.0_f32; // N, up-lane
@@ -1821,25 +1693,20 @@ mod tests {
         let loft_pitch =
             |t: f32| CAMERA_PITCH_DEG + (crate::gfx::LOFT_PITCH_TOPDOWN_DEG - CAMERA_PITCH_DEG) * t;
 
-        let _ = loft_pitch; // lane-lean is the (pitch-independent) 2-D blit roll
         for &col in &[0usize, COLS / 2, COLS - 1] {
             for step in 0..=8u32 {
                 let t = step as f32 / 8.0;
                 // The SAME pitched projector the hud builds (drawbridge mode = with_pitch).
                 let cfg = ProjectorConfig::for_scene(480.0, 270.0).with_pitch(t);
                 let q = grid_cell_quad(Pos::new(col, row), &cfg);
-                let vp = vanishing_point(&cfg);
-                let (lvx, lvy) = (vp.x - q.center[0], vp.y - q.center[1]);
-                // The blit roll applied to the screen up-vector must be parallel to the
-                // lane (cross ≈ 0) at every pitch — the column lines reconverge as the
-                // grid tilts, and the roll tracks the live VP.
-                let roll = loft_blit_roll_deg(q.center, facing_yaw, &cfg);
-                let (rx, ry) = roll_up_vector(roll);
-                let crossp = rx * lvy - ry * lvx;
-                let scale = lvx.hypot(lvy);
+                let yaw = chase_cam_ground_yaw_deg(q.center, facing_yaw, &cfg, loft_pitch(t));
+                let (bx, _) = bow_loft_ndc_pitched(yaw, [3.0, 0.0, 0.0], loft_pitch(t));
+                let (cx, _) = bow_loft_ndc_pitched(yaw, [0.0, 0.0, 0.0], loft_pitch(t));
+                let bow_dx = bx - cx;
+                // Every column, every pitch: dead-straight up, no lean (flat cardinal).
                 assert!(
-                    crossp.abs() < 1e-3 * scale.max(1.0),
-                    "col {col} step {step} t={t:.2}: rolled hull must be PARALLEL to lane (roll={roll:.2}, cross={crossp:.5}, lane=({lvx:.2},{lvy:.2}))"
+                    bow_dx.abs() < 1e-3,
+                    "col {col} step {step} t={t:.2}: bow must be STRAIGHT up (flat cardinal, no lean); dx={bow_dx:.4}"
                 );
             }
         }
