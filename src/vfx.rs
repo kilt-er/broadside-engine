@@ -289,7 +289,7 @@ impl CombatVfx {
                     emit_flash(out, lane, cell, HIT_COLOR, e.t(), 16.0);
                 }
                 EffectKind::Explosion { cell } => {
-                    emit_flash(out, lane, cell, EXPLOSION_COLOR, e.t(), 30.0);
+                    emit_explosion(out, lane, cell, e.t());
                 }
                 EffectKind::Trail {
                     from_cell,
@@ -443,7 +443,7 @@ fn emit_shot_beam(
     }));
 }
 
-/// A flash / explosion: an expanding, fading square centred on a cell.
+/// A flash / hit-spark: an expanding, fading square centred on a cell.
 fn emit_flash(
     out: &mut Vec<DrawCommand>,
     lane: &LaneGeometry,
@@ -462,6 +462,63 @@ fn emit_flash(
         [color[0], color[1], color[2], alpha],
         atlas::cell_uvs(atlas::SOLID_WHITE),
     )));
+}
+
+/// (#178 Bruce) A real-time EXPANDING explosion, composited from three eased flat
+/// quads (`SOLID_WHITE`) over the effect's wall-clock life `t` (0→1, driven by the
+/// pool's per-frame `advance(dt)` — NOT the turn beat). Bruce: "an explosion can
+/// run in real time", not a static pop.
+///
+/// The three layers: an EXPANDING orange SHELL (the blast front — grows from a
+/// small disc toward `~peak` while fading, ease-out so it bursts then settles; the
+/// "expanding" Bruce called for); a HOT yellow CORE (smaller, shrinks + fades ~2×
+/// faster than the shell, so the blast reads hottest at the middle early); and a
+/// brief white IGNITION FLASH (over-bright, gone by ~t=0.25, sells the detonation
+/// instant). `t` advances on real seconds, so the whole thing plays out over
+/// `EXPLOSION_SECS` regardless of how the turn resolves — the `ParticlePool` burst
+/// the bin seeds on the same kill layers debris on top.
+fn emit_explosion(out: &mut Vec<DrawCommand>, lane: &LaneGeometry, cell: f32, t: f32) {
+    let p = fractional_cell_to_screen(cell, lane);
+    let peak = 30.0_f32;
+    let mut quad = |size: f32, rgba: [f32; 4]| {
+        out.push(DrawCommand::Sprite(SpriteInstance::axis_aligned(
+            [p.x, p.y],
+            [size * 0.5, size * 0.5],
+            rgba,
+            atlas::cell_uvs(atlas::SOLID_WHITE),
+        )));
+    };
+    // ease-out (fast then settle) for growth; linear-ish fades per layer.
+    let ease_out = 1.0 - (1.0 - t) * (1.0 - t);
+
+    // 2) Expanding orange shell — grows 0.25→1.1 of peak, fades over the whole life.
+    let shell_size = peak * (0.25 + 0.85 * ease_out);
+    let shell_alpha = (1.0 - t) * 0.8;
+    if shell_alpha > 0.0 {
+        quad(
+            shell_size,
+            [
+                EXPLOSION_COLOR[0],
+                EXPLOSION_COLOR[1],
+                EXPLOSION_COLOR[2],
+                shell_alpha,
+            ],
+        );
+    }
+    // 3) Hot yellow core — smaller, shrinks + fades by ~t=0.55 (2x the shell's rate).
+    let core_life = (t / 0.55).clamp(0.0, 1.0);
+    if core_life < 1.0 {
+        let core_size = peak * 0.5 * (0.5 + 0.5 * ease_out);
+        let core_alpha = (1.0 - core_life) * 0.9;
+        quad(core_size, [1.0, 0.85, 0.4, core_alpha]);
+    }
+    // 1) White ignition flash — over-bright spike, gone by ~t=0.25.
+    let flash_life = (t / 0.25).clamp(0.0, 1.0);
+    if flash_life < 1.0 {
+        let flash_size = peak * (0.4 + 0.3 * flash_life);
+        let flash_alpha = (1.0 - flash_life) * 0.95;
+        quad(flash_size, [1.0, 0.97, 0.9, flash_alpha]);
+    }
 }
 
 /// Telegraph FIRE pop (#70): a quick expanding red flash at the telegraph slot

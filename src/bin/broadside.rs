@@ -966,6 +966,11 @@ struct App {
     /// Drives the #67 telegraph spinner + move-arrow / incoming-attack pulse.
     /// Wraps so it never loses precision over a long session.
     frame_clock: f32,
+    /// (#178) Wall-clock anchor for the previous rendered frame. The per-frame FX
+    /// `dt` is `now - last_frame` (clamped), so the real-time VFX layer (explosions
+    /// / beams / trails) animates on TRUE wall-clock seconds instead of an assumed
+    /// 60 Hz — smooth at any frame pacing, and decoupled from turn resolution.
+    last_frame: Instant,
     /// Player danger legibility (#67): last observed player hull, and a
     /// decaying hit-flash intensity (0..1). When the player's hull drops
     /// between frames we bump the flash to 1.0; the redraw fades it.
@@ -1048,6 +1053,7 @@ impl App {
             vfx: broadside_engine::vfx::CombatVfx::new(),
             ability_hud: broadside_engine::hud::AbilityHud::new(),
             frame_clock: 0.0,
+            last_frame: Instant::now(),
             player_hull_prev: None,
             hit_flash: 0.0,
             kill_bursts: Vec::new(),
@@ -1827,22 +1833,30 @@ impl ApplicationHandler for App {
                 let demo_state = self.demo_state;
                 let sector_idx = self.run.current_sector_idx;
                 let salvage = self.run.salvage;
+                // (#178) Measured wall-clock dt for the real-time FX layer: now -
+                // last_frame, clamped to ~50ms so a stall (window drag / GC pause)
+                // can't fast-forward an explosion in one giant step. This is what
+                // makes the VFX genuinely real-time (not an assumed 60 Hz) AND
+                // decoupled from turn resolution — the turn resolves in logic while
+                // these effects play out over real seconds.
+                let dt = (now.duration_since(self.last_frame).as_secs_f32()).clamp(0.0, 0.050);
+                self.last_frame = now;
                 // Combat juice (#51): diff the board for this frame (spawns
-                // hit/explosion/trail/beam effects), then advance lifetimes by a
-                // fixed ~60 Hz dt. observe() is read-only over the board and
-                // idempotent on unchanged frames, so running it every redraw is
-                // safe — it only spawns on an actual state change.
+                // hit/explosion/trail/beam effects), then advance lifetimes by the
+                // measured dt. observe() is read-only over the board and idempotent
+                // on unchanged frames, so running it every redraw is safe — it only
+                // spawns on an actual state change.
                 self.vfx.observe(&self.board);
-                let vfx_active = self.vfx.advance(1.0 / 60.0);
-                // (#119) Advance the explosion particle pool at the same fixed dt;
+                let vfx_active = self.vfx.advance(dt);
+                // (#119) Advance the explosion particle pool at the same wall-clock dt;
                 // stays empty (cheap no-op) until a ship death seeds a burst.
-                let particles_active = self.particles.advance(1.0 / 60.0);
+                let particles_active = self.particles.advance(dt);
                 // Free-running animation clock kept advancing for the #67
                 // telegraph spinner / move-arrow / incoming pulse — consumed by
                 // the lane-keyed overlays that are dropped in the #43 pass-1 2-D
                 // switch and return as 2-D overlays (the `spin`/`pulse` readers
                 // come back with them). Wrap at TAU so it stays precise.
-                self.frame_clock = (self.frame_clock + 1.0 / 60.0) % std::f32::consts::TAU;
+                self.frame_clock = (self.frame_clock + dt) % std::f32::consts::TAU;
                 // Player danger legibility (#67): read the player's current hull
                 // and flash the screen red when it drops. The flash decays ~2/s.
                 let player_hull = self
@@ -1860,7 +1874,7 @@ impl ApplicationHandler for App {
                     }
                     self.player_hull_prev = Some(hull);
                 }
-                self.hit_flash = (self.hit_flash - (1.0 / 60.0) * 2.0).max(0.0);
+                self.hit_flash = (self.hit_flash - dt * 2.0).max(0.0);
                 let flash_active = self.hit_flash > 0.01;
                 // Ability tiles (#64): build the player's tiles and advance the
                 // below↔above queue animation (~60 Hz). Built before the gfx
@@ -1874,7 +1888,7 @@ impl ApplicationHandler for App {
                     .find(|s| s.faction == Faction::Player)
                     .map(|p| build_ship_tiles(p, &self.content, &self.board))
                     .unwrap_or_default();
-                let ability_active = self.ability_hud.advance(&player_tiles, 1.0 / 60.0);
+                let ability_active = self.ability_hud.advance(&player_tiles, dt);
                 // (#122/#123) Player targeting telegraph: for each weapon the player
                 // has QUEUED, resolve the cells it would strike from the current pose
                 // (resolve_targeting_2d — the same single source the shot fires

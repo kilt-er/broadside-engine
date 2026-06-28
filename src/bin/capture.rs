@@ -512,6 +512,25 @@ fn main() {
             }
             pool.emit(&mut commands);
             log::info!("capture: #119 explosion particle burst at killed cell {killed:?}");
+            // (#178) Drive the REAL wall-clock CombatVfx explosion at mid-life so the
+            // capture shows emit_explosion's expanding multi-layer blast (the live
+            // death path). observe(before) latches the enemy present; observe(after =
+            // current `board`, enemy already removed above) spawns the Explosion;
+            // advance ~0.18s puts it mid-expansion; emit over the same lane the bin uses.
+            {
+                use broadside_engine::perspective::DEFAULT_LANE;
+                // `before` = a fresh campaign board (all enemies present, incl. the
+                // centre back-row one at `killed`); `board` already had it removed by
+                // the VFX-demo kill above. observe(before)->observe(board) is exactly
+                // the live vanish diff that spawns the Explosion.
+                let before = capture_board(player_col, player_row, player_facing);
+                let mut demo_vfx = broadside_engine::vfx::CombatVfx::new();
+                demo_vfx.observe(&before);
+                demo_vfx.observe(&board); // enemy gone -> spawns Explosion at `killed`
+                demo_vfx.advance(0.18); // mid-expansion on wall-clock
+                demo_vfx.emit(&mut commands, &board, &DEFAULT_LANE);
+                log::info!("capture: #178 CombatVfx explosion mid-life at {killed:?}");
+            }
         }
         // (#101) Flash the hull bar of the SURVIVING enemy we knocked to half hull
         // (above, before compose, so its bar already renders PARTIAL) at full
