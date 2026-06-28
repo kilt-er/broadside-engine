@@ -204,6 +204,20 @@ lives. (TS: `resolve.ts:24`.)
 **Cooldown**
 Per-action throttle, 0–8 pips. Resets to `cost.cooldownMax` on fire (hit or miss),
 ticks down 1 at end of turn, blocks re-queue until 0. (HTML Part I; `types.ts:111`.)
+**Timing quirk (#184):** a round is *fire → end-of-turn*, and EOT decrements every
+cooldown the **same** round, so `cooldownMax = 1` is a **no-op** (ticks straight back
+to 0 and re-fires every turn). A weapon therefore fires once every `cooldownMax`
+turns: `cd 2` = every other turn (fire, one reload turn, fire). See **Load-and-fire**.
+
+**Load-and-fire (#184)**
+The rule that **every real weapon must reload** between shots — its `cooldownMax` is
+≥ 2, so the **cooldown** is the sustained-fire spam-limiter. This reverted the earlier
+#73 design, where `pulse_laser` had `cd: 0` and **heat** alone throttled spam (a cd-0
+gun re-queued and fired every single turn — the AI lasered the player down with no
+reload window). Post-#184, heat only accumulates when a ship fires **multiple** weapons
+in one round; a lone gun no longer overheats itself. The synthetic maneuvers
+(`__move_*` / `__rotate_*` / `__vent`) stay `cd 0` — they are not weapons.
+(`pulse_laser` `cd 2`: `input.rs:683`, `assets/broadside.catalog.json`.)
 
 **Corrupted**
 A Patrol-4+ overlay on capital ships. Aura swap, bonus hull, and an additional
@@ -267,7 +281,19 @@ A verb inside an Action's `effects[]` list. Closed set: `DAMAGE`, `APPLY_STATUS`
 `DISPLACE_TARGET`, `DISPLACE_SELF`, `REORIENT`, `SPAWN_ORDNANCE`, `VENT_HEAT`, `DEPLOY`,
 `BOARD`. Adding a verb requires extending the enum and the dispatch in `applyEffect`;
 new content using existing verbs is data only. (HTML Part II; `types.ts:136`,
-`resolve.ts:167`.)
+`resolve.ts:167`.) **Not to be confused with `EffectDef`** below — that is the
+*visual* effect data, an unrelated type.
+
+**EffectCatalog / EffectDef**
+The serde schema for **VFX** data (`src/effects.rs`, E1/E2). An `EffectCatalog` is a
+flat, id-keyed list of `EffectDef`s; each `EffectDef` is a stable `id` plus an
+`EffectKind` over the six families the `vfx` pool draws (`ShotBeam`, `HitFlash`,
+`Explosion`, `Trail`, `TelegraphFire`, `ParticleBurst`). It is the **shared bridge**
+the standalone Broadside VFX editor and the game both read, so an effect tuned in the
+editor is byte-for-byte the one the game plays. Every field is `#[serde(default)]`
+with the default equal to the constant formerly hardcoded in `vfx.rs`, so an unedited
+catalog is behaviour-identical. Distinct from the gameplay **Effect** above. (Rust
+port; no TS analog. See **VfxConfig**, `docs/MODULES/effects.md`.)
 
 **Elite**
 A Patrol-2+ layer on enemies: palette swap, bonus hull, and exactly one of
@@ -791,6 +817,14 @@ player's bow is aimed at this point. See **Bow-aim**, **Chase camera**. (`src/pr
 The `VENT_HEAT` action and effect. Clears heat (by `amount`), unlocks an overheated
 ship, optionally recharges *all* cooldowns. The Shogun Showdown WAIT analog. Emits
 `onVent`. (HTML Part I; `types.ts:143`, `resolve.ts:185`.)
+
+**VfxConfig**
+The runtime bundle (`src/vfx.rs`) of the six per-family **EffectDef** structs that
+drives `CombatVfx` and `ParticlePool` from data instead of module constants. The
+process-wide default (`default_vfx_config`) feeds both the windowed `vfx` beams and
+the live 2-D HUD beams from one source, so they cannot diverge; the VFX editor
+overrides per-instance via `CombatVfx::with_config`. A default `VfxConfig` reproduces
+the pre-data look exactly. See **EffectCatalog / EffectDef**, `docs/MODULES/vfx.md`.
 
 **Voidtouched**
 A Patrol-7-only Elite trait: on death, spawns a Void Progeny. (HTML Part VII.)

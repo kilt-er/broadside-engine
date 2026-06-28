@@ -41,11 +41,47 @@ lifetime (`t() = age/dur` clamped; `alive()` = `age < dur`). `EffectKind`
 (src/vfx.rs:51) is the transient shapes: **`ShotBeam`** (the EXACT attacker→target
 line, latched from the resolver's `board.fire_events` — #59; styled by archetype,
 tinted by faction, dimmed on a miss), `HitFlash` (expanding flash on a hit ship),
-`Explosion` (burst at a destroyed ship), `Trail` (fading ordnance streak). The per-kind lifetimes are tunable consts
-(`BEAM_SECS` 0.22, `HIT_FLASH_SECS` 0.30, `EXPLOSION_SECS` 0.55, `TRAIL_SECS` 0.35).
-The placeholder palette consts (src/vfx.rs:113-117) are readable flat tones. Note the
-**telegraph cue is not a transient Effect** — it pulses live while the intent is
-queued, emitted straight from the current board (no lifetime).
+`Explosion` (burst at a destroyed ship), `Trail` (fading ordnance streak). The per-kind
+lifetimes and palette are **no longer bare module consts** — they were lifted into the
+authored `VfxConfig` (see "Data layer" below); the old `BEAM_SECS` / `HIT_FLASH_SECS`
+(0.30) / `EXPLOSION_SECS` (0.55) / `TRAIL_SECS` (0.35) literals now survive as the
+`Default` values of the matching [`effects`](effects.md) structs, so the look is
+unchanged. Note the **telegraph cue is not a transient Effect** — it pulses live while
+the intent is queued, emitted straight from the current board (no lifetime).
+
+---
+
+## Data layer — `VfxConfig` + the `effects` schema (src/vfx.rs:140–201)
+
+**Intent:** drive the look/timing from *authored data* instead of hardcoded
+constants, so the standalone Broadside VFX editor can tune effects and the game plays
+exactly what was tuned. The schema itself lives in [`src/effects.rs`](effects.md)
+(pure serde, `EffectCatalog` / `EffectDef`); this module is its **consumer**.
+
+- `struct VfxConfig` (src/vfx.rs:147) — a bundle of the six per-family
+  [`effects`](effects.md) structs (`ShotBeam`, `HitFlash`, `Explosion`, `Trail`,
+  `TelegraphFire`, `ParticleBurst`). Its `Default` is each field's `Default`, which
+  reproduces the original `vfx.rs` constants **exactly** — so a default `VfxConfig` is
+  behaviour-identical to the pre-data look.
+- `default_vfx_config()` (src/vfx.rs:170) — a process-wide `OnceLock<VfxConfig>`, the
+  **single source** both the windowed `vfx` path *and* the live 2-D HUD beams
+  ([`hud::push_fire_2d`](hud.md) via `archetype_beam_style` / `faction_beam_tint`)
+  read their styling from, so the two beam paths cannot diverge.
+- `CombatVfx { …, cfg: VfxConfig }` (src/vfx.rs:178) now carries a config;
+  `CombatVfx::with_config(cfg)` (src/vfx.rs:196) is the **editor's injection point**.
+  `observe` styles each `ShotBeam` through `self.cfg.shot_beam` (src/vfx.rs:220–225):
+  `archetype_beam_style(&self.cfg.shot_beam, archetype)` for `(thickness, life)` and
+  `faction_beam_tint(&self.cfg.shot_beam, faction)` for the tint — both now take a
+  `&ShotBeam` cfg arg (src/vfx.rs:449/460) rather than reading module consts.
+
+**Behaviour-identical guarantee:** because every `effects` default equals the old
+literal, none of this changes a pixel until someone authors a non-default catalog. The
+`effects` module's `defaults_match_vfx_constants` test is the cross-module pin.
+
+> **Stale-doc flag (out of scope here):** the #178 *real-time* VFX pass (expanding
+> wall-clock explosion, animated beam travel, torpedo cell-to-cell lerp + exhaust
+> trail; commits `e910571` / `7d4f34c` / `5c50037`) is not yet reflected in the
+> per-function walkthrough below — a separate doc-update item.
 
 ## `struct Snapshot` (src/vfx.rs:83)
 

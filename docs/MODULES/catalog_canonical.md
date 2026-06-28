@@ -208,14 +208,18 @@ Line 199: `Ok(Value::Object(a))` — the now-strict action object.
 Produces objects decoded into [`Action`](types.md) (with nested `ActionCost` and
 `Targeting`).
 
-**Worked example** (`canonical_pulse_laser_parses`, src/catalog_canonical.rs:617):
+**Worked example** (`canonical_pulse_laser_parses`, src/catalog_canonical.rs:704):
 the flat `pulse_laser` above decodes to `cost.heat == 1`, `cost.cooldown_max == 0`,
 `cost.advances_turn == true` (because `freeplay: false`), and a single
 `Effect::DAMAGE { amount: 3 }` — the `beam + DAMAGE` inflation produces amount 3.
-(The `heat: 1` here is this **test's inline fixture input**, demonstrating the
-transformer shape — it is *not* the live runtime balance. The shipped
-`assets/broadside.catalog.json` sets `pulse_laser` `heat: 2, cd: 0` since #73, so
-sustained fire overheats: the spam-limiter is HEAT → overheat → vent, not cooldown.)
+(The `heat: 1` and `cd: 0` here are this **test's inline fixture input**,
+demonstrating the transformer shape — they are *not* the live runtime balance.
+**Live value differs:** the shipped `assets/broadside.catalog.json` now sets
+`pulse_laser` to **`cd: 2`** (heat `2`), reverting the old #73 `cd: 0` heat-gate.
+This is the **#184 load-and-fire** rule: every real weapon reloads, so the
+spam-limiter is the COOLDOWN — `cd 2` fires every other turn (a weapon fires once
+every `cooldown_max` turns); heat now only stacks across *multiple* weapons fired
+in one round. See [`GLOSSARY.md`](../GLOSSARY.md) "Cooldown" / "Load-and-fire.")
 
 ---
 

@@ -42,6 +42,7 @@ glance what is documented vs. what is pending.*
 - [`src/atlas.rs`](#srcatlasrs) — procedural 256×256 sprite atlas
 - [`src/hud.rs`](#srchudrs) — scene compositor (DrawCommand list)
 - [`src/vfx.rs`](#srcvfxrs) — combat juice: read-only board-diff → transient beams/flashes/explosions/trails + telegraph cue
+- [`src/effects.rs`](#srceffectsrs) — VFX effect data schema (`EffectCatalog`/`EffectDef`): the editor↔game serde bridge `vfx` reads via `VfxConfig`
 - [`src/subsystems.rs`](#srcsubsystemsrs) — runtime subsystem behavior: install registry, attacker-side damage modifier, end-of-turn heat
 - [`src/cards.rs`](#srccardsrs) — field-kit Cards: catalog, per-ship inventory, BOARD-note dispatch, play validation
 - [`src/classes.rs`](#srcclassesrs) — canonical 5-class roster + Signature actions (+ provisional Aegis "Sweep")
@@ -75,6 +76,18 @@ machinery. Treat the file as "the data the resolver operates on, plus the smalle
 amount of glue that data needs to be usable."*
 
 **Mirrors:** `engine/types.ts` (the entire file).
+
+> **Drift — the "Mirrors" header now overstates reality.** Per the architect, the v2
+> design lives in the **Rust** port; `engine/types.ts` is **frozen at 221 lines** and
+> has not tracked the v2 work. So `types.rs` is no longer a faithful mirror of the TS
+> file — the 2-D `Pos`/`Board` reshape, `ShieldProfile`, the per-lane `Threat` model,
+> and the v2 catalog axes exist in Rust with **no TS counterpart**. Read the per-type
+> `Mirrors: types.ts:NN` anchors below as "where this *originated*," not "what the TS
+> currently says." When TS and Rust disagree on anything touched by v2, **Rust is
+> canonical** (the inverse of the original port-time tie-breaker). The `types.rs`
+> source module rustdoc still carries the old "TS is canonical" line — left as-is by
+> agreement; do not edit the source header to match this note.
+
 **Design anchor:** HTML Part XIII (Engine Integration & Schema) — the "Type definitions"
 codeblock is the canonical schema this file ports.
 **Source commit:** `5625f30` (initial port) + `291206d` (reviewer audit response —
@@ -4523,35 +4536,62 @@ No open items.
 
 ---
 
-## Effects layer — folded into `src/resolve.rs`
+## `src/effects.rs`
 
-*Navigational breadcrumb for readers who came looking for an `effects.rs` module.*
+*VFX effect data schema. Companion: [`docs/MODULES/effects.md`](MODULES/effects.md).*
 
-There is **no separate `src/effects.rs` file** in the Rust port. The five function
-bodies the TS source leaves as TODO comments inside `resolve.ts` — `apply_modifiers`,
-`resolve_self_move`, `resolve_target_move`, `decide_enemy_action`, and the per-effect
-arms of `apply_effect` — all live inside `src/resolve.rs` alongside the resolver they
-collaborate with. Documented in this file's [`src/resolve.rs`](#srcresolvers) section:
+**Mirrors:** no TS analog. New in the Rust port (E1/E2, commits `545b939` /
+`adab6e0`) as the serde half of the standalone Broadside VFX editor.
 
-- **`apply_modifiers`** — see the "fn apply_modifiers" sub-entry. Step 2 of the
-  damage pipeline; routes subsystem bonuses through `Content::damage_modifier`.
-- **`resolve_self_move`** — see the "Movement" sub-entry. All five `MovementMode`s
-  (THRUST / BURN / SLIP / JUMP / TRACTOR_SWAP) with collision damage routed through
-  the regular pipeline.
-- **`resolve_target_move`** — see the "Target displacement" sub-entry. Push / Pull /
-  Swap with the "source counts as occupant" rule.
-- **`decide_enemy_action`** — see the "AI" sub-entry. Scoring formula + visible-threat
-  fallback ladder.
-- **Per-effect dispatch** — see the "`fn apply_effect`" sub-entry covering all nine
-  `Effect` variants including the `DEPLOY` arm and the `BOARD` doc-stub.
+**Intent:** Turn the hardcoded look/timing constants that used to live in
+[`src/vfx.rs`](#srcvfxrs) into *authored data*. Both the game runtime and the
+`broadside_vfx_editor` app read the **same** `EffectCatalog` JSON, so an effect
+tuned in the editor is byte-for-byte the effect the game plays. The module is
+**pure serde** — no `wgpu`, no GPU, *not* behind the `render` feature — so it
+compiles on the logic-only build and the editor reads it without the render stack
+(registered `pub mod effects;` at `lib.rs:99`).
 
-**Why no split?** Content kept these bodies in `resolve.rs` because they share the
-resolver's private helpers (`dummy_weapon`, `add_status`, `cells_toward`,
-`bearing_direction`) and because routing them through `&dyn Content` already
-externalises the only state the TS would have wanted a separate module for
-(subsystem registry). Splitting would either duplicate the helpers or force them
-public for no benefit. The original `LINE_BY_LINE.md` skeleton's "effects.rs"
-heading predates this decision; folding it here removes the confusion.
+**Behaviour-identical by default (the load-bearing invariant).** Every field is
+`#[serde(default)]` and every default returns the *exact* literal that was
+hardcoded in `vfx.rs`. So an empty file, a partial entry, or a `Default`-built
+catalog yields precisely today's look; the data layer changes visuals only once
+someone edits a value. `defaults_match_vfx_constants` (effects.rs:594) pins this.
+
+**Schema shape (three nested types):**
+- `EffectCatalog { effects: Vec<EffectDef> }` (effects.rs:60) — the whole file: a
+  flat, id-keyed list. `from_json_str` / `to_json_string` round-trip it; `get(id)`
+  looks one up. `empty_catalog_round_trips` (effects.rs:584) pins JSON symmetry.
+- `EffectDef { id, #[serde(flatten)] kind }` (effects.rs:86) — one named effect: a
+  stable lookup `id` (e.g. `"player_beam"`) plus its family. `flatten` keeps the
+  wire shape flat (`{ "id": …, "kind": …, <params> }`).
+- `EffectKind` (effects.rs:100) — an internally `#[serde(tag = "kind")]`-tagged
+  enum over the six families the `vfx` pool produces today: **`ShotBeam`**
+  (per-archetype thickness/life table + faction tints + travel/fade fractions),
+  **`HitFlash`**, **`Explosion`** (three eased layers — shell / core / ignition),
+  **`Trail`**, **`TelegraphFire`**, **`ParticleBurst`**. A new family is a new
+  variant; old catalogs keep parsing (`partial_json_fills_defaults`, effects.rs:643).
+
+`Rgb` / `Rgba` (effects.rs:47/52) are `#[serde(transparent)]` newtypes over
+`[f32;3]` / `[f32;4]`, so colours serialize as bare arrays.
+
+**Cross-references:** Consumed by [`src/vfx.rs`](#srcvfxrs) via `VfxConfig` — each
+`VfxConfig` field is one of these per-family structs, and `CombatVfx::with_config`
+injects an editor-built config (see the vfx.rs "Data layer" entry and
+[`docs/MODULES/effects.md`](MODULES/effects.md)). The process-wide default
+`VfxConfig` reads these `Default`s, so the windowed `vfx` look and the live 2-D HUD
+beams cannot diverge.
+
+> **Disambiguation — two unrelated meanings of "effect."** `src/effects.rs` is the
+> *visual* effect schema above. The *gameplay* `Effect` enum (DAMAGE / DISPLACE /
+> STATUS / DEPLOY / BOARD …) is a different type in [`src/types.rs`](#srctypesrs),
+> and its per-variant *dispatch* — `apply_effect`, `apply_modifiers`,
+> `resolve_self_move`, `resolve_target_move` — lives in
+> [`src/resolve.rs`](#srcresolvers), documented under that section's effect-dispatch
+> entries. There is **no** separate gameplay-effects module: those bodies stay in
+> `resolve.rs` because they share the resolver's private helpers (`dummy_weapon`,
+> `add_status`, `cells_toward`, `bearing_direction`). The original
+> `LINE_BY_LINE.md` skeleton's "effects.rs" heading once meant *that* gameplay
+> dispatch; the filename is now taken by the VFX schema, so do not conflate them.
 
 ---
 
@@ -4748,12 +4788,20 @@ advancesTurn: !freeplay }`. Line 174-193: build `targeting` — note line 182-18
 **Cross-references:** Called by `from_canonical_value`. Calls `inflate_effect`. Produces an
 [`Action`](#srctypesrs).
 
-**Worked example** (`canonical_pulse_laser_parses`, src/catalog_canonical.rs:617): the flat
+**Worked example** (`canonical_pulse_laser_parses`, src/catalog_canonical.rs:704): the flat
 `pulse_laser` decodes to `cost.heat=1`, `cooldown_max=0`, `advances_turn=true`
-(freeplay=false), one `Effect::DAMAGE { amount: 3 }`. The `heat:1` is this **test's inline
-fixture**, not the live balance — the shipped `assets/broadside.catalog.json` sets
-`pulse_laser` `heat:2, cd:0` (#73) so sustained fire overheats (spam-limiter = HEAT, not
-cooldown).
+(freeplay=false), one `Effect::DAMAGE { amount: 3 }`. Both the `heat:1` and the
+`cd:0` here are this **test's inline fixture** — an arbitrary parse input, **not** the
+live balance. The shipped `assets/broadside.catalog.json` (and the `DemoContent`
+mirror at `input.rs:683`) now set `pulse_laser` to **`cd 2`** (catalog `heat:2`;
+`DemoContent` `heat:1, DAMAGE 4`). This is the **#184 load-and-fire** reversal of the
+old #73 `cd:0` heat-gate: every real weapon reloads, so the spam-limiter is now the
+**cooldown**, not heat. A weapon fires once every `cooldown_max` turns — `cd 2` means
+fire, one reload turn, fire = **every other turn** (the cd MUST be 2, not 1: a round is
+fire-then-end-of-turn and EOT decrements every cooldown the same round, so `cd 1` ticks
+straight back to 0 and re-fires every turn — the no-op gate). Heat now only stacks when
+a ship fires **multiple** weapons in one round; a single load-and-fire gun no longer
+overheats itself. See [`docs/GLOSSARY.md`](GLOSSARY.md) "Cooldown" / "Load-and-fire."
 
 ### `fn transform_subsystem(v: Value) -> Value` (src/catalog_canonical.rs:205)
 
