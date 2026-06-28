@@ -25,17 +25,19 @@
 //! unit-testable headless. The caller ([`crate::hud`] / the bin) advances
 //! lifetimes each frame and asks for the draw commands.
 
+use crate::effects::{Explosion, HitFlash, ParticleBurst, ShotBeam, TelegraphFire, Trail};
 use crate::gfx::{DrawCommand, SpriteInstance};
 use crate::perspective::{fractional_cell_to_screen, LaneGeometry};
 use crate::types::{Board, Faction};
 use crate::{atlas, types::Ship};
 use std::collections::HashMap;
+use std::sync::OnceLock;
 
-/// How long each effect lives, seconds. First-pass values; bruce tunes.
-const HIT_FLASH_SECS: f32 = 0.30;
-const EXPLOSION_SECS: f32 = 0.55;
-const TRAIL_SECS: f32 = 0.35;
-const TELEGRAPH_FIRE_SECS: f32 = 0.32;
+// Effect lifetimes, colours, and curve params are no longer hardcoded here: they
+// live in [`VfxConfig`] (sourced from [`crate::effects`]), so the VFX editor can
+// author them as data. The shared default ([`default_vfx_config`]) reproduces the
+// previous constants EXACTLY (the `effects::*` `Default`s == the old literals), so
+// the game look is unchanged until a config is edited.
 // The telegraph cue is not event-transient — it pulses while the intent is
 // queued — so it has no lifetime; it's emitted live from the current board.
 
@@ -135,23 +137,67 @@ impl Snapshot {
     }
 }
 
+/// Tunable VFX parameters, bundled so [`CombatVfx`] and [`ParticlePool`] can be
+/// driven by authored data instead of module constants. Each field is one of the
+/// [`crate::effects`] per-family structs; their `Default`s reproduce the original
+/// `vfx.rs` constants exactly, so a default `VfxConfig` is behavior-identical to
+/// the pre-data look. The VFX editor builds one from an
+/// [`crate::effects::EffectCatalog`] and injects it via [`CombatVfx::with_config`]
+/// / [`ParticlePool::with_config`].
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct VfxConfig {
+    /// Fired-shot beam style (per-archetype table, faction tints, travel/fade).
+    pub shot_beam: ShotBeam,
+    /// Hit-spark flash params.
+    pub hit_flash: HitFlash,
+    /// Destruction explosion params (shell / core / ignition).
+    pub explosion: Explosion,
+    /// Ordnance-trail params.
+    pub trail: Trail,
+    /// Telegraph-discharge pop params (also tints the steady telegraph cue).
+    pub telegraph_fire: TelegraphFire,
+    /// Screen-space particle-burst params.
+    pub particle_burst: ParticleBurst,
+}
+
+/// The process-wide default [`VfxConfig`] — the SINGLE SOURCE the game reads.
+/// Both [`CombatVfx::default`] and the 2-D scene compositor
+/// ([`crate::hud::push_fire_2d`], via [`archetype_beam_style`] /
+/// [`faction_beam_tint`]) resolve their styling from this, so the windowed `vfx`
+/// beams and the live 2-D beams cannot diverge. The VFX editor overrides on a
+/// per-[`CombatVfx`] instance via [`CombatVfx::with_config`] (it previews through
+/// `CombatVfx`, not the hud path), so there is no divergence in practice.
+pub(crate) fn default_vfx_config() -> &'static VfxConfig {
+    static DEFAULT: OnceLock<VfxConfig> = OnceLock::new();
+    DEFAULT.get_or_init(VfxConfig::default)
+}
+
 /// Live combat VFX state: the active transient effects + the previous frame's
-/// snapshot for diffing. Render-owned; the bin advances it each frame.
+/// snapshot for diffing + the tunable [`VfxConfig`]. Render-owned; the bin
+/// advances it each frame.
 #[derive(Default, Debug)]
 pub struct CombatVfx {
     effects: Vec<Effect>,
     prev: Option<Snapshot>,
+    /// Look/timing params. Defaults to [`VfxConfig::default`] (== the old
+    /// constants); the VFX editor overrides via [`Self::with_config`].
+    cfg: VfxConfig,
 }
-
-/// Placeholder palette — readable flat tones; bruce refines.
-const HIT_COLOR: [f32; 3] = [1.0, 0.86, 0.45]; // warm spark
-const EXPLOSION_COLOR: [f32; 3] = [1.0, 0.55, 0.25]; // orange burst
-const TRAIL_COLOR: [f32; 3] = [0.95, 0.70, 0.35]; // ordnance ember
-const TELEGRAPH_COLOR: [f32; 4] = [0.95, 0.30, 0.30, 0.9]; // enemy-intent red
 
 impl CombatVfx {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Build with an authored [`VfxConfig`] (the VFX editor's path). The default
+    /// constructor uses [`VfxConfig::default`], behavior-identical to the
+    /// pre-data constants.
+    #[must_use]
+    pub fn with_config(cfg: VfxConfig) -> Self {
+        Self {
+            cfg,
+            ..Self::default()
+        }
     }
 
     /// Diff `board` against the previous frame and spawn effects for the
@@ -171,12 +217,12 @@ impl CombatVfx {
         // list persists across redraws until the next round repopulates it).
         if !board.fire_events.is_empty() && cur.fire_sig != prev_sig {
             for fe in &board.fire_events {
-                let (thickness, dur) = archetype_beam_style(fe.archetype);
+                let (thickness, dur) = archetype_beam_style(&self.cfg.shot_beam, fe.archetype);
                 self.spawn(
                     EffectKind::ShotBeam {
                         from_cell: fe.from_cell as f32,
                         to_cell: fe.to_cell as f32,
-                        color: faction_beam_tint(fe.attacker_faction),
+                        color: faction_beam_tint(&self.cfg.shot_beam, fe.attacker_faction),
                         thickness,
                         dim: !fe.hit,
                     },
@@ -198,7 +244,7 @@ impl CombatVfx {
                         // ShotBeam in observe), not a guessed nearest-opponent
                         // beam — so we no longer fabricate an attacker here.
                         let cell = cur_cell as f32;
-                        self.spawn(EffectKind::HitFlash { cell }, HIT_FLASH_SECS);
+                        self.spawn(EffectKind::HitFlash { cell }, self.cfg.hit_flash.life_secs);
                     }
                 }
                 None => {
@@ -207,7 +253,7 @@ impl CombatVfx {
                         EffectKind::Explosion {
                             cell: prev_cell as f32,
                         },
-                        EXPLOSION_SECS,
+                        self.cfg.explosion.life_secs,
                     );
                 }
             }
@@ -233,7 +279,7 @@ impl CombatVfx {
                     EffectKind::TelegraphFire {
                         cell: cur_cell as f32,
                     },
-                    TELEGRAPH_FIRE_SECS,
+                    self.cfg.telegraph_fire.life_secs,
                 );
             }
         }
@@ -245,9 +291,9 @@ impl CombatVfx {
                         EffectKind::Trail {
                             from_cell: prev_cell as f32,
                             to_cell: cur_cell as f32,
-                            color: TRAIL_COLOR,
+                            color: self.cfg.trail.color.0,
                         },
-                        TRAIL_SECS,
+                        self.cfg.trail.life_secs,
                     );
                 }
             }
@@ -286,30 +332,42 @@ impl CombatVfx {
         for e in &self.effects {
             match e.kind {
                 EffectKind::HitFlash { cell } => {
-                    emit_flash(out, lane, cell, HIT_COLOR, e.t(), 16.0);
+                    emit_flash(out, lane, cell, e.t(), &self.cfg.hit_flash);
                 }
                 EffectKind::Explosion { cell } => {
-                    emit_explosion(out, lane, cell, e.t());
+                    emit_explosion(out, lane, cell, e.t(), &self.cfg.explosion);
                 }
                 EffectKind::Trail {
                     from_cell,
                     to_cell,
                     color,
-                } => emit_beam(out, lane, from_cell, to_cell, color, e.t()),
-                EffectKind::TelegraphFire { cell } => emit_telegraph_fire(out, lane, cell, e.t()),
+                } => emit_beam(out, lane, from_cell, to_cell, color, e.t(), &self.cfg.trail),
+                EffectKind::TelegraphFire { cell } => {
+                    emit_telegraph_fire(out, lane, cell, e.t(), &self.cfg.telegraph_fire);
+                }
                 EffectKind::ShotBeam {
                     from_cell,
                     to_cell,
                     color,
                     thickness,
                     dim,
-                } => emit_shot_beam(out, lane, from_cell, to_cell, color, thickness, dim, e.t()),
+                } => emit_shot_beam(
+                    out,
+                    lane,
+                    from_cell,
+                    to_cell,
+                    color,
+                    thickness,
+                    dim,
+                    e.t(),
+                    &self.cfg.shot_beam,
+                ),
             }
         }
         // Telegraph: live cue above any enemy holding a queued action.
         for s in board.cells.iter().flatten() {
             if s.faction == Faction::Enemy && !s.queue.is_empty() {
-                emit_telegraph(out, lane, s);
+                emit_telegraph(out, lane, s, &self.cfg.telegraph_fire);
             }
         }
     }
@@ -349,6 +407,7 @@ fn emit_beam(
     to_cell: f32,
     color: [f32; 3],
     t: f32,
+    cfg: &Trail,
 ) {
     let a = fractional_cell_to_screen(from_cell, lane);
     let b = fractional_cell_to_screen(to_cell, lane);
@@ -357,8 +416,8 @@ fn emit_beam(
     let len = dx.hypot(dy).max(1.0);
     let cx = f32::midpoint(a.x, b.x);
     let cy = f32::midpoint(a.y, b.y);
-    let alpha = (1.0 - t) * 0.9; // fade out
-    let thickness = 3.0 * (1.0 - t * 0.5); // thins slightly as it fades
+    let alpha = (1.0 - t) * cfg.alpha; // fade out
+    let thickness = cfg.thickness * (1.0 - t * 0.5); // thins slightly as it fades
     out.push(DrawCommand::Sprite(SpriteInstance {
         pos: [cx, cy],
         half_size: [len / 2.0, thickness / 2.0],
@@ -382,28 +441,26 @@ fn emit_beam(
  * our own fade timers, never mutating `board.fire_events`. ----------------- */
 
 /// Visual style for a fired shot, by weapon archetype: `(thickness, life_secs)`.
-/// Cheap differentiation so a beam reads instant-and-thin, ordnance slow-and-fat,
-/// a broadside short-and-wide, etc. Colour comes from the firing faction.
-/// `pub(crate)` so the 2-D scene compositor ([`crate::hud::push_fire_2d`]) styles
-/// its fire beams from the SAME archetype table (single source).
-pub(crate) const fn archetype_beam_style(a: crate::types::WeaponArchetype) -> (f32, f32) {
-    use crate::types::WeaponArchetype as W;
-    match a {
-        W::Beam => (2.5, 0.20),      // instant thin bolt
-        W::Ordnance => (4.5, 0.40),  // fat, lingering streak
-        W::Broadside => (5.5, 0.26), // wide volley
-        W::Control => (2.0, 0.30),   // thin, lingering tractor/lock
-        W::Displacement => (3.0, 0.24),
-        W::Movement | W::Defensive => (2.0, 0.20),
-    }
+/// Reads the per-archetype table from `cfg` (data); falls back to the [`ShotBeam`]
+/// default Beam row if an archetype is somehow absent (the default config never
+/// is). `pub(crate)` so the 2-D scene compositor ([`crate::hud::push_fire_2d`])
+/// styles its fire beams from the SAME config (single source) — pass it
+/// [`default_vfx_config`]'s `shot_beam`.
+pub(crate) fn archetype_beam_style(cfg: &ShotBeam, a: crate::types::WeaponArchetype) -> (f32, f32) {
+    cfg.per_archetype
+        .iter()
+        .find(|b| b.archetype == a)
+        .map_or((2.5, 0.20), |b| (b.thickness, b.life_secs))
 }
 
 /// Beam tint by the FIRING faction: enemy shots red, player shots cyan, so the
-/// player can read at a glance who is shooting whom.
-pub(crate) const fn faction_beam_tint(f: Faction) -> [f32; 3] {
+/// player can read at a glance who is shooting whom. Reads tints from `cfg`
+/// (data); `pub(crate)` for the same single-source reason as
+/// [`archetype_beam_style`].
+pub(crate) const fn faction_beam_tint(cfg: &ShotBeam, f: Faction) -> [f32; 3] {
     match f {
-        Faction::Enemy => [0.98, 0.34, 0.30], // hostile red
-        Faction::Player => [0.40, 0.86, 1.0], // friendly cyan
+        Faction::Enemy => cfg.enemy_tint.0,
+        Faction::Player => cfg.player_tint.0,
     }
 }
 
@@ -428,17 +485,18 @@ fn emit_shot_beam(
     thickness: f32,
     dim: bool,
     t: f32,
+    cfg: &ShotBeam,
 ) {
-    /// Fraction of the beam's life spent in the TRAVEL phase (bolt crossing the
-    /// lane); the rest is the strike + fade.
-    const TRAVEL_FRAC: f32 = 0.4;
+    // Fraction of the beam's life spent in the TRAVEL phase (bolt crossing the
+    // lane); the rest is the strike + fade. From data (`ShotBeam.travel_frac`).
+    let travel_frac = cfg.travel_frac;
 
     let a = fractional_cell_to_screen(from_cell, lane);
     let b = fractional_cell_to_screen(to_cell, lane);
     let dx = b.x - a.x;
     let dy = b.y - a.y;
     let rot = dy.atan2(dx);
-    let base_alpha = if dim { 0.45 } else { 0.95 };
+    let base_alpha = if dim { cfg.miss_alpha } else { cfg.hit_alpha };
     let uv = atlas::cell_uvs(atlas::SOLID_WHITE);
     let mut seg =
         |p0: crate::perspective::Point2, p1: crate::perspective::Point2, th: f32, alpha: f32| {
@@ -454,10 +512,10 @@ fn emit_shot_beam(
             }));
         };
 
-    if t < TRAVEL_FRAC {
+    if t < travel_frac {
         // TRAVEL: head eases muzzle→target; draw muzzle→head as the bolt body, plus
         // a brighter leading tip so the shot reads as a fast-moving round.
-        let prog = (t / TRAVEL_FRAC).clamp(0.0, 1.0);
+        let prog = (t / travel_frac).clamp(0.0, 1.0);
         let ease = 1.0 - (1.0 - prog) * (1.0 - prog); // ease-out
         let head = crate::perspective::Point2 {
             x: a.x + dx * ease,
@@ -465,31 +523,33 @@ fn emit_shot_beam(
         };
         seg(a, head, thickness, base_alpha);
         // Bright leading tip: a short over-bright stub at the head.
+        let tip = cfg.tip_len_frac;
         let tail = crate::perspective::Point2 {
-            x: a.x + dx * (ease - 0.12).max(0.0),
-            y: a.y + dy * (ease - 0.12).max(0.0),
+            x: a.x + dx * (ease - tip).max(0.0),
+            y: a.y + dy * (ease - tip).max(0.0),
         };
-        seg(tail, head, thickness * 1.4, (base_alpha + 0.05).min(1.0));
+        seg(
+            tail,
+            head,
+            thickness * cfg.tip_thickness_mul,
+            (base_alpha + 0.05).min(1.0),
+        );
     } else {
         // STRIKE + FADE: full beam, fading + thinning over the remaining life.
-        let f = ((t - TRAVEL_FRAC) / (1.0 - TRAVEL_FRAC)).clamp(0.0, 1.0);
+        let f = ((t - travel_frac) / (1.0 - travel_frac)).clamp(0.0, 1.0);
         seg(a, b, thickness * (1.0 - f * 0.45), (1.0 - f) * base_alpha);
     }
 }
 
-/// A flash / hit-spark: an expanding, fading square centred on a cell.
-fn emit_flash(
-    out: &mut Vec<DrawCommand>,
-    lane: &LaneGeometry,
-    cell: f32,
-    color: [f32; 3],
-    t: f32,
-    peak: f32,
-) {
+/// A flash / hit-spark: an expanding, fading square centred on a cell. Colour /
+/// peak size / grow curve / alpha come from [`HitFlash`] (data); the defaults
+/// reproduce the prior `HIT_COLOR` + peak `16.0` + `0.35 + 0.65t` + `0.85`.
+fn emit_flash(out: &mut Vec<DrawCommand>, lane: &LaneGeometry, cell: f32, t: f32, cfg: &HitFlash) {
     let p = fractional_cell_to_screen(cell, lane);
+    let color = cfg.color.0;
     // Ease-out grow; fade over life.
-    let size = peak * (0.35 + 0.65 * t);
-    let alpha = (1.0 - t) * 0.85;
+    let size = cfg.peak_px * (cfg.grow_base + cfg.grow_span * t);
+    let alpha = (1.0 - t) * cfg.alpha_peak;
     out.push(DrawCommand::Sprite(SpriteInstance::axis_aligned(
         [p.x, p.y],
         [size / 2.0, size / 2.0],
@@ -511,9 +571,15 @@ fn emit_flash(
 /// instant). `t` advances on real seconds, so the whole thing plays out over
 /// `EXPLOSION_SECS` regardless of how the turn resolves — the `ParticlePool` burst
 /// the bin seeds on the same kill layers debris on top.
-fn emit_explosion(out: &mut Vec<DrawCommand>, lane: &LaneGeometry, cell: f32, t: f32) {
+fn emit_explosion(
+    out: &mut Vec<DrawCommand>,
+    lane: &LaneGeometry,
+    cell: f32,
+    t: f32,
+    cfg: &Explosion,
+) {
     let p = fractional_cell_to_screen(cell, lane);
-    let peak = 30.0_f32;
+    let peak = cfg.peak_px;
     let mut quad = |size: f32, rgba: [f32; 4]| {
         out.push(DrawCommand::Sprite(SpriteInstance::axis_aligned(
             [p.x, p.y],
@@ -526,45 +592,51 @@ fn emit_explosion(out: &mut Vec<DrawCommand>, lane: &LaneGeometry, cell: f32, t:
     let ease_out = 1.0 - (1.0 - t) * (1.0 - t);
 
     // 2) Expanding orange shell — grows 0.25→1.1 of peak, fades over the whole life.
-    let shell_size = peak * (0.25 + 0.85 * ease_out);
-    let shell_alpha = (1.0 - t) * 0.8;
+    let shell = cfg.shell_color.0;
+    let shell_size = peak * (cfg.shell_grow_base + cfg.shell_grow_span * ease_out);
+    let shell_alpha = (1.0 - t) * cfg.shell_alpha;
     if shell_alpha > 0.0 {
-        quad(
-            shell_size,
-            [
-                EXPLOSION_COLOR[0],
-                EXPLOSION_COLOR[1],
-                EXPLOSION_COLOR[2],
-                shell_alpha,
-            ],
-        );
+        quad(shell_size, [shell[0], shell[1], shell[2], shell_alpha]);
     }
     // 3) Hot yellow core — smaller, shrinks + fades by ~t=0.55 (2x the shell's rate).
-    let core_life = (t / 0.55).clamp(0.0, 1.0);
+    let core = cfg.core_color.0;
+    let core_life = (t / cfg.core_life_frac).clamp(0.0, 1.0);
     if core_life < 1.0 {
         let core_size = peak * 0.5 * (0.5 + 0.5 * ease_out);
-        let core_alpha = (1.0 - core_life) * 0.9;
-        quad(core_size, [1.0, 0.85, 0.4, core_alpha]);
+        let core_alpha = (1.0 - core_life) * cfg.core_alpha;
+        quad(core_size, [core[0], core[1], core[2], core_alpha]);
     }
     // 1) White ignition flash — over-bright spike, gone by ~t=0.25.
-    let flash_life = (t / 0.25).clamp(0.0, 1.0);
+    let fl = cfg.flash_color.0;
+    let flash_life = (t / cfg.flash_life_frac).clamp(0.0, 1.0);
     if flash_life < 1.0 {
         let flash_size = peak * (0.4 + 0.3 * flash_life);
-        let flash_alpha = (1.0 - flash_life) * 0.95;
-        quad(flash_size, [1.0, 0.97, 0.9, flash_alpha]);
+        let flash_alpha = (1.0 - flash_life) * cfg.flash_alpha;
+        quad(flash_size, [fl[0], fl[1], fl[2], flash_alpha]);
     }
 }
 
 /// Telegraph FIRE pop (#70): a quick expanding red flash at the telegraph slot
-/// above the enemy (`lane.center_y - 96`, matching the hud telegraph stack), so
-/// the readied action visibly DISCHARGES as the enemy fires rather than silently
-/// rolling to the next intent. Grows + fades over its short life.
-fn emit_telegraph_fire(out: &mut Vec<DrawCommand>, lane: &LaneGeometry, cell: f32, t: f32) {
+/// above the enemy (`lane.center_y + slot_offset_px`, matching the hud telegraph
+/// stack), so the readied action visibly DISCHARGES as the enemy fires rather
+/// than silently rolling to the next intent. Grows + fades over its short life.
+/// Slot offset / grow curve / alpha come from [`TelegraphFire`] (data). NOTE: the
+/// pop's own tint `[1.0, 0.42, 0.38]` stays a literal — it is a DISTINCT colour
+/// from the steady-cue tint (`TelegraphFire.color`, == the old `TELEGRAPH_COLOR`)
+/// and the schema has one colour field, so keeping the pop literal preserves the
+/// exact prior look. A future schema rev can add a `pop_color` field if desired.
+fn emit_telegraph_fire(
+    out: &mut Vec<DrawCommand>,
+    lane: &LaneGeometry,
+    cell: f32,
+    t: f32,
+    cfg: &TelegraphFire,
+) {
     let p = fractional_cell_to_screen(cell, lane);
-    let y = lane.center_y - 96.0;
+    let y = lane.center_y + cfg.slot_offset_px;
     // Bright expanding ring-ish pop: a fast-growing, fast-fading square.
-    let size = 18.0 * (0.4 + 1.1 * t);
-    let alpha = (1.0 - t) * 0.95;
+    let size = 18.0 * (cfg.grow_base + cfg.grow_span * t);
+    let alpha = (1.0 - t) * cfg.alpha;
     out.push(DrawCommand::Sprite(SpriteInstance::axis_aligned(
         [p.x, y],
         [size / 2.0, size / 2.0],
@@ -575,15 +647,21 @@ fn emit_telegraph_fire(out: &mut Vec<DrawCommand>, lane: &LaneGeometry, cell: f3
 
 /// Telegraph cue: a small red marker above an enemy holding a queued action,
 /// signalling "this ship intends to act". First-pass = a chevron-ish bar; the
-/// per-intent icon set is a later art pass.
-fn emit_telegraph(out: &mut Vec<DrawCommand>, lane: &LaneGeometry, ship: &Ship) {
+/// per-intent icon set is a later art pass. Tint + slot offset from
+/// [`TelegraphFire`] (data; `color` == the old `TELEGRAPH_COLOR`).
+fn emit_telegraph(
+    out: &mut Vec<DrawCommand>,
+    lane: &LaneGeometry,
+    ship: &Ship,
+    cfg: &TelegraphFire,
+) {
     let p = fractional_cell_to_screen(ship.cell as f32, lane);
     // Sit well above the ship silhouette.
-    let y = lane.center_y - 96.0;
+    let y = lane.center_y + cfg.slot_offset_px;
     out.push(DrawCommand::Sprite(SpriteInstance::axis_aligned(
         [p.x, y],
         [6.0, 6.0],
-        TELEGRAPH_COLOR,
+        cfg.color.0,
         atlas::cell_uvs(atlas::SOLID_WHITE),
     )));
 }
@@ -633,22 +711,38 @@ pub struct ParticlePool {
     particles: Vec<Particle>,
     /// Rolling seed for the deterministic spread (no RNG dep) — folded per spawn.
     seed: u64,
+    /// Burst params (speeds/sizes/jitter/drag). Defaults reproduce the prior
+    /// hardcodes; the VFX editor overrides via [`Self::with_config`].
+    cfg: ParticleBurst,
 }
 
 impl ParticlePool {
-    pub const fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             particles: Vec::new(),
             seed: 0x9E37_79B9_7F4A_7C15,
+            cfg: ParticleBurst::default(),
         }
+    }
+
+    /// Build with authored [`ParticleBurst`] params (the VFX editor's path). The
+    /// default constructor reproduces the prior hardcoded spread.
+    #[must_use]
+    pub fn with_config(cfg: ParticleBurst) -> Self {
+        Self { cfg, ..Self::new() }
     }
 
     /// Seed `n` particles at `center` (screen space) flying outward with a
     /// DETERMINISTIC radial spread (FNV-style fold of a per-particle counter, the
     /// same no-RNG approach as `fire_events_sig`), so the burst is reproducible
     /// for headless capture/tests. `color` is the burst tint; `dur` its lifetime
-    /// (seconds). Speeds + sizes vary a little per particle for a lively spray.
+    /// (seconds). Speed/size ranges + lifetime jitter come from [`ParticleBurst`]
+    /// (data); the defaults reproduce the prior `24 + 0..70` speed, `2 + 0..3`
+    /// size, `0.7 + 0..0.6` jitter.
     pub fn spawn_burst(&mut self, center: [f32; 2], n: u32, color: [f32; 4], dur: f32) {
+        let (spd_min, spd_span) = (self.cfg.speed_min, self.cfg.speed_max - self.cfg.speed_min);
+        let (sz_min, sz_span) = (self.cfg.size_min, self.cfg.size_max - self.cfg.size_min);
+        let (jit_base, jit_span) = (self.cfg.dur_jitter[0], self.cfg.dur_jitter[1]);
         for i in 0..n {
             // FNV-1a fold of (seed, i) → three independent-ish [0,1) values.
             let mut h: u64 = 1_469_598_103_934_665_603;
@@ -661,13 +755,13 @@ impl ParticlePool {
             let spd01 = fold(0xA1 ^ u64::from(i));
             let sz01 = fold(0xB2 ^ u64::from(i));
             let angle = a01 * std::f32::consts::TAU;
-            let speed = 24.0 + spd01 * 70.0; // px/sec, radial
+            let speed = spd_min + spd01 * spd_span; // px/sec, radial
             self.particles.push(Particle {
                 pos: center,
                 vel: [angle.cos() * speed, angle.sin() * speed],
                 age: 0.0,
-                dur: dur * (0.7 + sz01 * 0.6), // staggered lifetimes
-                size: 2.0 + sz01 * 3.0,
+                dur: dur * (jit_base + sz01 * jit_span), // staggered lifetimes
+                size: sz_min + sz01 * sz_span,
                 color,
             });
         }
@@ -682,10 +776,11 @@ impl ParticlePool {
     /// Returns true while any particle is still alive (so the caller can keep
     /// requesting redraws). A light drag bleeds the velocity so the spray settles.
     pub fn advance(&mut self, dt: f32) -> bool {
+        let drag_k = self.cfg.drag;
         for p in &mut self.particles {
             p.pos[0] += p.vel[0] * dt;
             p.pos[1] += p.vel[1] * dt;
-            let drag = (1.0 - 2.0 * dt).clamp(0.0, 1.0);
+            let drag = (1.0 - drag_k * dt).clamp(0.0, 1.0);
             p.vel[0] *= drag;
             p.vel[1] *= drag;
             p.age += dt;
@@ -916,8 +1011,9 @@ mod tests {
         board.cells[2] = None;
         vfx.observe(&board);
         assert!(vfx.is_active());
-        // Past the explosion lifetime → cleared.
-        let still = vfx.advance(EXPLOSION_SECS + 0.01);
+        // Past the explosion lifetime → cleared. Lifetime now comes from the
+        // (default) VfxConfig, which reproduces the old EXPLOSION_SECS (0.55).
+        let still = vfx.advance(crate::effects::Explosion::default().life_secs + 0.01);
         assert!(!still);
         assert!(!vfx.is_active());
     }

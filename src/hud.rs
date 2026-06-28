@@ -1256,9 +1256,12 @@ pub fn push_fizzle_cue_2d(
 /// here the beam is the full-strength round read (clarity over a micro-fade —
 /// Bruce wants to SEE the shots), which the next round's events replace.
 fn push_fire_2d(out: &mut Vec<DrawCommand>, board: &Board, cfg: &ProjectorConfig) {
+    // Single source: read the SAME default VfxConfig the windowed `vfx` beams use,
+    // so the 2-D fire beams can't diverge from the effect pool's styling.
+    let beam_cfg = &crate::vfx::default_vfx_config().shot_beam;
     for fe in &board.fire_events {
-        let (thickness, _life) = crate::vfx::archetype_beam_style(fe.archetype);
-        let tint = crate::vfx::faction_beam_tint(fe.attacker_faction);
+        let (thickness, _life) = crate::vfx::archetype_beam_style(beam_cfg, fe.archetype);
+        let tint = crate::vfx::faction_beam_tint(beam_cfg, fe.attacker_faction);
         let from = grid_cell_quad(fe.from_pos, cfg).center;
         let to = grid_cell_quad(fe.to_pos, cfg).center;
         // A hit reads full + bright; a miss is dimmer + thinner so "fired but
@@ -1351,7 +1354,10 @@ fn push_ordnance_2d(
         // Faction tint so a player torpedo reads cyan-ish and an enemy one red-ish
         // (same palette as the fire beams). Size scales with depth, hard-capped so a
         // near-row projectile doesn't slab the lane.
-        let t = crate::vfx::faction_beam_tint(proj.owner_faction);
+        let t = crate::vfx::faction_beam_tint(
+            &crate::vfx::default_vfx_config().shot_beam,
+            proj.owner_faction,
+        );
         let tint = [t[0], t[1], t[2], 1.0];
         let half_w = (8.0 * scale).clamp(4.0, 10.0);
         let half_h = (4.0 * scale).clamp(2.0, 6.0);
