@@ -195,15 +195,23 @@ pub(crate) fn expand_band_2d(b: crate::types::RangeBand) -> Vec<crate::grid::Ran
  * `inflate_effect`), and those ids are ALSO the PLAYER's weapons — so the amount
  * can't be lowered on the shared action without nerfing the player.
  *
- * Fix: at load, give EVERY enemy a PRIVATE capped copy of any direct-DAMAGE
- * weapon whose amount exceeds the cap AND whose cooldown is below the
- * "very-long" threshold. The copy keeps the base action's name / archetype /
+ * Fix: at load, give every NON-CAPITAL enemy a PRIVATE capped copy of any
+ * direct-DAMAGE weapon whose amount exceeds the cap AND whose cooldown is below
+ * the "very-long" threshold. The copy keeps the base action's name / archetype /
  * targeting / arc / cost (so the HUD + AI behave identically) and only differs in
  * `id` (`<base>__enemy`) and the DAMAGE amount (clamped to [`ENEMY_DAMAGE_CAP`]).
  * The enemy's weapon ref is rewritten to the capped id; the player never
  * references it, so the player's loadout is untouched.
  *
  * Exceptions (left at full damage, base id):
+ * - **capitals / bosses** (Bruce ruling: bosses should hit harder; their threat
+ *   is the long-cd specials anyway): any `enemies[]` entry whose id also appears
+ *   in `catalog.capitals[]` (e.g. the Citadel `warlord`, which is both a regular-
+ *   roster entry and a capital) is skipped entirely. The real bosses are anyway
+ *   synthesized by `runs::boss_ship_for_spawn` (hand-built mounts, NOT
+ *   `enemy_ship_from_catalog`), so they never flow through this pass — this guard
+ *   just makes the "non-capital only" scope explicit + data-driven for the
+ *   dual-listed entry.
  * - **very-long-cooldown weapons** (`cd >= `[`ENEMY_DAMAGE_CAP_CD_EXEMPT`]): the
  *   alpha-strike archetype (e.g. `railgun_broadside` cd 6, `particle_lance` cd 5)
  *   — a rare, telegraphed big hit is the intended counter-pressure, not the
@@ -243,21 +251,29 @@ fn is_enemy_capped_id(id: &str) -> bool {
 /// direct-DAMAGE weapons (#177). See the module section comment above for the why
 /// + the exception list.
 ///
-/// For each enemy weapon that resolves to a catalog action carrying a direct
-/// `Effect::DAMAGE` whose amount exceeds [`ENEMY_DAMAGE_CAP`] AND whose
+/// For each NON-CAPITAL enemy weapon that resolves to a catalog action carrying a
+/// direct `Effect::DAMAGE` whose amount exceeds [`ENEMY_DAMAGE_CAP`] AND whose
 /// `cooldown_max` is below [`ENEMY_DAMAGE_CAP_CD_EXEMPT`]:
 /// 1. ensure a capped clone exists in `catalog.actions` under id `<base>__enemy`
 ///    (idempotent — shared across enemies that mount the same base weapon), and
 /// 2. rewrite the enemy's weapon ref to that capped id.
 ///
-/// Weapons that already deal `<= cap`, carry no direct DAMAGE (ordnance /
-/// movement / defensive), or are cooldown-exempt are left pointing at the base id:
-/// no capped copy is made, so the catalog isn't littered with no-op variants.
+/// Capital-tier `enemies[]` entries (id present in `catalog.capitals[]`), weapons
+/// that already deal `<= cap`, those carrying no direct DAMAGE (ordnance /
+/// movement / defensive), and cooldown-exempt weapons are left pointing at the
+/// base id: no capped copy is made, so the catalog isn't littered with no-op
+/// variants.
 fn cap_enemy_weapon_damage(catalog: &mut Catalog) {
     // Resolve weapon refs (display name OR id) to action ids up front, using an
     // immutable snapshot of the name->id map (built before we start pushing the
     // capped variants, which only add new ids and never shadow a base name).
     let name_to_id = action_name_to_id(catalog);
+
+    // Capital ids (owned, so the borrow ends before the `&mut catalog.enemies`
+    // loop). An `enemies[]` entry that is ALSO a capital (the dual-listed Citadel
+    // warlord) is exempt — bosses hit harder (Bruce ruling).
+    let capital_ids: std::collections::HashSet<String> =
+        catalog.capitals.iter().map(|c| c.id.clone()).collect();
 
     // Collect the capped action defs to append after we finish reading + rewriting
     // `enemies` (can't push into `catalog.actions` while iterating the same
@@ -266,6 +282,10 @@ fn cap_enemy_weapon_damage(catalog: &mut Catalog) {
     let mut capped_defs: HashMap<String, crate::types::Action> = HashMap::new();
 
     for def in &mut catalog.enemies {
+        // Capitals/bosses keep full damage — their threat is intended.
+        if capital_ids.contains(&def.id) {
+            continue;
+        }
         for weapon in &mut def.weapons {
             let Some(base_id) = resolve_weapon_id(weapon, &name_to_id) else {
                 continue; // unresolved name — synthesis already logs + skips it
@@ -1006,6 +1026,15 @@ mod tests {
                 { "id": "monitor", "name": "Monitor", "hull": 5, "hull5": 7,
                   "traits": ["Pursuit"], "sector": "Spindle Port",
                   "weapons": ["Pulse Laser", "Railgun Broadside"] },
+                // Dual-listed: a regular-roster entry whose id is ALSO a capital
+                // (mirrors the real Citadel "warlord"). Must be EXEMPT from the cap.
+                { "id": "warlord", "name": "Citadel Warlord", "hull": 14, "hull5": 16,
+                  "traits": ["Reactor Breach"], "sector": "Inner Keeps",
+                  "weapons": ["Beam Cannon"] },
+            ],
+            "capitals": [
+                { "id": "warlord", "name": "The Warlord", "sector": "Inner Keeps",
+                  "corrupt": true, "sP1": 5, "sP7": 11 },
             ],
             "patrols": [],
         }))
@@ -1080,6 +1109,28 @@ mod tests {
                 .iter()
                 .all(|a| a.id != format!("railgun_broadside{ENEMY_CAPPED_SUFFIX}")),
             "no __enemy variant should exist for the cd-exempt railgun",
+        );
+    }
+
+    #[test]
+    fn capital_enemy_weapons_are_exempt() {
+        // Bruce ruling (#177): capitals/bosses keep full damage. The dual-listed
+        // `warlord` (in both enemies[] and capitals[]) mounts Beam Cannon (cd3,
+        // dmg4 — a STANDARD gun that WOULD be capped on a regular enemy), but as a
+        // capital it stays at full 4 and its BASE id (no `__enemy` variant).
+        let cat = load_from_bytes(&cap_test_catalog_bytes()).expect("catalog loads");
+        let warlord =
+            enemy_ship_from_catalog(&cat, &spawn_at("warlord", 2)).expect("warlord in catalog");
+
+        let bc = warlord
+            .mounts
+            .iter()
+            .find(|m| m.weapon == "beam_cannon")
+            .expect("capital warlord keeps beam_cannon at its BASE id (not capped)");
+        assert_eq!(
+            mount_damage(&cat, &bc.weapon),
+            Some(4),
+            "a capital's standard gun keeps full damage (beam_cannon 4, uncapped)",
         );
     }
 
