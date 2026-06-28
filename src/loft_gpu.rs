@@ -1676,9 +1676,9 @@ mod tests {
         }
     }
 
-    /// (#186 Bruce FINAL, supersedes the blit-roll parallel test) The N hull lies FLAT
-    /// + dead-straight up the screen in EVERY column AND at every grid-pitch step — no
-    /// lean, no roll. Bruce wants the player flat on the plane like the enemies; the
+    /// (#186 Bruce FINAL, supersedes the blit-roll parallel test) The N hull lies FLAT,
+    /// dead-straight up the screen, in EVERY column AND at every grid-pitch step, with no
+    /// lean and no roll. Bruce wants the player flat on the plane like the enemies; the
     /// flat ground pose foreshortens but never tilts off the deck or banks. (The
     /// flat/parallel tension is documented on `chase_cam_ground_yaw_deg`: a flat hull
     /// can't be made lane-parallel by yaw alone, and Bruce chose flat over parallel.)
