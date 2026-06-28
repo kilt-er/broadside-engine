@@ -407,9 +407,17 @@ pub(crate) const fn faction_beam_tint(f: Faction) -> [f32; 3] {
     }
 }
 
-/// Draw an EXACT fired shot (#59): a styled beam attacker→target, given
-/// archetype `thickness` and faction `color`, fading over its life. A miss
-/// (`dim`) renders at reduced alpha so it reads as "fired but didn't connect".
+/// (#178 Bruce) Draw an EXACT fired shot (#59) as a REAL-TIME ANIMATED beam over
+/// its wall-clock life `t` (0→1), not an instant-appear bolt.
+///
+/// Two phases. TRAVEL (`t` < `TRAVEL_FRAC`): a bright bolt races attacker→target —
+/// the drawn segment runs from the muzzle to a HEAD that eases `a`→`b`, with a
+/// brighter leading tip, so the shot visibly crosses the lane. STRIKE+FADE (`t` ≥
+/// `TRAVEL_FRAC`): the head has arrived, so the full attacker→target beam is drawn
+/// and fades + thins out over the remaining life. Archetype `thickness` + faction
+/// `color` as before; a miss (`dim`) renders at reduced alpha ("fired but didn't
+/// connect"). All on wall-clock, so the bolt crosses over real seconds regardless
+/// of how the turn resolves.
 #[allow(clippy::too_many_arguments)]
 fn emit_shot_beam(
     out: &mut Vec<DrawCommand>,
@@ -421,26 +429,52 @@ fn emit_shot_beam(
     dim: bool,
     t: f32,
 ) {
+    /// Fraction of the beam's life spent in the TRAVEL phase (bolt crossing the
+    /// lane); the rest is the strike + fade.
+    const TRAVEL_FRAC: f32 = 0.4;
+
     let a = fractional_cell_to_screen(from_cell, lane);
     let b = fractional_cell_to_screen(to_cell, lane);
     let dx = b.x - a.x;
     let dy = b.y - a.y;
-    let len = dx.hypot(dy).max(1.0);
-    let cx = f32::midpoint(a.x, b.x);
-    let cy = f32::midpoint(a.y, b.y);
-    // Bright at birth, fading out; a connecting hit reads fuller than a miss.
+    let rot = dy.atan2(dx);
     let base_alpha = if dim { 0.45 } else { 0.95 };
-    let alpha = (1.0 - t) * base_alpha;
-    let th = thickness * (1.0 - t * 0.4); // thins slightly as it fades
-    out.push(DrawCommand::Sprite(SpriteInstance {
-        pos: [cx, cy],
-        half_size: [len / 2.0, th / 2.0],
-        color: [color[0], color[1], color[2], alpha],
-        uv_min: atlas::cell_uvs(atlas::SOLID_WHITE).0,
-        uv_max: atlas::cell_uvs(atlas::SOLID_WHITE).1,
-        rotation_rad: dy.atan2(dx),
-        _pad: [0.0; 3],
-    }));
+    let uv = atlas::cell_uvs(atlas::SOLID_WHITE);
+    let mut seg =
+        |p0: crate::perspective::Point2, p1: crate::perspective::Point2, th: f32, alpha: f32| {
+            let len = (p1.x - p0.x).hypot(p1.y - p0.y).max(1.0);
+            out.push(DrawCommand::Sprite(SpriteInstance {
+                pos: [f32::midpoint(p0.x, p1.x), f32::midpoint(p0.y, p1.y)],
+                half_size: [len / 2.0, th / 2.0],
+                color: [color[0], color[1], color[2], alpha],
+                uv_min: uv.0,
+                uv_max: uv.1,
+                rotation_rad: rot,
+                _pad: [0.0; 3],
+            }));
+        };
+
+    if t < TRAVEL_FRAC {
+        // TRAVEL: head eases muzzle→target; draw muzzle→head as the bolt body, plus
+        // a brighter leading tip so the shot reads as a fast-moving round.
+        let prog = (t / TRAVEL_FRAC).clamp(0.0, 1.0);
+        let ease = 1.0 - (1.0 - prog) * (1.0 - prog); // ease-out
+        let head = crate::perspective::Point2 {
+            x: a.x + dx * ease,
+            y: a.y + dy * ease,
+        };
+        seg(a, head, thickness, base_alpha);
+        // Bright leading tip: a short over-bright stub at the head.
+        let tail = crate::perspective::Point2 {
+            x: a.x + dx * (ease - 0.12).max(0.0),
+            y: a.y + dy * (ease - 0.12).max(0.0),
+        };
+        seg(tail, head, thickness * 1.4, (base_alpha + 0.05).min(1.0));
+    } else {
+        // STRIKE + FADE: full beam, fading + thinning over the remaining life.
+        let f = ((t - TRAVEL_FRAC) / (1.0 - TRAVEL_FRAC)).clamp(0.0, 1.0);
+        seg(a, b, thickness * (1.0 - f * 0.45), (1.0 - f) * base_alpha);
+    }
 }
 
 /// A flash / hit-spark: an expanding, fading square centred on a cell.

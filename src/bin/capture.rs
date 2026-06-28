@@ -526,10 +526,10 @@ fn main() {
                 let before = capture_board(player_col, player_row, player_facing);
                 let mut demo_vfx = broadside_engine::vfx::CombatVfx::new();
                 demo_vfx.observe(&before);
-                demo_vfx.observe(&board); // enemy gone -> spawns Explosion at `killed`
-                demo_vfx.advance(0.18); // mid-expansion on wall-clock
+                demo_vfx.observe(&board); // enemy gone -> spawns Explosion; fire_events -> ShotBeams
+                demo_vfx.advance(0.08); // early: explosion expanding + beam mid-TRAVEL (#178.1)
                 demo_vfx.emit(&mut commands, &board, &DEFAULT_LANE);
-                log::info!("capture: #178 CombatVfx explosion mid-life at {killed:?}");
+                log::info!("capture: #178 CombatVfx explosion + travelling beam at {killed:?}");
             }
         }
         // (#101) Flash the hull bar of the SURVIVING enemy we knocked to half hull
