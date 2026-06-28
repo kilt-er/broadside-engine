@@ -183,17 +183,21 @@ pub(crate) fn expand_band_2d(b: crate::types::RangeBand) -> Vec<crate::grid::Ran
 /* =========================================================================
  * #177 — enemy per-shot damage cap (with a very-long-cooldown exception).
  *
- * Bruce ruling (refined): enemy weapons should deal AT MOST 1-2 damage PER SHOT,
- * EXCEPT very-long-cooldown abilities (a big telegraphed alpha hit may exceed
- * the cap). The player was dying in ~2 hits.
+ * Bruce ruling (re-tuned after playtest): standard enemy weapons should deal a
+ * per-shot in the 2-4 band (was an earlier <=2 cap; raised to [`ENEMY_DAMAGE_CAP`]
+ * = 4), EXCEPT very-long-cooldown abilities (a big telegraphed alpha hit may
+ * exceed the cap). The player was dying in ~2 hits at the un-capped values.
  *
  * The per-shot number a gun deals is its `Effect::DAMAGE` amount run through the
  * integer `band_falloff` (>=1) minus shield soak — falloff only ever REDUCES the
- * authored amount, so clamping the authored amount at <=2 caps the per-shot at
- * <=2. The DAMAGE amount lives on the SHARED catalog action (`pulse_laser` -> 3,
- * `beam_cannon` -> 4, `broadside_battery` -> 5 via the loader's heat-derived
- * `inflate_effect`), and those ids are ALSO the PLAYER's weapons — so the amount
- * can't be lowered on the shared action without nerfing the player.
+ * authored amount, so clamping the authored amount to the cap caps the per-shot
+ * at the cap. The DAMAGE amount lives on the SHARED catalog action
+ * (`pulse_laser` -> 3, `beam_cannon` -> 4, `broadside_battery` -> 5 via the
+ * loader's heat-derived `inflate_effect`), and those ids are ALSO the PLAYER's
+ * weapons — so the amount can't be lowered on the shared action without nerfing
+ * the player. With cap 4, only `broadside_battery` (5) exceeds it and gets a
+ * variant; `pulse_laser` (3) and `beam_cannon` (4) are already in-band and keep
+ * their base id (no variant minted).
  *
  * Fix: at load, give every NON-CAPITAL enemy a PRIVATE capped copy of any
  * direct-DAMAGE weapon whose amount exceeds the cap AND whose cooldown is below
@@ -215,17 +219,23 @@ pub(crate) fn expand_band_2d(b: crate::types::RangeBand) -> Vec<crate::grid::Ran
  * - **very-long-cooldown weapons** (`cd >= `[`ENEMY_DAMAGE_CAP_CD_EXEMPT`]): the
  *   alpha-strike archetype (e.g. `railgun_broadside` cd 6, `particle_lance` cd 5)
  *   — a rare, telegraphed big hit is the intended counter-pressure, not the
- *   "dying to chip" problem. Standard low/mid-cd guns (`pulse_laser` cd 0,
- *   `beam_cannon` cd 3, `broadside_battery` cd 4) are capped.
+ *   "dying to chip" problem. Standard low/mid-cd guns are subject to the cap, but
+ *   at cap 4 only `broadside_battery` (5) is actually over it; `pulse_laser` (3)
+ *   and `beam_cannon` (4) already sit in the 2-4 band.
  * - **ordnance** (e.g. Missile Salvo / Torpedo): carry their damage on the
  *   spawned projectile (`input::spawn_ordnance`), not the launcher action, so the
  *   launcher has no direct DAMAGE to cap; the projectile damage is a separate
  *   table (already low for the starter ordnance). Out of scope for this pass.
  * ====================================================================== */
 
-/// The most damage a standard (non-exempt) enemy weapon may deal per shot (#177,
-/// Bruce ruling: "1-2, max, per shot"). Bruce-tunable.
-const ENEMY_DAMAGE_CAP: i32 = 2;
+/// The most damage a standard (non-exempt) enemy weapon may deal per shot.
+/// Bruce ruling evolved: first "1-2 max" (#177), then re-tuned after playtest to
+/// a 2-4 band — raised to 4 so standard guns hit harder without reaching the
+/// alpha tier. Resulting capped per-shot values all land in 2-4 (`pulse_laser` 3,
+/// `beam_cannon` 4 both already <= cap so untouched; `broadside_battery` 5 -> 4);
+/// no standard gun's base amount is below 2, so the `.min(cap)` clamp never floors
+/// anything under 2. Bruce-tunable.
+const ENEMY_DAMAGE_CAP: i32 = 4;
 
 /// Cooldown (`Action.cost.cooldown_max`) at or above which a weapon is EXEMPT
 /// from [`ENEMY_DAMAGE_CAP`] — a "very-long-cooldown ability" that may deal a
@@ -1028,9 +1038,11 @@ mod tests {
                   "weapons": ["Pulse Laser", "Railgun Broadside"] },
                 // Dual-listed: a regular-roster entry whose id is ALSO a capital
                 // (mirrors the real Citadel "warlord"). Must be EXEMPT from the cap.
+                // Mounts Broadside Battery (dmg 5) — OVER the cap, so capping it
+                // would be observable; the exemption must leave it at full 5.
                 { "id": "warlord", "name": "Citadel Warlord", "hull": 14, "hull5": 16,
                   "traits": ["Reactor Breach"], "sector": "Inner Keeps",
-                  "weapons": ["Beam Cannon"] },
+                  "weapons": ["Broadside Battery"] },
             ],
             "capitals": [
                 { "id": "warlord", "name": "The Warlord", "sector": "Inner Keeps",
@@ -1052,36 +1064,48 @@ mod tests {
     }
 
     #[test]
-    fn enemy_standard_weapons_capped_at_two() {
-        // Standard low/mid-cd enemy guns are capped per shot (#177): gunboat's
-        // Beam Cannon (cd3) 4->2 and Broadside Battery (cd4) 5->2, monitor's Pulse
-        // Laser (cd0) 3->2. Each capped mount points at the private `__enemy`
-        // variant (base name/arc preserved).
+    fn enemy_standard_weapons_land_in_2_to_4_band() {
+        // Re-tune (cap 4): a standard enemy gun's per-shot lands in the 2-4 band.
+        // At cap 4 only OVER-cap guns get a `__enemy` variant: gunboat's Broadside
+        // Battery (5 -> 4). Already-in-band guns keep their base id (no variant):
+        // gunboat's Beam Cannon (4), monitor's Pulse Laser (3). The exempt railgun
+        // is checked separately.
         let cat = load_from_bytes(&cap_test_catalog_bytes()).expect("catalog loads");
+
+        let band_ok = |d: i32| (2..=ENEMY_DAMAGE_CAP).contains(&d);
 
         for (enemy, cell) in [("gunboat", 2usize), ("monitor", 4)] {
             let ship = enemy_ship_from_catalog(&cat, &spawn_at(enemy, cell))
                 .unwrap_or_else(|| panic!("{enemy} in catalog"));
             for m in &ship.mounts {
-                // Only the capped (non-exempt, over-cap) mounts carry the suffix;
-                // the exempt railgun keeps its base id and is checked separately.
-                if m.weapon.ends_with(ENEMY_CAPPED_SUFFIX) {
-                    let dmg = mount_damage(&cat, &m.weapon).unwrap_or_else(|| {
-                        panic!("{enemy} mount `{}` is a DAMAGE action", m.weapon)
-                    });
+                // Skip the cd-exempt alpha (railgun) — it intentionally exceeds 4.
+                let Some(action) = cat.actions.iter().find(|a| a.id == m.weapon) else {
+                    continue;
+                };
+                if action.cost.cooldown_max >= ENEMY_DAMAGE_CAP_CD_EXEMPT {
+                    continue;
+                }
+                if let Some(dmg) = direct_damage_amount(action) {
                     assert!(
-                        dmg <= ENEMY_DAMAGE_CAP,
-                        "{enemy} weapon `{}` must deal <= {ENEMY_DAMAGE_CAP}, got {dmg}",
+                        band_ok(dmg),
+                        "{enemy} standard weapon `{}` per-shot {dmg} must be in 2..={ENEMY_DAMAGE_CAP}",
                         m.weapon,
                     );
                 }
             }
         }
 
-        // Concretely: every standard gun resolved to its capped variant at <= 2.
-        assert_eq!(mount_damage(&cat, "beam_cannon__enemy"), Some(2));
-        assert_eq!(mount_damage(&cat, "broadside_battery__enemy"), Some(2));
-        assert_eq!(mount_damage(&cat, "pulse_laser__enemy"), Some(2));
+        // Concretely: the over-cap broadside_battery (5) caps to 4 (a `__enemy`
+        // variant); the in-band beam_cannon (4) + pulse_laser (3) get NO variant.
+        assert_eq!(mount_damage(&cat, "broadside_battery__enemy"), Some(4));
+        assert!(
+            cat.actions.iter().all(|a| a.id != "beam_cannon__enemy"),
+            "beam_cannon (4) is already <= cap 4 — no capped variant",
+        );
+        assert!(
+            cat.actions.iter().all(|a| a.id != "pulse_laser__enemy"),
+            "pulse_laser (3) is already <= cap 4 — no capped variant",
+        );
     }
 
     #[test]
@@ -1115,22 +1139,23 @@ mod tests {
     #[test]
     fn capital_enemy_weapons_are_exempt() {
         // Bruce ruling (#177): capitals/bosses keep full damage. The dual-listed
-        // `warlord` (in both enemies[] and capitals[]) mounts Beam Cannon (cd3,
-        // dmg4 — a STANDARD gun that WOULD be capped on a regular enemy), but as a
-        // capital it stays at full 4 and its BASE id (no `__enemy` variant).
+        // `warlord` (in both enemies[] and capitals[]) mounts Broadside Battery
+        // (dmg 5 — OVER the cap of 4, so a regular enemy WOULD cap it to a
+        // `broadside_battery__enemy` at 4). As a capital it stays at full 5 and its
+        // BASE id, proving the capital-skip (not just an already-in-band weapon).
         let cat = load_from_bytes(&cap_test_catalog_bytes()).expect("catalog loads");
         let warlord =
             enemy_ship_from_catalog(&cat, &spawn_at("warlord", 2)).expect("warlord in catalog");
 
-        let bc = warlord
+        let bb = warlord
             .mounts
             .iter()
-            .find(|m| m.weapon == "beam_cannon")
-            .expect("capital warlord keeps beam_cannon at its BASE id (not capped)");
+            .find(|m| m.weapon == "broadside_battery")
+            .expect("capital warlord keeps broadside_battery at its BASE id (not capped)");
         assert_eq!(
-            mount_damage(&cat, &bc.weapon),
-            Some(4),
-            "a capital's standard gun keeps full damage (beam_cannon 4, uncapped)",
+            mount_damage(&cat, &bb.weapon),
+            Some(5),
+            "a capital's over-cap gun keeps FULL damage (broadside_battery 5, uncapped)",
         );
     }
 
