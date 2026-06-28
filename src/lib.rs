@@ -60,6 +60,10 @@
 //!   three Signature actions; the `ClassDefs` are exposed via
 //!   `placeholder_classes()` for catalog seeding. Input wiring deferred
 //!   per task #62's "just have the Action defs in place."
+//! - [`effects`] — serde schema for VFX effect data ([`effects::EffectCatalog`]
+//!   / [`effects::EffectDef`]): the shared bridge the VFX editor and the game
+//!   both read. Data-only, non-gated; mirrors the constants in the `vfx` module
+//!   and its `Default`s reproduce them exactly (behavior-identical until edited).
 //! - [`save`] — JSON (`serde_json`) save/load for the per-run state
 //!   ([`types::Run`]). Methods on `Run`: `save_to_disk(path)`,
 //!   `load_from_disk(path)`, `delete_save(path)`. Path is the caller's
@@ -92,6 +96,7 @@ pub mod cards;
 pub mod catalog;
 pub mod catalog_canonical;
 pub mod classes;
+pub mod effects;
 pub mod geometry;
 pub mod geometry2d;
 pub mod grid;
