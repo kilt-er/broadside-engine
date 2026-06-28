@@ -2519,15 +2519,36 @@ impl Gfx {
                     );
                     self.queue.submit(std::iter::once(enc.finish()));
 
-                    // 2) Blit the posterized output onto this ship's lane quad
-                    //    (UN-rotated — the nose-aim lives in the 3D yaw, the hull
-                    //    stays flat on the grid). Load (don't clear) so earlier
-                    //    scene segments survive.
+                    // 2) Blit the posterized output onto this ship's lane quad.
+                    //    (#186 Bruce) ROLL the blit quad about the cell centre so the
+                    //    hull's long axis is screen-PARALLEL to its column's lane lines
+                    //    as they converge to the VP ("clearly parallel with the lane
+                    //    lines"). The roll is a pure 2-D screen rotation of the finished
+                    //    hull sprite — the ground pose stays the clean cardinal facing
+                    //    (chase_cam_ground_yaw_deg), so facing reads correctly while the
+                    //    on-screen silhouette aligns with the lane. N/S lean; E/W = 0
+                    //    (horizontal). The loft camera can't do this via ground yaw (its
+                    //    shallow chase pitch caps screen-tilt far short of the steep lane
+                    //    slopes) — see loft_gpu::loft_blit_roll_deg.
+                    let roll =
+                        crate::loft_gpu::loft_blit_roll_deg(q.aim_at, q.facing_yaw_deg, &cfg);
+                    let (p0, p1, p2, p3) = if roll.abs() < 1e-4 {
+                        (q.p0, q.p1, q.p2, q.p3)
+                    } else {
+                        let (s, c) = roll.to_radians().sin_cos();
+                        let piv = q.aim_at;
+                        // CW rotation in y-down screen space about the cell centre.
+                        let rot = |p: [f32; 2]| {
+                            let (dx, dy) = (p[0] - piv[0], p[1] - piv[1]);
+                            [piv[0] + dx * c - dy * s, piv[1] + dx * s + dy * c]
+                        };
+                        (rot(q.p0), rot(q.p1), rot(q.p2), rot(q.p3))
+                    };
                     let qu = LoftQuadUniform {
-                        p0: q.p0,
-                        p1: q.p1,
-                        p2: q.p2,
-                        p3: q.p3,
+                        p0,
+                        p1,
+                        p2,
+                        p3,
                         // (#76 scene-res) px→NDC over the LIVE offscreen size so the
                         // loft dest-quad lands on the right cell at any scene res.
                         px_to_ndc: [2.0 / scene_w() as f32, 2.0 / scene_h() as f32],
