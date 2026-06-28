@@ -101,11 +101,11 @@ pub fn load_from_bytes(bytes: &[u8]) -> Result<Catalog, LoadError> {
     // 2-D bands from the 1-D `band` for any action still missing them, so the
     // silent-inert bug can't recur regardless of which shape was loaded.
     normalize_2d_bands(&mut catalog);
-    // #177: cap the DAMAGE of the early-game ("starter") enemies' weapons to
-    // STARTER_DAMAGE_CAP so the opening sectors aren't lethal in ~2 hits. Runs on
-    // BOTH load shapes here (the single chokepoint), so every caller gets the
-    // capped enemies + capped action defs for free via `install_catalog_actions`.
-    cap_starter_enemy_weapons(&mut catalog);
+    // #177: cap every enemy weapon's per-shot DAMAGE to ENEMY_DAMAGE_CAP (except
+    // very-long-cooldown alpha abilities) so the player isn't killed in ~2 hits.
+    // Runs on BOTH load shapes here (the single chokepoint), so every caller gets
+    // the capped enemies + capped action defs for free via `install_catalog_actions`.
+    cap_enemy_weapon_damage(&mut catalog);
     Ok(catalog)
 }
 
@@ -181,60 +181,79 @@ pub(crate) fn expand_band_2d(b: crate::types::RangeBand) -> Vec<crate::grid::Ran
 }
 
 /* =========================================================================
- * #177 — starter-enemy damage cap.
+ * #177 — enemy per-shot damage cap (with a very-long-cooldown exception).
  *
- * Bruce playtest: the opening-sector enemies kill in ~2 hits. Their weapons'
- * DAMAGE comes from the SHARED catalog action (`pulse_laser` -> 3, `beam_cannon`
- * -> 4, `broadside_battery` -> 5 via the loader's heat-derived `inflate_effect`),
- * and those same action ids are the PLAYER's weapons — so the damage can't be
- * lowered on the shared action without also nerfing the player.
+ * Bruce ruling (refined): enemy weapons should deal AT MOST 1-2 damage PER SHOT,
+ * EXCEPT very-long-cooldown abilities (a big telegraphed alpha hit may exceed
+ * the cap). The player was dying in ~2 hits.
  *
- * Fix: at load, give each starter enemy a PRIVATE capped copy of any direct-
- * DAMAGE weapon. The copy keeps the base action's name / archetype / targeting /
- * arc / cost (so the HUD + AI behave identically) and only differs in `id`
- * (`<base>__starter`) and the DAMAGE amount (clamped to STARTER_DAMAGE_CAP). The
- * enemy's weapon ref is rewritten to the capped id; the player never references
- * it, so the player's loadout is untouched. Ordnance weapons (e.g. the Picket's
- * Missile Salvo) carry their damage on the spawned projectile, not the launcher
- * action, and that projectile already deals <= the cap (see
- * `input::spawn_ordnance`), so they need no change here.
+ * The per-shot number a gun deals is its `Effect::DAMAGE` amount run through the
+ * integer `band_falloff` (>=1) minus shield soak — falloff only ever REDUCES the
+ * authored amount, so clamping the authored amount at <=2 caps the per-shot at
+ * <=2. The DAMAGE amount lives on the SHARED catalog action (`pulse_laser` -> 3,
+ * `beam_cannon` -> 4, `broadside_battery` -> 5 via the loader's heat-derived
+ * `inflate_effect`), and those ids are ALSO the PLAYER's weapons — so the amount
+ * can't be lowered on the shared action without nerfing the player.
+ *
+ * Fix: at load, give EVERY enemy a PRIVATE capped copy of any direct-DAMAGE
+ * weapon whose amount exceeds the cap AND whose cooldown is below the
+ * "very-long" threshold. The copy keeps the base action's name / archetype /
+ * targeting / arc / cost (so the HUD + AI behave identically) and only differs in
+ * `id` (`<base>__enemy`) and the DAMAGE amount (clamped to [`ENEMY_DAMAGE_CAP`]).
+ * The enemy's weapon ref is rewritten to the capped id; the player never
+ * references it, so the player's loadout is untouched.
+ *
+ * Exceptions (left at full damage, base id):
+ * - **very-long-cooldown weapons** (`cd >= `[`ENEMY_DAMAGE_CAP_CD_EXEMPT`]): the
+ *   alpha-strike archetype (e.g. `railgun_broadside` cd 6, `particle_lance` cd 5)
+ *   — a rare, telegraphed big hit is the intended counter-pressure, not the
+ *   "dying to chip" problem. Standard low/mid-cd guns (`pulse_laser` cd 0,
+ *   `beam_cannon` cd 3, `broadside_battery` cd 4) are capped.
+ * - **ordnance** (e.g. Missile Salvo / Torpedo): carry their damage on the
+ *   spawned projectile (`input::spawn_ordnance`), not the launcher action, so the
+ *   launcher has no direct DAMAGE to cap; the projectile damage is a separate
+ *   table (already low for the starter ordnance). Out of scope for this pass.
  * ====================================================================== */
 
-/// The most damage an early-game ("starter") enemy weapon may deal (#177,
-/// Bruce ruling: "at most 1-2"). Bruce-tunable.
-const STARTER_DAMAGE_CAP: i32 = 2;
+/// The most damage a standard (non-exempt) enemy weapon may deal per shot (#177,
+/// Bruce ruling: "1-2, max, per shot"). Bruce-tunable.
+const ENEMY_DAMAGE_CAP: i32 = 2;
 
-/// Suffix marking a private, damage-capped weapon variant minted for a starter
-/// enemy (#177). The variant keeps the base action's display name, so it must be
+/// Cooldown (`Action.cost.cooldown_max`) at or above which a weapon is EXEMPT
+/// from [`ENEMY_DAMAGE_CAP`] — a "very-long-cooldown ability" that may deal a
+/// big telegraphed hit (#177 exception). Chosen so the alpha-strike guns
+/// (`particle_lance` cd 5, `railgun_broadside` cd 6) keep full damage while the
+/// sustained/standard guns (`pulse_laser` cd 0, `point_defense` cd 2,
+/// `beam_cannon` cd 3, `broadside_battery`/`scatter_laser` cd 4) are capped.
+/// Bruce-tunable.
+const ENEMY_DAMAGE_CAP_CD_EXEMPT: i32 = 5;
+
+/// Suffix marking a private, damage-capped weapon variant minted for an enemy
+/// (#177). The variant keeps the base action's display name, so it must be
 /// resolved by ID only — [`action_name_to_id`] excludes any id carrying this
 /// suffix so the variant never wins a display-name lookup.
-const STARTER_CAPPED_SUFFIX: &str = "__starter";
+const ENEMY_CAPPED_SUFFIX: &str = "__enemy";
 
-/// `true` if `id` is a private starter-capped weapon variant ([`STARTER_CAPPED_SUFFIX`]).
-fn is_starter_capped_id(id: &str) -> bool {
-    id.ends_with(STARTER_CAPPED_SUFFIX)
+/// `true` if `id` is a private enemy-capped weapon variant ([`ENEMY_CAPPED_SUFFIX`]).
+fn is_enemy_capped_id(id: &str) -> bool {
+    id.ends_with(ENEMY_CAPPED_SUFFIX)
 }
 
-/// The early-game enemy ids whose weapons are damage-capped (#177). These are the
-/// intro enemies of the first three combat sectors (Drift Belt / Ion Reefs /
-/// Ashen Expanse) — the "weak early-game" ships the player meets first. Capitals
-/// and every mid/late-game enemy are deliberately excluded (their challenge is
-/// intended). Keyed by the catalog `EnemyDef.id`.
-const STARTER_ENEMY_IDS: &[&str] = &["skiff", "lancer", "gunboat", "picket"];
-
-/// Give the [`STARTER_ENEMY_IDS`] enemies private, damage-capped copies of their
-/// direct-DAMAGE weapons (#177). See the module section comment above for the why.
+/// Give EVERY enemy private, damage-capped copies of their over-cap, non-exempt
+/// direct-DAMAGE weapons (#177). See the module section comment above for the why
+/// + the exception list.
 ///
-/// For each starter enemy weapon that resolves to a catalog action carrying a
-/// direct `Effect::DAMAGE` whose amount exceeds [`STARTER_DAMAGE_CAP`]:
-/// 1. ensure a capped clone exists in `catalog.actions` under id `<base>__starter`
+/// For each enemy weapon that resolves to a catalog action carrying a direct
+/// `Effect::DAMAGE` whose amount exceeds [`ENEMY_DAMAGE_CAP`] AND whose
+/// `cooldown_max` is below [`ENEMY_DAMAGE_CAP_CD_EXEMPT`]:
+/// 1. ensure a capped clone exists in `catalog.actions` under id `<base>__enemy`
 ///    (idempotent — shared across enemies that mount the same base weapon), and
 /// 2. rewrite the enemy's weapon ref to that capped id.
 ///
-/// Weapons that already deal `<= cap` (or carry no direct DAMAGE — ordnance,
-/// movement, defensive) are left pointing at the base id: no capped copy is made,
-/// so the catalog isn't littered with no-op variants.
-fn cap_starter_enemy_weapons(catalog: &mut Catalog) {
+/// Weapons that already deal `<= cap`, carry no direct DAMAGE (ordnance /
+/// movement / defensive), or are cooldown-exempt are left pointing at the base id:
+/// no capped copy is made, so the catalog isn't littered with no-op variants.
+fn cap_enemy_weapon_damage(catalog: &mut Catalog) {
     // Resolve weapon refs (display name OR id) to action ids up front, using an
     // immutable snapshot of the name->id map (built before we start pushing the
     // capped variants, which only add new ids and never shadow a base name).
@@ -243,13 +262,10 @@ fn cap_starter_enemy_weapons(catalog: &mut Catalog) {
     // Collect the capped action defs to append after we finish reading + rewriting
     // `enemies` (can't push into `catalog.actions` while iterating the same
     // catalog immutably for the base-action lookup). Keyed by capped id so the
-    // same base weapon shared by two starter enemies yields ONE variant.
+    // same base weapon shared by two enemies yields ONE variant.
     let mut capped_defs: HashMap<String, crate::types::Action> = HashMap::new();
 
     for def in &mut catalog.enemies {
-        if !STARTER_ENEMY_IDS.contains(&def.id.as_str()) {
-            continue;
-        }
         for weapon in &mut def.weapons {
             let Some(base_id) = resolve_weapon_id(weapon, &name_to_id) else {
                 continue; // unresolved name — synthesis already logs + skips it
@@ -263,15 +279,20 @@ fn cap_starter_enemy_weapons(catalog: &mut Catalog) {
             let Some(base_dmg) = direct_damage_amount(base_action) else {
                 continue; // no direct DAMAGE (ordnance / utility) — nothing to cap
             };
-            if base_dmg <= STARTER_DAMAGE_CAP {
+            if base_dmg <= ENEMY_DAMAGE_CAP {
                 continue; // already within the cap — leave the ref on the base id
             }
+            // Very-long-cooldown alpha weapons are EXEMPT: a big telegraphed hit
+            // is intended, not the chip-death problem.
+            if base_action.cost.cooldown_max >= ENEMY_DAMAGE_CAP_CD_EXEMPT {
+                continue;
+            }
             // Need a capped variant. Build it once (idempotent across enemies).
-            let capped_id = format!("{base_id}{STARTER_CAPPED_SUFFIX}");
+            let capped_id = format!("{base_id}{ENEMY_CAPPED_SUFFIX}");
             capped_defs.entry(capped_id.clone()).or_insert_with(|| {
                 let mut a = base_action.clone();
                 a.id.clone_from(&capped_id);
-                cap_direct_damage(&mut a, STARTER_DAMAGE_CAP);
+                cap_direct_damage(&mut a, ENEMY_DAMAGE_CAP);
                 a
             });
             // Point the enemy's mount at the capped id (snake_case, so the later
@@ -281,7 +302,7 @@ fn cap_starter_enemy_weapons(catalog: &mut Catalog) {
     }
 
     // Append the new capped actions (skip any id a catalog already defines, so a
-    // future explicit `*__starter` entry in the export wins over the synthesized
+    // future explicit `*__enemy` entry in the export wins over the synthesized
     // one). insert-if-absent semantics, mirroring `install_catalog_actions`.
     for (id, action) in capped_defs {
         if !catalog.actions.iter().any(|a| a.id == id) {
@@ -518,19 +539,19 @@ fn enemy_shield_default() -> ShieldProfile {
 /// for class set1/set2 normalization, but at synthesis time so it works
 /// whether the catalog arrived via the canonical or the strict load path.
 ///
-/// #177: the private `__starter` damage-capped variants (added by
-/// [`cap_starter_enemy_weapons`]) deliberately keep the BASE display name (so the
+/// #177: the private `__enemy` damage-capped variants (added by
+/// [`cap_enemy_weapon_damage`]) deliberately keep the BASE display name (so the
 /// HUD still reads "Pulse Laser"), so they would COLLIDE on the name key with
-/// their base action. They are resolved by ID only (the starter enemies'
-/// `weapons` were rewritten to the capped id), never by display name, so they
-/// are excluded here — otherwise the last-inserted variant would win the name
-/// key and silently re-map EVERY enemy's "Pulse Laser" to the capped copy
-/// (nerfing non-starter and capital enemies too).
+/// their base action. They are resolved by ID only (the enemies' `weapons` were
+/// rewritten to the capped id), never by display name, so they are excluded here
+/// — otherwise the last-inserted variant would win the name key and silently
+/// re-map a display-name lookup to the capped copy (and, on a second load pass,
+/// double-suffix the variant).
 fn action_name_to_id(catalog: &Catalog) -> HashMap<String, String> {
     catalog
         .actions
         .iter()
-        .filter(|a| !is_starter_capped_id(&a.id))
+        .filter(|a| !is_enemy_capped_id(&a.id))
         .map(|a| (a.name.to_lowercase(), a.id.clone()))
         .collect()
 }
@@ -827,7 +848,15 @@ mod tests {
         }
         let cat = load_from_path(path).expect("real catalog loads");
 
-        // monitor: hull 5, Pursuit, Pulse Laser.
+        // Helper: an enemy mounts the weapon `base` (possibly via its #177 capped
+        // `__enemy` variant — both resolve from the same display name).
+        let mounts_weapon = |ship: &Ship, base: &str| {
+            ship.mounts
+                .iter()
+                .any(|m| m.weapon == base || m.weapon == format!("{base}{ENEMY_CAPPED_SUFFIX}"))
+        };
+
+        // monitor: hull 5, Pursuit, Pulse Laser (capped to pulse_laser__enemy by #177).
         let monitor =
             enemy_ship_from_catalog(&cat, &spawn_at("monitor", 4)).expect("monitor in catalog");
         assert_eq!(monitor.hull, 5);
@@ -837,12 +866,12 @@ mod tests {
             monitor.traits
         );
         assert!(
-            monitor.mounts.iter().any(|m| m.weapon == "pulse_laser"),
-            "monitor should mount pulse_laser, got {:?}",
+            mounts_weapon(&monitor, "pulse_laser"),
+            "monitor should mount pulse_laser (or its #177 __enemy cap), got {:?}",
             monitor.mounts.iter().map(|m| &m.weapon).collect::<Vec<_>>()
         );
 
-        // voidrunner: Agile + beam_cannon + afterburner.
+        // voidrunner: Agile + beam_cannon (capped) + afterburner.
         let voidrunner = enemy_ship_from_catalog(&cat, &spawn_at("voidrunner", 6))
             .expect("voidrunner in catalog");
         assert!(
@@ -851,8 +880,8 @@ mod tests {
             voidrunner.traits
         );
         assert!(
-            voidrunner.mounts.iter().any(|m| m.weapon == "beam_cannon"),
-            "voidrunner should mount beam_cannon"
+            mounts_weapon(&voidrunner, "beam_cannon"),
+            "voidrunner should mount beam_cannon (or its #177 __enemy cap)"
         );
 
         // lancer: Burn-Hard.
@@ -944,13 +973,14 @@ mod tests {
         );
     }
 
-    /* ---- #177: starter-enemy damage cap --------------------------------- */
+    /* ---- #177: enemy per-shot damage cap (with cd exemption) ------------ */
 
-    /// A canonical-shape catalog with one STARTER enemy (gunboat: Beam Cannon 4 +
-    /// Broadside Battery 5) and one NON-starter (monitor: Railgun Broadside 6).
-    /// Loaded via `load_from_bytes` so the post-parse `cap_starter_enemy_weapons`
-    /// pass runs (the embedded-`from_canonical_value` tests above deliberately do
-    /// NOT run it).
+    /// A canonical-shape catalog with one enemy mounting standard low/mid-cd guns
+    /// (gunboat: Beam Cannon cd3/dmg4 + Broadside Battery cd4/dmg5) and one
+    /// mounting a very-long-cd alpha gun PLUS a cheap gun (monitor: Pulse Laser
+    /// cd0/dmg3 + Railgun Broadside cd6/dmg6). Loaded via `load_from_bytes` so the
+    /// post-parse `cap_enemy_weapon_damage` pass runs (the embedded
+    /// `from_canonical_value` tests above deliberately do NOT run it).
     fn cap_test_catalog_bytes() -> Vec<u8> {
         serde_json::to_vec(&serde_json::json!({
             "meta": { "schema": "x", "lane": [5], "newAxes": [], "bands": ["close"] },
@@ -975,7 +1005,7 @@ mod tests {
                   "weapons": ["Beam Cannon", "Broadside Battery"] },
                 { "id": "monitor", "name": "Monitor", "hull": 5, "hull5": 7,
                   "traits": ["Pursuit"], "sector": "Spindle Port",
-                  "weapons": ["Railgun Broadside"] },
+                  "weapons": ["Pulse Laser", "Railgun Broadside"] },
             ],
             "patrols": [],
         }))
@@ -993,36 +1023,43 @@ mod tests {
     }
 
     #[test]
-    fn starter_enemy_weapons_capped_at_two() {
-        // The gunboat is a starter (#177). After load, each of its mounts resolves
-        // to a capped action dealing <= STARTER_DAMAGE_CAP (Beam Cannon 4 -> 2,
-        // Broadside Battery 5 -> 2). The mount weapon ids point at the private
-        // `__starter` variants, which keep the base name/arc.
+    fn enemy_standard_weapons_capped_at_two() {
+        // Standard low/mid-cd enemy guns are capped per shot (#177): gunboat's
+        // Beam Cannon (cd3) 4->2 and Broadside Battery (cd4) 5->2, monitor's Pulse
+        // Laser (cd0) 3->2. Each capped mount points at the private `__enemy`
+        // variant (base name/arc preserved).
         let cat = load_from_bytes(&cap_test_catalog_bytes()).expect("catalog loads");
-        let gunboat =
-            enemy_ship_from_catalog(&cat, &spawn_at("gunboat", 2)).expect("gunboat in catalog");
 
-        for m in &gunboat.mounts {
-            let dmg = mount_damage(&cat, &m.weapon).unwrap_or_else(|| {
-                panic!("gunboat mount `{}` resolves to a DAMAGE action", m.weapon)
-            });
-            assert!(
-                dmg <= STARTER_DAMAGE_CAP,
-                "starter gunboat weapon `{}` must deal <= {STARTER_DAMAGE_CAP}, got {dmg}",
-                m.weapon,
-            );
-            assert!(
-                m.weapon.ends_with("__starter"),
-                "the capped mount id should be the private `__starter` variant, got `{}`",
-                m.weapon,
-            );
+        for (enemy, cell) in [("gunboat", 2usize), ("monitor", 4)] {
+            let ship = enemy_ship_from_catalog(&cat, &spawn_at(enemy, cell))
+                .unwrap_or_else(|| panic!("{enemy} in catalog"));
+            for m in &ship.mounts {
+                // Only the capped (non-exempt, over-cap) mounts carry the suffix;
+                // the exempt railgun keeps its base id and is checked separately.
+                if m.weapon.ends_with(ENEMY_CAPPED_SUFFIX) {
+                    let dmg = mount_damage(&cat, &m.weapon).unwrap_or_else(|| {
+                        panic!("{enemy} mount `{}` is a DAMAGE action", m.weapon)
+                    });
+                    assert!(
+                        dmg <= ENEMY_DAMAGE_CAP,
+                        "{enemy} weapon `{}` must deal <= {ENEMY_DAMAGE_CAP}, got {dmg}",
+                        m.weapon,
+                    );
+                }
+            }
         }
+
+        // Concretely: every standard gun resolved to its capped variant at <= 2.
+        assert_eq!(mount_damage(&cat, "beam_cannon__enemy"), Some(2));
+        assert_eq!(mount_damage(&cat, "broadside_battery__enemy"), Some(2));
+        assert_eq!(mount_damage(&cat, "pulse_laser__enemy"), Some(2));
     }
 
     #[test]
-    fn non_starter_enemy_weapons_keep_full_damage() {
-        // The monitor is NOT a starter — its Railgun Broadside keeps full damage
-        // (broadside heat 4 -> amount 6 via inflate) and the base id (no variant).
+    fn enemy_very_long_cooldown_weapon_is_exempt() {
+        // The cd-exemption (#177): monitor's Railgun Broadside (cd 6 >=
+        // ENEMY_DAMAGE_CAP_CD_EXEMPT) keeps FULL damage (heat 4 -> 6) and its BASE
+        // id — a big telegraphed alpha hit is intended, not the chip-death problem.
         let cat = load_from_bytes(&cap_test_catalog_bytes()).expect("catalog loads");
         let monitor =
             enemy_ship_from_catalog(&cat, &spawn_at("monitor", 4)).expect("monitor in catalog");
@@ -1031,19 +1068,26 @@ mod tests {
             .mounts
             .iter()
             .find(|m| m.weapon == "railgun_broadside")
-            .expect("monitor mounts railgun_broadside at its BASE id (not capped)");
+            .expect("monitor mounts railgun_broadside at its BASE id (cd-exempt, not capped)");
         assert_eq!(
             mount_damage(&cat, &rail.weapon),
             Some(6),
-            "non-starter monitor's railgun keeps full damage (heat 4 -> 6)",
+            "a very-long-cooldown weapon keeps full damage (heat 4 -> 6)",
+        );
+        // No capped variant was minted for the exempt weapon.
+        assert!(
+            cat.actions
+                .iter()
+                .all(|a| a.id != format!("railgun_broadside{ENEMY_CAPPED_SUFFIX}")),
+            "no __enemy variant should exist for the cd-exempt railgun",
         );
     }
 
     #[test]
-    fn capping_starter_does_not_touch_the_shared_base_weapon() {
-        // The base `broadside_battery` / `beam_cannon` actions (the PLAYER's
-        // weapons share these ids) must keep their full damage — the cap only
-        // adds private `__starter` variants. This is the "do NOT touch player
+    fn capping_enemy_does_not_touch_the_shared_base_weapon() {
+        // The base `broadside_battery` / `beam_cannon` / `pulse_laser` actions (the
+        // PLAYER's weapons share these ids) must keep their full damage — the cap
+        // only adds private `__enemy` variants. This is the "do NOT touch player
         // weapons" guarantee made structural.
         let cat = load_from_bytes(&cap_test_catalog_bytes()).expect("catalog loads");
         assert_eq!(
@@ -1056,13 +1100,15 @@ mod tests {
             Some(4),
             "base beam_cannon (player weapon) unchanged at 4",
         );
-        // The capped variants exist alongside, at the cap.
-        assert_eq!(mount_damage(&cat, "broadside_battery__starter"), Some(2));
-        assert_eq!(mount_damage(&cat, "beam_cannon__starter"), Some(2));
+        assert_eq!(
+            mount_damage(&cat, "pulse_laser"),
+            Some(3),
+            "base pulse_laser (player weapon) unchanged at 3",
+        );
     }
 
     #[test]
-    fn capped_starter_variant_keeps_base_name_and_arc() {
+    fn capped_enemy_variant_keeps_base_name_and_arc() {
         // The HUD reads the action's `name` + the mount's `arc`; the capped variant
         // must mirror the base so the enemy panel still says "Broadside Battery"
         // and the broadside still bears on its flanks.
@@ -1075,7 +1121,7 @@ mod tests {
         let capped = cat
             .actions
             .iter()
-            .find(|a| a.id == "broadside_battery__starter")
+            .find(|a| a.id == format!("broadside_battery{ENEMY_CAPPED_SUFFIX}"))
             .expect("capped variant present");
         assert_eq!(capped.name, base.name, "capped keeps the display name");
         assert_eq!(
