@@ -992,6 +992,18 @@ struct App {
     /// emitted into the draw list; cleared on restart. Later phases (muzzle flash,
     /// impact debris) reuse the same pool.
     particles: broadside_engine::vfx::ParticlePool,
+    /// (#178 step 3) Per-PROJECTILE slide anchor: projectile id -> (cell it came
+    /// FROM, when the step happened). Planted when the resolver advances a
+    /// projectile's `pos` (diffed against the prev frame, the #79 ship-tween
+    /// pattern for ordnance); `tween_2d` eases the SCREEN position from the old cell
+    /// to the new one over `TWEEN_DURATION_MS` so the torpedo SLIDES cell-to-cell.
+    /// Pruned when the projectile is gone (hit / off-board).
+    proj_anchors: HashMap<String, (Pos, Instant)>,
+    /// (#178 step 3) Exhaust trail particle pool — short-lived warm embers seeded
+    /// each frame behind a moving torpedo (its interpolated STERN), flickering out
+    /// the back. Separate from `particles` (death bursts) so the two never interfere;
+    /// advanced on the same measured wall-clock dt, emitted into the draw list.
+    exhaust: broadside_engine::vfx::ParticlePool,
     /// (#101/#106) Per-ship hull-DROP record: ship id -> (amount lost, when).
     /// Recorded on a combat resolve by diffing pre-vs-current hull (the 2-D analog
     /// of the player's `hit_flash`, but for EVERY ship). The redraw fades each entry
@@ -1058,6 +1070,8 @@ impl App {
             hit_flash: 0.0,
             kill_bursts: Vec::new(),
             particles: broadside_engine::vfx::ParticlePool::new(),
+            proj_anchors: HashMap::new(),
+            exhaust: broadside_engine::vfx::ParticlePool::new(),
             hull_flash: std::collections::HashMap::new(),
             beat_playback: None,
             queue_blocked_flash: None,
@@ -1177,6 +1191,8 @@ impl App {
         self.tween_anchors.clear();
         self.kill_bursts.clear(); // (#90) no stale bursts into the fresh board
         self.particles.clear(); // (#119) no stale explosion particles into the fresh board
+        self.proj_anchors.clear(); // (#178) no stale torpedo slide anchors into the fresh board
+        self.exhaust.clear(); // (#178) no stale exhaust embers into the fresh board
         self.hull_flash.clear(); // (#101) no stale damage flashes into the fresh board
         self.beat_playback = None; // (#133) abort any in-flight volley playback on restart
         self.queue_blocked_flash = None; // (#136) clear any recharging cue on restart
@@ -1343,6 +1359,26 @@ impl App {
                         eased,
                     ),
                 },
+            );
+        }
+        // (#178 step 3) PROJECTILE slide: ease each in-flight torpedo's SCREEN centre
+        // from the cell it came from to its current cell over the same window, so it
+        // glides cell-to-cell instead of snapping. Linear (constant velocity) reads
+        // better for a travelling round than the ship ease-out.
+        for proj in &self.board.ordnance {
+            let Some(&(from_pos, started_at)) = self.proj_anchors.get(&proj.id) else {
+                continue;
+            };
+            let elapsed = now.duration_since(started_at).as_secs_f32() * 1000.0;
+            let t = (elapsed / dur_ms).clamp(0.0, 1.0);
+            let from_c = grid_cell_quad(from_pos, cfg).center;
+            let to_c = grid_cell_quad(proj.pos, cfg).center;
+            tw.proj_centers.insert(
+                proj.id.clone(),
+                [
+                    from_c[0] + (to_c[0] - from_c[0]) * t,
+                    from_c[1] + (to_c[1] - from_c[1]) * t,
+                ],
             );
         }
         tw
@@ -1648,6 +1684,16 @@ impl ApplicationHandler for App {
                 // left the tube). Diffed against the post-resolve ordnance below.
                 let prev_ordnance: std::collections::HashSet<String> =
                     self.board.ordnance.iter().map(|p| p.id.clone()).collect();
+                // (#178 step 3) Ordnance POSITIONS before this turn, so after the
+                // resolver steps each projectile we can plant a slide anchor at the
+                // cell it came FROM (the torpedo then glides cell-to-cell over the
+                // tween window instead of snapping).
+                let prev_proj_pos: HashMap<String, Pos> = self
+                    .board
+                    .ordnance
+                    .iter()
+                    .map(|p| (p.id.clone(), p.pos))
+                    .collect();
                 let changed = apply_intent(
                     intent,
                     &mut self.board,
@@ -1710,6 +1756,20 @@ impl ApplicationHandler for App {
                                 broadside_engine::projector::grid_cell_quad(proj.pos, &pcfg).center;
                             self.particles
                                 .spawn_burst(c, 12, EXPLOSION_PARTICLE_COLOR, 0.30);
+                        }
+                    }
+                    // (#178 step 3) PROJECTILE SLIDE anchors: any projectile whose pos
+                    // STEPPED this turn gets an anchor at the cell it came from, so the
+                    // renderer glides it cell-to-cell over the tween window (the #79
+                    // pattern, for ordnance). Prune anchors for projectiles that are gone
+                    // (hit / off-board) so the map can't leak across a long session.
+                    self.proj_anchors
+                        .retain(|id, _| self.board.ordnance.iter().any(|p| &p.id == id));
+                    for proj in &self.board.ordnance {
+                        if let Some(&from) = prev_proj_pos.get(&proj.id) {
+                            if from != proj.pos {
+                                self.proj_anchors.insert(proj.id.clone(), (from, now));
+                            }
                         }
                     }
                     // (#133) BEAT PLAYBACK: when the player COMMITS a volley of 2+
@@ -1851,6 +1911,48 @@ impl ApplicationHandler for App {
                 // (#119) Advance the explosion particle pool at the same wall-clock dt;
                 // stays empty (cheap no-op) until a ship death seeds a burst.
                 let particles_active = self.particles.advance(dt);
+                // (#178 step 3) EXHAUST TRAIL: for each torpedo still SLIDING (has a live
+                // anchor), seed a few short-lived warm embers at its interpolated STERN
+                // (a bit behind the nose, opposite heading8) so a flickering trail streams
+                // out the back. Cheap (no-op when no ordnance is moving); advanced on the
+                // measured dt + emitted after compose.
+                {
+                    use broadside_engine::grid::Dir8;
+                    let pcfg = scene_projector();
+                    let dur_ms = TWEEN_DURATION_MS as f32;
+                    for proj in &self.board.ordnance {
+                        let Some(&(from_pos, started_at)) = self.proj_anchors.get(&proj.id) else {
+                            continue;
+                        };
+                        let t = (now.duration_since(started_at).as_secs_f32() * 1000.0 / dur_ms)
+                            .clamp(0.0, 1.0);
+                        if t >= 1.0 {
+                            continue; // arrived — no more trail this slide
+                        }
+                        let from_c =
+                            broadside_engine::projector::grid_cell_quad(from_pos, &pcfg).center;
+                        let to_c =
+                            broadside_engine::projector::grid_cell_quad(proj.pos, &pcfg).center;
+                        let cx = from_c[0] + (to_c[0] - from_c[0]) * t;
+                        let cy = from_c[1] + (to_c[1] - from_c[1]) * t;
+                        // STERN = a few px opposite the travel heading (screen-space).
+                        let (hx, hy) = match proj.heading8 {
+                            Dir8::E => (1.0, 0.0),
+                            Dir8::W => (-1.0, 0.0),
+                            Dir8::N => (0.0, -1.0),
+                            Dir8::S => (0.0, 1.0),
+                            Dir8::NE => (0.7, -0.7),
+                            Dir8::NW => (-0.7, -0.7),
+                            Dir8::SE => (0.7, 0.7),
+                            Dir8::SW => (-0.7, 0.7),
+                        };
+                        let stern = [cx - hx * 7.0, cy - hy * 7.0];
+                        // A tiny ember puff each frame — warm, brief, so it flickers out.
+                        self.exhaust
+                            .spawn_burst(stern, 2, [1.0, 0.62, 0.28, 1.0], 0.22);
+                    }
+                }
+                let exhaust_active = self.exhaust.advance(dt);
                 // Free-running animation clock kept advancing for the #67
                 // telegraph spinner / move-arrow / incoming pulse — consumed by
                 // the lane-keyed overlays that are dropped in the #43 pass-1 2-D
@@ -2078,6 +2180,9 @@ impl ApplicationHandler for App {
                     // Already in screen space (spawned via the projector), so it
                     // emits straight into the frame regardless of the live scene res.
                     self.particles.emit(&mut instances);
+                    // (#178 step 3) Torpedo exhaust embers — same screen-space pool,
+                    // emitted over the hulls/ordnance so the trail streams out the stern.
+                    self.exhaust.emit(&mut instances);
                     // (#101) Damage-flash on the lane hull bar of every ship that
                     // took a hit this round (fades over ~0.45s), so even a 1-2 hull
                     // drop visibly pops — paired with the min-size bar clamp so a
@@ -2211,6 +2316,7 @@ impl ApplicationHandler for App {
                     ability_active,
                     flash_active,
                     particles_active,
+                    exhaust_active,
                 );
                 // (#126) TURN-BASED: the world advances ONLY when the player takes a
                 // turn-action (inside apply_intent, on a keypress) — there is no

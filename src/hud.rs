@@ -438,6 +438,13 @@ pub struct VisualShip2d {
 #[derive(Default, Clone, Debug)]
 pub struct Tween2d {
     pub visual: std::collections::HashMap<String, VisualShip2d>,
+    /// (#178 step 3) Per-PROJECTILE interpolated draw centre (screen px), keyed by
+    /// `Projectile::id`. The resolver steps a projectile's `pos` one whole cell per
+    /// turn; the bin eases the SCREEN position between the old and new cell over
+    /// wall-clock (same #79 anchor pattern as ships) and puts the result here, so
+    /// `push_ordnance_2d` draws the torpedo SLIDING cell-to-cell instead of snapping.
+    /// Empty (the default / capture / test path) ⇒ ordnance draws at its cell centre.
+    pub proj_centers: std::collections::HashMap<String, [f32; 2]>,
 }
 
 /// Linear-interpolate two [`crate::projector::CellQuad`]s corner-for-corner (+
@@ -563,7 +570,7 @@ pub fn compose_scene_2d_tweened(
     // their current cell so they're VISIBLY travelling (the 2D path drew none
     // before, so ordnance was invisible mid-flight). Same board state the resolver
     // steps each turn; render-only.
-    push_ordnance_2d(&mut out, board, cfg);
+    push_ordnance_2d(&mut out, board, cfg, tween);
     // Bottom HUD band LAST of all — a screen-space fixed (NOT projected) health
     // bar + large weapon-tile row, drawn on top of everything (Bruce: a fixed
     // centered Shogun-Showdown-style bottom bar so health + abilities always read).
@@ -1306,11 +1313,24 @@ fn push_fire_2d(out: &mut Vec<DrawCommand>, board: &Board, cfg: &ProjectorConfig
 /// perspective. Does NOT change travel timing — the resolver's `advance_projectile_2d`
 /// still steps `pos` one cell per turn; this only renders where it already is.
 /// Drawn over the hulls (after the ship pass) so the projectile reads on top.
-fn push_ordnance_2d(out: &mut Vec<DrawCommand>, board: &Board, cfg: &ProjectorConfig) {
+fn push_ordnance_2d(
+    out: &mut Vec<DrawCommand>,
+    board: &Board,
+    cfg: &ProjectorConfig,
+    tween: &Tween2d,
+) {
     use crate::grid::Dir8;
     for proj in &board.ordnance {
         let q = grid_cell_quad(proj.pos, cfg);
         let scale = q.depth_scale;
+        // (#178 step 3) Draw the torpedo at its wall-clock-interpolated SCREEN centre
+        // (the bin eases it from the previous cell over the lerp window) if the bin
+        // supplied one; else snap to the logical cell centre (capture/test path).
+        let base_center = tween
+            .proj_centers
+            .get(&proj.id)
+            .copied()
+            .unwrap_or(q.center);
         let cell_uv = if proj.kind.contains("missile") {
             atlas::MISSILE
         } else {
@@ -1335,8 +1355,8 @@ fn push_ordnance_2d(out: &mut Vec<DrawCommand>, board: &Board, cfg: &ProjectorCo
         let tint = [t[0], t[1], t[2], 1.0];
         let half_w = (8.0 * scale).clamp(4.0, 10.0);
         let half_h = (4.0 * scale).clamp(2.0, 6.0);
-        // Float just above the cell centre so it reads as flying OVER the grid.
-        let c = [q.center[0], q.center[1] - 6.0 * scale];
+        // Float just above the (interpolated) centre so it reads as flying OVER the grid.
+        let c = [base_center[0], base_center[1] - 6.0 * scale];
         push_sprite(
             out,
             SpriteInstance {
