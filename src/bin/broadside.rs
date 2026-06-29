@@ -1674,6 +1674,18 @@ impl ApplicationHandler for App {
                         }
                         return;
                     }
+                    // (#196 Bruce) `F1` toggles the centered CONTROLS popup —
+                    // listing every player + debug binding. Render-only, no
+                    // gameplay state. F1 verified free in keycode_to_key (asserted
+                    // None in the test below) + all existing raw handlers.
+                    if code == KeyCode::F1 {
+                        let on = broadside_engine::gfx::toggle_controls_popup();
+                        log::info!("controls popup: {}", if on { "ON" } else { "OFF" });
+                        if let Some(win) = self.window.as_ref() {
+                            win.request_redraw();
+                        }
+                        return;
+                    }
                 }
                 let Some(key) = keycode_to_key(code) else {
                     return;
@@ -2366,6 +2378,13 @@ impl ApplicationHandler for App {
                     // actually queued, read live from the board). No-op between encounters.
                     hud::push_enemy_info_panel_2d(&mut instances, &self.board);
                 }
+                // (#196 Bruce) Controls popup — F1 toggles a centered panel
+                // listing every player + debug key. Pushed AFTER all the in-game
+                // HUD overlays so it sits ON TOP (over the menu strip too — it's a
+                // help dialog, the player wants the keys visible). End-state
+                // overlays below still composite over it if the run ends with the
+                // popup open. No-op when off.
+                hud::push_controls_popup(&mut instances);
                 // Push the appropriate demo-state overlay on top.
                 // Compose no longer auto-pushes — the bin owns the
                 // overlay decision since #77.

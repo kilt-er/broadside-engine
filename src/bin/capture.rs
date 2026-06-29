@@ -639,6 +639,12 @@ fn main() {
     if std::env::var("BROADSIDE_ANGLE_OVERLAY").is_ok_and(|v| v != "0") {
         broadside_engine::hud::push_ship_angle_overlay(&mut commands, &board, &cfg);
     }
+    // (#196) BROADSIDE_CONTROLS_POPUP=1 forces the centered controls popup on
+    // (the bin's `F1` toggle) so headless captures can verify the panel layout.
+    if std::env::var("BROADSIDE_CONTROLS_POPUP").is_ok_and(|v| v != "0") {
+        broadside_engine::gfx::set_controls_popup(true);
+    }
+    broadside_engine::hud::push_controls_popup(&mut commands);
     // (#90) VFX-demo kill burst at the destroyed enemy's cell — the bin emits this
     // off its prev-vs-current id diff each frame; here we append it directly so the
     // headless demo shows the post-kill burst.

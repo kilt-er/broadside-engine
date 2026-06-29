@@ -223,6 +223,31 @@ pub fn toggle_angle_overlay() -> bool {
     next
 }
 
+/// (#196 Bruce) Live toggle for the CONTROLS popup — a centered semi-transparent
+/// panel listing every player + debug key, rendered by
+/// [`crate::hud::push_controls_popup`]. OFF by default (no clutter); the bin's
+/// `F1` key flips it via [`toggle_controls_popup`]. Mirrors the [`ANGLE_OVERLAY`]
+/// pattern — plain atomic flag, no signature threads through the render path.
+static CONTROLS_POPUP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Whether the controls popup is currently shown (see [`CONTROLS_POPUP`]).
+pub fn controls_popup_enabled() -> bool {
+    CONTROLS_POPUP.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Flip the controls popup on/off (the `F1` key); returns the new state.
+pub fn toggle_controls_popup() -> bool {
+    let next = !controls_popup_enabled();
+    CONTROLS_POPUP.store(next, std::sync::atomic::Ordering::Relaxed);
+    next
+}
+
+/// Force the controls popup on/off (the capture bin sets it from its env so the
+/// headless shot can verify the popup geometry).
+pub fn set_controls_popup(on: bool) {
+    CONTROLS_POPUP.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// (UNIFY, Bruce order) Live toggle for the UNIFIED camera: the grid AND the 3-D
 /// hulls render through ONE real-perspective camera ([`crate::projector::unified_view_proj`])
 /// instead of the legacy `1/z` fan + separate per-ship loft bake. ON by default
@@ -454,11 +479,13 @@ pub fn prev_scene_res(w: u32, h: u32) -> (u32, u32) {
     }
 }
 
-/// Maximum sprite instances in a frame. 4096 covers a worst-case scene
-/// (lane plate + parallax + 9 ships × ~8 composed sprites + ordnance +
-/// HUD glyphs) with generous headroom. Bumping this only costs one VRAM
-/// allocation; the buffer is reused frame-to-frame.
-const MAX_SPRITES: u64 = 4096;
+/// Maximum sprite instances in a frame. (#196 Bruce) Bumped 4096 → 8192 to
+/// accommodate the F1 controls-popup overlay: 20 lines × ~22 chars × ~10 set
+/// 5x7-font cells/char ≈ 4400 extra sprite instances when the popup is open,
+/// stacked on top of the worst-case scene (~1300 = parallax stars + ships +
+/// HUD glyphs). Bumping this only costs one VRAM allocation; the buffer is
+/// reused frame-to-frame.
+const MAX_SPRITES: u64 = 8192;
 
 /// Maximum polygon instances in a frame. A 9-cell lane plate plus 9 ships ×
 /// 2 face polygons = ~27. 256 is plenty.

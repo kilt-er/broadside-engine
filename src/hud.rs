@@ -3829,6 +3829,119 @@ pub fn push_controls_overlay(out: &mut Vec<DrawCommand>) {
     }
 }
 
+/// (#196 Bruce) Centered semi-transparent CONTROLS POPUP — the FULL key reference
+/// that toggles with `F1`. Two labeled sections (PLAYER + DEBUG/CAMERA). Distinct
+/// from [`push_controls_overlay`] (the small persistent corner legend); this is
+/// the big "show me everything" panel Bruce hits when he forgets a binding.
+///
+/// Renders nothing if [`crate::gfx::controls_popup_enabled`] is false, so the bin
+/// can call it unconditionally. Render-only — no gameplay state touched.
+///
+/// Layout: centered on the LIVE scene size. Dark panel background + cyan title
+/// bar; PLAYER section left-aligned, DEBUG section to its right. The lists below
+/// are the AUTHORITATIVE controls table — when you wire a new key, update this.
+pub fn push_controls_popup(out: &mut Vec<DrawCommand>) {
+    if !crate::gfx::controls_popup_enabled() {
+        return;
+    }
+    const PANEL_BG: [f32; 4] = [0.04, 0.05, 0.07, 0.92];
+    const TITLE: [f32; 4] = [0.55, 0.92, 1.0, 1.0];
+    const HEADER: [f32; 4] = [0.80, 0.92, 1.0, 1.0];
+    const LINE: [f32; 4] = [0.80, 0.88, 0.95, 0.95];
+    const HINT: [f32; 4] = [0.55, 0.65, 0.78, 0.85];
+
+    let w = crate::gfx::scene_w() as f32;
+    let h = crate::gfx::scene_h() as f32;
+    let pixel = 1.0;
+    let line_h = 7.0 * pixel + 3.0;
+
+    // Two columns. Each line is "<key>  <label>" — pad keys so labels line up.
+    let player_lines = [
+        "1 2 3   QUEUE WEAPON",
+        "5 6 7   PLAY CARD",
+        "UP/DN   MOVE FWD/REV",
+        "LF/RT   ROTATE BOW",
+        "Q / E   ROTATE  (ALT)",
+        "TAB     180 ABOUT-FACE",
+        "V       VENT",
+        "R/SPC   COMMIT TURN",
+        "ENTER   RESTART (END)",
+    ];
+    let debug_lines = [
+        "ESC     EXIT",
+        ", / .   SHIP RES",
+        "; / '   SCENE RES",
+        "G       GRID PITCH",
+        "T       GRID MODE",
+        "O       ANGLE OVERLAY",
+        "U       UNIFIED CAM",
+        "[ / ]   SHIP SCALE",
+        "- / =   BOARD ZOOM",
+        "K / L   GRID CELL",
+        "F1      TOGGLE THIS",
+    ];
+
+    // Pick a panel width that fits the widest column line + label padding.
+    let col_w = 22.0 * 6.0 * pixel; // ~22 glyphs per line at 6px advance
+    let gutter = 16.0;
+    let title_h = 12.0;
+    let header_h = 9.0;
+    let body_rows = player_lines.len().max(debug_lines.len()) as f32;
+    let body_h = body_rows * line_h;
+    let pad_x = 12.0;
+    let pad_y = 10.0;
+
+    let panel_w = (col_w * 2.0 + gutter + pad_x * 2.0).min(w - 16.0);
+    let panel_h = title_h + header_h + body_h + pad_y * 2.0;
+    let panel_x = ((w - panel_w) * 0.5).max(0.0);
+    let panel_y = ((h - panel_h) * 0.5).max(0.0);
+
+    // Background panel (dark, semi-transparent).
+    push_polygon(
+        out,
+        PolygonInstance::flat(
+            [
+                [panel_x, panel_y],
+                [panel_x + panel_w, panel_y],
+                [panel_x + panel_w, panel_y + panel_h],
+                [panel_x, panel_y + panel_h],
+            ],
+            PANEL_BG,
+            atlas::cell_uvs(atlas::SOLID_WHITE),
+        ),
+    );
+
+    // Title row, centered.
+    let title = "CONTROLS";
+    let title_advance = 6.0 * pixel;
+    let title_w = title.len() as f32 * title_advance - pixel;
+    let title_x = panel_x + (panel_w - title_w) * 0.5;
+    let title_y = panel_y + pad_y;
+    push_text_left(out, title, title_x, title_y, pixel, TITLE);
+
+    // Column headers + body.
+    let col1_x = panel_x + pad_x;
+    let col2_x = col1_x + col_w + gutter;
+    let header_y = title_y + title_h;
+    let body_y = header_y + header_h;
+    push_text_left(out, "PLAYER", col1_x, header_y, pixel, HEADER);
+    push_text_left(out, "DEBUG / CAMERA", col2_x, header_y, pixel, HEADER);
+    for (i, line) in player_lines.iter().enumerate() {
+        push_text_left(out, line, col1_x, body_y + i as f32 * line_h, pixel, LINE);
+    }
+    for (i, line) in debug_lines.iter().enumerate() {
+        push_text_left(out, line, col2_x, body_y + i as f32 * line_h, pixel, LINE);
+    }
+
+    // Hint along the bottom inside the panel.
+    let hint = "F1 TO CLOSE";
+    let hint_advance = 6.0 * pixel;
+    let hint_w = hint.len() as f32 * hint_advance - pixel;
+    let hint_x = panel_x + (panel_w - hint_w) * 0.5;
+    let hint_y = panel_y + panel_h - pad_y - 7.0 * pixel;
+    push_text_left(out, hint, hint_x, hint_y, pixel, HINT);
+}
+
 /* =============================================================================
  * Ability tiles (#53 redesign / #64) — square icon tiles.
  *
