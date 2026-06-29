@@ -1624,14 +1624,28 @@ pub fn push_upcoming_ships_2d(
 ) {
     let m = crate::projector::unified_view_proj(cfg);
     let alpha = tint_alpha.clamp(0.0, 1.0);
-    // Enemy marker tint — base ENEMY_HULL_FILL faded by alpha; boss bumps
-    // RGB so it visibly looms warmer/brighter at the deepest layer.
+    // (#213 legibility, lead eye-check) Distinct HUE from the current-board's
+    // enemies (which use ENEMY_HULL_FILL = dark red [0.227, 0.122, 0.145]) so
+    // the upcoming markers don't blend into the playable back-row enemies
+    // when the at-depth grid overlaps. Bright cyan (regular) / saturated
+    // amber (boss) — both well outside the red-hull color family, both pop
+    // against the dim grid wireframe. Alpha multiplies the marker fill
+    // (consumes the live tint dial), so Bruce dialing the tint up/down
+    // changes opacity but not hue — the markers stay distinguishable at any
+    // alpha. We also push a brighter STROKE outline around the marker so the
+    // shape edges stay visible even when alpha is dialed low.
     let (r, g, b) = if is_boss {
-        (1.0, 0.55, 0.45)
+        (1.0, 0.65, 0.20) // saturated amber — boss looms warm/bright
     } else {
-        (ENEMY_HULL_FILL[0], ENEMY_HULL_FILL[1], ENEMY_HULL_FILL[2])
+        (0.35, 0.85, 1.0) // bright cyan — distinct from any red ship hull
     };
-    let fill = [r, g, b, ENEMY_HULL_FILL[3] * alpha];
+    let fill = [r, g, b, (0.85 * alpha).min(1.0)];
+    let stroke = [
+        (r + 0.1).min(1.0),
+        (g + 0.1).min(1.0),
+        (b + 0.1).min(1.0),
+        (alpha + 0.15).min(1.0),
+    ];
     let proj = |w: [f32; 3]| {
         crate::projector::unified_project(&m, w, cfg).map(|p| Point2 { x: p.x, y: p.y })
     };
@@ -1645,11 +1659,15 @@ pub fn push_upcoming_ships_2d(
         let projected: Option<[Point2; 4]> =
             (|| Some([proj(w[0])?, proj(w[1])?, proj(w[2])?, proj(w[3])?]))();
         let Some(p) = projected else { continue };
-        // Shrink the projected quad inward 30% so the marker reads as a small
-        // hull seated in the cell, not the cell-sized fill.
+        // Shrink the projected quad inward so the marker reads as a small
+        // hull seated in the cell, not the cell-sized fill. Tightened from
+        // 0.7 → 0.55 (more visible negative space between marker + cell
+        // edge) so the marker reads as a discrete ship icon, not "the cell
+        // is colored". Boss marker gets the full 0.7 so it visually looms
+        // larger at the deepest layer (per #210 P9 "boss looms distinct").
         let cx = (p[0].x + p[2].x) * 0.5;
         let cy = (p[0].y + p[2].y) * 0.5;
-        let shrink = 0.7;
+        let shrink = if is_boss { 0.75 } else { 0.55 };
         let inset = |q: Point2| Point2 {
             x: cx + (q.x - cx) * shrink,
             y: cy + (q.y - cy) * shrink,
@@ -1665,6 +1683,13 @@ pub fn push_upcoming_ships_2d(
             fill,
             atlas::cell_uvs(atlas::SOLID_WHITE),
         )));
+        // (#213 legibility) Brighter outline so the marker reads even at
+        // low alpha — Bruce can dial tint way down without losing the
+        // marker shape entirely.
+        push_line(out, q[0], q[1], 1.0, stroke);
+        push_line(out, q[1], q[2], 1.0, stroke);
+        push_line(out, q[2], q[3], 1.0, stroke);
+        push_line(out, q[3], q[0], 1.0, stroke);
     }
 }
 
