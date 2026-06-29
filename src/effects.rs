@@ -93,7 +93,8 @@ impl EffectCatalog {
         if !path.exists() {
             return Ok(None);
         }
-        let s = std::fs::read_to_string(path).map_err(|e| format!("read {}: {e}", path.display()))?;
+        let s =
+            std::fs::read_to_string(path).map_err(|e| format!("read {}: {e}", path.display()))?;
         let cat = Self::from_json_str(&s).map_err(|e| format!("decode {}: {e}", path.display()))?;
         Ok(Some(cat))
     }

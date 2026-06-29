@@ -335,8 +335,7 @@ pub fn unified_ship_scale() -> f32 {
 /// clamping into `[UNIFIED_SHIP_SCALE_MIN, UNIFIED_SHIP_SCALE_MAX]`. Returns the
 /// new value. Bound to `[` (delta=-STEP) and `]` (delta=+STEP) in the bin.
 pub fn adjust_ship_scale(delta: f32) -> f32 {
-    let next =
-        (unified_ship_scale() + delta).clamp(UNIFIED_SHIP_SCALE_MIN, UNIFIED_SHIP_SCALE_MAX);
+    let next = (unified_ship_scale() + delta).clamp(UNIFIED_SHIP_SCALE_MIN, UNIFIED_SHIP_SCALE_MAX);
     SHIP_SCALE_MILLI.store(
         (next * 1000.0).round() as u32,
         std::sync::atomic::Ordering::Relaxed,
@@ -422,10 +421,8 @@ pub fn unified_grid_cell_scale() -> f32 {
 /// `[UNIFIED_GRID_CELL_SCALE_MIN, UNIFIED_GRID_CELL_SCALE_MAX]`. Returns the new
 /// value. Bound to `K` (delta=-STEP) and `L` (delta=+STEP) in the bin.
 pub fn adjust_grid_cell_scale(delta: f32) -> f32 {
-    let next = (unified_grid_cell_scale() + delta).clamp(
-        UNIFIED_GRID_CELL_SCALE_MIN,
-        UNIFIED_GRID_CELL_SCALE_MAX,
-    );
+    let next = (unified_grid_cell_scale() + delta)
+        .clamp(UNIFIED_GRID_CELL_SCALE_MIN, UNIFIED_GRID_CELL_SCALE_MAX);
     GRID_CELL_SCALE_MILLI.store(
         (next * 1000.0).round() as u32,
         std::sync::atomic::Ordering::Relaxed,
@@ -2546,8 +2543,11 @@ impl Gfx {
                 let pos = crate::grid::Pos::new(lq.cell[0] as usize, lq.cell[1] as usize);
                 let mut center = crate::projector::cell_world_center(pos, &cfg);
                 center[1] += UNIFIED_SHIP_LIFT; // sit ON the plane, not half-buried
-                let model =
-                    crate::loft_gpu::unified_model(center, lq.unified_yaw_rad, unified_ship_scale());
+                let model = crate::loft_gpu::unified_model(
+                    center,
+                    lq.unified_yaw_rad,
+                    unified_ship_scale(),
+                );
                 draws.push((&mesh.vbuf, mesh.vcount, model));
             }
             if draws.is_empty() {

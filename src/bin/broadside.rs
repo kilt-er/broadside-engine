@@ -1054,9 +1054,10 @@ impl App {
         // is NOT an error — log and fall back to in-code defaults (== today's
         // stock look). Path resolved off `CARGO_MANIFEST_DIR` so the bin
         // succeeds from any cwd (mirrors the catalog loader).
-        let effects_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("assets/effects.json");
-        let vfx_cfg = match broadside_engine::effects::EffectCatalog::load_from_disk(&effects_path) {
+        let effects_path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/effects.json");
+        let vfx_cfg = match broadside_engine::effects::EffectCatalog::load_from_disk(&effects_path)
+        {
             Ok(Some(cat)) => {
                 log::info!(
                     "effects: loaded {} authored entries from {}",
@@ -1066,10 +1067,7 @@ impl App {
                 broadside_engine::vfx::VfxConfig::from_catalog(&cat)
             }
             Ok(None) => {
-                log::info!(
-                    "effects: no {} (default look)",
-                    effects_path.display()
-                );
+                log::info!("effects: no {} (default look)", effects_path.display());
                 broadside_engine::vfx::VfxConfig::default()
             }
             Err(e) => {

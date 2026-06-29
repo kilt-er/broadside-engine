@@ -26,7 +26,7 @@
 //!
 //! ## Active since `17f7edb`
 //!
-//! Origin/v2 `17f7edb` ("Width migration: thread board.dims() through every
+//! Origin/v2 `17f7edb` ("Width migration: thread `board.dims()` through every
 //! flat-index gameplay site (GATE)") landed both the foundation (`Board.cols`
 //! / `.rows` + `Dims` carrier) and the width migration (`to_index`/
 //! `from_index` rewired to `to_index_in(dims)` / `from_index_in(index,

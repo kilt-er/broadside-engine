@@ -236,6 +236,9 @@ impl CombatVfx {
     /// Already-spawned effects continue with their existing styling; subsequently
     /// spawned effects pick up the new config — exactly what authoring wants
     /// (drag a slider, the next `observe`-triggered effect uses the new value).
+    // setter, const-marginal: VfxConfig owns heap data so the destructor of
+    // the swapped-out value cannot be evaluated at compile-time (E0493).
+    #[allow(clippy::missing_const_for_fn)]
     pub fn set_config(&mut self, cfg: VfxConfig) {
         self.cfg = cfg;
     }
@@ -775,7 +778,7 @@ impl ParticlePool {
     /// Swap the active [`ParticleBurst`] config in place (live-tune). Already-
     /// spawned particles continue with their existing speeds/sizes; subsequently
     /// spawned bursts use the new values.
-    pub fn set_config(&mut self, cfg: ParticleBurst) {
+    pub const fn set_config(&mut self, cfg: ParticleBurst) {
         self.cfg = cfg;
     }
 
