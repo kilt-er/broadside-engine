@@ -51,7 +51,7 @@ gltf = { version = "1", features = ["import", "utils", "extras", "KHR_materials_
 # `optional = true` and gated behind a feature so the default build stays
 # fast for the slice that doesn't need rendering or the ECS host.
 hecs = { version = "0.10", optional = true }
-wgpu = { version = "26", optional = true }
+wgpu = { version = "27", optional = true }
 winit = { version = "0.30", optional = true }
 pollster = { version = "0.3", optional = true }
 bytemuck = { version = "1", features = ["derive"], optional = true }

@@ -766,7 +766,7 @@ impl LoftGpu {
         slice.map_async(wgpu::MapMode::Read, move |r| {
             let _ = tx.send(r);
         });
-        device.poll(wgpu::PollType::Wait).ok();
+        device.poll(wgpu::PollType::wait_indefinitely()).ok();
         rx.recv()
             .map_err(|e| format!("map channel: {e}"))?
             .map_err(|e| format!("map_async: {e}"))?;

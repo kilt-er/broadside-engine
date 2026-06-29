@@ -1363,6 +1363,7 @@ impl Gfx {
                 label: Some("primary device"),
                 required_features: wgpu::Features::empty(),
                 required_limits: wgpu::Limits::default(),
+                experimental_features: wgpu::ExperimentalFeatures::disabled(),
                 memory_hints: wgpu::MemoryHints::Performance,
                 trace: wgpu::Trace::Off,
             })
@@ -1608,6 +1609,7 @@ impl Gfx {
                 label: Some("headless device"),
                 required_features: wgpu::Features::empty(),
                 required_limits: wgpu::Limits::default(),
+                experimental_features: wgpu::ExperimentalFeatures::disabled(),
                 memory_hints: wgpu::MemoryHints::Performance,
                 trace: wgpu::Trace::Off,
             })
@@ -1640,6 +1642,77 @@ impl Gfx {
     /// wgpu requires `copy_texture_to_buffer`'s `bytes_per_row` to be a multiple
     /// of 256; 480×4 = 1920 is NOT, so we pad to the next multiple and strip the
     /// padding per row before saving.
+    /// Headless RGBA8 readback sibling of [`Self::capture_png`] — composites the
+    /// scene then returns `(width, height, Vec<u8>)` of tight (un-padded) RGBA8
+    /// bytes, stopping before any encode. The live-preview path in
+    /// `broadside_vfx_editor` uses this to upload the engine frame into an egui
+    /// texture (each preview frame), reusing the same pipeline `capture_png`
+    /// proves headlessly.
+    pub fn capture_rgba(
+        &mut self,
+        commands: &[DrawCommand],
+    ) -> Result<(u32, u32, Vec<u8>), String> {
+        self.render(commands)
+            .map_err(|e| format!("render: {e:?}"))?;
+        let (cap_w, cap_h) = (scene_w(), scene_h());
+        let bytes_per_pixel = 4u32;
+        let unpadded = cap_w * bytes_per_pixel;
+        let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+        let padded = unpadded.div_ceil(align) * align;
+        let buf_size = u64::from(padded * cap_h);
+        let readback = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("capture_rgba readback"),
+            size: buf_size,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let mut enc = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("capture_rgba copy"),
+            });
+        enc.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: &self.offscreen_tex,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &readback,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(padded),
+                    rows_per_image: Some(cap_h),
+                },
+            },
+            wgpu::Extent3d {
+                width: cap_w,
+                height: cap_h,
+                depth_or_array_layers: 1,
+            },
+        );
+        self.queue.submit(std::iter::once(enc.finish()));
+        let slice = readback.slice(..);
+        let (tx, rx) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |r| {
+            let _ = tx.send(r);
+        });
+        self.device.poll(wgpu::PollType::wait_indefinitely()).ok();
+        rx.recv()
+            .map_err(|e| format!("map recv: {e}"))?
+            .map_err(|e| format!("map_async: {e:?}"))?;
+        let data = slice.get_mapped_range();
+        let mut rgba = Vec::with_capacity((unpadded * cap_h) as usize);
+        for row in 0..cap_h {
+            let start = (row * padded) as usize;
+            rgba.extend_from_slice(&data[start..start + unpadded as usize]);
+        }
+        drop(data);
+        readback.unmap();
+        Ok((cap_w, cap_h, rgba))
+    }
+
     pub fn capture_png(
         &mut self,
         commands: &[DrawCommand],
@@ -1706,7 +1779,7 @@ impl Gfx {
         slice.map_async(wgpu::MapMode::Read, move |r| {
             let _ = tx.send(r);
         });
-        self.device.poll(wgpu::PollType::Wait).ok();
+        self.device.poll(wgpu::PollType::wait_indefinitely()).ok();
         rx.recv()
             .map_err(|e| format!("map recv: {e}"))?
             .map_err(|e| format!("map_async: {e:?}"))?;
