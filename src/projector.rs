@@ -831,13 +831,18 @@ const UNIFIED_Z_FRONT: f32 = 1.3;
 // into `[gfx::UNIFIED_CAM_DIST_MIN, gfx::UNIFIED_CAM_DIST_MAX]` = [3.5, 7.0].
 // Per-column lean + cell-center alignment are distance-independent invariants
 // (covered by `tests/render_orientation.rs`).
-/// Look-at height above the ground (world units). (#188) 0.6→0.3 raised the board
-/// for the bottom HUD; (#191 v4 ALT) bumped to 0.0 at CAM_DIST 5.0 to vertically
-/// center the smaller board. (#193 Bruce verified) Restored to 0.3 because the
-/// 5.5 default (the verified cleaner shrink) reads best with the slight lower-
-/// center bias — board sits in a clear central band with starfield above + clean
-/// gap to the menu below.
-const UNIFIED_TARGET_Y: f32 = 0.3;
+/// Default look-at height above the ground (world units), the value Bruce
+/// verified at the [`gfx::BOOT_UNIFIED_CAM_DIST`] = 5.5 default — board sits in
+/// a clear central band with starfield above + clean gap to the menu below.
+/// (#188) 0.6→0.3 raised the board for the bottom HUD; (#193 Bruce verified)
+/// 0.3 is the locked default at d=5.5.
+///
+/// (#197 Bruce) From this anchor (d=5.5, t_y=0.3) the NEAR-ROW screen-y is
+/// computed once and then [`unified_target_y_anchored`] back-solves t_y for any
+/// other d so the near edge stays PARKED at the same screen-y while the board
+/// grows UPWARD into the empty sky — zoom no longer pushes the near row into
+/// the bottom menu.
+const UNIFIED_TARGET_Y_DEFAULT: f32 = 0.3;
 
 /// The unified camera's look-down pitch (radians) for this `cfg`, lerped along the
 /// `G` grid-pitch arc ([`ProjectorConfig::pitch_t`]).
@@ -846,11 +851,59 @@ fn unified_pitch_rad(cfg: &ProjectorConfig) -> f32 {
     (UNIFIED_PITCH_DEG + (UNIFIED_TOPDOWN_PITCH_DEG - UNIFIED_PITCH_DEG) * t).to_radians()
 }
 
-/// World-space look-at target (board centre on the ground, lifted by
-/// [`UNIFIED_TARGET_Y`]).
+/// (#197 Bruce) Live look-at height that ANCHORS the board's near row at a
+/// fixed screen-y above the bottom menu. As [`gfx::unified_cam_dist`] (`-`/`=`)
+/// scales the camera distance, this function back-solves t_y so the projected
+/// screen-y of the near row's centre is invariant — only the FAR edge moves
+/// (board grows UP into the sky), the near edge stays parked.
+///
+/// Derivation (camera-up = (0, cos p, sin p), camera-forward = (0, -sin p, cos p)):
+///   view-Y_near = -t_y·cos p + (near_z - z_target)·sin p          (d cancels)
+///   view-Z_near =  t_y·sin p + d + (near_z - z_target)·cos p
+///   screen_y ∝ view_y / view_z = k  (constant by design)
+/// Solving for t_y at any d, given the anchor ratio k computed once at the
+/// default pair (d₀ = `gfx::BOOT_UNIFIED_CAM_DIST`, t_y₀ = [`UNIFIED_TARGET_Y_DEFAULT`]).
+///
+/// Limitation: the derivation assumes pitch = [`UNIFIED_PITCH_DEG`] and cell
+/// scale = 1.0; at non-zero `G` (grid-pitch step) or `K`/`L` (cell scale ≠ 1)
+/// the anchor drifts slightly. Bruce typically dials zoom in isolation, so this
+/// is fine — the anchor holds in the common case.
+fn unified_target_y_anchored(cfg: &ProjectorConfig) -> f32 {
+    let p = unified_pitch_rad(cfg);
+    let cos_p = p.cos();
+    let sin_p = p.sin();
+    // Near-row centre Z minus look-at Z. Look-at sits at the un-scaled board
+    // centre (z_center in `unified_target`); near-row centre uses the live cell
+    // scale (#195). At scale=1 these reduce to -2.0 for ROWS=5 (the original).
+    let s = crate::gfx::unified_grid_cell_scale();
+    let rows = cfg.rows.max(1) as f32;
+    let near_z = UNIFIED_Z_FRONT + 0.5 * s; // cell_world_center for the near row centre
+    let z_target = UNIFIED_Z_FRONT + rows * 0.5; // unified_target z (unchanged by #195)
+    let dz = near_z - z_target;
+    // Anchor: compute the constant ratio k once at the default (d₀, t_y₀).
+    let d0 = crate::gfx::BOOT_UNIFIED_CAM_DIST;
+    let ty0 = UNIFIED_TARGET_Y_DEFAULT;
+    let view_y0 = -ty0 * cos_p + dz * sin_p;
+    let view_z0 = ty0 * sin_p + d0 + dz * cos_p;
+    if view_z0.abs() < 1e-6 {
+        return ty0;
+    }
+    let k = view_y0 / view_z0;
+    // Back-solve t_y for the LIVE d so view_y / view_z = k.
+    let d = crate::gfx::unified_cam_dist();
+    let denom = -cos_p - k * sin_p;
+    if denom.abs() < 1e-6 {
+        return ty0;
+    }
+    (k * (d + dz * cos_p) - dz * sin_p) / denom
+}
+
+/// World-space look-at target (board centre on the ground, lifted by the
+/// [`unified_target_y_anchored`] coupling so the near edge stays parked across
+/// the `-`/`=` zoom range).
 fn unified_target(cfg: &ProjectorConfig) -> [f32; 3] {
     let z_center = UNIFIED_Z_FRONT + cfg.rows as f32 * 0.5;
-    [0.0, UNIFIED_TARGET_Y, z_center]
+    [0.0, unified_target_y_anchored(cfg), z_center]
 }
 
 /// World-space camera eye: orbit [`crate::gfx::unified_cam_dist`] (live, #192)
