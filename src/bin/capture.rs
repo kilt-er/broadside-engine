@@ -90,6 +90,29 @@ fn capture_board(player_col: usize, player_row: usize, player_facing: Facing) ->
     player.klass = Some("aegis".to_string());
     player.shield_profile.bow.charge = 2;
     player.shield_profile.port.charge = 1;
+    // (#191 Bruce) Match the live campaign boot player's 3 mounts so the bottom
+    // HUD card strip renders all 3 weapon slots (1/2/3), not just 1. The live
+    // bin builds mounts m1=pulse_laser + m2=torpedo + m3=broadside_battery in
+    // bin/broadside.rs:706. Without this the capture under-draws the menu (one
+    // tile vs the live six) and the menu-over-ship clip stays invisible to the
+    // capture harness — the bug Bruce saw in 192545.
+    player.mounts = vec![
+        broadside_engine::types::Mount {
+            id: "m1".into(),
+            arc: broadside_engine::types::Arc::Forward,
+            weapon: "pulse_laser".into(),
+        },
+        broadside_engine::types::Mount {
+            id: "m2".into(),
+            arc: broadside_engine::types::Arc::Forward,
+            weapon: "torpedo".into(),
+        },
+        broadside_engine::types::Mount {
+            id: "m3".into(),
+            arc: broadside_engine::types::Arc::BroadsideArc,
+            weapon: "broadside_battery".into(),
+        },
+    ];
     place(&mut cells, player);
     let mid = COLS / 2;
     place(
@@ -540,7 +563,7 @@ fn main() {
     // build_ship_tiles + push_ability_tiles_2d do in the live bin.
     {
         use broadside_engine::hud::{AbilityIcon, AbilityTile};
-        let tiles: Vec<AbilityTile> = if let Some(p) = board
+        let mut tiles: Vec<AbilityTile> = if let Some(p) = board
             .cells
             .iter()
             .flatten()
@@ -564,6 +587,25 @@ fn main() {
         } else {
             Vec::new()
         };
+        // (#191 Bruce) Add the 3 field-kit card slots 5/6/7 so the capture's
+        // bottom strip is the FULL 6-tile menu the live bin renders (3 weapon
+        // mounts + 3 cards). build_ship_tiles + the live App always push all 6
+        // when cards are loaded; the capture has no Content registry to read
+        // real cards, so synthesise placeholder tiles at the same slots/sizes
+        // so push_ability_tiles_2d lays out the SAME 6-cell width Bruce sees.
+        for slot in ['5', '6', '7'] {
+            tiles.push(AbilityTile {
+                slot,
+                icon: AbilityIcon::Defensive,
+                damage: 0,
+                range: 0,
+                cooldown: 0,
+                cooldown_max: 0,
+                queued_index: None,
+                can_fire: true,
+                arc: None,
+            });
+        }
         broadside_engine::hud::push_ability_tiles_2d(&mut commands, &tiles);
         broadside_engine::hud::push_player_queue_panel_2d(&mut commands, &tiles);
         broadside_engine::hud::push_enemy_info_panel_2d(&mut commands, &board);

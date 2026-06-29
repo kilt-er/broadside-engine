@@ -824,19 +824,22 @@ const UNIFIED_TOPDOWN_PITCH_DEG: f32 = 72.0;
 /// World Z of the board's NEAR edge (front of the near row) — how far the board
 /// sits in front of the camera's look-at reference.
 const UNIFIED_Z_FRONT: f32 = 1.3;
-/// (#188 Bruce) Camera orbit distance from the look-at target (world units). 5.5
-/// pulled the camera too far back so the grid filled only ~50% of the frame
-/// width; 3.7 brings it close enough that the grid spans ~80% — matching the
-/// legacy fan's frame-fill. Closer also makes per-column lean MORE visible at
-/// edge cols (the perspective convergence is steeper).
-const UNIFIED_CAM_DIST: f32 = 3.7;
-/// Look-at height above the ground (world units) — larger aims the camera higher,
-/// pushing the board DOWN on screen (chase-cam: board in the lower ~⅔, horizon near
-/// mid-screen). (#188 Bruce live shot) Was 0.6, still framed the board in the
-/// bottom half + clipped the near-row hull under the HUD strip. 0.3 centers the
-/// board vertically in the playable area (above the HUD bar at y≈230), with the
-/// near row clear of the ability-tile strip.
-const UNIFIED_TARGET_Y: f32 = 0.3;
+/// Camera orbit distance from the look-at target (world units). (#188) 5.5→3.7
+/// filled the frame; (#191 Bruce SHRINK directive) pulled back to 5.0 — the
+/// MINIMAL shrink that clears the bottom 6-tile menu strip + HUD bars without
+/// clipping the near-row hull. Board no longer reaches the bottom HUD; top
+/// stays fairly full (Bruce wants the starfield prominent above). This value
+/// is the locked default for #191; #192 makes it live-tunable via two keys
+/// (-/=). Per-column lean + cell-center alignment are distance-independent
+/// invariants (covered by `tests/render_orientation.rs`).
+const UNIFIED_CAM_DIST: f32 = 5.0;
+/// Look-at height above the ground (world units). (#188) 0.6→0.3 raised the board
+/// for the bottom HUD; (#191 Bruce v4) 0.3→0.0 vertically centers the now-shrunk
+/// (CAM_DIST 5.0) board so the near row is comfortably above the bottom menu +
+/// the back row clears the ENEMIES status panel. NOTE: at CAM_DIST 5.0 the
+/// 0.0 value centers a smaller board — it is NOT the v3 "pan a full-size board
+/// up" that Bruce rejected (that was 0.0 at CAM_DIST 3.7).
+const UNIFIED_TARGET_Y: f32 = 0.0;
 
 /// The unified camera's look-down pitch (radians) for this `cfg`, lerped along the
 /// `G` grid-pitch arc ([`ProjectorConfig::pitch_t`]).
@@ -1204,7 +1207,7 @@ mod tests {
     /// crux of the #73 fix — a hull-sized box at every cell projects in FRONT of the
     /// camera to a sane screen position (it does NOT wrap, the failure the legacy fan
     /// forced). Plus the same grid invariants as the fan: col 0 screen-left, far row
-    /// higher, depth_scale shrinks far<near<=1.
+    /// higher, `depth_scale` shrinks far<near<=1.
     #[test]
     fn unified_grid_is_sane_and_a_hull_does_not_wrap() {
         let c = ProjectorConfig::for_scene(480.0, 270.0).with_unified(0.0);

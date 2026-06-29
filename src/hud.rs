@@ -3754,6 +3754,16 @@ pub fn push_res_readout(out: &mut Vec<DrawCommand>, ship: (u32, u32), scene: (u3
     // so it doesn't clutter the readout in normal play.
     right_align(out, &format!("SHIP {}x{}", ship.0, ship.1), h - 20.0);
     right_align(out, &format!("SCENE {}x{}", scene.0, scene.1), h - 10.0);
+    // (#191 Bruce) Show the live ship-scale multiplier (#190 `[`/`]` adjuster).
+    // Always visible — `[`/`]` change it but the only feedback was a console log,
+    // so Bruce couldn't see the value while dialling in. Above the PITCH line at
+    // h-40 (which is conditional + may be absent in default play), at h-50 so it
+    // doesn't collide with PITCH when both show. Distinct from "SHIP <w>x<h>"
+    // (loft pixel res) — this is the world-unit scale multiplier. Formatted as
+    // an INTEGER hundredths ("SCALE x10" = 0.10) because the 5x7 font has no `.`
+    // glyph (renders as a blank space — would read "SCALE 0 10").
+    let scale_pct = (crate::gfx::unified_ship_scale() * 100.0).round() as u32;
+    right_align(out, &format!("SCALE X{scale_pct}"), h - 50.0);
     // (#139) PITCH step (0 = chase-cam, GRID_PITCH_STEPS = near-top-down), read from
     // the gfx global. Placed at h-40, ABOVE the POS/FACE line (h-30, push_player_readout)
     // so the bottom-right debug stack doesn't overlap. Only shown when pitched off the
