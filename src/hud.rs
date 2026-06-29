@@ -1620,6 +1620,40 @@ fn push_ship_2d(
     // here; do NOT re-add the removed runtime loft.
     let class = ship.klass.as_deref().unwrap_or("frigate");
 
+    // (#84 lead-directed) UNIFIED SHIP PASS — when unified is live, EVERY ship
+    // (player AND enemies) flows through render_unified_fleet as ONE LoftShip per
+    // ship keyed on cell + unified_yaw_rad. This bypasses the hero-band quad
+    // override (which anchored the player at the foreground bottom band, square-to-
+    // window) and the per-faction is_player gate (which kept enemies off the loft
+    // path on the legacy bake — they fell to the placeholder billboard square-to-
+    // window). The p0..p3 corners are computed as the cell quad bounds so the
+    // LEGACY chase-cam path (U-key A/B) still has a sensible dest-rect.
+    if crate::gfx::unified_enabled() {
+        if let Some(loft_kind) = sprites.loft_kind(&ship.id, is_player) {
+            // Cell-quad screen bounds as a fallback dest-rect for the legacy bake.
+            // Unified pass ignores p0..p3 (reads cell + unified_yaw_rad only); the
+            // legacy chase-cam path uses these. Width = near edge of the projected
+            // cell; height = loft aspect.
+            let w = (near_edge_width * 1.0).max(16.0);
+            let h = w / LOFT_TEXTURE_ASPECT;
+            let (l, r) = (center[0] - w * 0.5, center[0] + w * 0.5);
+            let (t, b) = (center[1] - h * 0.5, center[1] + h * 0.5);
+            out.push(DrawCommand::LoftShip(LoftShipInstance {
+                p0: [l, t],
+                p1: [r, t],
+                p2: [r, b],
+                p3: [l, b],
+                ship_id: SpriteSlug::new(&ship.id),
+                kind: loft_kind,
+                aim_at: center,
+                facing_yaw_deg,
+                cell: [ship.pos.col as u32, ship.pos.row as u32],
+                unified_yaw_rad: unified_heading_yaw(ship.facing),
+            }));
+            return;
+        }
+    }
+
     // (#70) LIVE-3D PLAYER: if a loft mesh is installed for the player (the Aegis
     // GLB via mesh_import — the faithful render render_aegis proved), emit a
     // LoftShip at the player's projected cell. gfx's loft pre-pass renders the

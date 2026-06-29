@@ -225,11 +225,15 @@ pub fn toggle_angle_overlay() -> bool {
 
 /// (UNIFY, Bruce order) Live toggle for the UNIFIED camera: the grid AND the 3-D
 /// hulls render through ONE real-perspective camera ([`crate::projector::unified_view_proj`])
-/// instead of the legacy `1/z` fan + separate per-ship loft bake. OFF by default
-/// (the legacy path is byte-identical) until proven; the bin's `U` key flips it.
-/// Read by [`scene_projector_cfg`] (so the grid + every projector-derived overlay
-/// reproject) AND by the loft render loop (so the hulls take the unified ship pass).
-static UNIFIED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// instead of the legacy `1/z` fan + separate per-ship loft bake. ON by default
+/// (#84): the legacy chase-cam loft bake renders every hull through its OWN
+/// screen-space yaw ([`crate::hud::loft_facing_ground_yaw`]), which sits the hull
+/// square-to-WINDOW (vertical for FACE N at every column) instead of square-to-GRID.
+/// The unified pass orients each hull's heading as a world-space ray + projects it
+/// through the same camera the grid lines use, so the hull's long axis converges
+/// on the VP automatically — col0 leans up-right, col4 up-left, col2 stays
+/// vertical — by construction. `U` flips back to the legacy bake for A/B.
+static UNIFIED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
 
 /// Whether the unified camera is active (see [`UNIFIED`]).
 pub fn unified_enabled() -> bool {
@@ -2255,8 +2259,20 @@ impl Gfx {
     /// blit when [`unified_enabled`]. `cleared` tracks whether the offscreen has been
     /// cleared yet (the full-screen blit clears on the first draw of the frame).
     fn render_unified_fleet(&self, loft_quads: &[LoftShipInstance], cleared: &mut bool) {
+        // (#84) The grid + cell-world math uses the SCENE size; the unified
+        // view_proj must use the LOFT target's aspect (the actual viewport the
+        // hulls render into — see `loft.output_size()`). Mixing scene-aspect
+        // view_proj with a loft-target viewport distorts X positions (a 480x270
+        // scene-aspect proj rendered into a 480x300 1.6:1 target stretches the
+        // grid's perspective horizontally, which hides the per-column lean the
+        // unified pass should produce). `cell_world_center` depends only on
+        // cols/rows so swapping frame_w/h for the view_proj is safe.
         let cfg = scene_projector_cfg(scene_w() as f32, scene_h() as f32);
-        let view_proj = crate::projector::unified_view_proj(&cfg);
+        let (loft_w, loft_h) = self.loft.output_size();
+        let mut view_cfg = cfg;
+        view_cfg.frame_w = loft_w as f32;
+        view_cfg.frame_h = loft_h as f32;
+        let view_proj = crate::projector::unified_view_proj(&view_cfg);
         // Build the per-hull (vbuf, vcount, model) draw list; scoped so the
         // immutable borrow of `self.loft_meshes` drops before the blit below.
         {

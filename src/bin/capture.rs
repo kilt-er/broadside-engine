@@ -484,13 +484,15 @@ fn main() {
         broadside_engine::gfx::scene_h() as f32,
     );
     let pitch_t = broadside_engine::gfx::grid_pitch_t();
-    // (UNIFY) BROADSIDE_UNIFIED=1 routes the grid through the unified real-perspective
-    // camera (the same one the hulls render through), so the capture verifies the
-    // unified coordinate system.
-    let cfg = if std::env::var("BROADSIDE_UNIFIED").is_ok_and(|v| v != "0") {
-        // Set the global too, so gfx's loft loop runs the unified 3-D ship pass
-        // (the hulls render through the same camera as the grid below).
-        broadside_engine::gfx::set_unified(true);
+    // (UNIFY / #84) The unified real-perspective camera is the default — gfx's
+    // global UNIFIED flag boots `true`, so the capture mirrors the live bin which
+    // honours the same default via `scene_projector_cfg`. `BROADSIDE_UNIFIED=0`
+    // forces the legacy fan path (the `U` key off case) for A/B; any other value
+    // (including unset) keeps the unified default. The legacy-mode set_unified(false)
+    // also propagates to gfx's loft loop so its ship pass matches.
+    let unified_on = !std::env::var("BROADSIDE_UNIFIED").is_ok_and(|v| v == "0");
+    broadside_engine::gfx::set_unified(unified_on);
+    let cfg = if unified_on {
         base.with_unified(pitch_t)
     } else {
         match broadside_engine::gfx::grid_mode() {
