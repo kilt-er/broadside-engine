@@ -1686,6 +1686,25 @@ impl ApplicationHandler for App {
                         }
                         return;
                     }
+                    // (#198 Bruce) `M` cycles the vertical anchor MODE:
+                    //   false (default) = snap-to-menu (#197 near edge parked
+                    //                     above the bottom HUD, board grows UP);
+                    //   true            = CENTERED (board's centroid at screen
+                    //                     centre, equal margin top + bottom).
+                    // KeyM verified free in keycode_to_key (no mapping) + the raw
+                    // G/T/O/U/[/]/-/=/K/L/F1 handlers above (grep KeyCode::KeyM
+                    // across src/ = no hits).
+                    if code == KeyCode::KeyM {
+                        let on = broadside_engine::gfx::toggle_anchor_mode();
+                        log::info!(
+                            "anchor mode: {}",
+                            if on { "CTR (centered)" } else { "MENU (snap)" }
+                        );
+                        if let Some(win) = self.window.as_ref() {
+                            win.request_redraw();
+                        }
+                        return;
+                    }
                 }
                 let Some(key) = keycode_to_key(code) else {
                     return;

@@ -248,6 +248,34 @@ pub fn set_controls_popup(on: bool) {
     CONTROLS_POPUP.store(on, std::sync::atomic::Ordering::Relaxed);
 }
 
+/// (#198 Bruce) Live toggle for the board's vertical anchor MODE — toggled by `M`.
+/// false (default) = Mode A "snap-to-menu" (the #197 behavior: near edge parked
+/// just above the bottom menu, board grows UP into the sky as -/= zooms in).
+/// true = Mode B "centered" (board sits vertically centered in the window,
+/// equal margin top + bottom; overlaps the menu strip at zoom max — fine for
+/// a debug pose).
+static ANCHOR_MODE_CENTERED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Whether the board is in vertically-CENTERED mode (see [`ANCHOR_MODE_CENTERED`]).
+/// `false` = the default #197 snap-to-menu mode.
+pub fn anchor_mode_centered() -> bool {
+    ANCHOR_MODE_CENTERED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Cycle the board's vertical anchor mode (the `M` key); returns the new state.
+pub fn toggle_anchor_mode() -> bool {
+    let next = !anchor_mode_centered();
+    ANCHOR_MODE_CENTERED.store(next, std::sync::atomic::Ordering::Relaxed);
+    next
+}
+
+/// Force the anchor mode (the capture bin sets it from its env so a headless
+/// shot can verify either pose). `true` = centered, `false` = snap-to-menu.
+pub fn set_anchor_mode_centered(on: bool) {
+    ANCHOR_MODE_CENTERED.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// (UNIFY, Bruce order) Live toggle for the UNIFIED camera: the grid AND the 3-D
 /// hulls render through ONE real-perspective camera ([`crate::projector::unified_view_proj`])
 /// instead of the legacy `1/z` fan + separate per-ship loft bake. ON by default

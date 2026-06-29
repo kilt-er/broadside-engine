@@ -868,7 +868,19 @@ fn unified_pitch_rad(cfg: &ProjectorConfig) -> f32 {
 /// scale = 1.0; at non-zero `G` (grid-pitch step) or `K`/`L` (cell scale ≠ 1)
 /// the anchor drifts slightly. Bruce typically dials zoom in isolation, so this
 /// is fine — the anchor holds in the common case.
+///
+/// (#198 Bruce) Branches on [`crate::gfx::anchor_mode_centered`]: when true,
+/// returns 0.0 so the look-at sits on the board centroid (ground plane, z =
+/// z_center) — the board's centroid then projects to screen centre, giving a
+/// vertically CENTERED pose (equal margin top + bottom). The default (false)
+/// runs the closed-form snap-to-menu solve below.
 fn unified_target_y_anchored(cfg: &ProjectorConfig) -> f32 {
+    if crate::gfx::anchor_mode_centered() {
+        // Mode B: look at the board's ground centroid. The look-at point
+        // projects to screen centre by construction → board sits vertically
+        // centered in the window (independent of d, p, and cell scale).
+        return 0.0;
+    }
     let p = unified_pitch_rad(cfg);
     let cos_p = p.cos();
     let sin_p = p.sin();

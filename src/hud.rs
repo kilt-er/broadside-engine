@@ -3776,6 +3776,15 @@ pub fn push_res_readout(out: &mut Vec<DrawCommand>, ship: (u32, u32), scene: (u3
     // above CAM at h-70.
     let cell_centi = (crate::gfx::unified_grid_cell_scale() * 100.0).round() as u32;
     right_align(out, &format!("CELL {cell_centi}"), h - 70.0);
+    // (#198 Bruce) Show the live vertical anchor mode (`M` cycle key): MENU =
+    // snap-to-menu (default, #197 near edge above bottom HUD), CTR = centered
+    // (board centroid at screen centre). Placed above CELL at h-80.
+    let anch_tag = if crate::gfx::anchor_mode_centered() {
+        "ANCH CTR"
+    } else {
+        "ANCH MENU"
+    };
+    right_align(out, anch_tag, h - 80.0);
     // (#139) PITCH step (0 = chase-cam, GRID_PITCH_STEPS = near-top-down), read from
     // the gfx global. Placed at h-40, ABOVE the POS/FACE line (h-30, push_player_readout)
     // so the bottom-right debug stack doesn't overlap. Only shown when pitched off the

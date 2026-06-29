@@ -292,6 +292,13 @@ fn main() {
             log::info!("capture: unified grid cell scale -> {s:.2}");
         }
     }
+    // (#198) BROADSIDE_ANCHOR_CENTERED=1 sets the vertical anchor mode to
+    // CENTERED (Mode B) so a headless capture can verify the centered pose;
+    // unset / 0 keeps the default snap-to-menu (Mode A). Mirrors the M cycle.
+    if std::env::var("BROADSIDE_ANCHOR_CENTERED").is_ok_and(|v| v != "0") {
+        broadside_engine::gfx::set_anchor_mode_centered(true);
+        log::info!("capture: anchor mode -> CTR (centered)");
+    }
     // (#140/#142/#151) Optional grid-mode env (mirrors the `T` cycle), so the pitch-arc
     // shots show each mode. BROADSIDE_GRID_CONTINUOUS=1 -> continuous-straight (mode 3);
     // BROADSIDE_GRID_STRAIGHT=1 -> stretch-straight stepped (mode 2);
