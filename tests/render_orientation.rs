@@ -48,11 +48,13 @@
 
 #![cfg(feature = "render")]
 
+use broadside_engine::gfx;
 use broadside_engine::grid::{Axis, Dir4, Facing, Pos, COLS, ROWS};
 use broadside_engine::projector::{
     cell_world_center, cell_world_corners, grid_cell_quad, unified_project, unified_view_proj,
     ProjectorConfig,
 };
+use std::sync::{Mutex, MutexGuard};
 
 /// Reference frame size — `VIRTUAL_W × VIRTUAL_H` (`480 × 270`). Matches every
 /// other projector test + the bin's default scene resolution; the unified
@@ -69,6 +71,34 @@ const SAMPLED_COLS: [usize; 3] = [0, 2, 4];
 /// The `pitch_t` values the guard sweeps — boot (chase-cam), mid-arc, full
 /// top-down. Mirrors the live `G` key cycle (`0..=GRID_PITCH_STEPS`).
 const PITCH_T_SWEEP: [f32; 3] = [0.0, 0.5, 1.0];
+
+/// The `cam_dist` values the cross-dial regression sweeps — `MIN` and `MAX`
+/// of [`gfx::UNIFIED_CAM_DIST_MIN`]..[`gfx::UNIFIED_CAM_DIST_MAX`]. Reviewer-a
+/// flagged that the #197 anchor coupling moves both eye-y and target-y
+/// together as `d` changes, so the pitch/lean/centre-projection geometry
+/// at the extremes is worth pinning alongside the boot value. The anchor
+/// invariant test itself uses a denser sweep (`CAM_DIST_ANCHOR_SWEEP`).
+const CAM_DIST_CROSS_SWEEP: [f32; 2] = [gfx::UNIFIED_CAM_DIST_MIN, gfx::UNIFIED_CAM_DIST_MAX];
+
+/// The `cam_dist` values the anchor invariant test sweeps. Four well-spread
+/// samples across `[MIN, MAX]` — endpoints + two interior points — so a
+/// near-row screen-y drift at any point on the range trips the gate. Holding
+/// 4 samples (not 10) keeps the test fast; the anchor is analytic so
+/// intermediate values are implied if endpoints + interior land within eps.
+const CAM_DIST_ANCHOR_SWEEP: [f32; 4] = [
+    gfx::UNIFIED_CAM_DIST_MIN,
+    4.0,
+    gfx::BOOT_UNIFIED_CAM_DIST,
+    gfx::UNIFIED_CAM_DIST_MAX,
+];
+
+/// Bruce's #197 anchor-invariance tolerance. The derivation is analytic but
+/// the projection goes through an `f32` mat4·vec4 + a NDC→pixel scale, so a
+/// 2 px slop band absorbs the float-roundoff at the extremes without making
+/// the assertion meaningless (the anchor *visually* parks the near edge —
+/// 2 px on a 270 px frame is < 1% drift, well below Bruce's "stays put"
+/// threshold).
+const ANCHOR_EPS_PX: f32 = 2.0;
 
 /// `hud::unified_heading_yaw` dir-table mirror. Source of truth lives in
 /// `src/hud.rs` (private `fn unified_heading_yaw(facing: Facing) -> f32`); if
@@ -104,6 +134,74 @@ const fn heading_dir(facing: Facing) -> [f32; 3] {
 /// (`ProjectorConfig::for_scene(VIRTUAL_W, VIRTUAL_H).with_unified(grid_pitch_t)`).
 fn unified_cfg(pitch_t: f32) -> ProjectorConfig {
     ProjectorConfig::for_scene(FRAME_W, FRAME_H).with_unified(pitch_t)
+}
+
+/// Process-wide serialisation for any test that READS or WRITES the live
+/// `gfx::unified_cam_dist` atomic. Cargo runs `#[test]`s in parallel within a
+/// binary; without this, a test that pins `cam_dist` to `MIN` could race a
+/// test that reads the default and flake. Every `#[test]` in this file
+/// acquires this mutex via [`CamDistGuard`] (even the ones that don't touch
+/// the atomic deliberately — they implicitly depend on it being the boot
+/// value, which a parallel test could violate).
+static CAM_DIST_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+/// RAII guard that (1) takes the [`CAM_DIST_TEST_LOCK`] mutex, (2) sets
+/// `gfx::unified_cam_dist` to `target` + pins the #198 anchor mode to
+/// SNAP-TO-MENU (the anchor invariant's only meaningful mode — the centred
+/// mode deliberately does NOT park the near edge), and (3) on `Drop`
+/// restores both to their boot values. This keeps the live atomics clean for
+/// the next test even if an assertion panics mid-test.
+///
+/// Use [`CamDistGuard::pin_boot`] for tests that just want the boot value +
+/// the serialisation lock; use [`CamDistGuard::pin`] to drive the dial
+/// (anchor / cross-dial tests).
+struct CamDistGuard {
+    // Keep the lock alive for the lifetime of the guard. Drop order is
+    // bottom-up: the lock releases AFTER we've restored the atomics.
+    _lock: MutexGuard<'static, ()>,
+}
+
+impl CamDistGuard {
+    fn pin_boot() -> Self {
+        Self::pin(gfx::BOOT_UNIFIED_CAM_DIST)
+    }
+
+    fn pin(target: f32) -> Self {
+        // Recover the lock even if a previous test panicked — a poisoned
+        // mutex must not block this whole suite. `into_inner()` extracts the
+        // guard regardless.
+        let lock = CAM_DIST_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // `adjust_cam_dist(delta)` clamps + sets via `+delta`. Set to `target`
+        // by computing the delta from the current value (the previous test's
+        // restore should have left this at BOOT, but compute from `current`
+        // so a race in a future addition can't drift us off `target`).
+        let current = gfx::unified_cam_dist();
+        gfx::adjust_cam_dist(target - current);
+        // #198: pin the SNAP-TO-MENU anchor mode (boot default). The
+        // centered-mode pose deliberately breaks the near-edge anchor
+        // invariant, so a parallel test that toggled it would flake this
+        // suite.
+        gfx::set_anchor_mode_centered(false);
+        debug_assert!(
+            (gfx::unified_cam_dist() - target).abs() < 1e-3,
+            "CamDistGuard::pin({target}) — atomic landed at {} (clamp range \
+             [{}, {}])",
+            gfx::unified_cam_dist(),
+            gfx::UNIFIED_CAM_DIST_MIN,
+            gfx::UNIFIED_CAM_DIST_MAX,
+        );
+        Self { _lock: lock }
+    }
+}
+
+impl Drop for CamDistGuard {
+    fn drop(&mut self) {
+        let current = gfx::unified_cam_dist();
+        gfx::adjust_cam_dist(gfx::BOOT_UNIFIED_CAM_DIST - current);
+        gfx::set_anchor_mode_centered(false);
+    }
 }
 
 /// Screen-space vector `(end - start)` after projecting both points through
@@ -191,6 +289,7 @@ fn assert_hull_parallel_to_lane(
 
 #[test]
 fn bow_north_hull_long_axis_parallel_to_column_lane_at_edge_and_centre_columns() {
+    let _g = CamDistGuard::pin_boot();
     // Front row (row = ROWS-1) is the most visually load-bearing — the lean
     // bug Bruce reported was that off-centre near-row hulls rendered
     // square-to-the-window instead of pointed at the vanishing point.
@@ -214,6 +313,7 @@ fn bow_north_hull_long_axis_parallel_to_column_lane_at_edge_and_centre_columns()
 
 #[test]
 fn bow_south_hull_long_axis_parallel_to_column_lane_at_edge_and_centre_columns() {
+    let _g = CamDistGuard::pin_boot();
     let row = ROWS - 1;
     let facing = Facing::Bow(Dir4::S);
     for &pitch_t in &PITCH_T_SWEEP {
@@ -234,6 +334,7 @@ fn bow_south_hull_long_axis_parallel_to_column_lane_at_edge_and_centre_columns()
 
 #[test]
 fn bow_north_hull_lane_parallel_holds_on_far_row_too() {
+    let _g = CamDistGuard::pin_boot();
     // Far row (row = 0) is the second visual hot-spot: under a too-narrow FOV
     // the back-row hulls converge AROUND the vanishing point, so lean-parity
     // there guards the across-depth case.
@@ -291,6 +392,7 @@ fn assert_hull_horizontal_on_screen(
 
 #[test]
 fn bow_east_hull_long_axis_horizontal_on_screen_at_edge_and_centre_columns() {
+    let _g = CamDistGuard::pin_boot();
     let row = ROWS - 1;
     let facing = Facing::Bow(Dir4::E);
     for &pitch_t in &PITCH_T_SWEEP {
@@ -311,6 +413,7 @@ fn bow_east_hull_long_axis_horizontal_on_screen_at_edge_and_centre_columns() {
 
 #[test]
 fn bow_west_hull_long_axis_horizontal_on_screen_at_edge_and_centre_columns() {
+    let _g = CamDistGuard::pin_boot();
     let row = ROWS - 1;
     let facing = Facing::Bow(Dir4::W);
     for &pitch_t in &PITCH_T_SWEEP {
@@ -363,6 +466,7 @@ fn assert_cell_center_alignment(
 
 #[test]
 fn projected_cell_world_center_equals_grid_cell_quad_center_on_near_row() {
+    let _g = CamDistGuard::pin_boot();
     let row = ROWS - 1;
     for &pitch_t in &PITCH_T_SWEEP {
         let cfg = unified_cfg(pitch_t);
@@ -381,6 +485,7 @@ fn projected_cell_world_center_equals_grid_cell_quad_center_on_near_row() {
 
 #[test]
 fn projected_cell_world_center_equals_grid_cell_quad_center_on_far_row() {
+    let _g = CamDistGuard::pin_boot();
     let row = 0;
     for &pitch_t in &PITCH_T_SWEEP {
         let cfg = unified_cfg(pitch_t);
@@ -403,6 +508,7 @@ fn projected_cell_world_center_equals_grid_cell_quad_center_on_far_row() {
 
 #[test]
 fn unified_projection_initialises_and_projects_every_cell_in_frame() {
+    let _g = CamDistGuard::pin_boot();
     // Smoke gate: at every pitch step, every cell's world centre projects to
     // a finite screen point in [0, frame_w] × [0, frame_h]. Catches the class
     // of "near-row hull lands behind the camera" / "back-row hull off the top
@@ -443,6 +549,134 @@ fn unified_projection_initialises_and_projects_every_cell_in_frame() {
                          projected behind the camera"
                     );
                 }
+            }
+        }
+    }
+}
+
+/* =========================================================================
+ * (d) #197 ANCHOR INVARIANT — near-row screen-y is constant across cam_dist
+ * ====================================================================== */
+
+/// Returns the projected screen-y of the near-row cell centre at column
+/// `anchor_col` when the live `cam_dist` is pinned to `target`. The anchor
+/// coupling is implemented analytically inside
+/// `projector::unified_target_y_anchored` (which `unified_eye` /
+/// `unified_target` read internally), so this exercises the entire
+/// `unified_view_proj` path the renderer uses, not an isolated helper.
+///
+/// Pinned at the anchor's derivation regime: `pitch_t = 0` (default
+/// chase-cam) + the boot grid cell scale = `1.0` (the projector's anchor
+/// derivation explicitly assumes both; see the doc on
+/// `unified_target_y_anchored`).
+fn near_row_screen_y_at_cam_dist(target: f32, anchor_col: usize) -> f32 {
+    let _g = CamDistGuard::pin(target);
+    let cfg = unified_cfg(0.0);
+    let vp = unified_view_proj(&cfg);
+    let near_pos = Pos::new(anchor_col, ROWS - 1);
+    unified_project(&vp, cell_world_center(near_pos, &cfg), &cfg)
+        .expect("near-row centre projects under unified camera")
+        .y
+}
+
+#[test]
+fn near_row_screen_y_anchors_across_cam_dist_sweep_at_centre_column() {
+    // Centre column (col = 2) is the reference: zero per-column lean, so the
+    // anchor coupling shows as a clean "near cell-centre screen-y is
+    // constant" datum. Compute against the BOOT cam_dist (the anchor's
+    // reference point), then check every sweep value is within eps of that.
+    let anchor_col = COLS / 2;
+    let baseline = near_row_screen_y_at_cam_dist(gfx::BOOT_UNIFIED_CAM_DIST, anchor_col);
+    for &cam_dist in &CAM_DIST_ANCHOR_SWEEP {
+        let y = near_row_screen_y_at_cam_dist(cam_dist, anchor_col);
+        let drift = (y - baseline).abs();
+        assert!(
+            drift < ANCHOR_EPS_PX,
+            "anchor drift at cam_dist={cam_dist}: near-row screen-y = {y}, \
+             baseline (cam_dist={baseline_d}) = {baseline}, |Δ| = {drift} > {ANCHOR_EPS_PX} px",
+            baseline_d = gfx::BOOT_UNIFIED_CAM_DIST,
+        );
+    }
+}
+
+#[test]
+fn near_row_screen_y_anchors_across_cam_dist_sweep_at_edge_columns() {
+    // Edge columns (0, 4) also have per-column lean under unified, but the
+    // anchor invariant is the screen-y of THIS CELL'S centre, not the column
+    // tangent — the centre of an edge near-row cell is still a screen point
+    // that must stay parked as zoom changes (Bruce's eyeball check is "the
+    // bottom row doesn't slide under the menu"; that's literally screen-y).
+    for &anchor_col in &[0_usize, COLS - 1] {
+        let baseline = near_row_screen_y_at_cam_dist(gfx::BOOT_UNIFIED_CAM_DIST, anchor_col);
+        for &cam_dist in &CAM_DIST_ANCHOR_SWEEP {
+            let y = near_row_screen_y_at_cam_dist(cam_dist, anchor_col);
+            let drift = (y - baseline).abs();
+            assert!(
+                drift < ANCHOR_EPS_PX,
+                "anchor drift at edge col={anchor_col} cam_dist={cam_dist}: near-row \
+                 screen-y = {y}, baseline (cam_dist={baseline_d}) = {baseline}, \
+                 |Δ| = {drift} > {ANCHOR_EPS_PX} px",
+                baseline_d = gfx::BOOT_UNIFIED_CAM_DIST,
+            );
+        }
+    }
+}
+
+/* =========================================================================
+ * (e) CROSS-DIAL — lean + cell-centre hold at cam_dist extremes
+ * ====================================================================== */
+
+#[test]
+fn bow_north_lean_holds_at_cam_dist_min_and_max() {
+    // Reviewer-a flagged: the #197 anchor coupling moves both target_y AND
+    // eye-y as `d` slides, so the pitch geometry could subtly drift at the
+    // [3.5, 7.0] extremes even though the lean math is theoretically
+    // distance-invariant. Pin it explicitly — but only at the anchor's
+    // derivation regime (pitch_t = 0; the projector doc on
+    // `unified_target_y_anchored` flags that at non-zero pitch the anchor
+    // drifts, which can push the camera close enough to the ground at
+    // min cam_dist that off-centre cells project BEHIND the camera —
+    // documented limitation, intentional, covered by the existing
+    // pitch-sweep tests at the default cam_dist).
+    let row = ROWS - 1;
+    let facing = Facing::Bow(Dir4::N);
+    for &cam_dist in &CAM_DIST_CROSS_SWEEP {
+        let _g = CamDistGuard::pin(cam_dist);
+        let cfg = unified_cfg(0.0);
+        let vp = unified_view_proj(&cfg);
+        for &col in &SAMPLED_COLS {
+            assert_hull_parallel_to_lane(
+                &vp,
+                &cfg,
+                Pos::new(col, row),
+                facing,
+                1e-3,
+                &format!("Bow(N) col={col} row={row} cam_dist={cam_dist}"),
+            );
+        }
+    }
+}
+
+#[test]
+fn cell_center_alignment_holds_at_cam_dist_min_and_max() {
+    // The (b) invariant — projected cell_world_center == grid_cell_quad.center
+    // — should be distance-independent (both sides go through the same
+    // view_proj), but the same anchor-coupling concern applies. Same
+    // pitch_t = 0 restriction as the lean cross-dial test (see its comment
+    // for the documented-limitation rationale).
+    for &cam_dist in &CAM_DIST_CROSS_SWEEP {
+        let _g = CamDistGuard::pin(cam_dist);
+        let cfg = unified_cfg(0.0);
+        let vp = unified_view_proj(&cfg);
+        for &row in &[0_usize, ROWS - 1] {
+            for col in 0..COLS {
+                assert_cell_center_alignment(
+                    &vp,
+                    &cfg,
+                    Pos::new(col, row),
+                    1e-3,
+                    &format!("col={col} row={row} cam_dist={cam_dist}"),
+                );
             }
         }
     }
