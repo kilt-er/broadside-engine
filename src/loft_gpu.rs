@@ -47,21 +47,22 @@ pub const LOW_W: u32 = 160;
 pub const LOW_H: u32 = 100;
 
 /// (#76) The SHIP-res cycle Bruce steps through with `,` / `.` (chunky → crisp):
-/// 160×100 (default) → 220×138 → 320×200 → 480×300, then wraps. All ~1.6:1 so the
+/// 160×100 → 220×138 → 320×200 → 480×300 → 640×400, then wraps. All ~1.6:1 so the
 /// lane dest-quad aspect ([`crate::hud`]'s `LOFT_TEXTURE_ASPECT`) stays valid and
-/// the hull never re-squashes (#74; 480/1.6 = 300). Bigger = finer ship pixels —
-/// 480×300 is the crisp-hull step Bruce asked for past the old 320 max.
-/// [`next_loft_res`] / [`prev_loft_res`] step this list, snapping an off-list
-/// current size to the default first.
-pub const LOFT_RES_PRESETS: [(u32, u32); 4] = [(160, 100), (220, 138), (320, 200), (480, 300)];
+/// the hull never re-squashes (#74; 640/1.6 = 400 exactly). Bigger = finer ship
+/// pixels — 640×400 is the new crisp-end step Bruce asked for past the prior 480
+/// ceiling (#205). [`next_loft_res`] / [`prev_loft_res`] step this list, snapping
+/// an off-list current size to the default first.
+pub const LOFT_RES_PRESETS: [(u32, u32); 5] =
+    [(160, 100), (220, 138), (320, 200), (480, 300), (640, 400)];
 
 /// (#76) The SHIP-loft res the game LAUNCHES at — Bruce's pick after the A/B:
 /// "480 for the ship is the winner." So the hull boots CRISP (480×300) instead of
 /// the chunky 160×100 floor (which forced a cycle-up every run). `,`/`.` still
-/// cycle all four [`LOFT_RES_PRESETS`] for experimentation; this only sets the
-/// initial [`LoftGpu`] target size. = `LOFT_RES_PRESETS[3]` (the crisp end);
-/// [`LOW_W`]/[`LOW_H`] (160×100) remain the chunky floor preset, no longer the
-/// boot default.
+/// cycle all five [`LOFT_RES_PRESETS`] for experimentation; this only sets the
+/// initial [`LoftGpu`] target size. = `LOFT_RES_PRESETS[3]` (480×300 — Bruce's
+/// boot pick, NOT the new 640 ceiling); [`LOW_W`]/[`LOW_H`] (160×100) remain the
+/// chunky floor preset, no longer the boot default.
 pub const DEFAULT_LOFT_RES: (u32, u32) = LOFT_RES_PRESETS[3];
 
 /// The next ship-res preset after `(w, h)` (wraps). If `(w, h)` isn't in the
