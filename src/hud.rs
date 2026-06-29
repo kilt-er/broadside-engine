@@ -4047,19 +4047,32 @@ pub fn push_phase_dials_readout(out: &mut Vec<DrawCommand>) {
             crate::gfx::BOOT_PHASE5_SETTLE_MS,
         ),
     ];
-    let any_off_boot = dials.iter().any(|(_, cur, boot)| cur != boot);
-    if !any_off_boot {
+    let phase_off = dials.iter().any(|(_, cur, boot)| cur != boot);
+    let preview_off = (crate::gfx::preview_z_offset() - crate::gfx::BOOT_PREVIEW_Z_OFFSET).abs()
+        > 0.05
+        || (crate::gfx::preview_tint_alpha() - crate::gfx::BOOT_PREVIEW_TINT_ALPHA).abs() > 0.005;
+    if !phase_off && !preview_off {
         return;
     }
-    // Stack from h-100 upward, 10 px line height.
     let mut y = h - 100.0;
-    for (idx, cur, _) in dials {
-        right_align(out, &format!("P{idx} {cur}"), y);
+    if phase_off {
+        for (idx, cur, _) in dials {
+            right_align(out, &format!("P{idx} {cur}"), y);
+            y -= 10.0;
+        }
+        let total_ms = (crate::gfx::round_warp_total_secs() * 1000.0).round() as u32;
+        right_align(out, &format!("WARP {total_ms}"), y);
         y -= 10.0;
     }
-    // Total round-warp window summary at the top of the stack.
-    let total_ms = (crate::gfx::round_warp_total_secs() * 1000.0).round() as u32;
-    right_align(out, &format!("WARP {total_ms}"), y);
+    if preview_off {
+        // INTEGER hundredths to dodge the missing `.` glyph: e.g. "PRVZ 800"
+        // = 8.00 world units, "PRVA 055" = alpha 0.55.
+        let z_centi = (crate::gfx::preview_z_offset() * 100.0).round() as u32;
+        let a_centi = (crate::gfx::preview_tint_alpha() * 100.0).round() as u32;
+        right_align(out, &format!("PRVZ {z_centi}"), y);
+        y -= 10.0;
+        right_align(out, &format!("PRVA {a_centi}"), y);
+    }
 }
 
 /// Minimalist controls legend, bottom-left corner. Dim single-column text,
@@ -4143,6 +4156,8 @@ pub fn push_controls_popup(out: &mut Vec<DrawCommand>) {
         "LBKT RBKT    SHIP SCALE",
         "MINUS PLUS   BOARD ZOOM",
         "K L          GRID CELL",
+        "Z X          PREVIEW Z",
+        "B N          PREVIEW TINT",
         "F2 F6        WARP PHASE 1 5",
         "F1           TOGGLE THIS",
     ];

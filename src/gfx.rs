@@ -606,6 +606,56 @@ pub fn phase_from_progress(t: f32) -> (CinematicPhase, f32) {
     }
 }
 
+/// (#213 / Bruce priority dial #1) At-depth preview Z offset (world units) —
+/// distance from the current back row to the upcoming-board's near edge.
+/// Live `Z` / `X` step. Default 8.0 (Bruce's capture-sweep pick; tight ~5,
+/// loose ~12). Used for the persistent preview AND the cinematic next-grid
+/// start depth so dialing one dials the other.
+pub const BOOT_PREVIEW_Z_OFFSET: f32 = 8.0;
+static PREVIEW_Z_MILLI: std::sync::atomic::AtomicI32 =
+    std::sync::atomic::AtomicI32::new((BOOT_PREVIEW_Z_OFFSET * 1000.0) as i32);
+
+/// (#213) Live at-depth preview Z offset (world units).
+#[must_use]
+pub fn preview_z_offset() -> f32 {
+    PREVIEW_Z_MILLI.load(std::sync::atomic::Ordering::Relaxed) as f32 / 1000.0
+}
+/// (#213) Step preview Z by `delta` (world units), clamped to a sane envelope.
+/// `Z` = pull closer (smaller Z), `X` = push deeper (larger Z).
+pub fn step_preview_z(delta: f32) -> f32 {
+    let cur = preview_z_offset();
+    let next = (cur + delta).clamp(0.5, 40.0);
+    PREVIEW_Z_MILLI.store(
+        (next * 1000.0).round() as i32,
+        std::sync::atomic::Ordering::Relaxed,
+    );
+    next
+}
+
+/// (#213 / Bruce priority dial #2) At-depth preview tint alpha — opacity of
+/// the upcoming-grid wireframe + ship markers. Live `B` / `N` step. Default
+/// 0.55 (Bruce-tunable from 0.0 invisible to 1.0 fully bright).
+pub const BOOT_PREVIEW_TINT_ALPHA: f32 = 0.55;
+static PREVIEW_TINT_MILLI: std::sync::atomic::AtomicU32 =
+    std::sync::atomic::AtomicU32::new((BOOT_PREVIEW_TINT_ALPHA * 1000.0) as u32);
+
+/// (#213) Live at-depth preview tint alpha (0..=1).
+#[must_use]
+pub fn preview_tint_alpha() -> f32 {
+    PREVIEW_TINT_MILLI.load(std::sync::atomic::Ordering::Relaxed) as f32 / 1000.0
+}
+/// (#213) Step preview tint by `delta` (alpha units), clamped to [0, 1].
+/// `B` = dimmer, `N` = brighter.
+pub fn step_preview_tint(delta: f32) -> f32 {
+    let cur = preview_tint_alpha();
+    let next = (cur + delta).clamp(0.0, 1.0);
+    PREVIEW_TINT_MILLI.store(
+        (next * 1000.0).round() as u32,
+        std::sync::atomic::Ordering::Relaxed,
+    );
+    next
+}
+
 /// (#213) Cycle a single phase duration up by `step_ms` (wrap at `max_ms`).
 /// Bruce holds Shift + 1..5 to step each phase.
 pub fn cycle_phase_ms(idx: u8, step_ms: u32, max_ms: u32) -> u32 {

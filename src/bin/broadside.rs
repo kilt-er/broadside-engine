@@ -2042,6 +2042,49 @@ impl ApplicationHandler for App {
                         }
                         return;
                     }
+                    // (#213 Bruce-priority dial #1) `Z` / `X` step the at-depth
+                    // preview Z offset (world units): `Z` = pull preview closer
+                    // (smaller Z, more present), `X` = push deeper (larger Z,
+                    // more distant). Step = 0.5 world unit, clamped 0.5..=40.0
+                    // in gfx. KeyZ + KeyX are free in keycode_to_key (asserted
+                    // None below).
+                    if code == KeyCode::KeyZ {
+                        let next = broadside_engine::gfx::step_preview_z(-0.5);
+                        log::info!("preview Z = {next:.2}");
+                        if let Some(win) = self.window.as_ref() {
+                            win.request_redraw();
+                        }
+                        return;
+                    }
+                    if code == KeyCode::KeyX {
+                        let next = broadside_engine::gfx::step_preview_z(0.5);
+                        log::info!("preview Z = {next:.2}");
+                        if let Some(win) = self.window.as_ref() {
+                            win.request_redraw();
+                        }
+                        return;
+                    }
+                    // (#213 Bruce-priority dial #2) `B` / `N` step the at-depth
+                    // preview tint alpha: `B` = dimmer (fainter preview), `N` =
+                    // brighter (preview closer to playable-grid contrast). Step
+                    // 0.05, clamped [0.0, 1.0]. KeyB + KeyN free in
+                    // keycode_to_key.
+                    if code == KeyCode::KeyB {
+                        let next = broadside_engine::gfx::step_preview_tint(-0.05);
+                        log::info!("preview tint alpha = {next:.2}");
+                        if let Some(win) = self.window.as_ref() {
+                            win.request_redraw();
+                        }
+                        return;
+                    }
+                    if code == KeyCode::KeyN {
+                        let next = broadside_engine::gfx::step_preview_tint(0.05);
+                        log::info!("preview tint alpha = {next:.2}");
+                        if let Some(win) = self.window.as_ref() {
+                            win.request_redraw();
+                        }
+                        return;
+                    }
                     // (#213) F2..F6 step the FIVE per-phase round-warp duration
                     // dials (gfx::PHASE{1..5}_*_MS). Each press adds 50 ms,
                     // wraps to 0 past the 1000 ms cap so Bruce can cycle the
@@ -2950,13 +2993,12 @@ impl ApplicationHandler for App {
                         let spawns: Vec<Pos> = next_enc.enemy_ships.iter().map(|s| s.pos).collect();
                         let cols = next_enc.dims.cols;
                         let rows = next_enc.dims.rows;
-                        // Boot tunables — z_offset places the next board ~8
-                        // world units past the back row of the current grid
-                        // (legible gap, mid-frame, dialled by capture sweep
-                        // #P7). Tint alpha 0.55 reads visibly but stays
-                        // clearly fainter than the playable grid.
-                        let rest_z_offset: f32 = 8.0;
-                        let rest_tint_alpha: f32 = 0.55;
+                        // (#213) Live dials — `Z`/`X` adjust preview depth,
+                        // `B`/`N` adjust preview tint alpha. Default 8.0 / 0.55
+                        // matches the boot consts; Bruce dials by eye during
+                        // playtest.
+                        let rest_z_offset = broadside_engine::gfx::preview_z_offset();
+                        let rest_tint_alpha = broadside_engine::gfx::preview_tint_alpha();
                         // (#213) When a Transitioning window is in flight,
                         // drive the upcoming grid IN — toward the player —
                         // during phases 2..5 (the mutual-approach + warp +
@@ -3437,6 +3479,11 @@ mod tests {
         assert_eq!(keycode_to_key(KeyCode::F4), None);
         assert_eq!(keycode_to_key(KeyCode::F5), None);
         assert_eq!(keycode_to_key(KeyCode::F6), None);
+        // (#213) Z/X/B/N are raw-handler keys (preview Z + tint dials).
+        assert_eq!(keycode_to_key(KeyCode::KeyZ), None);
+        assert_eq!(keycode_to_key(KeyCode::KeyX), None);
+        assert_eq!(keycode_to_key(KeyCode::KeyB), None);
+        assert_eq!(keycode_to_key(KeyCode::KeyN), None);
     }
 
     #[test]
