@@ -864,10 +864,20 @@ fn unified_pitch_rad(cfg: &ProjectorConfig) -> f32 {
 /// Solving for t_y at any d, given the anchor ratio k computed once at the
 /// default pair (d₀ = `gfx::BOOT_UNIFIED_CAM_DIST`, t_y₀ = [`UNIFIED_TARGET_Y_DEFAULT`]).
 ///
-/// Limitation: the derivation assumes pitch = [`UNIFIED_PITCH_DEG`] and cell
-/// scale = 1.0; at non-zero `G` (grid-pitch step) or `K`/`L` (cell scale ≠ 1)
-/// the anchor drifts slightly. Bruce typically dials zoom in isolation, so this
-/// is fine — the anchor holds in the common case.
+/// Limitation (#200, PARKED — reviewer-a math-audit follow-up): the anchor
+/// ratio `k` is back-solved ONCE from a fixed default pair
+/// (d₀ = [`crate::gfx::BOOT_UNIFIED_CAM_DIST`] = 5.5, t_y₀ = [`UNIFIED_TARGET_Y_DEFAULT`] = 0.3)
+/// that was tuned at pitch = [`UNIFIED_PITCH_DEG`] (30°) AND cell scale = 1.0.
+/// The closed-form is exact + distance-invariant within those constraints (the
+/// `d·sin·cos` terms cancel in `view-Y_near`), so dialling zoom in ISOLATION
+/// holds the near edge to within ~1 px. But STACKING dials breaks the anchor:
+/// pressing `G` (grid-pitch) or `K`/`L` (cell scale ≠ 1) FIRST and THEN zooming
+/// shifts the parked near-row by tens of px at the [3.5, 7.0] extremes — `k`
+/// was computed against a stale (pitch, scale) baseline that no longer matches
+/// the live geometry. The common path (zoom alone) is fine; full fix is to
+/// recompute (d₀, t_y₀) against the live pitch + cell-scale on each call so
+/// the anchor stays exact across the cross-dial product space. Don't pre-do —
+/// Bruce dials zoom in isolation today; revisit if he combines and sees drift.
 ///
 /// (#198 Bruce) Branches on [`crate::gfx::anchor_mode_centered`]: when true,
 /// returns 0.0 so the look-at sits on the board centroid (ground plane, z =
