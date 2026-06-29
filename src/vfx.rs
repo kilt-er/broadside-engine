@@ -673,10 +673,32 @@ fn emit_shot_beam(
             thickness * cfg.tip_thickness_mul,
             (base_alpha + 0.05).min(1.0),
         );
+        // (#209 hook 5) MUZZLE FLASH: a one-shot over-bright pop at the firing
+        // cell during the very first slice of travel — sells the "shot left the
+        // muzzle" instant. Square quad at `a`, sized in pixels (so it reads at
+        // any cell scale), fades over the first 30% of the travel phase. Goes
+        // through emit_flash for free reuse of the easing — borrow the
+        // ShotBeam color so player/enemy muzzles match their beam tint.
+        let muzzle_t = (prog / 0.3).clamp(0.0, 1.0);
+        if muzzle_t < 1.0 {
+            let mflash_size = thickness * 4.0;
+            let mflash_alpha = (1.0 - muzzle_t) * (base_alpha + 0.10).min(1.0);
+            out.push(DrawCommand::Sprite(SpriteInstance::axis_aligned(
+                a,
+                [mflash_size / 2.0, mflash_size / 2.0],
+                [color[0], color[1], color[2], mflash_alpha],
+                uv,
+            )));
+        }
     } else {
         // STRIKE + FADE: full beam, fading + thinning over the remaining life.
+        // (#209 hook 5) Thickness now peaks at the strike instant then tapers,
+        // not linear — `1 + 0.5*(1-f)^2 - 0.6f` reads as "punchy strike, then
+        // settles" instead of slow uniform thinning. Bounded so a single
+        // mis-tuned life_secs can't blow the half-size buffer.
         let f = ((t - travel_frac) / (1.0 - travel_frac)).clamp(0.0, 1.0);
-        seg(a, b, thickness * (1.0 - f * 0.45), (1.0 - f) * base_alpha);
+        let strike_mul = (1.0 + 0.5 * (1.0 - f) * (1.0 - f) - 0.6 * f).clamp(0.3, 1.6);
+        seg(a, b, thickness * strike_mul, (1.0 - f) * base_alpha);
     }
 }
 
