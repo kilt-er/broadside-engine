@@ -253,12 +253,43 @@ pub fn set_unified(on: bool) {
     UNIFIED.store(on, std::sync::atomic::Ordering::Relaxed);
 }
 
-/// (UNIFY) World-unit scale applied to a hull mesh in the unified ship pass. The
-/// imported hulls are ~12 units long; one grid cell is 1 world unit. (#188 Bruce
-/// pick) 0.10 = hull spans ~1.2 cells along the lane, hull width ~0.62 world units
-/// (~62% of a cell) — comfortable cell fit with the bow projecting slightly out of
-/// the near edge for "ship moving up the lane" read. Live cycle = #190.
-const UNIFIED_SHIP_SCALE: f32 = 0.10;
+/// (#190 Bruce) Minimum allowed ship scale for the live `[` adjuster. Clamp keeps
+/// the hull from going silly tiny. Named so the band widens via a one-liner.
+pub const UNIFIED_SHIP_SCALE_MIN: f32 = 0.05;
+/// (#190) Maximum allowed ship scale for the live `]` adjuster. Named so the band
+/// widens via a one-liner if Bruce wants larger hulls later.
+pub const UNIFIED_SHIP_SCALE_MAX: f32 = 0.15;
+/// (#190) Per-press step size for the `[` / `]` ship-scale adjuster.
+pub const UNIFIED_SHIP_SCALE_STEP: f32 = 0.01;
+/// (#190) Boot value — Bruce's #188 pick (0.10). Within
+/// `[UNIFIED_SHIP_SCALE_MIN, UNIFIED_SHIP_SCALE_MAX]`.
+pub const BOOT_SHIP_SCALE: f32 = 0.10;
+
+/// (#190) Live ship-scale stored as `scale * 1000` rounded to u32 so we can use a
+/// stdlib atomic (no `AtomicF32`). Resolution = 0.001, plenty for a 0.01-step
+/// adjuster. Read by the loft render loop via [`unified_ship_scale`], adjusted
+/// by [`adjust_ship_scale`] (the `[` and `]` keys).
+static SHIP_SCALE_MILLI: std::sync::atomic::AtomicU32 =
+    std::sync::atomic::AtomicU32::new((BOOT_SHIP_SCALE * 1000.0) as u32);
+
+/// (#190) The live ship-scale value. Reads the atomic + converts back to f32.
+/// Safe to call from any thread / render hot path.
+pub fn unified_ship_scale() -> f32 {
+    SHIP_SCALE_MILLI.load(std::sync::atomic::Ordering::Relaxed) as f32 / 1000.0
+}
+
+/// (#190) Adjust the live ship scale by `delta` (positive grows, negative shrinks),
+/// clamping into `[UNIFIED_SHIP_SCALE_MIN, UNIFIED_SHIP_SCALE_MAX]`. Returns the
+/// new value. Bound to `[` (delta=-STEP) and `]` (delta=+STEP) in the bin.
+pub fn adjust_ship_scale(delta: f32) -> f32 {
+    let next =
+        (unified_ship_scale() + delta).clamp(UNIFIED_SHIP_SCALE_MIN, UNIFIED_SHIP_SCALE_MAX);
+    SHIP_SCALE_MILLI.store(
+        (next * 1000.0).round() as u32,
+        std::sync::atomic::Ordering::Relaxed,
+    );
+    next
+}
 /// (UNIFY) Vertical lift (world units) of the hull above the ground plane so it
 /// sits ON the grid rather than half-buried at its mesh origin. (#188 Bruce: enemies
 /// "float above their cells" — diagnosis: _03.glb Y-bbox is [-1.48, +1.32], so at
@@ -2298,7 +2329,7 @@ impl Gfx {
                 let mut center = crate::projector::cell_world_center(pos, &cfg);
                 center[1] += UNIFIED_SHIP_LIFT; // sit ON the plane, not half-buried
                 let model =
-                    crate::loft_gpu::unified_model(center, lq.unified_yaw_rad, UNIFIED_SHIP_SCALE);
+                    crate::loft_gpu::unified_model(center, lq.unified_yaw_rad, unified_ship_scale());
                 draws.push((&mesh.vbuf, mesh.vcount, model));
             }
             if draws.is_empty() {

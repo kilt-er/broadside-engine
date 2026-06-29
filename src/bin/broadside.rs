@@ -1594,6 +1594,31 @@ impl ApplicationHandler for App {
                         }
                         return;
                     }
+                    // (#190 Bruce) `[` shrinks UNIFIED_SHIP_SCALE by STEP (0.01); `]`
+                    // grows it. Clamp [UNIFIED_SHIP_SCALE_MIN, UNIFIED_SHIP_SCALE_MAX]
+                    // = [0.05, 0.15]. Live read by the unified ship pass — updates
+                    // without rebuild. Both keys verified free in keycode_to_key + the
+                    // raw G/T/O/U/,/. /;/' handlers.
+                    if code == KeyCode::BracketLeft {
+                        let s = broadside_engine::gfx::adjust_ship_scale(
+                            -broadside_engine::gfx::UNIFIED_SHIP_SCALE_STEP,
+                        );
+                        log::info!("unified ship scale -> {s:.2}");
+                        if let Some(win) = self.window.as_ref() {
+                            win.request_redraw();
+                        }
+                        return;
+                    }
+                    if code == KeyCode::BracketRight {
+                        let s = broadside_engine::gfx::adjust_ship_scale(
+                            broadside_engine::gfx::UNIFIED_SHIP_SCALE_STEP,
+                        );
+                        log::info!("unified ship scale -> {s:.2}");
+                        if let Some(win) = self.window.as_ref() {
+                            win.request_redraw();
+                        }
+                        return;
+                    }
                 }
                 let Some(key) = keycode_to_key(code) else {
                     return;

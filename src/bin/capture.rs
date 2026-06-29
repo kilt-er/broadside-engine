@@ -234,6 +234,18 @@ fn main() {
             }
         }
     }
+    // (#190) Optional BROADSIDE_SHIP_SCALE=F sets the live UNIFIED_SHIP_SCALE to
+    // F (float, clamped into [UNIFIED_SHIP_SCALE_MIN, UNIFIED_SHIP_SCALE_MAX]) so
+    // the headless shot verifies any value the live `[` / `]` keys can dial.
+    // Implemented as a single adjust_ship_scale(F - current) so the clamp logic
+    // and the atomic update path are the same as the live key handler.
+    if let Ok(v) = std::env::var("BROADSIDE_SHIP_SCALE") {
+        if let Ok(target) = v.parse::<f32>() {
+            let cur = broadside_engine::gfx::unified_ship_scale();
+            let s = broadside_engine::gfx::adjust_ship_scale(target - cur);
+            log::info!("capture: unified ship scale -> {s:.2}");
+        }
+    }
     // (#140/#142/#151) Optional grid-mode env (mirrors the `T` cycle), so the pitch-arc
     // shots show each mode. BROADSIDE_GRID_CONTINUOUS=1 -> continuous-straight (mode 3);
     // BROADSIDE_GRID_STRAIGHT=1 -> stretch-straight stepped (mode 2);
