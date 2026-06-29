@@ -1535,50 +1535,70 @@ impl App {
     /// board so the existing `tween_2d` pipeline eases each ship FROM an
     /// off-board start point TO its real `Pos` over the warp window.
     ///
-    /// Source point branches by faction so the player + enemies converge onto
-    /// the board from OPPOSITE ends of the lane (Bruce's "player moves into
-    /// the screen as enemies move toward the screen"):
+    /// (#213 continuity rewrite — PLAYER NEVER LEAVES SCREEN + A1 + A2)
     ///
-    /// - **Enemies**: `from_cell_frac.row = -1.0` — one row BEHIND the back
-    ///   row, so the enemy ships enter at the top of the frame "just above
-    ///   the grid" and slide DOWN-toward-camera into their cells.
-    /// - **Player**: `from_cell_frac.row = ROWS as f32 - 0.1` (≈ 3.9 on the
-    ///   4-row default board) — just IN FRONT of the near row so the player
-    ///   ship enters as a HUGE foreground hull at the bottom edge, sliding
-    ///   UP-away-from-camera into its near cell. The upper bound is fixed
-    ///   by the unified pinhole's near plane: a ship at row=ROWS+1 lives in
-    ///   front of the camera eye and gets clipped (verified via headless
-    ///   capture sweep), so we stay strictly inside `[ROWS-1, ROWS-0.1]`.
+    /// Bruce's hard rule: the PLAYER is the on-screen anchor for the entire
+    /// transition — never pops offscreen or reappears from a foreground
+    /// plant. Relative motion = grids move under a still-framed player, not
+    /// the player teleporting between boards.
     ///
-    /// Col is unchanged (`ship.pos.col`); only the row origin differs by
-    /// faction. Both ranges are tuned against the unified camera's boot
-    /// pinhole (FOV 52°, pitch 20°, `cam_dist` 5.75, cell scale 1.9) so the
-    /// hulls are visibly-sized throughout the warp window. The truly-FROM-
-    /// DEEP read needs streaks/trails (parallax P7 follow-up), not a deeper
-    /// start point alone (row=-2 enemies project to ≈ 11.75 world z — tiny
-    /// + hidden by the top-edge HUD enemies panel).
+    /// - **Player (A1 = Option 2 column-clamped)**: tween FROM
+    ///   `(prior_player_col clamped to new cols, ship.pos.row)` TO the new
+    ///   spawn cell. With variable boards gated OFF (current default) the
+    ///   prior + new boards share the same dims, so clamping is a no-op and
+    ///   the player either stays at the same cell (no anchor needed) or
+    ///   carries forward to a different cell column-by-column without ever
+    ///   leaving the visible board. Same-cell case = no anchor planted, the
+    ///   player just stays put while the grids change underneath.
+    /// - **Enemies (A2 = Reading B)**: NO anchor planted. The new board's
+    ///   enemies "ride the approaching grid in formation" via the at-depth
+    ///   preview pipeline: they render as upcoming-board markers behind the
+    ///   playable board (already on at e72f100 with phase-2 Z-lerp), and the
+    ///   bin's `tween_2d` adds their ids to `Tween2d::hidden_ship_ids` while
+    ///   the warp is in flight so they DON'T also render on the playable
+    ///   grid during the same window. By the time the preview Z lands at the
+    ///   playable plane (end of phase 4) the hide-set clears and they
+    ///   resume normal rendering — the seamless "they were always there,
+    ///   they just rode in with the grid" read.
     ///
-    /// Eased over `kind.warp_secs() * 1000` ms, matching the Transitioning
-    /// window so each slide completes exactly when the warp ends. Facing
-    /// isn't tweened (ships warp in already facing their final dir);
-    /// `from_facing == ship.facing` keeps the rotation lerp a no-op.
-    fn plant_warp_in_anchors(&mut self, kind: TransitionKind, now: Instant) {
+    /// `prior_player_col` is the cleared board's player column (None if the
+    /// cleared board had no player, defensive). Clamp uses `Board::dims()`.
+    fn plant_warp_in_anchors(
+        &mut self,
+        kind: TransitionKind,
+        now: Instant,
+        prior_player_col: Option<usize>,
+    ) {
         let dur_ms = kind.warp_secs() * 1000.0;
-        let rows = broadside_engine::grid::ROWS as f32;
+        let new_cols = self.board.dims().cols;
         for ship in self.board.cells.iter().flatten() {
-            let from_col = ship.pos.col as f32;
-            let from_row = if ship.faction == Faction::Player {
-                rows - 0.1
-            } else {
-                -1.0
+            if ship.faction != Faction::Player {
+                // (A2 Reading B) Enemies skip the anchor — they ride the
+                // upcoming-board preview Z animation, hidden on the
+                // playable grid until the warp lands.
+                continue;
+            }
+            let Some(prior_col) = prior_player_col else {
+                continue;
             };
+            // (A1 Option 2) Clamp the cleared-board col into the new dims;
+            // same-cell = no visible tween (anchor still planted so the
+            // tween_2d path consumes the same hidden-set bookkeeping window,
+            // but `from_pos == ship.pos` means the lerp is a no-op).
+            let clamped_from_col = prior_col.min(new_cols.saturating_sub(1));
+            if clamped_from_col == ship.pos.col {
+                // Player ends at the same column — nothing to tween; skip the
+                // anchor entirely so push_ship_2d falls back to the integer
+                // cell (no lerp ovrhd, no #188 fraction edge case).
+                continue;
+            }
             self.tween_anchors.insert(
                 ship.id.clone(),
                 TweenAnchor {
                     from_pos: ship.pos,
                     from_facing: ship.facing,
                     started_at: now,
-                    from_cell_frac: Some([from_col, from_row]),
+                    from_cell_frac: Some([clamped_from_col as f32, ship.pos.row as f32]),
                     dur_ms_override: Some(dur_ms),
                 },
             );
@@ -1744,6 +1764,25 @@ impl App {
                     from_c[1] + (to_c[1] - from_c[1]) * t,
                 ],
             );
+        }
+        // (#213 A2 Reading B) During a Transitioning window hide every NON-
+        // PLAYER ship on the just-swapped-in board UNTIL the cinematic's
+        // Settle phase — they "ride the upcoming-grid preview" as it
+        // animates Z → 0. Player is never in the hide set (PLAYER NEVER
+        // LEAVES SCREEN hard rule). At phase Settle the at-depth preview
+        // has effectively landed on the playable plane, the markers visually
+        // overlap their real positions, and the hide set clears so the real
+        // hulls take over for the steady-state.
+        if let DemoState::Transitioning(phase) = self.demo_state {
+            let t = phase.progress(now);
+            let (cur_phase, _) = broadside_engine::gfx::phase_from_progress(t);
+            if !matches!(cur_phase, broadside_engine::gfx::CinematicPhase::Settle) {
+                for ship in self.board.cells.iter().flatten() {
+                    if ship.faction != broadside_engine::types::Faction::Player {
+                        tw.hidden_ship_ids.insert(ship.id.clone());
+                    }
+                }
+            }
         }
         tw
     }
@@ -2462,6 +2501,19 @@ impl ApplicationHandler for App {
                                     // `pending_board` is left None since the
                                     // swap is immediate, and the warp-end tick
                                     // just flips the demo state.
+                                    // (#213 A1 Option 2) Snapshot the CLEARED
+                                    // board's player col BEFORE the swap so
+                                    // plant_warp_in_anchors can tween the
+                                    // player FROM that column (clamped to the
+                                    // new dims) TO the new spawn cell. None if
+                                    // the cleared board has no player ship.
+                                    let prior_player_col: Option<usize> = self
+                                        .board
+                                        .cells
+                                        .iter()
+                                        .flatten()
+                                        .find(|s| s.faction == Faction::Player)
+                                        .map(|s| s.pos.col);
                                     self.board = next;
                                     self.tween_anchors.clear();
                                     self.kickbacks.clear();
@@ -2473,7 +2525,7 @@ impl ApplicationHandler for App {
                                     self.beat_playback = None;
                                     self.queue_blocked_flash = None;
                                     self.reinstall_audio();
-                                    self.plant_warp_in_anchors(kind, now);
+                                    self.plant_warp_in_anchors(kind, now, prior_player_col);
                                     self.demo_state = DemoState::Transitioning(TransitionPhase {
                                         kind,
                                         started_at: now,

@@ -459,6 +459,14 @@ pub struct Tween2d {
     /// `push_ordnance_2d` draws the torpedo SLIDING cell-to-cell instead of snapping.
     /// Empty (the default / capture / test path) ⇒ ordnance draws at its cell centre.
     pub proj_centers: std::collections::HashMap<String, [f32; 2]>,
+    /// (#213 A2 Reading B) Ship IDs to SKIP rendering this frame. The bin
+    /// populates this during a `Transitioning` window with every enemy on the
+    /// just-swapped-in board so they DON'T render on the playable grid yet —
+    /// the at-depth upcoming-board preview shows their markers; they "ride the
+    /// grid" as Z animates 0. Once the warp's settle phase lands they're
+    /// removed from the hide set and resume normal rendering. Empty ⇒
+    /// every ship renders (byte-identical to pre-#213 compose paths).
+    pub hidden_ship_ids: std::collections::HashSet<String>,
 }
 
 /// Linear-interpolate two [`crate::projector::CellQuad`]s corner-for-corner (+
@@ -539,6 +547,13 @@ pub fn compose_scene_2d_tweened(
     let mut ships: Vec<&Ship> = board.cells.iter().flatten().collect();
     ships.sort_by_key(|s| s.pos.row);
     for ship in &ships {
+        // (#213 A2 Reading B) Skip ships whose id is in the hide set — the bin
+        // populates this during a Transitioning window for enemies that
+        // "ride the upcoming grid" in formation rather than warp-in per
+        // faction. Empty in steady-state Playing so every ship draws.
+        if tween.hidden_ship_ids.contains(&ship.id) {
+            continue;
+        }
         push_ship_2d(
             &mut out,
             ship,
