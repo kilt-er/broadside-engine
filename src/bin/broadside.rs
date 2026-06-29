@@ -340,6 +340,36 @@ const fn demo_lane() -> LaneGeometry {
     DEFAULT_LANE
 }
 
+/// (#213 / #P7) Look up the encounter that comes AFTER the current one in the
+/// run. Used by the persistent at-depth distance preview so the next grid +
+/// boss can be drawn behind the playable board through the shared unified
+/// camera. Returns `None` if the run is already over or there is no next
+/// encounter (final sector's final encounter — once Bruce clears that the
+/// run ends, no preview needed).
+fn next_encounter_after_current<'s>(
+    run: &broadside_engine::types::Run,
+    sectors: &'s [broadside_engine::types::Sector],
+) -> Option<&'s broadside_engine::types::EncounterDef> {
+    if run.defeated || run.victorious {
+        return None;
+    }
+    // Next encounter within the current sector.
+    let next_in_sector = run.completed_encounters as usize + 1;
+    if let Some(enc) = sectors
+        .get(run.current_sector_idx)
+        .and_then(|s| s.encounters.get(next_in_sector))
+    {
+        return Some(enc);
+    }
+    // Otherwise — first encounter of the next non-empty sector.
+    let start = run.current_sector_idx.saturating_add(1);
+    sectors
+        .get(start..)
+        .into_iter()
+        .flatten()
+        .find_map(|s| s.encounters.first())
+}
+
 /// Build the demo [`DemoContent`] with the player's Phase 2 loadout
 /// pre-installed: `HeatSink` + Point-Blank Doctrine subsystems and one
 /// charge of each placeholder field-kit card (`mass_lock` / `mass_breach` /
@@ -2879,6 +2909,41 @@ impl ApplicationHandler for App {
                     &scene_tween,
                     self.frame_clock,
                 );
+                // (#213 / #P7) PERSISTENT NEXT-GRID PREVIEW — Bruce can't see the
+                // next encounter approaching, so always draw the upcoming board
+                // at deeper Z through the shared unified camera. Picks the next
+                // encounter via the campaign cursor (current sector at
+                // completed_encounters+1, or rolling to the next sector). The
+                // upcoming grid + enemy markers project through the same
+                // unified_view_proj as the current board on the same receding
+                // ground plane (the locked design — not flat billboards). Hidden
+                // during the death overlay so the freeze reads clean.
+                if !matches!(demo_state, DemoState::Dying(_)) {
+                    if let Some(next_enc) = next_encounter_after_current(&self.run, &self.sectors) {
+                        let spawns: Vec<Pos> = next_enc.enemy_ships.iter().map(|s| s.pos).collect();
+                        let cols = next_enc.dims.cols;
+                        let rows = next_enc.dims.rows;
+                        // Boot tunables — z_offset places the next board ~8
+                        // world units past the back row of the current grid
+                        // (legible gap, mid-frame, dialled by capture sweep
+                        // #P7). Tint alpha 0.55 reads visibly but stays
+                        // clearly fainter than the playable grid. Both become
+                        // live-dial keys in a follow-up once Bruce eyeballs
+                        // the static look.
+                        let z_offset: f32 = 8.0;
+                        let tint_alpha: f32 = 0.55;
+                        hud::prepend_upcoming_board_2d(
+                            &mut instances,
+                            &scene_cfg,
+                            z_offset,
+                            cols,
+                            rows,
+                            &spawns,
+                            next_enc.is_boss,
+                            tint_alpha,
+                        );
+                    }
+                }
                 // In-game salvage counter (top-right) + controls legend
                 // (bottom-left) — both screen-space, independent of the board
                 // projection. The modal overlays surface salvage in their banners.

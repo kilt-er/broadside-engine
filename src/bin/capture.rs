@@ -581,6 +581,24 @@ fn main() {
         }
     };
     let mut commands = compose_scene_2d_with(&board, &cfg, &gfx);
+    // (#213/#P7) Mirror the live bin's persistent at-depth preview so headless
+    // capture reads the SAME view Bruce will see at boot. Uses a stand-in
+    // next-encounter shape (5x4, 2 enemies, not a boss) since the capture
+    // harness doesn't run a real Run/Sector campaign. The live bin pulls real
+    // EncounterDef::dims + enemy_ships from the campaign cursor.
+    {
+        let stand_in_spawns = [Pos::new(1, 0), Pos::new(3, 0)];
+        broadside_engine::hud::prepend_upcoming_board_2d(
+            &mut commands,
+            &cfg,
+            8.0,
+            COLS,
+            ROWS,
+            &stand_in_spawns,
+            false,
+            0.55,
+        );
+    }
     // (#127) SALVAGE readout — the live bin draws this in its Playing overlay (not
     // inside compose_scene_2d), so append it here with a representative value so the
     // capture shows its NEW bottom-left position under the HULL/SHLD bars.

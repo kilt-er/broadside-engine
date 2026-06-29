@@ -1492,6 +1492,167 @@ fn push_grid_2d(out: &mut Vec<DrawCommand>, cfg: &ProjectorConfig) {
     }
 }
 
+/// (#P7/#213) Convenience: prepend upcoming-board grid wireframe + ship
+/// markers at the FRONT of an already-composed scene Vec, so the at-depth
+/// preview draws BEHIND the current grid (earlier in the command list →
+/// drawn first → covered by the current grid where they overlap). The bin
+/// calls this AFTER `compose_scene_2d_tweened` with the next encounter's
+/// dims/spawns/`is_boss` so the persistent distance preview is always on at
+/// boot (no env gate). Pass `enemy_spawns` from `EncounterDef::enemy_ships
+/// .iter().map(|s| s.pos)`; `is_boss` from `EncounterDef::is_boss`.
+#[allow(clippy::too_many_arguments)]
+pub fn prepend_upcoming_board_2d(
+    out: &mut Vec<DrawCommand>,
+    cfg: &ProjectorConfig,
+    z_offset: f32,
+    cols: usize,
+    rows: usize,
+    enemy_spawns: &[crate::grid::Pos],
+    is_boss: bool,
+    tint_alpha: f32,
+) {
+    let mut preview: Vec<DrawCommand> = Vec::with_capacity(64);
+    push_upcoming_grid_2d(&mut preview, cfg, z_offset, cols, rows, tint_alpha);
+    push_upcoming_ships_2d(
+        &mut preview,
+        cfg,
+        z_offset,
+        cols,
+        rows,
+        enemy_spawns,
+        is_boss,
+        tint_alpha,
+    );
+    // Splice at the front so the at-depth preview draws before the current
+    // grid + ships; depth ordering on screen becomes: starfield BG → upcoming
+    // preview (at deep Z) → current grid → current ships → effects → HUD.
+    out.splice(0..0, preview);
+}
+
+/// (#P7/#213) Render an UPCOMING board's grid wireframe at a world-space
+/// `z_offset` deeper than the current board, through the SAME unified camera.
+/// `dims` is the upcoming encounter's grid shape (#199b variable boards) —
+/// can differ from `cfg.cols / cfg.rows`. Each cell's four ground corners go
+/// through [`projector::cell_world_corners_offset_dims`] then project through
+/// [`projector::unified_view_proj`]; cells whose corners project behind the
+/// camera are skipped. The wire color dims with depth via `tint_alpha` so
+/// deeper boards read fainter than the playable foreground.
+pub fn push_upcoming_grid_2d(
+    out: &mut Vec<DrawCommand>,
+    cfg: &ProjectorConfig,
+    z_offset: f32,
+    cols: usize,
+    rows: usize,
+    tint_alpha: f32,
+) {
+    use crate::grid::Pos as GridPos;
+    let m = crate::projector::unified_view_proj(cfg);
+    let alpha = tint_alpha.clamp(0.0, 1.0);
+    let stroke = [
+        LANE_STROKE[0],
+        LANE_STROKE[1],
+        LANE_STROKE[2],
+        LANE_STROKE[3] * alpha,
+    ];
+    let tick = [
+        LANE_TICK[0],
+        LANE_TICK[1],
+        LANE_TICK[2],
+        LANE_TICK[3] * alpha,
+    ];
+    let proj = |w: [f32; 3]| {
+        crate::projector::unified_project(&m, w, cfg).map(|p| Point2 { x: p.x, y: p.y })
+    };
+    for row in 0..rows {
+        for col in 0..cols {
+            let w = crate::projector::cell_world_corners_offset_dims(
+                GridPos::new(col, row),
+                cfg,
+                z_offset,
+                cols,
+                rows,
+            );
+            let projected: Option<[Point2; 4]> =
+                (|| Some([proj(w[0])?, proj(w[1])?, proj(w[2])?, proj(w[3])?]))();
+            let Some(p) = projected else { continue };
+            let color = if row == rows.saturating_sub(1) {
+                tick
+            } else {
+                stroke
+            };
+            push_line(out, p[0], p[1], 1.0, color);
+            push_line(out, p[1], p[2], 1.0, color);
+            push_line(out, p[2], p[3], 1.0, color);
+            push_line(out, p[3], p[0], 1.0, color);
+        }
+    }
+}
+
+/// (#P7/#213) Render simple ship markers (faction-tinted small filled boxes)
+/// at each `spawn_pos` of an upcoming encounter, at world `z_offset`. `dims`
+/// must match the upcoming `EncounterDef::dims` so the cell math agrees with
+/// [`push_upcoming_grid_2d`]. `is_boss` paints the boss marker in a warmer/
+/// brighter tint so it LOOMS distinctly in the deepest layer. Projects through
+/// [`projector::unified_view_proj`] same as the grid wireframe — single
+/// camera, no separate at-depth pipeline. First-cut placeholder before the
+/// faithful RTT ship previews land.
+#[allow(clippy::too_many_arguments)]
+pub fn push_upcoming_ships_2d(
+    out: &mut Vec<DrawCommand>,
+    cfg: &ProjectorConfig,
+    z_offset: f32,
+    cols: usize,
+    rows: usize,
+    enemy_spawns: &[crate::grid::Pos],
+    is_boss: bool,
+    tint_alpha: f32,
+) {
+    let m = crate::projector::unified_view_proj(cfg);
+    let alpha = tint_alpha.clamp(0.0, 1.0);
+    // Enemy marker tint — base ENEMY_HULL_FILL faded by alpha; boss bumps
+    // RGB so it visibly looms warmer/brighter at the deepest layer.
+    let (r, g, b) = if is_boss {
+        (1.0, 0.55, 0.45)
+    } else {
+        (ENEMY_HULL_FILL[0], ENEMY_HULL_FILL[1], ENEMY_HULL_FILL[2])
+    };
+    let fill = [r, g, b, ENEMY_HULL_FILL[3] * alpha];
+    let proj = |w: [f32; 3]| {
+        crate::projector::unified_project(&m, w, cfg).map(|p| Point2 { x: p.x, y: p.y })
+    };
+    for pos in enemy_spawns {
+        // Sanity-clamp the spawn to the upcoming dims so a stale spawn at
+        // col/row past the rolled dims doesn't NaN out (defensive).
+        if pos.col >= cols || pos.row >= rows {
+            continue;
+        }
+        let w = crate::projector::cell_world_corners_offset_dims(*pos, cfg, z_offset, cols, rows);
+        let projected: Option<[Point2; 4]> =
+            (|| Some([proj(w[0])?, proj(w[1])?, proj(w[2])?, proj(w[3])?]))();
+        let Some(p) = projected else { continue };
+        // Shrink the projected quad inward 30% so the marker reads as a small
+        // hull seated in the cell, not the cell-sized fill.
+        let cx = (p[0].x + p[2].x) * 0.5;
+        let cy = (p[0].y + p[2].y) * 0.5;
+        let shrink = 0.7;
+        let inset = |q: Point2| Point2 {
+            x: cx + (q.x - cx) * shrink,
+            y: cy + (q.y - cy) * shrink,
+        };
+        let q = [inset(p[0]), inset(p[1]), inset(p[2]), inset(p[3])];
+        out.push(DrawCommand::Polygon(PolygonInstance::flat(
+            [
+                [q[0].x, q[0].y],
+                [q[1].x, q[1].y],
+                [q[2].x, q[2].y],
+                [q[3].x, q[3].y],
+            ],
+            fill,
+            atlas::cell_uvs(atlas::SOLID_WHITE),
+        )));
+    }
+}
+
 /// Outline a projected cell quad's four edges (the grid wireframe).
 fn outline_cell_2d(out: &mut Vec<DrawCommand>, q: &CellQuad, color: [f32; 4]) {
     let c = q.corners;

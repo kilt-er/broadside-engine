@@ -1018,6 +1018,62 @@ pub fn cell_world_center_frac(col: f32, row: f32, cfg: &ProjectorConfig) -> [f32
     [x, 0.0, z]
 }
 
+/// (#P7/#213) Z-OFFSET variant of [`cell_world_corners`] over an EXPLICIT dims
+/// pair — same ground-plane corners, shifted along +Z by `z_offset`. Lets the
+/// renderer place an UPCOMING board at deeper Z through the SAME unified
+/// camera, even when the upcoming dims differ from the current ones (#199b
+/// variable boards). `cfg` is the SCENE projector cfg (frame size, base
+/// cols/rows for camera FOV math) — the camera doesn't change with the
+/// preview's grid dims, only the grid layout does. Pass `(cols, rows)`
+/// matching the upcoming `EncounterDef::dims`. At `z_offset = 0` and
+/// `(cols, rows) == (cfg.cols, cfg.rows)` this returns exactly
+/// [`cell_world_corners`].
+pub fn cell_world_corners_offset_dims(
+    pos: Pos,
+    _cfg: &ProjectorConfig,
+    z_offset: f32,
+    cols: usize,
+    rows: usize,
+) -> [[f32; 3]; 4] {
+    let cols_f = cols.max(1) as f32;
+    let rows_f = rows.max(1) as f32;
+    let s = crate::gfx::unified_grid_cell_scale();
+    let left_x = (cols_f * 0.5 - pos.col as f32) * s;
+    let right_x = (cols_f * 0.5 - (pos.col as f32 + 1.0)) * s;
+    let near_z = UNIFIED_Z_FRONT + (rows_f - 1.0 - pos.row as f32) * s + z_offset;
+    let far_z = near_z + s;
+    [
+        [left_x, 0.0, far_z],
+        [right_x, 0.0, far_z],
+        [right_x, 0.0, near_z],
+        [left_x, 0.0, near_z],
+    ]
+}
+
+/// (#P7/#213) Z-OFFSET variant of [`cell_world_corners`] — same ground-plane
+/// corners as [`cell_world_corners`], shifted along +Z by `z_offset`. Wraps
+/// [`cell_world_corners_offset_dims`] at `(cfg.cols, cfg.rows)` for the
+/// same-dims case.
+pub fn cell_world_corners_offset(pos: Pos, cfg: &ProjectorConfig, z_offset: f32) -> [[f32; 3]; 4] {
+    cell_world_corners_offset_dims(pos, cfg, z_offset, cfg.cols, cfg.rows)
+}
+
+/// (#P7/#213) Z-OFFSET variant of [`cell_world_center_frac`] — same ground-
+/// plane centre, shifted along +Z by `z_offset`. Mirrors
+/// [`cell_world_corners_offset`] so a ship rendered at the offset board's
+/// `(col, row)` cell aligns with the offset grid cell quad by construction
+/// (#188 alignment guard holds at any `z_offset`).
+pub fn cell_world_center_frac_offset(
+    col: f32,
+    row: f32,
+    cfg: &ProjectorConfig,
+    z_offset: f32,
+) -> [f32; 3] {
+    let mut c = cell_world_center_frac(col, row, cfg);
+    c[2] += z_offset;
+    c
+}
+
 /// World-space direction a ship heading `N` (up-lane) points: deeper into the
 /// board, `+Z`. The renderer yaws the hull about `+Y` from this so E/S/W follow.
 /// (Provided so the ship pass + tests share the convention.)
