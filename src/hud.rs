@@ -430,6 +430,12 @@ pub struct VisualShip2d {
     pub depth_scale: f32,
     /// Interpolated ground-plane facing yaw (deg) for the loft hull's rotation.
     pub facing_yaw_deg: f32,
+    /// (#201 fix A) FRACTIONAL grid cell `[col, row]` — the eased Tween2d lerp
+    /// from the previous cell to the current cell. The unified ship pass uses
+    /// this to slide the loft hull cell-to-cell through the world-space camera
+    /// (instead of snapping on the integer cell while everything else tweened).
+    /// At rest equal to `[ship.pos.col, ship.pos.row]` cast to f32.
+    pub cell_frac: [f32; 2],
 }
 
 /// (#79) Per-ship visual tween overrides for the 2-D live path, keyed by
@@ -1638,6 +1644,11 @@ fn push_ship_2d(
             let h = w / LOFT_TEXTURE_ASPECT;
             let (l, r) = (center[0] - w * 0.5, center[0] + w * 0.5);
             let (t, b) = (center[1] - h * 0.5, center[1] + h * 0.5);
+            // (#201 fix A) Fractional cell sourced from the Tween2d override
+            // when a slide is in flight; absent ⇒ snap to the integer cell so
+            // the rest-state frame is byte-identical (and the #188 alignment
+            // guard's invariants hold by construction).
+            let cell_frac = vis.map_or([ship.pos.col as f32, ship.pos.row as f32], |v| v.cell_frac);
             out.push(DrawCommand::LoftShip(LoftShipInstance {
                 p0: [l, t],
                 p1: [r, t],
@@ -1648,6 +1659,7 @@ fn push_ship_2d(
                 aim_at: center,
                 facing_yaw_deg,
                 cell: [ship.pos.col as u32, ship.pos.row as u32],
+                cell_frac,
                 unified_yaw_rad: unified_heading_yaw(ship.facing),
             }));
             return;
@@ -1697,6 +1709,8 @@ fn push_ship_2d(
             let b = near_edge_y;
             let t = b - h;
             let (l, r) = (center[0] - w * 0.5, center[0] + w * 0.5);
+            // (#201 fix A) Fractional cell for the unified-pass sliding hull.
+            let cell_frac = vis.map_or([ship.pos.col as f32, ship.pos.row as f32], |v| v.cell_frac);
             out.push(DrawCommand::LoftShip(LoftShipInstance {
                 p0: [l, t],
                 p1: [r, t],
@@ -1715,6 +1729,7 @@ fn push_ship_2d(
                 facing_yaw_deg,
                 // (UNIFY) cell + world heading for the unified ship pass.
                 cell: [ship.pos.col as u32, ship.pos.row as u32],
+                cell_frac,
                 unified_yaw_rad: unified_heading_yaw(ship.facing),
             }));
             // (#138) Shield pips removed — the per-face cyan squares read as mystery
@@ -1794,6 +1809,8 @@ fn push_ship_2d(
             // This is the per-ship facing the rotate-to-turn movement model needs to read
             // (each ship points where its bow points; you turn by rotating). Scale stays
             // 1.0x (the #153 uniform size is unchanged; only the wrong forced yaw is fixed).
+            // (#201 fix A) Fractional cell for the unified-pass sliding hull.
+            let cell_frac = vis.map_or([ship.pos.col as f32, ship.pos.row as f32], |v| v.cell_frac);
             out.push(DrawCommand::LoftShip(LoftShipInstance {
                 p0: [l, t],
                 p1: [r, t],
@@ -1805,6 +1822,7 @@ fn push_ship_2d(
                 facing_yaw_deg,
                 // (UNIFY) cell + world heading for the unified ship pass.
                 cell: [ship.pos.col as u32, ship.pos.row as u32],
+                cell_frac,
                 unified_yaw_rad: unified_heading_yaw(ship.facing),
             }));
             // (#112) NO per-enemy overlay (no arrow/pips/bars/telegraph) — the
@@ -2347,6 +2365,9 @@ fn push_ship(
             facing_yaw_deg: 0.0,
             // (UNIFY) Legacy 1-D path never runs the unified pass; fill defaults.
             cell: [0, 0],
+            // (#201 fix A) Legacy path: keep the matching integer default — the
+            // unified ship pass that consumes cell_frac never runs on this branch.
+            cell_frac: [0.0, 0.0],
             unified_yaw_rad: 0.0,
         }));
         return;

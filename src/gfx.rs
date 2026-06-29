@@ -741,11 +741,19 @@ pub struct LoftShipInstance {
     /// ±90 — all FLAT on the grid. Set by `hud` from `ship.facing`; the renderer
     /// adds it to the base yaw so all 4 cardinals render as distinct flat poses.
     pub facing_yaw_deg: f32,
-    /// (UNIFY) The ship's grid cell `[col, row]` — the unified ship pass places the
-    /// hull at this cell's WORLD point ([`crate::projector::cell_world_center`]) and
-    /// renders it through the grid's own camera, so it lives in the grid. (The legacy
-    /// per-cell blit path ignores this and uses the screen quad above.)
+    /// (UNIFY) The ship's INTEGER grid cell `[col, row]` — the logical / snapped
+    /// position. Kept alongside [`cell_frac`] as the rest-state baseline (#188
+    /// alignment guard reads this); when the ship is not mid-slide both fields
+    /// agree exactly. The legacy per-cell blit path ignores both and uses the
+    /// screen quad above.
     pub cell: [u32; 2],
+    /// (#201 fix A) FRACTIONAL grid cell `[col, row]` — the unified ship pass
+    /// projects through [`crate::projector::cell_world_center_frac`] using this,
+    /// so a moving ship SLIDES cell-to-cell instead of snapping the loft hull on
+    /// the integer cell while the rest of the HUD tweened. Set by `hud` to the
+    /// `Tween2d`-eased fractional Pos when a move/turn is in flight; otherwise
+    /// equal to `cell` cast to `f32` so the steady-state frame is byte-identical.
+    pub cell_frac: [f32; 2],
     /// (UNIFY) The hull's world HEADING yaw (radians) about `+Y` for the unified
     /// model matrix: local prow `+X` rotates to the facing direction (N = up-lane
     /// `+Z`, etc.). Set by `hud` from `ship.facing`. Distinct from `facing_yaw_deg`
@@ -2540,8 +2548,16 @@ impl Gfx {
                 if !self.loft_poses.contains_key(lq.ship_id.as_str()) {
                     continue;
                 }
-                let pos = crate::grid::Pos::new(lq.cell[0] as usize, lq.cell[1] as usize);
-                let mut center = crate::projector::cell_world_center(pos, &cfg);
+                // (#201 fix A) Read the FRACTIONAL cell so a tweened ship's hull
+                // SLIDES cell-to-cell through this pass instead of snapping. When
+                // the ship is at rest cell_frac == cell (cast to f32), so this
+                // matches the prior cell_world_center path exactly + the #188
+                // alignment guard holds.
+                let mut center = crate::projector::cell_world_center_frac(
+                    lq.cell_frac[0],
+                    lq.cell_frac[1],
+                    &cfg,
+                );
                 center[1] += UNIFIED_SHIP_LIFT; // sit ON the plane, not half-buried
                 let model = crate::loft_gpu::unified_model(
                     center,

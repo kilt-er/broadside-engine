@@ -1371,6 +1371,18 @@ impl App {
             let from_q = grid_cell_quad(anchor.from_pos, cfg);
             let to_q = grid_cell_quad(ship.pos, cfg);
             let q = hud::lerp_cell_quad(&from_q, &to_q, eased);
+            // (#201 fix A) FRACTIONAL grid cell — `eased` lerp from the previous
+            // cell to the current. The unified ship pass consumes this so a
+            // moving hull SLIDES through the world-space camera instead of
+            // snapping while every other 2-D HUD element tweens. At rest
+            // (no anchor) this code path is skipped and push_ship_2d falls
+            // back to the integer cell, so #188 alignment stays exact.
+            let cell_frac = [
+                anchor.from_pos.col as f32
+                    + (ship.pos.col as f32 - anchor.from_pos.col as f32) * eased,
+                anchor.from_pos.row as f32
+                    + (ship.pos.row as f32 - anchor.from_pos.row as f32) * eased,
+            ];
             tw.visual.insert(
                 ship.id.clone(),
                 hud::VisualShip2d {
@@ -1385,6 +1397,7 @@ impl App {
                         ship.facing,
                         eased,
                     ),
+                    cell_frac,
                 },
             );
         }

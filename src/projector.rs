@@ -983,13 +983,23 @@ pub fn cell_world_corners(pos: Pos, cfg: &ProjectorConfig) -> [[f32; 3]; 4] {
 
 /// World-space ground-plane centre of cell `pos` (where a hull is seated/yawed).
 pub fn cell_world_center(pos: Pos, cfg: &ProjectorConfig) -> [f32; 3] {
+    cell_world_center_frac(pos.col as f32, pos.row as f32, cfg)
+}
+
+/// (#201 fix A) FRACTIONAL variant of [`cell_world_center`] — interpolates the
+/// ground-plane centre for a non-integer `(col, row)` so a moving ship's hull
+/// SLIDES cell-to-cell through the unified ship pass instead of snapping. At
+/// integer inputs this is exactly [`cell_world_center`] (corner-averaging plus
+/// the #188 cell-centre invariant continue to hold). The unified ship pass
+/// calls this with the `Tween2d`-eased fractional cell during a move.
+pub fn cell_world_center_frac(col: f32, row: f32, cfg: &ProjectorConfig) -> [f32; 3] {
     let cols = cfg.cols.max(1) as f32;
     let rows = cfg.rows.max(1) as f32;
     // (#195) Same scale as cell_world_corners — ships auto-recenter as cells grow/shrink.
     let s = crate::gfx::unified_grid_cell_scale();
     // See cell_world_corners: world +X = screen LEFT, so col increasing right→ smaller X.
-    let x = (cols * 0.5 - (pos.col as f32 + 0.5)) * s;
-    let z = UNIFIED_Z_FRONT + (rows - 1.0 - pos.row as f32 + 0.5) * s;
+    let x = (cols * 0.5 - (col + 0.5)) * s;
+    let z = UNIFIED_Z_FRONT + (rows - 1.0 - row + 0.5) * s;
     [x, 0.0, z]
 }
 
