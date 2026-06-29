@@ -753,3 +753,149 @@ fn cell_center_alignment_holds_at_cam_dist_min_and_max() {
         }
     }
 }
+
+/// (#213 item 4 / #199b) Variable-board render regression lock: the bin chains
+/// `.with_dims(board.dims())` on the per-frame scene cfg so a non-5x4 encounter
+/// lays out at its rolled shape. This test pins the invariant by walking the
+/// full #199b dims pool and asserting, on each shape, that EVERY in-bounds
+/// `Pos` projects to a point inside the viewport — `grid_cell_quad(pos, cfg)
+/// .center` for the centres + `cell_world_corners(pos, cfg)` for the corners.
+/// If a future change reverts the renderer to compile-time COLS/ROWS (the bug
+/// fixed in 4619b10), the wrong-dim layout pushes cells off-frame and the
+/// assertion fires at the offending shape.
+///
+/// We sample the full pool — `{2x2, 2x3, 3x2, 2x4, 4x2, 3x3, 3x4, 4x3, 4x4,
+/// 5x4}` — instead of just one non-5x4 case, because the projector's column
+/// fan + row depth math are independent surfaces and a regression could break
+/// one without the other. The 5x4 case is the existing canonical path (the
+/// #188 lean + cell-centre guards above already cover it richly) — included
+/// here only so this single test fails consistently if `with_dims` itself
+/// regressed to a no-op.
+#[test]
+fn variable_dims_grid_lays_out_in_viewport() {
+    let _g = CamDistGuard::pin_boot();
+    // #199b pool — matches runs::VARIABLE_ENCOUNTER_DIMS_POOL.
+    const POOL: &[(usize, usize)] = &[
+        (2, 2),
+        (2, 3),
+        (3, 2),
+        (2, 4),
+        (4, 2),
+        (3, 3),
+        (3, 4),
+        (4, 3),
+        (4, 4),
+        (5, 4),
+    ];
+    for &(cols, rows) in POOL {
+        let cfg = unified_cfg(0.0).with_dims(cols, rows);
+        // (a) cfg actually carries the override (not a no-op).
+        assert_eq!(
+            cfg.cols, cols,
+            "with_dims must set cfg.cols (shape {cols}x{rows})",
+        );
+        assert_eq!(
+            cfg.rows, rows,
+            "with_dims must set cfg.rows (shape {cols}x{rows})",
+        );
+        let vp = unified_view_proj(&cfg);
+        // (b) every in-bounds cell's CENTRE projects inside the viewport.
+        for row in 0..rows {
+            for col in 0..cols {
+                let q = grid_cell_quad(Pos::new(col, row), &cfg);
+                assert!(
+                    q.center[0] >= 0.0 && q.center[0] <= cfg.frame_w,
+                    "cell ({col}, {row}) centre x={} OUT of [0, {}] at dims {cols}x{rows}",
+                    q.center[0],
+                    cfg.frame_w,
+                );
+                assert!(
+                    q.center[1] >= 0.0 && q.center[1] <= cfg.frame_h,
+                    "cell ({col}, {row}) centre y={} OUT of [0, {}] at dims {cols}x{rows}",
+                    q.center[1],
+                    cfg.frame_h,
+                );
+                // (c) every cell-world-centre projects in-frame too (the
+                // ship-seating math the unified loft path actually uses).
+                let world =
+                    broadside_engine::projector::cell_world_center(Pos::new(col, row), &cfg);
+                let p = unified_project(&vp, world, &cfg).unwrap_or_else(|| {
+                    panic!(
+                        "cell ({col}, {row}) world centre failed to project at dims {cols}x{rows}"
+                    )
+                });
+                assert!(
+                    p.x >= 0.0 && p.x <= cfg.frame_w,
+                    "cell ({col}, {row}) world-projected x={} OUT of [0, {}] at dims {cols}x{rows}",
+                    p.x,
+                    cfg.frame_w,
+                );
+                assert!(
+                    p.y >= 0.0 && p.y <= cfg.frame_h,
+                    "cell ({col}, {row}) world-projected y={} OUT of [0, {}] at dims {cols}x{rows}",
+                    p.y,
+                    cfg.frame_h,
+                );
+                // (d) every world corner projects (must not return None
+                // = behind camera). Edge-cell corners CAN spill past the
+                // frame's x extent under the canonical near-row fan (the
+                // documented "lanes run off the corners like a reference
+                // road" — see projector::for_scene docs at projector.rs:298),
+                // so we don't assert in-frame on corners — just that they
+                // project at all (in front of the camera) so a regression
+                // that flips cells behind the camera fails here.
+                let corners = cell_world_corners(Pos::new(col, row), &cfg);
+                for (i, w) in corners.iter().enumerate() {
+                    let _ = unified_project(&vp, *w, &cfg).unwrap_or_else(|| {
+                        panic!(
+                            "cell ({col}, {row}) corner {i} failed to project (behind camera) at dims {cols}x{rows}",
+                        )
+                    });
+                }
+            }
+        }
+    }
+}
+
+/// (#213 item 4) Companion lock that a non-5x4 dims layout DIFFERS from the
+/// 5x4 layout — proves the `with_dims` override actually changes the
+/// projection, not just stores the values. A 3x3 board's centre cell should
+/// project to a screen position that's DIFFERENT from the 5x4 (1, 1) cell
+/// (its column-fan + row-depth math both shift when cols/rows change). If
+/// this fires the override has been silently disconnected from the cell math.
+#[test]
+fn variable_dims_actually_shifts_projection_vs_5x4() {
+    let _g = CamDistGuard::pin_boot();
+    let base = unified_cfg(0.0);
+    let three_by_three = base.with_dims(3, 3);
+    let four_by_two = base.with_dims(4, 2);
+    let two_by_four = base.with_dims(2, 4);
+    // 5x4 centre (col=2, row=2) projects somewhere.
+    let q_5x4 = grid_cell_quad(Pos::new(2, 2), &base);
+    // 3x3 centre (col=1, row=1) projects somewhere distinct.
+    let q_3x3 = grid_cell_quad(Pos::new(1, 1), &three_by_three);
+    // 4x2 centre-ish (col=2, row=0) — wider, shorter — projects somewhere
+    // distinct from the 3x3 case.
+    let q_4x2 = grid_cell_quad(Pos::new(2, 0), &four_by_two);
+    // 2x4 centre-ish (col=0, row=2) — narrow, tall.
+    let q_2x4 = grid_cell_quad(Pos::new(0, 2), &two_by_four);
+    let same = |a: [f32; 2], b: [f32; 2]| (a[0] - b[0]).abs() < 1e-3 && (a[1] - b[1]).abs() < 1e-3;
+    assert!(
+        !same(q_5x4.center, q_3x3.center),
+        "3x3 (1,1) should not collide with 5x4 (2,2) — with_dims is a no-op",
+    );
+    assert!(
+        !same(q_5x4.center, q_4x2.center),
+        "4x2 (2,0) should not collide with 5x4 (2,2) — with_dims is a no-op",
+    );
+    assert!(
+        !same(q_5x4.center, q_2x4.center),
+        "2x4 (0,2) should not collide with 5x4 (2,2) — with_dims is a no-op",
+    );
+    // And the three non-5x4 shapes are mutually distinct (different orientations
+    // can't map to the same screen point).
+    assert!(
+        !same(q_3x3.center, q_4x2.center) && !same(q_3x3.center, q_2x4.center),
+        "3x3 / 4x2 / 2x4 shapes should not all map to the same screen point",
+    );
+}

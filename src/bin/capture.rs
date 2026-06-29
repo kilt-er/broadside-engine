@@ -69,15 +69,38 @@ fn make_ship(id: &str, faction: Faction, pos: Pos, facing: Facing) -> Ship {
 /// centre-out across the back row Bow(S) — the real bow-to-bow start. `player_col`
 /// lets the capture place the player OFF-CENTER (e.g. col 0/4) to expose
 /// lane-dependent pose bugs that a centred (col 2, zero lane-yaw) shot masks.
+/// (#213 item 4 proof) Build a capture board at the canonical 5x4 dims.
 fn capture_board(player_col: usize, player_row: usize, player_facing: Facing) -> Board {
-    let mut cells: Vec<Option<Ship>> = (0..broadside_engine::grid::CELLS).map(|_| None).collect();
-    let place = |cells: &mut Vec<Option<Ship>>, s: Ship| {
-        let idx = s.pos.to_index();
-        cells[idx] = Some(s);
+    capture_board_with_dims(
+        broadside_engine::grid::Dims::new(COLS, broadside_engine::grid::ROWS),
+        player_col,
+        player_row,
+        player_facing,
+    )
+}
+
+/// (#213 item 4 proof) Build a capture board at ARBITRARY [`Dims`] so the
+/// capture path can prove variable-board rendering. Player + back-row enemies
+/// are clamped + spread to fit the requested shape so a 3x3 / 4x2 / 2x4 / etc.
+/// captures render without out-of-bounds spawns. Mirrors the live bin's
+/// `build_encounter_board_with_dims` behavior at a smaller scale.
+fn capture_board_with_dims(
+    dims: broadside_engine::grid::Dims,
+    player_col: usize,
+    player_row: usize,
+    player_facing: Facing,
+) -> Board {
+    let cell_count = dims.cols * dims.rows;
+    let mut cells: Vec<Option<Ship>> = (0..cell_count).map(|_| None).collect();
+    let place = |cells: &mut Vec<Option<Ship>>, s: Ship, dims: broadside_engine::grid::Dims| {
+        let idx = s.pos.row * dims.cols + s.pos.col;
+        if idx < cells.len() {
+            cells[idx] = Some(s);
+        }
     };
     let ppos = Pos::new(
-        player_col.min(COLS - 1),
-        player_row.min(broadside_engine::grid::ROWS - 1),
+        player_col.min(dims.cols.saturating_sub(1)),
+        player_row.min(dims.rows.saturating_sub(1)),
     );
     // (#70) Player facing is an ARG so the capture reproduces a MOVED/REORIENTED
     // live player (the old frozen spawn-facing masked the chase-cam pose bug).
@@ -113,8 +136,13 @@ fn capture_board(player_col: usize, player_row: usize, player_facing: Facing) ->
             weapon: "broadside_battery".into(),
         },
     ];
-    place(&mut cells, player);
-    let mid = COLS / 2;
+    place(&mut cells, player, dims);
+    // (#213 item 4) Lay enemies along the BACK row (row 0) at clamped columns
+    // so a narrow board (cols<3) doesn't spawn out-of-bounds. Centre + two
+    // flanking lanes, all clamped into [0..cols).
+    let mid = dims.cols / 2;
+    let lhs = mid.saturating_sub(1);
+    let rhs = (mid + 1).min(dims.cols.saturating_sub(1));
     place(
         &mut cells,
         make_ship(
@@ -123,35 +151,40 @@ fn capture_board(player_col: usize, player_row: usize, player_facing: Facing) ->
             Pos::new(mid, 0),
             enemy_spawn_facing(),
         ),
+        dims,
     );
-    place(
-        &mut cells,
-        make_ship(
-            "enemy-3",
-            Faction::Enemy,
-            Pos::new(mid - 1, 0),
-            enemy_spawn_facing(),
-        ),
-    );
-    place(
-        &mut cells,
-        make_ship(
-            "enemy-5",
-            Faction::Enemy,
-            Pos::new(mid + 1, 0),
-            enemy_spawn_facing(),
-        ),
-    );
+    if lhs != mid {
+        place(
+            &mut cells,
+            make_ship(
+                "enemy-3",
+                Faction::Enemy,
+                Pos::new(lhs, 0),
+                enemy_spawn_facing(),
+            ),
+            dims,
+        );
+    }
+    if rhs != mid {
+        place(
+            &mut cells,
+            make_ship(
+                "enemy-5",
+                Faction::Enemy,
+                Pos::new(rhs, 0),
+                enemy_spawn_facing(),
+            ),
+            dims,
+        );
+    }
 
     Board {
-        size: COLS,
-        cols: COLS,
-        rows: ROWS,
+        size: dims.cols,
+        cols: dims.cols,
+        rows: dims.rows,
         cells,
         ordnance: Vec::new(),
-        hazards: (0..broadside_engine::grid::CELLS)
-            .map(|_| Vec::new())
-            .collect(),
+        hazards: (0..cell_count).map(|_| Vec::new()).collect(),
         patrol: 1,
         level: 0,
         threats: Vec::new(),
@@ -361,8 +394,29 @@ fn main() {
         .nth(4)
         .and_then(|s| s.parse::<usize>().ok())
         .unwrap_or_else(|| player_start_pos().row);
-    let mut board = capture_board(player_col, player_row, player_facing);
-    log::info!("capture: player at col {player_col} row {player_row}, facing {player_facing:?}");
+    // (#213 item 4 capture proof) BROADSIDE_DIMS=CxR env override builds the
+    // capture board at variable [`Dims`] so a single capture run can prove
+    // non-5x4 rendering. Format: BROADSIDE_DIMS=3x3 / 4x2 / 2x4 / etc. Falls
+    // back to the canonical 5x4 when unset / malformed.
+    let dims = std::env::var("BROADSIDE_DIMS")
+        .ok()
+        .and_then(|s| {
+            let lower = s.to_ascii_lowercase();
+            let mut it = lower.split('x');
+            let c = it.next()?.parse::<usize>().ok()?;
+            let r = it.next()?.parse::<usize>().ok()?;
+            if c == 0 || r == 0 {
+                return None;
+            }
+            Some(broadside_engine::grid::Dims::new(c, r))
+        })
+        .unwrap_or_else(|| broadside_engine::grid::Dims::new(COLS, broadside_engine::grid::ROWS));
+    let mut board = capture_board_with_dims(dims, player_col, player_row, player_facing);
+    log::info!(
+        "capture: player at col {player_col} row {player_row}, facing {player_facing:?}, dims {}x{}",
+        dims.cols,
+        dims.rows,
+    );
 
     // (#90 yellow-square repro) Optional BROADSIDE_QUEUE_DEMO=1 queues the player's
     // mount weapon (what pressing `1` does) so the queue-driven overlays render —
