@@ -88,7 +88,13 @@ pub fn decide_enemy_action(enemy_cell: usize, board: &mut Board, content: &dyn C
     let has_trait = |t: Trait| traits.contains(&t);
     let burn_hard = has_trait(Trait::BurnHard);
     let pursuit = has_trait(Trait::Pursuit);
-    let anchored = has_trait(Trait::Anchored);
+    // #214 multi-cell boss: a 1×2 boss is immovable (resolver gates self-
+    // moves + displaces against `tail.is_some()`), so even queuing a move /
+    // rotate / fallback-close would no-op next turn. Fold it into `anchored`
+    // so the boss falls through to FIRE/REORIENT-via-weapon/VENT only — it
+    // still telegraphs and fires, it just doesn't try to maneuver.
+    let is_multi_cell = board.ship_at(enemy_pos).is_some_and(|s| s.tail.is_some());
+    let anchored = has_trait(Trait::Anchored) || is_multi_cell;
 
     /* -- RUNG 1: FIRE (commit when able) --------------------------------- */
     // Score every affordable, in-arc, in-band, hostile-targeting weapon and fire
