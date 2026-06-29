@@ -290,6 +290,49 @@ pub fn adjust_ship_scale(delta: f32) -> f32 {
     );
     next
 }
+
+/// (#192 Bruce) Minimum allowed unified-camera orbit distance for the live `-`
+/// adjuster. At 3.5 the board nearly fills the frame (no menu clearance) — the
+/// pre-#191 framing. Floor named so the band widens via a one-liner.
+pub const UNIFIED_CAM_DIST_MIN: f32 = 3.5;
+/// (#192) Maximum allowed unified-camera orbit distance for the live `=`
+/// adjuster. At 7.0 the board is small enough to leave wide margins above + below.
+pub const UNIFIED_CAM_DIST_MAX: f32 = 7.0;
+/// (#192) Per-press step size for the `-` / `=` board-size adjuster. 0.25 gives
+/// Bruce ~14 stops across the [3.5, 7.0] band — coarse enough to feel each press,
+/// fine enough to dial the exact framing.
+pub const UNIFIED_CAM_DIST_STEP: f32 = 0.25;
+/// (#192) Boot value — #191's locked default (5.0, the minimal shrink that
+/// clears the bottom menu). Within `[UNIFIED_CAM_DIST_MIN, UNIFIED_CAM_DIST_MAX]`.
+pub const BOOT_UNIFIED_CAM_DIST: f32 = 5.0;
+
+/// (#192) Live unified-camera orbit distance stored as `dist * 1000` rounded to
+/// u32 so we can use a stdlib atomic (no `AtomicF32`). Resolution = 0.001, plenty
+/// for a 0.25-step adjuster. Read by [`projector::unified_eye`] via
+/// [`unified_cam_dist`], adjusted by [`adjust_cam_dist`] (the `-` and `=` keys).
+static CAM_DIST_MILLI: std::sync::atomic::AtomicU32 =
+    std::sync::atomic::AtomicU32::new((BOOT_UNIFIED_CAM_DIST * 1000.0) as u32);
+
+/// (#192) The live unified-camera orbit distance. Reads the atomic + converts
+/// back to f32. Safe to call from any thread / render hot path.
+pub fn unified_cam_dist() -> f32 {
+    CAM_DIST_MILLI.load(std::sync::atomic::Ordering::Relaxed) as f32 / 1000.0
+}
+
+/// (#192) Adjust the live unified-camera distance by `delta` (positive pushes
+/// the camera further → board shrinks; negative pulls it closer → board grows),
+/// clamping into `[UNIFIED_CAM_DIST_MIN, UNIFIED_CAM_DIST_MAX]`. Returns the new
+/// value. Bound to `-` (delta=+STEP, zoom OUT) and `=` (delta=-STEP, zoom IN)
+/// in the bin — note the sign convention: `-` shrinks the board (Bruce reads
+/// "zoom out" as the camera retreating, the board getting smaller).
+pub fn adjust_cam_dist(delta: f32) -> f32 {
+    let next = (unified_cam_dist() + delta).clamp(UNIFIED_CAM_DIST_MIN, UNIFIED_CAM_DIST_MAX);
+    CAM_DIST_MILLI.store(
+        (next * 1000.0).round() as u32,
+        std::sync::atomic::Ordering::Relaxed,
+    );
+    next
+}
 /// (UNIFY) Vertical lift (world units) of the hull above the ground plane so it
 /// sits ON the grid rather than half-buried at its mesh origin. (#188 Bruce: enemies
 /// "float above their cells" — diagnosis: _03.glb Y-bbox is [-1.48, +1.32], so at

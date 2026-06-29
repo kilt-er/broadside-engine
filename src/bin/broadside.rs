@@ -1619,6 +1619,33 @@ impl ApplicationHandler for App {
                         }
                         return;
                     }
+                    // (#192 Bruce) `-` pushes the unified camera FURTHER from the
+                    // board (board shrinks); `=` pulls it CLOSER (board grows).
+                    // Clamp [UNIFIED_CAM_DIST_MIN, UNIFIED_CAM_DIST_MAX] = [3.5, 7.0].
+                    // Live-read by projector::unified_eye, so the grid + 3-D hulls
+                    // rescale together every redraw. Both keycodes verified free in
+                    // keycode_to_key (no Minus/Equal mapping) + the raw G/T/O/U/[/]
+                    // handlers above.
+                    if code == KeyCode::Minus {
+                        let d = broadside_engine::gfx::adjust_cam_dist(
+                            broadside_engine::gfx::UNIFIED_CAM_DIST_STEP,
+                        );
+                        log::info!("unified cam dist -> {d:.2} (board shrunk)");
+                        if let Some(win) = self.window.as_ref() {
+                            win.request_redraw();
+                        }
+                        return;
+                    }
+                    if code == KeyCode::Equal {
+                        let d = broadside_engine::gfx::adjust_cam_dist(
+                            -broadside_engine::gfx::UNIFIED_CAM_DIST_STEP,
+                        );
+                        log::info!("unified cam dist -> {d:.2} (board grown)");
+                        if let Some(win) = self.window.as_ref() {
+                            win.request_redraw();
+                        }
+                        return;
+                    }
                 }
                 let Some(key) = keycode_to_key(code) else {
                     return;

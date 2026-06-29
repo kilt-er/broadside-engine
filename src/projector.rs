@@ -824,15 +824,13 @@ const UNIFIED_TOPDOWN_PITCH_DEG: f32 = 72.0;
 /// World Z of the board's NEAR edge (front of the near row) — how far the board
 /// sits in front of the camera's look-at reference.
 const UNIFIED_Z_FRONT: f32 = 1.3;
-/// Camera orbit distance from the look-at target (world units). (#188) 5.5→3.7
-/// filled the frame; (#191 Bruce SHRINK directive) pulled back to 5.0 — the
-/// MINIMAL shrink that clears the bottom 6-tile menu strip + HUD bars without
-/// clipping the near-row hull. Board no longer reaches the bottom HUD; top
-/// stays fairly full (Bruce wants the starfield prominent above). This value
-/// is the locked default for #191; #192 makes it live-tunable via two keys
-/// (-/=). Per-column lean + cell-center alignment are distance-independent
-/// invariants (covered by `tests/render_orientation.rs`).
-const UNIFIED_CAM_DIST: f32 = 5.0;
+// (#192 Bruce) Unified-camera orbit distance is now LIVE — read from the
+// gfx-side atomic so the `-` / `=` keys dial the board size at runtime without
+// a rebuild. Boot value = [`gfx::BOOT_UNIFIED_CAM_DIST`] (5.0, #191's locked
+// default — the minimal shrink that clears the bottom menu). Clamped into
+// `[gfx::UNIFIED_CAM_DIST_MIN, gfx::UNIFIED_CAM_DIST_MAX]` = [3.5, 7.0] by the
+// adjuster. Per-column lean + cell-center alignment are distance-independent
+// invariants (covered by `tests/render_orientation.rs`).
 /// Look-at height above the ground (world units). (#188) 0.6→0.3 raised the board
 /// for the bottom HUD; (#191 Bruce v4) 0.3→0.0 vertically centers the now-shrunk
 /// (CAM_DIST 5.0) board so the near row is comfortably above the bottom menu +
@@ -855,16 +853,14 @@ fn unified_target(cfg: &ProjectorConfig) -> [f32; 3] {
     [0.0, UNIFIED_TARGET_Y, z_center]
 }
 
-/// World-space camera eye: orbit [`UNIFIED_CAM_DIST`] from the target at the
-/// look-down pitch, behind the near edge (smaller Z) and above.
+/// World-space camera eye: orbit [`crate::gfx::unified_cam_dist`] (live, #192)
+/// from the target at the look-down pitch, behind the near edge (smaller Z) and
+/// above.
 fn unified_eye(cfg: &ProjectorConfig) -> [f32; 3] {
     let p = unified_pitch_rad(cfg);
     let t = unified_target(cfg);
-    [
-        t[0],
-        t[1] + UNIFIED_CAM_DIST * p.sin(),
-        t[2] - UNIFIED_CAM_DIST * p.cos(),
-    ]
+    let d = crate::gfx::unified_cam_dist();
+    [t[0], t[1] + d * p.sin(), t[2] - d * p.cos()]
 }
 
 /// The unified camera's `view_proj` (column-major, RH, clip-z `0..1`, looking down

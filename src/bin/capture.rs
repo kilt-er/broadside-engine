@@ -269,6 +269,18 @@ fn main() {
             log::info!("capture: unified ship scale -> {s:.2}");
         }
     }
+    // (#192) Optional BROADSIDE_CAM_DIST=F sets the live UNIFIED_CAM_DIST to F
+    // (clamped into [UNIFIED_CAM_DIST_MIN, UNIFIED_CAM_DIST_MAX]) so the headless
+    // shot verifies any value the `-` / `=` keys can dial. Mirrors the
+    // BROADSIDE_SHIP_SCALE pattern — single adjust_cam_dist(F - current) routes
+    // through the same clamp + atomic store the live key handler uses.
+    if let Ok(v) = std::env::var("BROADSIDE_CAM_DIST") {
+        if let Ok(target) = v.parse::<f32>() {
+            let cur = broadside_engine::gfx::unified_cam_dist();
+            let d = broadside_engine::gfx::adjust_cam_dist(target - cur);
+            log::info!("capture: unified cam dist -> {d:.2}");
+        }
+    }
     // (#140/#142/#151) Optional grid-mode env (mirrors the `T` cycle), so the pitch-arc
     // shots show each mode. BROADSIDE_GRID_CONTINUOUS=1 -> continuous-straight (mode 3);
     // BROADSIDE_GRID_STRAIGHT=1 -> stretch-straight stepped (mode 2);

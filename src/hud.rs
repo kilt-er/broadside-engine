@@ -3764,6 +3764,12 @@ pub fn push_res_readout(out: &mut Vec<DrawCommand>, ship: (u32, u32), scene: (u3
     // glyph (renders as a blank space — would read "SCALE 0 10").
     let scale_pct = (crate::gfx::unified_ship_scale() * 100.0).round() as u32;
     right_align(out, &format!("SCALE X{scale_pct}"), h - 50.0);
+    // (#192 Bruce) Show the live unified-camera distance (`-` / `=` adjuster).
+    // INTEGER hundredths to dodge the missing-`.` 5x7-font glyph: e.g. "CAM 500"
+    // = 5.00 world units, "CAM 350" = 3.50, "CAM 700" = 7.00. Placed above SCALE
+    // at h-60 so it lives in the same right-aligned debug stack.
+    let cam_centi = (crate::gfx::unified_cam_dist() * 100.0).round() as u32;
+    right_align(out, &format!("CAM {cam_centi}"), h - 60.0);
     // (#139) PITCH step (0 = chase-cam, GRID_PITCH_STEPS = near-top-down), read from
     // the gfx global. Placed at h-40, ABOVE the POS/FACE line (h-30, push_player_readout)
     // so the bottom-right debug stack doesn't overlap. Only shown when pitched off the
