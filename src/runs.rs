@@ -207,10 +207,9 @@ pub fn current_encounter<'s>(run: &Run, sectors: &'s [Sector]) -> Option<&'s Enc
  * Encounter → Board materialization.
  * ====================================================================== */
 
-/// Build a fresh [`Board`] for the encounter on the fixed 5×4 grid (v2 C4).
-/// The player is placed at the front-centre cell ([`player_start_pos`], bow N
-/// toward the enemies); each enemy spawn is placed at its 2-D [`ShipSpawn::pos`]
-/// on the back rows.
+/// Build a fresh [`Board`] for the encounter on the *default* 5×4 grid (v2 C4).
+/// Existing callers keep the default — this is a thin wrapper over
+/// [`build_encounter_board_with_dims`] passing [`crate::grid::Dims::default`].
 ///
 /// `player` is the player's CURRENT ship (with whatever heat / hull / statuses
 /// carried over from the prior encounter). The board's cell vector is rebuilt;
@@ -223,48 +222,100 @@ pub fn current_encounter<'s>(run: &Run, sectors: &'s [Sector]) -> Option<&'s Enc
 /// keeping it a parameter lets the same encounter builder work with placeholder
 /// data and real catalog data.
 ///
-/// **INVARIANT (A) — slot == `pos.to_index()`.** Every ship is stored at
-/// `cells[ship.pos.to_index()]` with `ship.pos` set to its real grid [`Pos`], so
-/// [`Board::ship_at`] called with `pos` returns `cells[pos.to_index()]`. The resolver's
-/// R3 ray-walk and R4 `apply_damage` depend on this; a ship whose slot and
-/// `pos` disagree is invisible to `ship_at`. A spawn whose `pos` collides with
-/// an already-placed ship (or the player) is skipped — placeholder/generated
-/// sectors are collision-free by construction, but a hand-authored sector with
-/// a duplicate cell won't corrupt the board.
+/// **INVARIANT (A) — slot == `pos.to_index_in(dims)`.** Every ship is stored at
+/// `cells[ship.pos.to_index_in(dims)]` with `ship.pos` set to its real grid
+/// [`Pos`], so [`Board::ship_at`] called with `pos` returns
+/// `cells[pos.to_index_in(dims)]`. The resolver's R3 ray-walk and R4
+/// `apply_damage` depend on this; a ship whose slot and `pos` disagree is
+/// invisible to `ship_at`. A spawn whose `pos` collides with an already-placed
+/// ship (or the player) is skipped — placeholder/generated sectors are
+/// collision-free by construction, but a hand-authored sector with a duplicate
+/// cell won't corrupt the board.
 ///
 /// Hazards on the encounter populate `board.hazards` at their 2-D [`Hazard::pos`].
-pub fn build_encounter_board<F>(
+pub fn build_encounter_board<F>(encounter: &EncounterDef, player: Ship, class_to_ship: F) -> Board
+where
+    F: FnMut(&ShipSpawn) -> Option<Ship>,
+{
+    build_encounter_board_with_dims(
+        encounter,
+        player,
+        crate::grid::Dims::default(),
+        class_to_ship,
+    )
+}
+
+/// Variable-board (#199) variant of [`build_encounter_board`]: build a fresh
+/// [`Board`] on the supplied runtime `dims` grid. Existing 5×4 callers use the
+/// thin wrapper above; the random-size encounter feature (separate later step)
+/// will call this one directly with the rolled dims.
+///
+/// ## Per-shape behaviour
+///
+/// - Player goes to [`player_start_pos_in`] of `dims` (front-centre on `dims`),
+///   bow N. The legacy 1-D `cell` is `pos.to_index_in(dims)` (NOT the default
+///   `to_index()`) so a non-5-wide board still has a consistent legacy field.
+/// - Each `ShipSpawn` is placed at its `pos` if `pos.in_bounds_in(dims)` AND
+///   `pos != player_pos` — out-of-bounds spawns are dropped (e.g. a 5×4-shaped
+///   encounter author placing at `(4,0)` on a 3×3 board), as are spawns that
+///   collide with the player's front-centre cell. This is **defensive**: a
+///   well-formed dim-aware encounter (built via
+///   [`sample_encounter_spawns_with_dims`]) never produces an out-of-bounds
+///   spawn for its own grid.
+/// - `ship.cell` is **derived** from `spawn.pos.to_index_in(dims)` inside the
+///   loop (reviewer rec, #199): the spawn's `cell` field is ignored for
+///   placement so it can never go stale on a non-5 board. This is the
+///   collapse-redundancy half of the variable-board feature — `ShipSpawn.cell`
+///   stays in the type only for serde fixture compatibility.
+/// - Hazards are placed at `hazard.pos` if in-bounds; out-of-bounds hazards are
+///   silently dropped (same defensive policy as spawns).
+///
+/// The `Board.size`/`cols`/`rows` fields all carry `dims` so downstream
+/// `board.dims()` reflects the actual grid.
+pub fn build_encounter_board_with_dims<F>(
     encounter: &EncounterDef,
     mut player: Ship,
+    dims: crate::grid::Dims,
     mut class_to_ship: F,
 ) -> Board
 where
     F: FnMut(&ShipSpawn) -> Option<Ship>,
 {
-    // v2 (A3 Board EXPAND): backing Vecs sized to the board's runtime grid so the
-    // 2-D occupancy view (Board::ship_at(pos) = cells[pos.to_index()]) is valid
-    // over the whole grid. FOUNDATION step: `dims` is the default 5×4 grid
-    // (`cell_count() == CELLS == 20`), so this is behaviour-identical; the
-    // variable-size-encounter step picks `dims` per encounter here.
-    let dims = crate::grid::Dims::default();
+    // Backing Vecs sized to the runtime grid so the 2-D occupancy view
+    // (Board::ship_at(pos) = cells[pos.to_index_in(dims)]) is valid over the
+    // whole grid. The cell vector is dense (`dims.cell_count()` Nones) so the
+    // resolver's `cells.iter()` scans cover every grid cell.
     let mut cells: Vec<Option<Ship>> = (0..dims.cell_count()).map(|_| None).collect();
     let mut hazards: Vec<Vec<crate::types::Hazard>> =
         (0..dims.cell_count()).map(|_| Vec::new()).collect();
 
-    // Player at the front-centre cell, bow pointed N (into the board, toward the
-    // enemies). Normalize both the 2-D pos/facing and the legacy 1-D
-    // cell/orientation (transition window). Invariant (A): slot == pos.to_index().
-    let player_pos = player_start_pos();
+    // Player at the front-centre cell of `dims`, bow pointed N (into the board,
+    // toward the enemies). Normalize both the 2-D pos/facing and the legacy 1-D
+    // cell/orientation. Invariant (A): slot == pos.to_index_in(dims). The
+    // legacy `cell` is the dim-aware index (not `to_index()`), so a non-5 board
+    // doesn't leave a stale 5-wide cell on the player.
+    let player_pos = player_start_pos_in(dims);
+    let player_idx = player_pos.to_index_in(dims);
     player.pos = player_pos;
     player.facing = player_spawn_facing();
-    player.cell = player_pos.to_index_in(dims);
+    player.cell = player_idx;
     player.orientation = Orientation::BowOn { bow: LaneEnd::Fore };
-    cells[player_pos.to_index_in(dims)] = Some(player);
+    // Guard against a degenerate `Dims` (e.g. 0×0) yielding an out-of-range
+    // index; on every real shape (rows>=1 && cols>=1) the player slot exists.
+    if player_idx < cells.len() {
+        cells[player_idx] = Some(player);
+    }
 
-    // Place each enemy spawn at its 2-D pos (invariant A).
+    // Place each enemy spawn at its 2-D pos (invariant A). `cell` is DERIVED
+    // from `pos.to_index_in(dims)` — the spawn's serialized `cell` field is
+    // not consulted for placement, so it can't go stale on a non-5 board.
     for spawn in &encounter.enemy_ships {
         if !spawn.pos.in_bounds_in(dims) || spawn.pos == player_pos {
-            // Off-grid or colliding with the player — skip (defensive).
+            // Off-grid (for THIS grid) or colliding with the player — skip.
+            // TODO(broadside-content): log a debug! when an authored spawn is
+            // dropped for out-of-grid (a 5×4-shaped encounter rolled onto a
+            // smaller `dims`); silent today so a non-default-size encounter
+            // doesn't surface as a spam in the canonical 5×4 campaign.
             continue;
         }
         let idx = spawn.pos.to_index_in(dims);
@@ -272,9 +323,9 @@ where
             continue; // a prior spawn already holds this cell
         }
         if let Some(mut ship) = class_to_ship(spawn) {
-            // Force slot == pos.to_index(): trust the spawn's authoritative 2-D
-            // pos/facing over whatever the builder defaulted, and keep the
-            // legacy fields consistent for the transition.
+            // Force slot == pos.to_index_in(dims): trust the spawn's
+            // authoritative 2-D pos/facing over whatever the builder defaulted,
+            // and derive `cell` from `pos` (not from the spawn's `cell` field).
             ship.pos = spawn.pos;
             ship.facing = spawn.facing;
             ship.cell = idx;
@@ -287,7 +338,7 @@ where
         }
     }
 
-    // Drop hazards into their 2-D cells.
+    // Drop hazards into their 2-D cells (dim-aware bounds).
     for h in &encounter.hazards {
         if h.pos.in_bounds_in(dims) {
             hazards[h.pos.to_index_in(dims)].push(h.clone());
@@ -579,11 +630,26 @@ pub fn placeholder_sectors() -> Vec<Sector> {
  * of truth for placement and are what `build_encounter_board` keys on.
  * ====================================================================== */
 
-/// The player's fixed 2-D start cell: front-center (`col = COLS/2`, the front
-/// row `ROWS-1`). Blueprint decision #8 — the player anchors at the front and
-/// the rows ahead are pure dodge space.
+/// The player's fixed 2-D start cell on the *default* 5×4 grid: front-centre
+/// (`col = COLS/2`, the front row `ROWS-1`). Blueprint decision #8 — the player
+/// anchors at the front and the rows ahead are pure dodge space.
+///
+/// For a runtime-sized grid use [`player_start_pos_in`].
 pub const fn player_start_pos() -> crate::grid::Pos {
     crate::grid::Pos::new(crate::grid::COLS / 2, crate::grid::ROWS - 1)
+}
+
+/// The player's front-centre start cell on the runtime `dims` grid:
+/// `(dims.center_col(), dims.front_row())`. The dim-aware mirror of
+/// [`player_start_pos`]; on a default `Dims` the two agree byte-for-byte.
+///
+/// Variable-board feature (#199): every shape — 2×2, 3×3, 4×4, 5×4 — anchors the
+/// player at front-centre on its own grid. On odd-width grids that is the exact
+/// middle column; on even-width grids `center_col() == cols / 2` (slightly
+/// right-of-centre), which keeps the same closed-form rule across all shapes.
+#[must_use]
+pub const fn player_start_pos_in(dims: crate::grid::Dims) -> crate::grid::Pos {
+    crate::grid::Pos::new(dims.center_col(), dims.front_row())
 }
 
 /// The player's spawn stance: bow pointed N (toward row 0 / the enemies). The
@@ -599,58 +665,174 @@ pub const fn enemy_spawn_facing() -> crate::grid::Facing {
     crate::grid::Facing::Bow(crate::grid::Dir4::S)
 }
 
-/// Column order for fanning enemies across one back row: centre-out
-/// (`2, 1, 3, 0, 4` for `COLS == 5`) so small encounters cluster toward the
-/// middle (in front of the front-centre player) and larger ones fan to the
-/// edges. Deterministic and total over `0..COLS`.
+/// Variable-board enemy cap (#199): the maximum number of enemies an encounter
+/// should spawn onto a `dims`-sized board so the fight stays **legible +
+/// winnable** on every pool shape (2×2 .. 5×4).
+///
+/// ## The formula (canonical — Bruce's ruling)
+///
+/// Capacity-by-shape trades geometric capacity for legibility. The width-minus-
+/// one rule (always leave one back-row column as a clean dodge lane) is the
+/// binding livability constraint; the 4-enemy ceiling is the same telegraph
+/// limit `encounter_enemy_count`'s tier curve maxes at on the canonical 5×4.
+///
+/// 1. `back_capacity = (rows - 1) * cols` — actual back-row slots.
+/// 2. `geometric_cap = back_capacity.min(4)` — never exceed the canonical
+///    4-enemy ceiling.
+/// 3. `narrow_cap = (cols - 1).max(1)` — leave at least one back-row column
+///    as a clean dodge lane (cap == `cols - 1`), with a hard floor of 1 for
+///    the `cols == 1` corner case.
+/// 4. `cap = geometric_cap.min(narrow_cap)`, then `0` when `rows < 2` (no
+///    back row at all → no enemies fit anywhere).
+///
+/// ## What the formula produces (the canonical table)
+///
+/// Each row is `back = (rows-1)*cols`, `geo = min(back, 4)`, `narrow =
+/// max(cols-1, 1)`, `cap = min(geo, narrow)`:
+///
+/// | Shape | back | geo | narrow | **cap** |
+/// |-------|------|-----|--------|---------|
+/// | 2×2   |  2   |  2  |   1    | **1** |
+/// | 3×2   |  3   |  3  |   2    | **2** |
+/// | 4×2   |  4   |  4  |   3    | **3** |
+/// | 5×2   |  5   |  4  |   4    | **4** |
+/// | 2×3   |  4   |  4  |   1    | **1** |
+/// | 3×3   |  6   |  4  |   2    | **2** |
+/// | 4×3   |  8   |  4  |   3    | **3** |
+/// | 5×3   | 10   |  4  |   4    | **4** |
+/// | 2×4   |  6   |  4  |   1    | **1** |
+/// | 3×4   |  9   |  4  |   2    | **2** |
+/// | 4×4   | 12   |  4  |   3    | **3** |
+/// | 5×4   | 15   |  4  |   4    | **4** |
+///
+/// `cols == 2` boards always cap at 1 (the `narrow_cap` floor). Shallow
+/// boards (`rows == 2`) hit the cap via `narrow_cap` rather than `geo`, so
+/// widening past 4 keeps shipping more enemies because the dodge-lane
+/// constraint is the binding one — 5×2 fields 4 enemies on the single back
+/// row, which is the max-pressure shape in the pool.
+///
+/// Returns `0` on `dims.rows < 2` (no back row) or `dims.cols == 0`. The
+/// caller's `sample_encounter_spawns` / `build_encounter_board` further filter
+/// out spawns that collide with the player or land off-grid.
+#[must_use]
+pub const fn max_enemies_in(dims: crate::grid::Dims) -> usize {
+    if dims.rows < 2 || dims.cols == 0 {
+        return 0;
+    }
+    let back_capacity = (dims.rows - 1) * dims.cols;
+    let geometric_cap = if back_capacity > 4 { 4 } else { back_capacity };
+    // Leave at least one column as a dodge lane; floor of 1 for cols==1.
+    let narrow_cap = if dims.cols > 1 { dims.cols - 1 } else { 1 };
+    if geometric_cap < narrow_cap {
+        geometric_cap
+    } else {
+        narrow_cap
+    }
+}
+
+/// Column order for fanning enemies across one back row on the *default* 5×4
+/// grid: centre-out (`2, 1, 3, 0, 4` for `COLS == 5`) so small encounters
+/// cluster toward the middle (in front of the front-centre player) and larger
+/// ones fan to the edges. Deterministic and total over `0..COLS`.
+///
+/// For a runtime-sized grid use [`back_row_column_order_in`]. Test-only thin
+/// wrapper kept for the legacy regression tests that pin the default-size
+/// centre-out fan; production calls go through `_in`.
+#[cfg(test)]
 fn back_row_column_order() -> Vec<usize> {
-    let mid = crate::grid::COLS / 2;
-    let mut cols = vec![mid];
+    back_row_column_order_in(crate::grid::Dims::default())
+}
+
+/// Column order for fanning enemies across one back row on the runtime `dims`
+/// grid: centre-out from `dims.center_col()`. Deterministic and total over
+/// `0..dims.cols`. The dim-aware mirror of [`back_row_column_order`]; the two
+/// agree at the default size. An even-width grid centres on `cols / 2` (the
+/// `Dims::center_col` rule), so 4-wide is `2, 1, 3, 0` (slightly right-biased,
+/// consistent with the odd-width rule).
+fn back_row_column_order_in(dims: crate::grid::Dims) -> Vec<usize> {
+    let cols = dims.cols;
+    if cols == 0 {
+        return Vec::new();
+    }
+    let mid = dims.center_col();
+    let mut out = vec![mid];
     let mut k = 1usize;
-    while cols.len() < crate::grid::COLS {
-        // mid - k then mid + k, dropping any that fall off the row.
+    while out.len() < cols {
         if mid >= k {
-            cols.push(mid - k);
+            out.push(mid - k);
         }
-        if mid + k < crate::grid::COLS {
-            cols.push(mid + k);
+        if mid + k < cols {
+            out.push(mid + k);
         }
         k += 1;
     }
-    cols
+    out
 }
 
-/// The back-row [`crate::grid::Pos`] for the `i`-th enemy in an encounter: fill
-/// row 0 across the centre-out column order, then row 1, then (defensively) row
-/// 2. Returns `None` once the back rows are exhausted — encounters cap at 4
-/// enemies ([`encounter_enemy_count`]) so the first two rows (10 slots) always
-/// suffice; the `None` is a guard, not an expected path.
-///
-/// The two back rows give the depth gradient (decision #8): row-0 enemies are
-/// Far/Near from the front-centre player, row-1 ones one band closer, so the
-/// player reads a wall with depth and dodges laterally between threatened
-/// columns.
+/// The back-row [`crate::grid::Pos`] for the `i`-th enemy on the *default* 5×4
+/// grid. For a runtime-sized grid use [`enemy_spawn_pos_in`]. Test-only thin
+/// wrapper kept for the legacy default-size regression tests; production calls
+/// go through `_in`.
+#[cfg(test)]
 fn enemy_spawn_pos(i: usize) -> Option<crate::grid::Pos> {
-    let order = back_row_column_order();
-    let per_row = order.len(); // == COLS
+    enemy_spawn_pos_in(i, crate::grid::Dims::default())
+}
+
+/// The back-row [`crate::grid::Pos`] for the `i`-th enemy on the runtime `dims`
+/// grid: fill the topmost back row across the centre-out column order, then the
+/// next back row, … all the way down to (but excluding) the player's front row
+/// `dims.front_row()`. Returns `None` once the back rows are exhausted, or for a
+/// grid with `rows < 2` (no back rows at all — caller falls through to no
+/// enemies).
+///
+/// The depth gradient (decision #8): top-row enemies are Far/Near from the
+/// front-centre player, lower-row ones one band closer, so the player reads a
+/// wall with depth and dodges laterally between threatened columns. The
+/// centre-out fill (via [`back_row_column_order_in`]) means small encounters
+/// cluster directly in front of the player and larger ones fan to the edges,
+/// so a Far-band weapon can bear on the centre-of-mass on every shape.
+fn enemy_spawn_pos_in(i: usize, dims: crate::grid::Dims) -> Option<crate::grid::Pos> {
+    if dims.rows < 2 || dims.cols == 0 {
+        return None; // no back rows at all (rows<=1) or zero-width grid
+    }
+    let order = back_row_column_order_in(dims);
+    let per_row = order.len(); // == dims.cols
     let row = i / per_row;
     let col = order[i % per_row];
-    // Enemies occupy the back rows only; never the front row (the player's).
-    if row >= crate::grid::ROWS - 1 {
+    // Enemies occupy the back rows only; never the player's front row
+    // (`dims.front_row()`). Rows 0..front_row() are back; rows >= front_row()
+    // are off-limits.
+    if row >= dims.front_row() {
         return None;
     }
     Some(crate::grid::Pos::new(col, row))
 }
 
-/// Map a placeholder sector's 1-D lane `cell` onto a back-row 2-D [`Pos`]
-/// (the placeholder sectors below author 1-D cells; this re-keys them onto the
-/// grid). Columns wrap across `COLS`; each full wrap drops to the next back row,
-/// so a spread of cells fans across row 0 then row 1. Bounded to the back rows
-/// (row 0..ROWS-1) — a cell that would overflow past the back rows clamps to the
-/// last back row's last column (defensive; the placeholder cells stay small).
+/// Map a placeholder sector's 1-D lane `cell` onto a back-row 2-D [`Pos`] on
+/// the *default* 5×4 grid (the placeholder sectors below author 1-D cells; this
+/// re-keys them onto the grid). For a runtime-sized grid use
+/// [`placeholder_cell_to_pos_in`].
 fn placeholder_cell_to_pos(cell: usize) -> crate::grid::Pos {
-    let col = cell % crate::grid::COLS;
-    let row = (cell / crate::grid::COLS).min(crate::grid::ROWS.saturating_sub(2));
+    placeholder_cell_to_pos_in(cell, crate::grid::Dims::default())
+}
+
+/// Map a placeholder sector's 1-D lane `cell` onto a back-row 2-D [`Pos`] on
+/// the runtime `dims` grid. Columns wrap across `dims.cols`; each full wrap
+/// drops to the next back row, so a spread of cells fans across row 0 then row
+/// 1 … . Bounded to the back rows — a cell that would overflow past the back
+/// rows clamps to the last back row (defensive; placeholder cells stay small).
+/// A `rows<2` grid clamps to row 0 with `col = cell % cols` (placement still
+/// goes through `build_encounter_board`'s collision filter, which will then
+/// drop the spawn since it lands on the player's row).
+fn placeholder_cell_to_pos_in(cell: usize, dims: crate::grid::Dims) -> crate::grid::Pos {
+    let cols = dims.cols.max(1); // guard the modulus on a degenerate 0-wide
+    let col = cell % cols;
+    // Last back row = front_row() - 1; saturating at 0 for a rows<2 grid so we
+    // never produce a negative row. `dims.rows.saturating_sub(2)` is the max
+    // valid back-row index (`front_row() - 1`) for rows>=2; saturates to 0 for
+    // smaller grids.
+    let last_back = dims.rows.saturating_sub(2);
+    let row = (cell / cols).min(last_back);
     crate::grid::Pos::new(col, row)
 }
 
@@ -1044,30 +1226,50 @@ pub fn generate_sector(
 /// transition window; the 2-D `pos` from [`enemy_spawn_pos`] is the source of
 /// truth for placement.
 fn sample_encounter_spawns(pool: &SpawnPool, lane: u8, count: usize, seed: u32) -> Vec<ShipSpawn> {
-    // `lane` (the v1 1-D lane length) no longer drives distribution — the grid
-    // is a fixed 5×4 and enemies fan across the back rows. Kept in the signature
-    // for the `generate_sector` call site / future per-sector tuning.
+    sample_encounter_spawns_with_dims(pool, lane, count, seed, crate::grid::Dims::default())
+}
+
+/// Variable-board (#199) variant of [`sample_encounter_spawns`]: fan
+/// `count` enemies across the back rows of the runtime `dims` grid in
+/// centre-out order, with the per-shape liveability cap from
+/// [`max_enemies_in`] applied on top. `lane` is held in the signature for
+/// caller parity but no longer drives distribution.
+///
+/// The result count is `count.min(max_enemies_in(dims))` — so a 2×2 board
+/// never gets more than 1 enemy even if the caller asked for 4. Spawns
+/// beyond the back-row capacity are simply dropped (`enemy_spawn_pos_in`
+/// returns `None`), which is a defensive guard since the per-shape cap
+/// already keeps the count within the rows.
+pub(crate) fn sample_encounter_spawns_with_dims(
+    pool: &SpawnPool,
+    lane: u8,
+    count: usize,
+    seed: u32,
+    dims: crate::grid::Dims,
+) -> Vec<ShipSpawn> {
     let _ = lane;
     if pool.is_empty() {
         return Vec::new();
     }
-    // Cap at the back-row capacity (row 0 + row 1 = 2 * COLS slots). Encounters
-    // never request this many, but keep placement total.
-    let max_back_row = (crate::grid::ROWS.saturating_sub(1)) * crate::grid::COLS;
-    let n = count.min(max_back_row);
+    // Variable-board cap (#199): per-shape liveability ceiling. On the default
+    // 5×4 grid `max_enemies_in == 4`, matching the legacy
+    // `encounter_enemy_count` ceiling so existing behaviour is preserved; on
+    // smaller shapes the cap shrinks per the table on [`max_enemies_in`].
+    let n = count.min(max_enemies_in(dims));
 
     let mut spawns = Vec::with_capacity(n);
     for i in 0..n {
-        let Some(pos) = enemy_spawn_pos(i) else {
-            break; // back rows exhausted (guard; not reached at count ≤ 4)
+        let Some(pos) = enemy_spawn_pos_in(i, dims) else {
+            break; // back rows exhausted (extra-defensive given the cap above)
         };
         let pick = wang_hash(seed.wrapping_add(i as u32)) as usize % pool.class_ids.len();
         let class_id = pool.class_ids[pick].clone();
         spawns.push(ShipSpawn {
             class_id,
-            // Legacy 1-D cell for the transition window: the spawn's grid index.
-            // Not load-bearing for placement (2-D `pos` is), just kept non-stale.
-            cell: pos.to_index(),
+            // Legacy 1-D cell for the transition window: dim-aware grid index.
+            // Not load-bearing for placement (2-D `pos` is), just kept
+            // non-stale on a non-5 board.
+            cell: pos.to_index_in(dims),
             pos,
             // Bow toward the player (S). Set explicitly — NOT via
             // facing_from_orientation (see the 2-D spawn-geometry section).
@@ -1091,8 +1293,23 @@ fn sample_encounter_spawns(pool: &SpawnPool, lane: u8, count: usize, seed: u32) 
 /// Returns `None` if the capital name isn't in the catalog (defensive — a
 /// typo'd capital just yields a boss-less sector rather than crashing).
 fn capital_spawn(capital_name: &str, lane: u8, catalog: &Catalog) -> Option<ShipSpawn> {
-    // Confirm the capital exists in the catalog's typed capitals[]
-    // (architect's CapitalDef, #63 — was a loose Value before).
+    capital_spawn_with_dims(capital_name, lane, catalog, crate::grid::Dims::default())
+}
+
+/// Variable-board (#199) variant of [`capital_spawn`]: place the capital at the
+/// back-row centre of the runtime `dims` grid — row 0 (the row furthest from
+/// the player), `dims.center_col()`. On the default 5×4 this is `Pos(2, 0)`,
+/// matching the legacy behavior; on a 2×2 grid it's `Pos(1, 0)` which
+/// (importantly) is *not* the player's front-centre `(1, 1)`, so the boss has
+/// somewhere to land. Returns `None` if the capital name isn't in the catalog,
+/// OR if the grid has no back row (`dims.rows < 2`) — a capital encounter on a
+/// 1-row board is geometrically degenerate (boss can't stand off the player).
+pub(crate) fn capital_spawn_with_dims(
+    capital_name: &str,
+    lane: u8,
+    catalog: &Catalog,
+    dims: crate::grid::Dims,
+) -> Option<ShipSpawn> {
     let known = catalog
         .capitals
         .iter()
@@ -1100,20 +1317,14 @@ fn capital_spawn(capital_name: &str, lane: u8, catalog: &Catalog) -> Option<Ship
     if !known {
         return None;
     }
-    // v2 (C4): a capital is a single ship — place it at the back-row centre
-    // (row 0, centre column), bow=S toward the player. `lane` is no longer used
-    // for placement (the grid is fixed 5×4); kept in the signature for the
-    // capital-lookup call sites and future per-capital tuning.
+    if dims.rows < 2 || dims.cols == 0 {
+        return None; // no room for a stand-off boss on this shape
+    }
     let _ = lane;
-    let boss_pos = crate::grid::Pos::new(crate::grid::COLS / 2, 0);
+    let boss_pos = crate::grid::Pos::new(dims.center_col(), 0);
     Some(ShipSpawn {
-        // class_id carries the capital's canonical name; the bin's
-        // spawn callback maps capitals to boss_ship_for_spawn. Until a
-        // typed CapitalDef lands, all capitals share the boss synthesizer
-        // (hull 14, ReactorBreach) — distinct per-capital stats are a
-        // future content+architect follow-up.
         class_id: capital_name.to_string(),
-        cell: boss_pos.to_index(),
+        cell: boss_pos.to_index_in(dims),
         pos: boss_pos,
         orientation: Orientation::BowOn { bow: LaneEnd::Aft },
         facing: enemy_spawn_facing(),
@@ -2103,6 +2314,561 @@ mod tests {
             3,
             "lane 7 → 3 enemies per encounter"
         );
+    }
+
+    /* =====================================================================
+     * Variable-board (#199) coverage.
+     *
+     * Every test here exercises the dim-aware spawn surface
+     * (`*_in(dims)` helpers + `build_encounter_board_with_dims`) across the
+     * full pool of encounter shapes the random-size feature will roll from:
+     *
+     *   { 2x2, 3x2, 4x2, 5x2, 2x3, 3x3, 4x3, 5x3, 2x4, 3x4, 4x4, 5x4 }
+     *
+     * Property focus, not data: the design-critical invariants (player on
+     * the board, enemies on the back rows, no collisions, at least one
+     * dodge lane open) hold for every shape, not just the canonical 5x4.
+     * ================================================================== */
+
+    /// Every pool shape the variable-board feature is expected to support.
+    /// Sourced from the lead's `#199` brief; kept here as the test source of
+    /// truth so a shape change is a one-line edit.
+    const POOL_SHAPES: &[(usize, usize)] = &[
+        (2, 2),
+        (3, 2),
+        (4, 2),
+        (5, 2),
+        (2, 3),
+        (3, 3),
+        (4, 3),
+        (5, 3),
+        (2, 4),
+        (3, 4),
+        (4, 4),
+        (5, 4),
+    ];
+
+    #[test]
+    fn max_enemies_in_matches_the_design_table() {
+        // CANONICAL TABLE (Bruce's ruling): each row is the *literal expected
+        // output* of `max_enemies_in` on that shape, hard-coded here rather
+        // than recomputed from the formula in-test. This pins the CONTRACT
+        // (the public per-shape cap promise), not the implementation — a
+        // future refactor that quietly changes the formula's output for any
+        // shape is a visible break here. Mirrors the table on
+        // `max_enemies_in` itself; if you tune one, tune the other.
+        let cases: &[(usize, usize, usize)] = &[
+            // (cols, rows, expected cap)
+            (2, 2, 1),
+            (3, 2, 2),
+            (4, 2, 3),
+            (5, 2, 4),
+            (2, 3, 1),
+            (3, 3, 2),
+            (4, 3, 3),
+            (5, 3, 4),
+            (2, 4, 1),
+            (3, 4, 2),
+            (4, 4, 3),
+            (5, 4, 4),
+        ];
+        for &(c, r, expected) in cases {
+            let got = max_enemies_in(crate::grid::Dims::new(c, r));
+            assert_eq!(
+                got, expected,
+                "{c}x{r}: canonical cap is {expected}, max_enemies_in returned {got}",
+            );
+        }
+        // Sanity: 5x4 default keeps the legacy 4-enemy cap (behaviour-identical
+        // — `Dims::default()` produces the same number as the 5x4 entry above).
+        assert_eq!(
+            max_enemies_in(crate::grid::Dims::default()),
+            4,
+            "default Dims preserves the legacy 4-enemy cap",
+        );
+        // Degenerate shapes return 0 (no back row, or zero-width grid).
+        assert_eq!(max_enemies_in(crate::grid::Dims::new(0, 4)), 0);
+        assert_eq!(max_enemies_in(crate::grid::Dims::new(4, 0)), 0);
+        assert_eq!(
+            max_enemies_in(crate::grid::Dims::new(4, 1)),
+            0,
+            "rows<2 has no back row",
+        );
+    }
+
+    #[test]
+    fn max_enemies_in_always_leaves_a_dodge_lane() {
+        // For every legal shape (rows >= 2, cols >= 2): the cap must leave at
+        // least one back-row column free for the player to dodge into.
+        for &(c, r) in POOL_SHAPES {
+            let cap = max_enemies_in(crate::grid::Dims::new(c, r));
+            assert!(
+                cap < c,
+                "{c}x{r}: cap {cap} would saturate the back row's columns — no dodge lane left",
+            );
+        }
+    }
+
+    #[test]
+    fn player_start_pos_in_default_matches_legacy_const_helper() {
+        // Behaviour-identical lock: at default Dims the dim-aware variant must
+        // produce the exact same Pos as the legacy const helper. A regression
+        // here would silently shift every existing 5x4 encounter.
+        assert_eq!(
+            player_start_pos_in(crate::grid::Dims::default()),
+            player_start_pos(),
+        );
+    }
+
+    #[test]
+    fn player_start_pos_in_lands_in_bounds_on_every_pool_shape() {
+        for &(c, r) in POOL_SHAPES {
+            let d = crate::grid::Dims::new(c, r);
+            let p = player_start_pos_in(d);
+            assert!(
+                p.in_bounds_in(d),
+                "{c}x{r}: player start {p:?} off the grid"
+            );
+            // Front-centre rule: row is the front row, col is the centre col.
+            assert_eq!(p.row, d.front_row(), "{c}x{r}: player not on front row");
+            assert_eq!(p.col, d.center_col(), "{c}x{r}: player not on centre col");
+        }
+    }
+
+    #[test]
+    fn enemy_spawn_pos_in_default_matches_legacy_helper() {
+        // Byte-equivalent on default Dims — the legacy `enemy_spawn_pos` is a
+        // thin wrapper. Walks well past the cap so the None tail is checked.
+        let d = crate::grid::Dims::default();
+        for i in 0..(crate::grid::CELLS * 2) {
+            assert_eq!(enemy_spawn_pos_in(i, d), enemy_spawn_pos(i), "slot {i}");
+        }
+    }
+
+    #[test]
+    fn enemy_spawn_pos_in_never_lands_on_the_player_or_off_grid() {
+        // Across every pool shape, every Some(pos) is a back-row cell distinct
+        // from the player's front-centre.
+        for &(c, r) in POOL_SHAPES {
+            let d = crate::grid::Dims::new(c, r);
+            let ppos = player_start_pos_in(d);
+            for i in 0..(d.cell_count() * 2) {
+                if let Some(pos) = enemy_spawn_pos_in(i, d) {
+                    assert!(
+                        pos.in_bounds_in(d),
+                        "{c}x{r} slot {i}: {pos:?} off the grid",
+                    );
+                    assert!(
+                        pos.row < d.front_row(),
+                        "{c}x{r} slot {i}: {pos:?} on player's front row",
+                    );
+                    assert_ne!(pos, ppos, "{c}x{r} slot {i}: enemy on player cell");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn enemy_spawn_pos_in_back_row_slots_are_mutually_distinct() {
+        // Each shape's back-row slots are a permutation: no two distinct
+        // indices below the back-row capacity share a Pos.
+        for &(c, r) in POOL_SHAPES {
+            let d = crate::grid::Dims::new(c, r);
+            let back_slots = (d.rows - 1) * d.cols;
+            let mut seen = std::collections::HashSet::new();
+            for i in 0..back_slots {
+                let pos = enemy_spawn_pos_in(i, d).expect("in-range slot is Some");
+                assert!(seen.insert(pos), "{c}x{r}: slot {i} duplicated at {pos:?}");
+            }
+            assert_eq!(
+                seen.len(),
+                back_slots,
+                "{c}x{r}: every back-row cell used exactly once",
+            );
+            assert_eq!(
+                enemy_spawn_pos_in(back_slots, d),
+                None,
+                "{c}x{r}: first slot past the back rows is None",
+            );
+        }
+    }
+
+    #[test]
+    fn placeholder_cell_to_pos_in_never_lands_on_the_player_row() {
+        // For every pool shape, the placeholder re-key clamps to the back rows
+        // — no 1-D cell, however large, ever lands on `front_row()`.
+        for &(c, r) in POOL_SHAPES {
+            let d = crate::grid::Dims::new(c, r);
+            for cell in 0..(d.cell_count() * 4) {
+                let pos = placeholder_cell_to_pos_in(cell, d);
+                assert!(pos.in_bounds_in(d), "{c}x{r} cell {cell}: {pos:?} off grid");
+                assert!(
+                    pos.row < d.front_row() || d.rows < 2,
+                    "{c}x{r} cell {cell}: {pos:?} on the player's front row",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn back_row_column_order_in_default_matches_legacy_helper() {
+        // Behaviour-identical lock at default size.
+        assert_eq!(
+            back_row_column_order_in(crate::grid::Dims::default()),
+            back_row_column_order(),
+        );
+    }
+
+    #[test]
+    fn back_row_column_order_in_is_a_permutation_for_every_shape() {
+        // Centre-out fan is a permutation of `0..cols` — every column hit
+        // exactly once, no column dropped. Pinning this means a regression in
+        // the centre-out walk (skipping a column on an even-width board) is a
+        // visible break, not a silently-skewed encounter.
+        for &(c, _r) in POOL_SHAPES {
+            let d = crate::grid::Dims::new(c, 4);
+            let order = back_row_column_order_in(d);
+            assert_eq!(order.len(), c, "{c}-wide: order length");
+            let mut sorted = order.clone();
+            sorted.sort_unstable();
+            let expected: Vec<usize> = (0..c).collect();
+            assert_eq!(sorted, expected, "{c}-wide: not a permutation of 0..cols");
+            // First entry is always the centre column.
+            assert_eq!(order[0], d.center_col(), "{c}-wide: first not centre");
+        }
+    }
+
+    #[test]
+    fn build_encounter_board_default_matches_with_dims_default() {
+        // The 5x4 wrapper is exactly `build_encounter_board_with_dims(_, _,
+        // Dims::default(), _)`. A non-empty encounter that exercises the
+        // placement path (one enemy on the back row) MUST land at the same
+        // cells through both APIs — the behaviour-identical lock on the
+        // default callers.
+        let enc = EncounterDef {
+            id: "parity".into(),
+            enemy_ships: vec![ShipSpawn {
+                class_id: "skiff".into(),
+                cell: crate::grid::Pos::new(1, 0).to_index(),
+                pos: crate::grid::Pos::new(1, 0),
+                orientation: Orientation::BowOn { bow: LaneEnd::Aft },
+                facing: enemy_spawn_facing(),
+                hp_override: None,
+            }],
+            hazards: vec![],
+            is_boss: false,
+        };
+        let p1 = make_player(0, 10);
+        let p2 = make_player(0, 10);
+        let a = build_encounter_board(&enc, p1, |spawn| Some(fallback_ship_for_spawn(spawn)));
+        let b = build_encounter_board_with_dims(&enc, p2, crate::grid::Dims::default(), |spawn| {
+            Some(fallback_ship_for_spawn(spawn))
+        });
+        // Both boards have identical occupancy and shape.
+        assert_eq!(a.cols, b.cols);
+        assert_eq!(a.rows, b.rows);
+        assert_eq!(a.size, b.size);
+        assert_eq!(a.cells.len(), b.cells.len());
+        assert_eq!(
+            a.cells
+                .iter()
+                .map(|c| c.as_ref().map(|s| (s.faction, s.pos, s.cell)))
+                .collect::<Vec<_>>(),
+            b.cells
+                .iter()
+                .map(|c| c.as_ref().map(|s| (s.faction, s.pos, s.cell)))
+                .collect::<Vec<_>>(),
+        );
+    }
+
+    #[test]
+    fn build_encounter_board_with_dims_2x2_spawns_one_enemy_off_the_player() {
+        // The smallest shape: player at the front-centre of a 2x2, one back-row
+        // cell remains in front of the player → exactly 1 enemy fits + must not
+        // collide.
+        let d = crate::grid::Dims::new(2, 2);
+        let cap = max_enemies_in(d);
+        assert_eq!(cap, 1, "2x2 enemy cap");
+        let pos = enemy_spawn_pos_in(0, d).expect("at least one back-row slot exists on a 2x2");
+        let enc = EncounterDef {
+            id: "2x2".into(),
+            enemy_ships: vec![ShipSpawn {
+                class_id: "skiff".into(),
+                cell: pos.to_index_in(d),
+                pos,
+                orientation: Orientation::BowOn { bow: LaneEnd::Aft },
+                facing: enemy_spawn_facing(),
+                hp_override: None,
+            }],
+            hazards: vec![],
+            is_boss: false,
+        };
+        let board = build_encounter_board_with_dims(&enc, make_player(0, 10), d, |spawn| {
+            Some(fallback_ship_for_spawn(spawn))
+        });
+        // Board shape carries through.
+        assert_eq!((board.cols, board.rows), (2, 2));
+        assert_eq!(board.cells.len(), 4);
+        // Player at front-centre, NOT on the enemy cell.
+        let ppos = player_start_pos_in(d);
+        let player = board
+            .ship_at(ppos)
+            .expect("player on the front-centre cell");
+        assert_eq!(player.faction, Faction::Player);
+        assert_eq!(player.pos, ppos);
+        assert_eq!(player.cell, ppos.to_index_in(d), "invariant A on a 2x2");
+        // Enemy at its 2-D pos, slot==idx, distinct from the player's.
+        assert_ne!(pos, ppos, "test setup: spawn pos != player");
+        let enemy = board.ship_at(pos).expect("enemy on its back-row pos");
+        assert_eq!(enemy.faction, Faction::Enemy);
+        assert_eq!(enemy.pos, pos);
+        assert_eq!(enemy.cell, pos.to_index_in(d), "invariant A: derived cell");
+    }
+
+    #[test]
+    fn build_encounter_board_with_dims_3x3_full_squad_lands_distinct() {
+        // 3x3: cap=2, fan two enemies across the back row.
+        let d = crate::grid::Dims::new(3, 3);
+        let cap = max_enemies_in(d);
+        assert_eq!(cap, 2, "3x3 enemy cap");
+        let spawns: Vec<ShipSpawn> = (0..cap)
+            .map(|i| {
+                let pos = enemy_spawn_pos_in(i, d).expect("in-range slot");
+                ShipSpawn {
+                    class_id: "skiff".into(),
+                    cell: pos.to_index_in(d),
+                    pos,
+                    orientation: Orientation::BowOn { bow: LaneEnd::Aft },
+                    facing: enemy_spawn_facing(),
+                    hp_override: None,
+                }
+            })
+            .collect();
+        let board = build_encounter_board_with_dims(
+            &EncounterDef {
+                id: "3x3".into(),
+                enemy_ships: spawns.clone(),
+                hazards: vec![],
+                is_boss: false,
+            },
+            make_player(0, 10),
+            d,
+            |spawn| Some(fallback_ship_for_spawn(spawn)),
+        );
+        assert_eq!((board.cols, board.rows), (3, 3));
+        assert_eq!(board.cells.len(), 9);
+        let ppos = player_start_pos_in(d);
+        assert_eq!(board.ship_at(ppos).unwrap().faction, Faction::Player);
+        // Every spawn placed at its pos, distinct from the player.
+        let mut enemy_cells = std::collections::HashSet::new();
+        for sp in &spawns {
+            let s = board
+                .ship_at(sp.pos)
+                .unwrap_or_else(|| panic!("enemy missing on 3x3 at {:?}", sp.pos));
+            assert_eq!(s.faction, Faction::Enemy);
+            assert_eq!(s.pos, sp.pos);
+            assert_eq!(s.cell, sp.pos.to_index_in(d));
+            assert_ne!(sp.pos, ppos);
+            assert!(enemy_cells.insert(sp.pos));
+        }
+    }
+
+    #[test]
+    fn build_encounter_board_with_dims_4x4_full_squad_lands_distinct() {
+        // 4x4: cap=3, three enemies spread across the back rows.
+        let d = crate::grid::Dims::new(4, 4);
+        let cap = max_enemies_in(d);
+        assert_eq!(cap, 3, "4x4 enemy cap");
+        let spawns: Vec<ShipSpawn> = (0..cap)
+            .map(|i| {
+                let pos = enemy_spawn_pos_in(i, d).expect("in-range slot");
+                ShipSpawn {
+                    class_id: "skiff".into(),
+                    cell: pos.to_index_in(d),
+                    pos,
+                    orientation: Orientation::BowOn { bow: LaneEnd::Aft },
+                    facing: enemy_spawn_facing(),
+                    hp_override: None,
+                }
+            })
+            .collect();
+        let board = build_encounter_board_with_dims(
+            &EncounterDef {
+                id: "4x4".into(),
+                enemy_ships: spawns.clone(),
+                hazards: vec![],
+                is_boss: false,
+            },
+            make_player(0, 10),
+            d,
+            |spawn| Some(fallback_ship_for_spawn(spawn)),
+        );
+        assert_eq!((board.cols, board.rows), (4, 4));
+        assert_eq!(board.cells.len(), 16);
+        let ppos = player_start_pos_in(d);
+        assert_eq!(board.ship_at(ppos).unwrap().faction, Faction::Player);
+        // Player has at least one empty back-row cell to dodge to next turn.
+        let mut free_back_cells = 0usize;
+        for row in 0..d.front_row() {
+            for col in 0..d.cols {
+                let p = crate::grid::Pos::new(col, row);
+                if board.ship_at(p).is_none() {
+                    free_back_cells += 1;
+                }
+            }
+        }
+        assert!(
+            free_back_cells >= 1,
+            "4x4 with cap-{cap} squad should leave >=1 free back-row dodge cell, got {free_back_cells}",
+        );
+        // Every spawn placed, invariant A.
+        for sp in &spawns {
+            let s = board.ship_at(sp.pos).unwrap();
+            assert_eq!(s.cell, sp.pos.to_index_in(d));
+        }
+    }
+
+    #[test]
+    fn build_encounter_board_with_dims_drops_out_of_grid_spawns() {
+        // A spawn whose Pos is in-bounds on 5x4 but OFF the 3x3 grid is
+        // silently dropped (defensive). The on-grid spawns still place. This
+        // is the contract that lets a 5x4-shaped encounter author run on a
+        // narrower roll without panicking.
+        let d = crate::grid::Dims::new(3, 3);
+        let on_grid = crate::grid::Pos::new(0, 0);
+        let off_grid = crate::grid::Pos::new(4, 0); // valid on 5x4, off 3x3
+        let enc = EncounterDef {
+            id: "off-grid".into(),
+            enemy_ships: vec![
+                ShipSpawn {
+                    class_id: "skiff".into(),
+                    cell: on_grid.to_index_in(d),
+                    pos: on_grid,
+                    orientation: Orientation::BowOn { bow: LaneEnd::Aft },
+                    facing: enemy_spawn_facing(),
+                    hp_override: None,
+                },
+                ShipSpawn {
+                    class_id: "skiff".into(),
+                    cell: 0,
+                    pos: off_grid,
+                    orientation: Orientation::BowOn { bow: LaneEnd::Aft },
+                    facing: enemy_spawn_facing(),
+                    hp_override: None,
+                },
+            ],
+            hazards: vec![],
+            is_boss: false,
+        };
+        let board = build_encounter_board_with_dims(&enc, make_player(0, 10), d, |spawn| {
+            Some(fallback_ship_for_spawn(spawn))
+        });
+        // On-grid enemy landed.
+        assert_eq!(board.ship_at(on_grid).unwrap().faction, Faction::Enemy);
+        // Total enemies = 1 (the off-grid spawn was dropped).
+        let n_enemies = board
+            .cells
+            .iter()
+            .flatten()
+            .filter(|s| s.faction == Faction::Enemy)
+            .count();
+        assert_eq!(n_enemies, 1, "off-grid spawn was dropped, not crashed");
+    }
+
+    #[test]
+    fn build_encounter_board_with_dims_collapses_stale_ship_spawn_cell() {
+        // Reviewer rec (#199): `ship.cell` is DERIVED from `pos.to_index_in(
+        // dims)` — the spawn's `cell` field is NOT consulted for placement, so
+        // a stale `cell` (e.g. a 5x4-keyed index on a 3x3 board) doesn't
+        // corrupt the ship's slot. The ship lands at `pos`, and its `cell`
+        // field matches that pos under the runtime dims.
+        let d = crate::grid::Dims::new(3, 3);
+        let pos = crate::grid::Pos::new(1, 1);
+        let stale_cell = 19usize; // a valid 5x4 index that's nonsense on 3x3
+        let enc = EncounterDef {
+            id: "stale".into(),
+            enemy_ships: vec![ShipSpawn {
+                class_id: "skiff".into(),
+                cell: stale_cell,
+                pos,
+                orientation: Orientation::BowOn { bow: LaneEnd::Aft },
+                facing: enemy_spawn_facing(),
+                hp_override: None,
+            }],
+            hazards: vec![],
+            is_boss: false,
+        };
+        let board = build_encounter_board_with_dims(&enc, make_player(0, 10), d, |spawn| {
+            Some(fallback_ship_for_spawn(spawn))
+        });
+        let enemy = board.ship_at(pos).expect("enemy at its 2-D pos");
+        assert_eq!(
+            enemy.cell,
+            pos.to_index_in(d),
+            "ship.cell derived from pos.to_index_in(dims), not from spawn.cell",
+        );
+        // The slot-by-stale-cell holds no ship — confirms placement ignored
+        // the stale field.
+        assert!(
+            stale_cell >= board.cells.len()
+                || board.cells[stale_cell.min(board.cells.len() - 1)]
+                    .as_ref()
+                    .is_none_or(|s| s.pos == pos)
+        );
+    }
+
+    #[test]
+    fn capital_spawn_with_dims_lands_at_back_centre_on_every_shape() {
+        // Capital spawn: back-row centre of the runtime grid. Verified across
+        // every pool shape with rows >= 2 (rows<2 returns None — no room for a
+        // stand-off boss).
+        let cat = gen_catalog();
+        let cap_name = cat
+            .capitals
+            .first()
+            .map(|c| c.name.clone())
+            .expect("test catalog has at least one capital");
+        for &(c, r) in POOL_SHAPES {
+            let d = crate::grid::Dims::new(c, r);
+            let sp = capital_spawn_with_dims(&cap_name, 5, &cat, d)
+                .unwrap_or_else(|| panic!("{c}x{r}: capital_spawn_with_dims returned None"));
+            assert_eq!(sp.pos.col, d.center_col(), "{c}x{r}: capital not centred");
+            assert_eq!(sp.pos.row, 0, "{c}x{r}: capital not on back row 0");
+            assert_eq!(sp.cell, sp.pos.to_index_in(d), "{c}x{r}: cell derived");
+            // Most importantly, NEVER the player's cell.
+            assert_ne!(sp.pos, player_start_pos_in(d), "{c}x{r}: capital on player");
+        }
+        // Degenerate: 1-row board has no stand-off, no capital.
+        assert!(
+            capital_spawn_with_dims(&cap_name, 5, &cat, crate::grid::Dims::new(3, 1)).is_none()
+        );
+    }
+
+    #[test]
+    fn sample_encounter_spawns_with_dims_caps_at_max_enemies_in() {
+        // A pool with one class + a high requested count must produce exactly
+        // `max_enemies_in(dims)` spawns on every shape — the cap takes
+        // precedence over the caller's `count`.
+        let pool = SpawnPool {
+            class_ids: vec!["skiff".to_string()],
+        };
+        for &(c, r) in POOL_SHAPES {
+            let d = crate::grid::Dims::new(c, r);
+            let spawns = sample_encounter_spawns_with_dims(&pool, 5, 999, 0xCAFE_BABE, d);
+            assert_eq!(
+                spawns.len(),
+                max_enemies_in(d),
+                "{c}x{r}: spawn count = max_enemies_in",
+            );
+            // Every spawn in-bounds and not on the player's cell.
+            let ppos = player_start_pos_in(d);
+            let mut seen = std::collections::HashSet::new();
+            for sp in &spawns {
+                assert!(sp.pos.in_bounds_in(d), "{c}x{r}: spawn off grid");
+                assert_ne!(sp.pos, ppos, "{c}x{r}: spawn on player");
+                assert!(seen.insert(sp.pos), "{c}x{r}: spawn collision");
+            }
+        }
     }
 
     #[test]
