@@ -229,6 +229,7 @@ mod tests {
             }],
             traits: vec![Trait::Agile],
             klass: Some("wanderer".into()),
+            tail: None,
         }
     }
 

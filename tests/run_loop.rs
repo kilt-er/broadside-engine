@@ -99,6 +99,7 @@ fn player_frigate(cell: usize, hull: i32) -> Ship {
         statuses: Vec::new(),
         traits: Vec::new(),
         klass: None,
+        tail: None,
     }
 }
 
@@ -144,6 +145,7 @@ fn weak_enemy(id: &str, cell: usize, hull: i32) -> Ship {
         statuses: Vec::new(),
         traits: Vec::new(),
         klass: None,
+        tail: None,
     }
 }
 

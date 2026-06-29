@@ -263,6 +263,7 @@ mod heat {
             statuses: Vec::new(),
             traits: Vec::new(),
             klass: None,
+            tail: None,
         }
     }
 
@@ -538,6 +539,7 @@ mod combat_2d {
             statuses: Vec::new(),
             traits: Vec::new(),
             klass: None,
+            tail: None,
         }
     }
 

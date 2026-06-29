@@ -88,6 +88,7 @@ fn target_ship(id: &str, cell: usize, hull: i32, bow: LaneEnd) -> Ship {
         statuses: Vec::new(),
         traits: Vec::new(),
         klass: None,
+        tail: None,
     }
 }
 

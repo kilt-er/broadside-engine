@@ -90,6 +90,7 @@ fn naked_ship_with_traits(
         statuses: Vec::new(),
         traits,
         klass: None,
+        tail: None,
     }
 }
 

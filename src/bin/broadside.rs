@@ -839,6 +839,7 @@ fn make_ship(
         statuses: Vec::new(),
         traits: Vec::new(),
         klass: None,
+        tail: None,
     }
 }
 

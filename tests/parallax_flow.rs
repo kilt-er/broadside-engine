@@ -117,6 +117,7 @@ fn player_seed() -> Ship {
         statuses: Vec::new(),
         traits: Vec::new(),
         klass: None,
+        tail: None,
     }
 }
 

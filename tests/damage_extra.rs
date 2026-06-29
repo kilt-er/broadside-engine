@@ -94,6 +94,7 @@ fn ship_with_armour(
         statuses: Vec::new(),
         traits,
         klass: None,
+        tail: None,
     }
 }
 

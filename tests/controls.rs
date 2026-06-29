@@ -97,6 +97,7 @@ fn player_ship(cell: usize) -> Ship {
         statuses: Vec::new(),
         traits: Vec::new(),
         klass: None,
+        tail: None,
     }
 }
 
@@ -268,6 +269,7 @@ fn queue_pulse_laser_then_commit_fires_once_against_a_target() {
         statuses: vec![],
         traits: vec![],
         klass: None,
+        tail: None,
     };
     board.cells[target_pos.to_index()] = Some(target);
 

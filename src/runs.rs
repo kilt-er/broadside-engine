@@ -49,8 +49,8 @@
 //! rather than embedding a Ship.
 
 use crate::types::{
-    Arc as TArc, Board, Catalog, EncounterDef, EventBus, Faction, HullZone, LaneEnd, Mount,
-    Orientation, Run, Sector, SectorDef, ShieldFace, ShieldProfile, Ship, ShipSpawn, Trait,
+    Arc as TArc, Board, Catalog, EncounterDef, EventBus, Faction, Footprint, HullZone, LaneEnd,
+    Mount, Orientation, Run, Sector, SectorDef, ShieldFace, ShieldProfile, Ship, ShipSpawn, Trait,
 };
 use std::collections::HashMap;
 
@@ -479,6 +479,7 @@ pub fn boss_ship_for_spawn(spawn: &ShipSpawn) -> Ship {
         statuses: Vec::new(),
         traits: vec![Trait::ReactorBreach],
         klass: Some(spawn.class_id.clone()),
+        tail: None,
     };
     if let Some(hp) = spawn.hp_override {
         s.hull = hp;
@@ -529,6 +530,112 @@ pub fn capital_boss_ship_for_spawn(spawn: &ShipSpawn, _catalog: &Catalog) -> Shi
     boss_ship_for_spawn(spawn)
 }
 
+/// Look up the [`Footprint`] for the capital named `class_id` in `catalog`, or
+/// [`Footprint::Single`] if the name isn't a known capital (#214). The bin's
+/// spawn closure uses this to decide whether to call [`place_capital_pair`]
+/// for the 1×2 boss footprint, or to fall through to the standard 1-cell
+/// placement path. Name match mirrors [`is_capital_spawn`] (case-sensitive
+/// against `CapitalDef.name`, the display form the #60 generator writes into
+/// `ShipSpawn.class_id`).
+#[must_use]
+pub fn capital_footprint(class_id: &str, catalog: &Catalog) -> Footprint {
+    catalog
+        .capitals
+        .iter()
+        .find(|c| c.name == class_id)
+        .map_or(Footprint::Single, |c| c.footprint)
+}
+
+/// Place a 1×2 boss into `board` at `primary` (#214). Sets `ship.tail` to the
+/// chosen tail [`Pos`] and writes a CLONE of the (now multi-cell) `Ship` into
+/// **both** [`Board::cells`] slots — primary at `ship.pos`, mirror at
+/// `ship.tail`. The primary slot is canonical (hull/state live there); the
+/// mirror exists so the cell is hittable and blocking.
+///
+/// **Tail selection.** The boss spawns `Bow(S)` (see [`enemy_spawn_facing`]) so
+/// the natural tail is one cell forward of the primary along its bow direction
+/// — `primary + (0, +1)` in row-space. If that cell is off-grid or already
+/// occupied, falls back to `primary + (0, -1)` (one cell behind, off-axis but
+/// still adjacent), so a boss arriving on a `back_row==0` board with the row
+/// below occupied has somewhere to go. If *both* candidates are unavailable —
+/// a degenerate board where the boss can't physically extend — the function
+/// **places a Single (1×1) boss** and returns `false`: `ship.tail` stays
+/// `None`, only the primary slot is written. Caller can log a warning; the
+/// fight is still playable (the architect's "never panic, fall back to 1-cell"
+/// ruling).
+///
+/// Returns `true` if the boss was placed as a 1×2 (tail filled), `false` if
+/// it degraded to a 1×1 fallback. Both cases place the primary; in neither
+/// does the function leave the board partially populated or panic.
+///
+/// # Slot==pos invariant
+///
+/// The mirror clone's `pos` field is the PRIMARY's pos (not the tail's). That
+/// preserves the invariant for the primary (`cells[primary.to_index_in(dims)]
+/// .pos == primary`) and lets [`Board::find_pos_by_id`]'s primary-slot guard
+/// drop the tail mirror (it sees `slot_pos == tail != ship.pos == primary` →
+/// `None` for the mirror, `Some(primary)` for the primary).
+pub fn place_capital_pair(board: &mut Board, mut ship: Ship, primary: crate::grid::Pos) -> bool {
+    use crate::grid::{offset_in, Dir4, Facing};
+    let dims = board.dims();
+    if !primary.in_bounds_in(dims) {
+        return false; // caller's job to validate; degrade defensively.
+    }
+
+    // Bow direction for the tail step. The boss's spawn facing is Bow(S); a
+    // future content tweak could put the boss in Broadside, in which case the
+    // tail steps along the broadside axis's positive direction. Bow stance is
+    // the only authored case today.
+    let bow_dir = match ship.facing {
+        Facing::Bow(d) => d,
+        Facing::Broadside(axis) => axis.dirs().0, // positive axis dir
+    };
+
+    // Pick the tail cell: prefer one step forward of primary along the bow
+    // (so the boss reads as a long ship pointing at the player); fall back to
+    // one step backward so a back-row boss on a deep grid still gets two cells.
+    let primary_idx = primary.to_index_in(dims);
+    let pick_tail = |dir: Dir4| -> Option<crate::grid::Pos> {
+        offset_in(primary, dir.to_dir8(), 1, dims).and_then(|p| {
+            let idx = p.to_index_in(dims);
+            // Tail cell must be in-bounds AND free AND distinct from the
+            // primary slot — guard the last in case a 1×1 grid would map a
+            // forward step to itself (it can't on real dims, but keep the
+            // invariant explicit).
+            if idx != primary_idx && board.cells.get(idx).is_some_and(Option::is_none) {
+                Some(p)
+            } else {
+                None
+            }
+        })
+    };
+    let tail = pick_tail(bow_dir).or_else(|| pick_tail(bow_dir.opposite()));
+
+    let primary_slot = board.cells.get_mut(primary_idx);
+    let Some(primary_slot) = primary_slot else {
+        return false;
+    };
+
+    ship.pos = primary;
+    ship.cell = primary_idx;
+    ship.tail = tail;
+    if let Some(tail_pos) = tail {
+        *primary_slot = Some(ship.clone());
+        // Mirror: same Ship clone, written into the tail slot. Its `pos`
+        // stays the PRIMARY's pos so the slot==pos invariant only holds at the
+        // primary slot; find_pos_by_id's primary-slot guard relies on this.
+        let tail_idx = tail_pos.to_index_in(dims);
+        if let Some(tail_slot) = board.cells.get_mut(tail_idx) {
+            *tail_slot = Some(ship);
+        }
+        true
+    } else {
+        // 1×1 fallback: degrade to a single-cell boss. tail stays None.
+        *primary_slot = Some(ship);
+        false
+    }
+}
+
 /// Minimal default `Ship` shape used for spawns whose `class_id` isn't
 /// known to the caller's class registry. Bow-on facing the player, low
 /// hull, one Forward `pulse_laser` mount so the AI has something to fire.
@@ -577,6 +684,7 @@ pub fn fallback_ship_for_spawn(spawn: &ShipSpawn) -> Ship {
         statuses: Vec::new(),
         traits: Vec::new(),
         klass: Some(spawn.class_id.clone()),
+        tail: None,
     };
     if let Some(hp) = spawn.hp_override {
         s.hull = hp;
@@ -1494,6 +1602,7 @@ mod tests {
             statuses: Vec::new(),
             traits: Vec::new(),
             klass: None,
+            tail: None,
         }
     }
 
@@ -1517,6 +1626,7 @@ mod tests {
             statuses: Vec::new(),
             traits: Vec::new(),
             klass: None,
+            tail: None,
         }
     }
 
@@ -2979,6 +3089,154 @@ mod tests {
         // Degenerate: 1-row board has no stand-off, no capital.
         assert!(
             capital_spawn_with_dims(&cap_name, 5, &cat, crate::grid::Dims::new(3, 1)).is_none()
+        );
+    }
+
+    /* ---- #214 1×2 boss footprint --------------------------------------- */
+
+    fn boss_test_ship(primary: crate::grid::Pos) -> Ship {
+        // Reuse the warlord shape so the test reads like a real boss spawn.
+        let spawn = ShipSpawn {
+            class_id: "warlord".into(),
+            cell: primary.to_index_in(crate::grid::Dims::default()),
+            pos: primary,
+            orientation: Orientation::BowOn { bow: LaneEnd::Aft },
+            facing: enemy_spawn_facing(),
+            hp_override: None,
+        };
+        boss_ship_for_spawn(&spawn)
+    }
+
+    fn empty_board(dims: crate::grid::Dims) -> Board {
+        Board {
+            size: dims.cols,
+            cols: dims.cols,
+            rows: dims.rows,
+            cells: (0..dims.cell_count()).map(|_| None).collect(),
+            ordnance: Vec::new(),
+            hazards: (0..dims.cell_count()).map(|_| Vec::new()).collect(),
+            patrol: 1,
+            level: 0,
+            threats: Vec::new(),
+            bus: EventBus::default(),
+            destroys_this_window: 0,
+            fire_events: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn place_capital_pair_writes_clone_into_both_slots_on_roomy_board() {
+        // 5×4: boss at back-row centre Pos(2,0), bow S → tail at Pos(2,1) (one
+        // step forward). Both slots hold the same id; primary is canonical.
+        let dims = crate::grid::Dims::new(5, 4);
+        let mut board = empty_board(dims);
+        let primary = crate::grid::Pos::new(2, 0);
+        let ship = boss_test_ship(primary);
+        let ship_id = ship.id.clone();
+
+        let placed_pair = place_capital_pair(&mut board, ship, primary);
+        assert!(placed_pair, "5×4 has room for a 1×2 boss");
+
+        let primary_ship = board
+            .ship_at(primary)
+            .expect("primary slot populated after place_capital_pair");
+        let tail = primary_ship
+            .tail
+            .expect("primary ship records its tail pos");
+        assert_eq!(
+            tail,
+            crate::grid::Pos::new(2, 1),
+            "tail one step forward (S)"
+        );
+
+        // Both slots resolve to the SAME id via ship_id_at — the renderer/AI
+        // sees one ship across two cells.
+        assert_eq!(board.ship_id_at(primary), Some(ship_id.as_str()));
+        assert_eq!(board.ship_id_at(tail), Some(ship_id.as_str()));
+
+        // find_pos_by_id returns the PRIMARY pos, never the tail — the
+        // primary-slot invariant survives the mirror.
+        assert_eq!(board.find_pos_by_id(&ship_id), Some(primary));
+
+        // Ship::footprint reports both cells.
+        let primary_ship = board.ship_at(primary).unwrap();
+        assert_eq!(primary_ship.footprint(), vec![primary, tail]);
+    }
+
+    #[test]
+    fn place_capital_pair_falls_back_to_single_on_too_small_a_board() {
+        // 1×1 board: primary is the only cell, forward step leaves the grid,
+        // backward step also leaves it → degrade to Single (tail = None) and
+        // return false. Boss still placed at the primary slot — never panics.
+        let dims = crate::grid::Dims::new(1, 1);
+        let mut board = empty_board(dims);
+        let primary = crate::grid::Pos::new(0, 0);
+        let ship = boss_test_ship(primary);
+        let ship_id = ship.id.clone();
+
+        let placed_pair = place_capital_pair(&mut board, ship, primary);
+        assert!(!placed_pair, "1×1 has no room for a tail → 1-cell fallback");
+
+        let primary_ship = board
+            .ship_at(primary)
+            .expect("primary slot still populated on fallback");
+        assert!(
+            primary_ship.tail.is_none(),
+            "fallback boss has no tail (single-cell)"
+        );
+        assert_eq!(board.find_pos_by_id(&ship_id), Some(primary));
+    }
+
+    #[test]
+    fn place_capital_pair_picks_backward_tail_when_forward_blocked() {
+        // 3×3 board with a co-occupant blocking the forward (S) tail cell.
+        // The helper falls back to the backward (N) cell — which is OOB at
+        // row 0 — so should degrade to Single. To exercise the backward
+        // fallback, put the primary at row 1 (centre row) with row 2 (front)
+        // already occupied.
+        let dims = crate::grid::Dims::new(3, 3);
+        let mut board = empty_board(dims);
+        let primary = crate::grid::Pos::new(1, 1);
+        let forward_tail = crate::grid::Pos::new(1, 2);
+
+        // Block the forward tail slot.
+        let mut decoy = boss_test_ship(forward_tail);
+        decoy.id = "decoy".into();
+        decoy.tail = None;
+        board.cells[forward_tail.to_index_in(dims)] = Some(decoy);
+
+        let ship = boss_test_ship(primary);
+        let placed_pair = place_capital_pair(&mut board, ship, primary);
+        assert!(
+            placed_pair,
+            "row 1 with forward blocked still has backward (row 0) free"
+        );
+        let primary_ship = board.ship_at(primary).unwrap();
+        assert_eq!(
+            primary_ship.tail,
+            Some(crate::grid::Pos::new(1, 0)),
+            "tail fell back to one step backward (N)"
+        );
+    }
+
+    #[test]
+    fn capital_footprint_defaults_to_single_for_unknown_capital() {
+        let cat = gen_catalog();
+        assert_eq!(capital_footprint("Nonexistent", &cat), Footprint::Single);
+        // Catalog test capitals omit `footprint` → serde default Single.
+        assert_eq!(capital_footprint("The Dasher", &cat), Footprint::Single);
+    }
+
+    #[test]
+    fn footprint_pair_serde_round_trip() {
+        // CapitalDef with footprint:"pair" parses and serializes identically.
+        let json = r#"{"id":"k","name":"K","sector":"S","sP7":9,"footprint":"pair"}"#;
+        let c: crate::types::CapitalDef = serde_json::from_str(json).unwrap();
+        assert_eq!(c.footprint, Footprint::Pair);
+        let back = serde_json::to_string(&c).unwrap();
+        assert!(
+            back.contains("\"footprint\":\"pair\""),
+            "round-trip: {back}"
         );
     }
 

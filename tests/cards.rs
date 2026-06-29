@@ -65,6 +65,7 @@ fn naked_ship(id: &str, faction: Faction, cell: usize) -> Ship {
         statuses: Vec::new(),
         traits: Vec::new(),
         klass: None,
+        tail: None,
     }
 }
 
