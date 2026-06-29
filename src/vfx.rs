@@ -27,7 +27,8 @@
 
 use crate::effects::{Explosion, HitFlash, ParticleBurst, ShotBeam, TelegraphFire, Trail};
 use crate::gfx::{DrawCommand, SpriteInstance};
-use crate::perspective::{fractional_cell_to_screen, LaneGeometry};
+use crate::grid::Pos;
+use crate::projector::{grid_cell_quad, ProjectorConfig};
 use crate::types::{Board, Faction};
 use crate::{atlas, types::Ship};
 use std::collections::HashMap;
@@ -55,27 +56,32 @@ enum EffectKind {
     /// styled beam attacker→target. `thickness` + `dur` come from the weapon
     /// archetype, `color` from the firing faction; a miss (`dim`) renders
     /// fainter. Replaces the old guessed nearest-opponent beam.
+    ///
+    /// (#201 bug 2) `from_pos` / `to_pos` are 2-D `Pos` (cell coords on the
+    /// unified board), not the legacy 1-D flat indices. The emit helpers
+    /// project them through the live `ProjectorConfig` via `grid_cell_quad` so
+    /// the beam endpoints land on the correct 2-D cells.
     ShotBeam {
-        from_cell: f32,
-        to_cell: f32,
+        from_pos: Pos,
+        to_pos: Pos,
         color: [f32; 3],
         thickness: f32,
         dim: bool,
     },
     /// Expanding flash centred on a cell (a ship taking a hit).
-    HitFlash { cell: f32 },
+    HitFlash { pos: Pos },
     /// Expanding ring + debris at a cell (a ship destroyed).
-    Explosion { cell: f32 },
+    Explosion { pos: Pos },
     /// Fading streak between two cells (ordnance step).
     Trail {
-        from_cell: f32,
-        to_cell: f32,
+        from_pos: Pos,
+        to_pos: Pos,
         color: [f32; 3],
     },
     /// A telegraph icon "spending" as its enemy fires (#70): a quick expanding
-    /// red pop at the telegraph slot above `cell`, so the player sees the
+    /// red pop at the telegraph slot above the cell, so the player sees the
     /// readied action discharge rather than silently becoming the next intent.
-    TelegraphFire { cell: f32 },
+    TelegraphFire { pos: Pos },
 }
 
 impl Effect {
@@ -92,10 +98,10 @@ impl Effect {
 /// frame against. Cheap: a few small maps keyed by ship / projectile id.
 #[derive(Clone, Debug, Default)]
 struct Snapshot {
-    /// ship id → (hull, cell, faction).
-    ships: HashMap<String, (i32, usize, Faction)>,
-    /// projectile id → cell.
-    ordnance: HashMap<String, usize>,
+    /// ship id → (hull, 2-D pos, faction). (#201 bug 2 migration: was 1-D `cell`.)
+    ships: HashMap<String, (i32, Pos, Faction)>,
+    /// projectile id → 2-D pos. (#201 bug 2 migration: was 1-D `cell`.)
+    ordnance: HashMap<String, Pos>,
     /// enemy ship id → its telegraphed (queue head) action id, if any. Used to
     /// detect a FIRE: with the resolver's fire-then-decide model (#67/#162), an
     /// enemy's queue head changes the instant it spends its telegraphed action,
@@ -117,7 +123,7 @@ impl Snapshot {
         let mut ships = HashMap::new();
         let mut enemy_intent = HashMap::new();
         for s in board.cells.iter().flatten() {
-            ships.insert(s.id.clone(), (s.hull, s.cell, s.faction));
+            ships.insert(s.id.clone(), (s.hull, s.pos, s.faction));
             if s.faction == Faction::Enemy {
                 if let Some(head) = s.queue.first() {
                     enemy_intent.insert(s.id.clone(), head.clone());
@@ -126,7 +132,7 @@ impl Snapshot {
         }
         let mut ordnance = HashMap::new();
         for p in &board.ordnance {
-            ordnance.insert(p.id.clone(), p.cell);
+            ordnance.insert(p.id.clone(), p.pos);
         }
         Self {
             ships,
@@ -263,8 +269,8 @@ impl CombatVfx {
                 let (thickness, dur) = archetype_beam_style(&self.cfg.shot_beam, fe.archetype);
                 self.spawn(
                     EffectKind::ShotBeam {
-                        from_cell: fe.from_cell as f32,
-                        to_cell: fe.to_cell as f32,
+                        from_pos: fe.from_pos,
+                        to_pos: fe.to_pos,
                         color: faction_beam_tint(&self.cfg.shot_beam, fe.attacker_faction),
                         thickness,
                         dim: !fe.hit,
@@ -278,24 +284,24 @@ impl CombatVfx {
 
     fn diff(&mut self, prev: &Snapshot, cur: &Snapshot) {
         // Ships: hull-drop → hit flash; vanished → explosion.
-        for (id, &(prev_hull, prev_cell, _prev_faction)) in &prev.ships {
+        for (id, &(prev_hull, prev_pos, _prev_faction)) in &prev.ships {
             match cur.ships.get(id) {
-                Some(&(cur_hull, cur_cell, _)) => {
+                Some(&(cur_hull, cur_pos, _)) => {
                     if cur_hull < prev_hull {
                         // Hull drop → the IMPACT (flash). The shot LINE itself now
                         // comes from the resolver's exact FireEvent (#59,
                         // ShotBeam in observe), not a guessed nearest-opponent
                         // beam — so we no longer fabricate an attacker here.
-                        let cell = cur_cell as f32;
-                        self.spawn(EffectKind::HitFlash { cell }, self.cfg.hit_flash.life_secs);
+                        self.spawn(
+                            EffectKind::HitFlash { pos: cur_pos },
+                            self.cfg.hit_flash.life_secs,
+                        );
                     }
                 }
                 None => {
                     // Ship gone this frame → destroyed at its last known cell.
                     self.spawn(
-                        EffectKind::Explosion {
-                            cell: prev_cell as f32,
-                        },
+                        EffectKind::Explosion { pos: prev_pos },
                         self.cfg.explosion.life_secs,
                     );
                 }
@@ -310,7 +316,7 @@ impl CombatVfx {
         for (id, prev_head) in &prev.enemy_intent {
             // Enemy must still be alive this frame (a destroyed enemy is an
             // explosion, not a fire).
-            let Some(&(_, cur_cell, _)) = cur.ships.get(id) else {
+            let Some(&(_, cur_pos, _)) = cur.ships.get(id) else {
                 continue;
             };
             let fired = match cur.enemy_intent.get(id) {
@@ -319,21 +325,19 @@ impl CombatVfx {
             };
             if fired {
                 self.spawn(
-                    EffectKind::TelegraphFire {
-                        cell: cur_cell as f32,
-                    },
+                    EffectKind::TelegraphFire { pos: cur_pos },
                     self.cfg.telegraph_fire.life_secs,
                 );
             }
         }
         // Ordnance: a projectile that moved leaves a trail along its step.
-        for (id, &cur_cell) in &cur.ordnance {
-            if let Some(&prev_cell) = prev.ordnance.get(id) {
-                if prev_cell != cur_cell {
+        for (id, &cur_pos) in &cur.ordnance {
+            if let Some(&prev_pos) = prev.ordnance.get(id) {
+                if prev_pos != cur_pos {
                     self.spawn(
                         EffectKind::Trail {
-                            from_cell: prev_cell as f32,
-                            to_cell: cur_cell as f32,
+                            from_pos: prev_pos,
+                            to_pos: cur_pos,
                             color: self.cfg.trail.color.0,
                         },
                         self.cfg.trail.life_secs,
@@ -371,34 +375,40 @@ impl CombatVfx {
     /// telegraph cues (read from `board`). Append to `out`; ordered so juice
     /// sits above the ships but below modal overlays (the caller controls
     /// where in the command stream this runs).
-    pub fn emit(&self, out: &mut Vec<DrawCommand>, board: &Board, lane: &LaneGeometry) {
+    /// (#201 bug 2) Emit every live effect into `out`, projected through the
+    /// LIVE 2-D [`ProjectorConfig`] so endpoints land on the correct cell quads
+    /// (was previously the 1-D `LaneGeometry`, which mapped flat-index cells
+    /// along a single horizontal line and never reached the unified board).
+    /// Called from the bin's frame compose alongside `particles.emit` /
+    /// `exhaust.emit`, after `observe(board)` + `advance(dt)`.
+    pub fn emit(&self, out: &mut Vec<DrawCommand>, board: &Board, cfg: &ProjectorConfig) {
         for e in &self.effects {
             match e.kind {
-                EffectKind::HitFlash { cell } => {
-                    emit_flash(out, lane, cell, e.t(), &self.cfg.hit_flash);
+                EffectKind::HitFlash { pos } => {
+                    emit_flash(out, cfg, pos, e.t(), &self.cfg.hit_flash);
                 }
-                EffectKind::Explosion { cell } => {
-                    emit_explosion(out, lane, cell, e.t(), &self.cfg.explosion);
+                EffectKind::Explosion { pos } => {
+                    emit_explosion(out, cfg, pos, e.t(), &self.cfg.explosion);
                 }
                 EffectKind::Trail {
-                    from_cell,
-                    to_cell,
+                    from_pos,
+                    to_pos,
                     color,
-                } => emit_beam(out, lane, from_cell, to_cell, color, e.t(), &self.cfg.trail),
-                EffectKind::TelegraphFire { cell } => {
-                    emit_telegraph_fire(out, lane, cell, e.t(), &self.cfg.telegraph_fire);
+                } => emit_beam(out, cfg, from_pos, to_pos, color, e.t(), &self.cfg.trail),
+                EffectKind::TelegraphFire { pos } => {
+                    emit_telegraph_fire(out, cfg, pos, e.t(), &self.cfg.telegraph_fire);
                 }
                 EffectKind::ShotBeam {
-                    from_cell,
-                    to_cell,
+                    from_pos,
+                    to_pos,
                     color,
                     thickness,
                     dim,
                 } => emit_shot_beam(
                     out,
-                    lane,
-                    from_cell,
-                    to_cell,
+                    cfg,
+                    from_pos,
+                    to_pos,
                     color,
                     thickness,
                     dim,
@@ -410,7 +420,7 @@ impl CombatVfx {
         // Telegraph: live cue above any enemy holding a queued action.
         for s in board.cells.iter().flatten() {
             if s.faction == Faction::Enemy && !s.queue.is_empty() {
-                emit_telegraph(out, lane, s, &self.cfg.telegraph_fire);
+                emit_telegraph(out, cfg, s, &self.cfg.telegraph_fire);
             }
         }
     }
@@ -445,20 +455,23 @@ fn fire_events_sig(board: &Board) -> u64 {
 /// over its lifetime. Rendered as a rotated `SpriteInstance`.
 fn emit_beam(
     out: &mut Vec<DrawCommand>,
-    lane: &LaneGeometry,
-    from_cell: f32,
-    to_cell: f32,
+    cfg_proj: &ProjectorConfig,
+    from_pos: Pos,
+    to_pos: Pos,
     color: [f32; 3],
     t: f32,
     cfg: &Trail,
 ) {
-    let a = fractional_cell_to_screen(from_cell, lane);
-    let b = fractional_cell_to_screen(to_cell, lane);
-    let dx = b.x - a.x;
-    let dy = b.y - a.y;
+    // (#201 bug 2) 2-D-correct endpoints: project each cell's screen-space
+    // centre through the live unified camera, so the trail spans the actual
+    // attacker→target cells on the perspective grid.
+    let a = grid_cell_quad(from_pos, cfg_proj).center;
+    let b = grid_cell_quad(to_pos, cfg_proj).center;
+    let dx = b[0] - a[0];
+    let dy = b[1] - a[1];
     let len = dx.hypot(dy).max(1.0);
-    let cx = f32::midpoint(a.x, b.x);
-    let cy = f32::midpoint(a.y, b.y);
+    let cx = f32::midpoint(a[0], b[0]);
+    let cy = f32::midpoint(a[1], b[1]);
     let alpha = (1.0 - t) * cfg.alpha; // fade out
     let thickness = cfg.thickness * (1.0 - t * 0.5); // thins slightly as it fades
     out.push(DrawCommand::Sprite(SpriteInstance {
@@ -521,9 +534,9 @@ pub(crate) const fn faction_beam_tint(cfg: &ShotBeam, f: Faction) -> [f32; 3] {
 #[allow(clippy::too_many_arguments)]
 fn emit_shot_beam(
     out: &mut Vec<DrawCommand>,
-    lane: &LaneGeometry,
-    from_cell: f32,
-    to_cell: f32,
+    cfg_proj: &ProjectorConfig,
+    from_pos: Pos,
+    to_pos: Pos,
     color: [f32; 3],
     thickness: f32,
     dim: bool,
@@ -534,43 +547,42 @@ fn emit_shot_beam(
     // lane); the rest is the strike + fade. From data (`ShotBeam.travel_frac`).
     let travel_frac = cfg.travel_frac;
 
-    let a = fractional_cell_to_screen(from_cell, lane);
-    let b = fractional_cell_to_screen(to_cell, lane);
-    let dx = b.x - a.x;
-    let dy = b.y - a.y;
+    // (#201 bug 2) 2-D-correct endpoints via grid_cell_quad — the bolt travels
+    // between the actual attacker / target cells on the unified perspective
+    // grid (not the legacy 1-D LaneGeometry centerline).
+    let a = grid_cell_quad(from_pos, cfg_proj).center;
+    let b = grid_cell_quad(to_pos, cfg_proj).center;
+    let dx = b[0] - a[0];
+    let dy = b[1] - a[1];
     let rot = dy.atan2(dx);
     let base_alpha = if dim { cfg.miss_alpha } else { cfg.hit_alpha };
     let uv = atlas::cell_uvs(atlas::SOLID_WHITE);
-    let mut seg =
-        |p0: crate::perspective::Point2, p1: crate::perspective::Point2, th: f32, alpha: f32| {
-            let len = (p1.x - p0.x).hypot(p1.y - p0.y).max(1.0);
-            out.push(DrawCommand::Sprite(SpriteInstance {
-                pos: [f32::midpoint(p0.x, p1.x), f32::midpoint(p0.y, p1.y)],
-                half_size: [len / 2.0, th / 2.0],
-                color: [color[0], color[1], color[2], alpha],
-                uv_min: uv.0,
-                uv_max: uv.1,
-                rotation_rad: rot,
-                _pad: [0.0; 3],
-            }));
-        };
+    let mut seg = |p0: [f32; 2], p1: [f32; 2], th: f32, alpha: f32| {
+        let len = (p1[0] - p0[0]).hypot(p1[1] - p0[1]).max(1.0);
+        out.push(DrawCommand::Sprite(SpriteInstance {
+            pos: [f32::midpoint(p0[0], p1[0]), f32::midpoint(p0[1], p1[1])],
+            half_size: [len / 2.0, th / 2.0],
+            color: [color[0], color[1], color[2], alpha],
+            uv_min: uv.0,
+            uv_max: uv.1,
+            rotation_rad: rot,
+            _pad: [0.0; 3],
+        }));
+    };
 
     if t < travel_frac {
         // TRAVEL: head eases muzzle→target; draw muzzle→head as the bolt body, plus
         // a brighter leading tip so the shot reads as a fast-moving round.
         let prog = (t / travel_frac).clamp(0.0, 1.0);
         let ease = 1.0 - (1.0 - prog) * (1.0 - prog); // ease-out
-        let head = crate::perspective::Point2 {
-            x: a.x + dx * ease,
-            y: a.y + dy * ease,
-        };
+        let head = [a[0] + dx * ease, a[1] + dy * ease];
         seg(a, head, thickness, base_alpha);
         // Bright leading tip: a short over-bright stub at the head.
         let tip = cfg.tip_len_frac;
-        let tail = crate::perspective::Point2 {
-            x: a.x + dx * (ease - tip).max(0.0),
-            y: a.y + dy * (ease - tip).max(0.0),
-        };
+        let tail = [
+            a[0] + dx * (ease - tip).max(0.0),
+            a[1] + dy * (ease - tip).max(0.0),
+        ];
         seg(
             tail,
             head,
@@ -587,14 +599,20 @@ fn emit_shot_beam(
 /// A flash / hit-spark: an expanding, fading square centred on a cell. Colour /
 /// peak size / grow curve / alpha come from [`HitFlash`] (data); the defaults
 /// reproduce the prior `HIT_COLOR` + peak `16.0` + `0.35 + 0.65t` + `0.85`.
-fn emit_flash(out: &mut Vec<DrawCommand>, lane: &LaneGeometry, cell: f32, t: f32, cfg: &HitFlash) {
-    let p = fractional_cell_to_screen(cell, lane);
+fn emit_flash(
+    out: &mut Vec<DrawCommand>,
+    cfg_proj: &ProjectorConfig,
+    pos: Pos,
+    t: f32,
+    cfg: &HitFlash,
+) {
+    let p = grid_cell_quad(pos, cfg_proj).center;
     let color = cfg.color.0;
     // Ease-out grow; fade over life.
     let size = cfg.peak_px * (cfg.grow_base + cfg.grow_span * t);
     let alpha = (1.0 - t) * cfg.alpha_peak;
     out.push(DrawCommand::Sprite(SpriteInstance::axis_aligned(
-        [p.x, p.y],
+        p,
         [size / 2.0, size / 2.0],
         [color[0], color[1], color[2], alpha],
         atlas::cell_uvs(atlas::SOLID_WHITE),
@@ -616,16 +634,16 @@ fn emit_flash(out: &mut Vec<DrawCommand>, lane: &LaneGeometry, cell: f32, t: f32
 /// the bin seeds on the same kill layers debris on top.
 fn emit_explosion(
     out: &mut Vec<DrawCommand>,
-    lane: &LaneGeometry,
-    cell: f32,
+    cfg_proj: &ProjectorConfig,
+    pos: Pos,
     t: f32,
     cfg: &Explosion,
 ) {
-    let p = fractional_cell_to_screen(cell, lane);
+    let p = grid_cell_quad(pos, cfg_proj).center;
     let peak = cfg.peak_px;
     let mut quad = |size: f32, rgba: [f32; 4]| {
         out.push(DrawCommand::Sprite(SpriteInstance::axis_aligned(
-            [p.x, p.y],
+            p,
             [size * 0.5, size * 0.5],
             rgba,
             atlas::cell_uvs(atlas::SOLID_WHITE),
@@ -670,18 +688,22 @@ fn emit_explosion(
 /// exact prior look. A future schema rev can add a `pop_color` field if desired.
 fn emit_telegraph_fire(
     out: &mut Vec<DrawCommand>,
-    lane: &LaneGeometry,
-    cell: f32,
+    cfg_proj: &ProjectorConfig,
+    pos: Pos,
     t: f32,
     cfg: &TelegraphFire,
 ) {
-    let p = fractional_cell_to_screen(cell, lane);
-    let y = lane.center_y + cfg.slot_offset_px;
+    // (#201 bug 2) 2-D-correct anchor: use the cell's screen-space centre +
+    // the configured slot offset, instead of the legacy lane.center_y constant.
+    // The offset is now applied relative to the cell's projected y, so the pop
+    // floats above the firing enemy's actual cell on the perspective grid.
+    let p = grid_cell_quad(pos, cfg_proj).center;
+    let y = p[1] + cfg.slot_offset_px;
     // Bright expanding ring-ish pop: a fast-growing, fast-fading square.
     let size = 18.0 * (cfg.grow_base + cfg.grow_span * t);
     let alpha = (1.0 - t) * cfg.alpha;
     out.push(DrawCommand::Sprite(SpriteInstance::axis_aligned(
-        [p.x, y],
+        [p[0], y],
         [size / 2.0, size / 2.0],
         [1.0, 0.42, 0.38, alpha],
         atlas::cell_uvs(atlas::SOLID_WHITE),
@@ -694,15 +716,17 @@ fn emit_telegraph_fire(
 /// [`TelegraphFire`] (data; `color` == the old `TELEGRAPH_COLOR`).
 fn emit_telegraph(
     out: &mut Vec<DrawCommand>,
-    lane: &LaneGeometry,
+    cfg_proj: &ProjectorConfig,
     ship: &Ship,
     cfg: &TelegraphFire,
 ) {
-    let p = fractional_cell_to_screen(ship.cell as f32, lane);
-    // Sit well above the ship silhouette.
-    let y = lane.center_y + cfg.slot_offset_px;
+    // (#201 bug 2) Use the ship's 2-D cell centre + slot offset relative to
+    // its projected y, so the cue floats above the actual ship on the grid
+    // (not at the legacy lane-centerline constant).
+    let p = grid_cell_quad(ship.pos, cfg_proj).center;
+    let y = p[1] + cfg.slot_offset_px;
     out.push(DrawCommand::Sprite(SpriteInstance::axis_aligned(
-        [p.x, y],
+        [p[0], y],
         [6.0, 6.0],
         cfg.color.0,
         atlas::cell_uvs(atlas::SOLID_WHITE),
@@ -1032,6 +1056,8 @@ mod tests {
 
     #[test]
     fn ordnance_step_spawns_trail() {
+        // (#201 bug 2 migration) Snapshot keys on `proj.pos` (2-D); a move
+        // requires the pos to change, not just the legacy 1-D cell index.
         let mut vfx = CombatVfx::new();
         let mut board = empty_board(7);
         let mut proj = Projectile {
@@ -1049,6 +1075,7 @@ mod tests {
         board.ordnance.push(proj.clone());
         vfx.observe(&board); // baseline
         proj.cell = 2;
+        proj.pos = crate::grid::Pos::new(0, 1);
         board.ordnance[0] = proj;
         vfx.observe(&board);
         assert_eq!(vfx.effects.len(), 1, "one ordnance trail");
@@ -1111,14 +1138,14 @@ mod tests {
 
     #[test]
     fn telegraph_emits_for_enemy_with_queue() {
-        let lane = crate::perspective::DEFAULT_LANE;
+        let cfg = crate::projector::ProjectorConfig::for_scene(480.0, 270.0);
         let mut board = empty_board(7);
         let mut e = ship("enemy", Faction::Enemy, 4, 5);
         e.queue.push("pulse_laser".into());
         board.cells[4] = Some(e);
         let vfx = CombatVfx::new();
         let mut out = Vec::new();
-        vfx.emit(&mut out, &board, &lane);
+        vfx.emit(&mut out, &board, &cfg);
         assert_eq!(out.len(), 1, "one telegraph cue for the queued enemy");
     }
 

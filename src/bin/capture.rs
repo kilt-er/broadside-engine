@@ -678,7 +678,6 @@ fn main() {
             // current `board`, enemy already removed above) spawns the Explosion;
             // advance ~0.18s puts it mid-expansion; emit over the same lane the bin uses.
             {
-                use broadside_engine::perspective::DEFAULT_LANE;
                 // `before` = a fresh campaign board (all enemies present, incl. the
                 // centre back-row one at `killed`); `board` already had it removed by
                 // the VFX-demo kill above. observe(before)->observe(board) is exactly
@@ -688,7 +687,7 @@ fn main() {
                 demo_vfx.observe(&before);
                 demo_vfx.observe(&board); // enemy gone -> spawns Explosion; fire_events -> ShotBeams
                 demo_vfx.advance(0.08); // early: explosion expanding + beam mid-TRAVEL (#178.1)
-                demo_vfx.emit(&mut commands, &board, &DEFAULT_LANE);
+                demo_vfx.emit(&mut commands, &board, &cfg);
                 log::info!("capture: #178 CombatVfx explosion + travelling beam at {killed:?}");
             }
         }

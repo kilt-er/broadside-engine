@@ -1261,53 +1261,46 @@ pub fn push_fizzle_cue_2d(
 /// over a shot's life still lives in the windowed `vfx` system for the 1-D path;
 /// here the beam is the full-strength round read (clarity over a micro-fade —
 /// Bruce wants to SEE the shots), which the next round's events replace.
+/// (#201 bug 2) Was the live static-beam compositor; now reduced to the
+/// IMPACT-SPARK cue only. The animated beam comes from
+/// [`crate::vfx::CombatVfx::emit`] which the bin now calls (the #178 wall-clock
+/// TRAVEL → STRIKE phases were sitting dead code before — observe + advance
+/// ran but emit was never invoked, and this fn drew a static full beam in its
+/// place). The spark fires on every `fe.hit` for one round (same frames the
+/// resolver keeps `fire_events` populated), drawn over the animated beam so
+/// the impact reads clearly on hit and not at all on miss.
 fn push_fire_2d(out: &mut Vec<DrawCommand>, board: &Board, cfg: &ProjectorConfig) {
-    // Single source: read the SAME default VfxConfig the windowed `vfx` beams use,
-    // so the 2-D fire beams can't diverge from the effect pool's styling.
-    let beam_cfg = &crate::vfx::default_vfx_config().shot_beam;
     for fe in &board.fire_events {
-        let (thickness, _life) = crate::vfx::archetype_beam_style(beam_cfg, fe.archetype);
-        let tint = crate::vfx::faction_beam_tint(beam_cfg, fe.attacker_faction);
-        let from = grid_cell_quad(fe.from_pos, cfg).center;
-        let to = grid_cell_quad(fe.to_pos, cfg).center;
-        // A hit reads full + bright; a miss is dimmer + thinner so "fired but
-        // didn't connect" reads without faking a separate animation.
-        let (alpha, th) = if fe.hit {
-            (0.95, thickness)
-        } else {
-            (0.45, thickness * 0.7)
-        };
-        let beam = [tint[0], tint[1], tint[2], alpha];
-        push_line(out, pt(from), pt(to), th, beam);
+        if !fe.hit {
+            continue;
+        }
         // (#120) Impact SPARK on the struck cell (hits only). Was a big cream
         // square (r = near_edge*0.5, up to 26px) centred on the cell — on the
         // player's NEAR cell that slabbed the whole hull (Bruce's "yellow square").
         // Now a COMPACT spark: a small bright core + a few short radial dashes at
         // the impact point, sized only loosely with depth and hard-capped small so
         // it reads as a hit WITHOUT covering the ship at any range.
-        if fe.hit {
-            let q = grid_cell_quad(fe.to_pos, cfg);
-            let c = q.center;
-            // Core: tiny, capped — never a slab.
-            let core = (q.near_edge_width() * 0.10).clamp(2.0, 5.0);
-            push_sprite(
-                out,
-                SpriteInstance::axis_aligned(
-                    c,
-                    [core, core],
-                    IMPACT_FLASH,
-                    atlas::cell_uvs(atlas::SOLID_WHITE),
-                ),
-            );
-            // A few short spark dashes radiating from the impact — reads as a burst
-            // without a filled square. Length scales gently with depth, capped.
-            let reach = (q.near_edge_width() * 0.22).clamp(4.0, 10.0);
-            let dirs = [(1.0_f32, 0.4_f32), (-0.8, 0.9), (0.3, -1.0), (-0.6, -0.5)];
-            for (dx, dy) in dirs {
-                let n = dx.hypot(dy).max(1e-3);
-                let end = [c[0] + dx / n * reach, c[1] + dy / n * reach];
-                push_line(out, pt(c), pt(end), 1.5, IMPACT_FLASH);
-            }
+        let q = grid_cell_quad(fe.to_pos, cfg);
+        let c = q.center;
+        // Core: tiny, capped — never a slab.
+        let core = (q.near_edge_width() * 0.10).clamp(2.0, 5.0);
+        push_sprite(
+            out,
+            SpriteInstance::axis_aligned(
+                c,
+                [core, core],
+                IMPACT_FLASH,
+                atlas::cell_uvs(atlas::SOLID_WHITE),
+            ),
+        );
+        // A few short spark dashes radiating from the impact — reads as a burst
+        // without a filled square. Length scales gently with depth, capped.
+        let reach = (q.near_edge_width() * 0.22).clamp(4.0, 10.0);
+        let dirs = [(1.0_f32, 0.4_f32), (-0.8, 0.9), (0.3, -1.0), (-0.6, -0.5)];
+        for (dx, dy) in dirs {
+            let n = dx.hypot(dy).max(1e-3);
+            let end = [c[0] + dx / n * reach, c[1] + dy / n * reach];
+            push_line(out, pt(c), pt(end), 1.5, IMPACT_FLASH);
         }
     }
 }

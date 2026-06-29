@@ -2379,6 +2379,19 @@ impl ApplicationHandler for App {
                     // (#178 step 3) Torpedo exhaust embers — same screen-space pool,
                     // emitted over the hulls/ordnance so the trail streams out the stern.
                     self.exhaust.emit(&mut instances);
+                    // (#201 bug 2) The #178 wall-clock COMBAT effects: animated
+                    // beam TRAVEL → STRIKE → fade, EXPANDING explosion (shell +
+                    // hot core + ignition flash), hit-flash, ordnance trail, and
+                    // telegraph pop. observe()/advance() above latch + age the
+                    // pool; emit() draws each at its current life-t through the
+                    // 2-D ProjectorConfig so endpoints land on cell quads (the
+                    // pool was previously 1-D-lane parametric and unreachable
+                    // on the unified board — emit was never invoked, so every
+                    // #178 effect aged out unseen and a static beam in
+                    // push_fire_2d covered for them). push_fire_2d still draws
+                    // the impact spark on hit (a non-beam cue this pool doesn't
+                    // carry).
+                    self.vfx.emit(&mut instances, &self.board, &scene_cfg);
                     // (#101) Damage-flash on the lane hull bar of every ship that
                     // took a hit this round (fades over ~0.45s), so even a 1-2 hull
                     // drop visibly pops — paired with the min-size bar clamp so a
