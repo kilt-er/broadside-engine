@@ -3855,35 +3855,41 @@ pub fn push_controls_popup(out: &mut Vec<DrawCommand>) {
     let pixel = 1.0;
     let line_h = 7.0 * pixel + 3.0;
 
-    // Two columns. Each line is "<key>  <label>" — pad keys so labels line up.
+    // (#196 followup, Bruce) Punctuation keys SPELLED OUT because the 5x7 font
+    // has no glyphs for , . ; ' [ ] - = / (they'd render blank, leaving the row
+    // keyless — Bruce caught this in fix196_popup_on for exactly the new dials).
+    // Every row now shows its key in pure A-Z + 0-9 text.
     let player_lines = [
-        "1 2 3   QUEUE WEAPON",
-        "5 6 7   PLAY CARD",
-        "UP/DN   MOVE FWD/REV",
-        "LF/RT   ROTATE BOW",
-        "Q / E   ROTATE  (ALT)",
-        "TAB     180 ABOUT-FACE",
-        "V       VENT",
-        "R/SPC   COMMIT TURN",
-        "ENTER   RESTART (END)",
+        "1 2 3        QUEUE WEAPON",
+        "5 6 7        PLAY CARD",
+        "UP DN        MOVE FWD REV",
+        "LF RT        ROTATE BOW",
+        "Q E          ROTATE ALT",
+        "TAB          180 ABOUT FACE",
+        "V            VENT",
+        "R SPC        COMMIT TURN",
+        "ENTER        RESTART END",
     ];
     let debug_lines = [
-        "ESC     EXIT",
-        ", / .   SHIP RES",
-        "; / '   SCENE RES",
-        "G       GRID PITCH",
-        "T       GRID MODE",
-        "O       ANGLE OVERLAY",
-        "U       UNIFIED CAM",
-        "[ / ]   SHIP SCALE",
-        "- / =   BOARD ZOOM",
-        "K / L   GRID CELL",
-        "F1      TOGGLE THIS",
+        "ESC          EXIT",
+        "COMMA DOT    SHIP RES",
+        "SEMI QUOT    SCENE RES",
+        "G            GRID PITCH",
+        "T            GRID MODE",
+        "O            ANGLE OVERLAY",
+        "U            UNIFIED CAM",
+        "LBKT RBKT    SHIP SCALE",
+        "MINUS PLUS   BOARD ZOOM",
+        "K L          GRID CELL",
+        "F1           TOGGLE THIS",
     ];
 
     // Pick a panel width that fits the widest column line + label padding.
-    let col_w = 22.0 * 6.0 * pixel; // ~22 glyphs per line at 6px advance
-    let gutter = 16.0;
+    // (#196 followup) Bumped from 22 → 28 glyph slots so the spelled-out
+    // punctuation labels ("MINUS PLUS   BOARD ZOOM", "TAB   180 ABOUT FACE",
+    // "ENTER   RESTART END") don't bleed into the right column.
+    let col_w = 28.0 * 6.0 * pixel; // ~28 glyphs per line at 6px advance
+    let gutter = 14.0;
     let title_h = 12.0;
     let header_h = 9.0;
     let body_rows = player_lines.len().max(debug_lines.len()) as f32;
