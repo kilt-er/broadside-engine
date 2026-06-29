@@ -237,12 +237,12 @@ pub fn build_encounter_board<F>(encounter: &EncounterDef, player: Ship, class_to
 where
     F: FnMut(&ShipSpawn) -> Option<Ship>,
 {
-    build_encounter_board_with_dims(
-        encounter,
-        player,
-        crate::grid::Dims::default(),
-        class_to_ship,
-    )
+    // #199b: route through `_with_dims` using the encounter's own `dims` field
+    // — for the legacy 5x4 path that's `Dims::default()` (via the type's
+    // `#[serde(default = "default_dims")]`); for the random-encounter-size
+    // flip, this is the per-encounter rolled `Dims` from `generate_sector`.
+    // Every existing call site picks up the rolled dims for free.
+    build_encounter_board_with_dims(encounter, player, encounter.dims, class_to_ship)
 }
 
 /// Variable-board (#199) variant of [`build_encounter_board`]: build a fresh
@@ -856,6 +856,7 @@ fn enc(id: &str, ships: Vec<ShipSpawn>, is_boss: bool) -> EncounterDef {
         enemy_ships: ships,
         hazards: Vec::new(),
         is_boss,
+        ..Default::default()
     }
 }
 
@@ -1007,6 +1008,7 @@ fn sector_citadel_approach() -> Sector {
                 ],
                 hazards: Vec::new(),
                 is_boss: true,
+                ..Default::default()
             },
         ],
     }
@@ -1061,6 +1063,63 @@ const _: fn() = || {
 /// capital encounter AFTER this loop, so the last encounter in the
 /// returned sector is always the boss (when the sector has one).
 pub const ENCOUNTERS_PER_SECTOR: u32 = 4;
+
+/// **#199b reversible gate:** when `true`, [`generate_sector`] rolls a random
+/// per-encounter [`Dims`] from the pool [`VARIABLE_ENCOUNTER_DIMS_POOL`] for
+/// every non-boss encounter (and a larger floor-pool for the boss, see
+/// [`VARIABLE_ENCOUNTER_BOSS_DIMS_POOL`]). When `false`, every encounter
+/// stays on the canonical 5x4 grid — `EncounterDef::dims` is always
+/// [`crate::grid::Dims::default`] and behaviour is byte-identical to the
+/// pre-flip campaign. Bruce ratified the random-per-encounter variation as
+/// the default, but the one-line flip back is preserved here so a bad
+/// small-board playtest can be reverted without surgery.
+pub const VARIABLE_ENCOUNTER_DIMS: bool = true;
+
+/// **#199b** the random pool from which [`generate_sector`] rolls a non-boss
+/// encounter's [`Dims`]. Sourced from the lead's brief (the variable-board
+/// design pool); each shape is uniformly sampled per encounter so a
+/// sector's 4 rounds read as 4 distinct arenas. Includes 5x4 (the canonical
+/// default) so the rolled variety still occasionally feels familiar. The
+/// per-shape winnability of every entry is locked by the #199 substrate
+/// (per-shape spawn cap via [`max_enemies_in`] + tester's
+/// `combat_per_shape` suite).
+pub const VARIABLE_ENCOUNTER_DIMS_POOL: &[(usize, usize)] = &[
+    (2, 2),
+    (2, 3),
+    (3, 2),
+    (2, 4),
+    (4, 2),
+    (3, 3),
+    (3, 4),
+    (4, 3),
+    (4, 4),
+    (5, 4),
+];
+
+/// **#199b** the random pool for boss encounters — narrower than
+/// [`VARIABLE_ENCOUNTER_DIMS_POOL`] so the climactic fight isn't cramped onto
+/// a 2x2. Boss rounds floor at 4x3 (3 enemies + dodge lane on a 2-row-deep
+/// back-field is the smallest shape that gives a single boss meaningful
+/// stand-off). Each entry passes [`max_enemies_in`] >= 3 so a 3-mount armed
+/// boss has room to manoeuvre. Bruce's call: "don't put a boss on a 2x2"; I
+/// pick the exact floor here.
+pub const VARIABLE_ENCOUNTER_BOSS_DIMS_POOL: &[(usize, usize)] = &[(4, 3), (4, 4), (5, 4)];
+
+/// **#199b** roll a per-encounter [`Dims`] from `pool` using `seed`, the
+/// existing campaign wang-hash PRNG so generation stays deterministic in
+/// `(sector node, patrol tier, encounter index)`. No `rand` crate, no global
+/// RNG — keeps the resolver/run-loop free of non-determinism the tests
+/// would flake on (#111 guarantee). Returns [`crate::grid::Dims::default`]
+/// if `pool` is empty (defensive — never reached, both pool consts are
+/// non-empty by const).
+fn roll_encounter_dims(pool: &[(usize, usize)], seed: u32) -> crate::grid::Dims {
+    if pool.is_empty() {
+        return crate::grid::Dims::default();
+    }
+    let pick = wang_hash(seed) as usize % pool.len();
+    let (cols, rows) = pool[pick];
+    crate::grid::Dims::new(cols, rows)
+}
 
 /// Deterministic hash PRNG (mirrors the `wang_hash` used render-side in
 /// hud.rs; kept local so runs.rs doesn't reach across the render boundary).
@@ -1177,12 +1236,25 @@ pub fn generate_sector(
     if !pool.is_empty() {
         let count = encounter_enemy_count(sector_def.lane);
         for e in 0..ENCOUNTERS_PER_SECTOR {
-            let enemy_ships = sample_encounter_spawns(
-                pool,
-                sector_def.lane,
-                count,
-                base_seed.wrapping_add(e.wrapping_mul(0x1000_0001)),
-            );
+            // #199b: roll a per-encounter Dims when the flip is on; otherwise
+            // stay on the canonical 5x4. The dims-roll seed is offset from
+            // the spawn-sample seed so dims + spawns are independent (a size
+            // change doesn't shift which classes get picked) — keeps
+            // determinism transparent under future tuning. Sampler runs ON
+            // the rolled dims so spawn `pos`s land inside `dims`, and the
+            // per-shape count cap via `max_enemies_in(dims)` keeps small
+            // boards uncrowded.
+            let spawn_seed = base_seed.wrapping_add(e.wrapping_mul(0x1000_0001));
+            let dims = if VARIABLE_ENCOUNTER_DIMS {
+                roll_encounter_dims(
+                    VARIABLE_ENCOUNTER_DIMS_POOL,
+                    spawn_seed.wrapping_add(0x0D15_D115),
+                )
+            } else {
+                crate::grid::Dims::default()
+            };
+            let enemy_ships =
+                sample_encounter_spawns_with_dims(pool, sector_def.lane, count, spawn_seed, dims);
             if enemy_ships.is_empty() {
                 continue;
             }
@@ -1191,21 +1263,34 @@ pub fn generate_sector(
                 enemy_ships,
                 hazards: Vec::new(),
                 is_boss: false,
+                dims,
             });
         }
     }
 
     // Capital boss encounter at sector end (if this sector has a capital).
+    // #199b: bosses roll from the LARGER pool (floor 4x3) so no boss lands on
+    // a 2x2 — Bruce's "don't cramp the boss" call. With the flip off, every
+    // boss stays on 5x4.
+    let boss_dims = if VARIABLE_ENCOUNTER_DIMS {
+        roll_encounter_dims(
+            VARIABLE_ENCOUNTER_BOSS_DIMS_POOL,
+            base_seed.wrapping_add(0xB055_B055),
+        )
+    } else {
+        crate::grid::Dims::default()
+    };
     if let Some(boss) = sector_def
         .capital
         .as_ref()
-        .and_then(|cap| capital_spawn(cap, sector_def.lane, catalog))
+        .and_then(|cap| capital_spawn_with_dims(cap, sector_def.lane, catalog, boss_dims))
     {
         encounters.push(EncounterDef {
             id: format!("{}_boss", sector_def.node),
             enemy_ships: vec![boss],
             hazards: Vec::new(),
             is_boss: true,
+            dims: boss_dims,
         });
     }
 
@@ -1232,6 +1317,14 @@ pub fn generate_sector(
 /// The legacy `cell` field is still populated (centre-out lane order) for the
 /// transition window; the 2-D `pos` from [`enemy_spawn_pos`] is the source of
 /// truth for placement.
+///
+/// Test-only thin wrapper since #199b — production [`generate_sector`] now
+/// calls [`sample_encounter_spawns_with_dims`] directly with the rolled
+/// per-encounter `Dims`. Kept under `#[cfg(test)] #[allow(dead_code)]` so a
+/// future regression test pinning the centre-out fan at the canonical 5×4
+/// can call this without an explicit Dims arg; currently no test uses it.
+#[cfg(test)]
+#[allow(dead_code)]
 fn sample_encounter_spawns(pool: &SpawnPool, lane: u8, count: usize, seed: u32) -> Vec<ShipSpawn> {
     sample_encounter_spawns_with_dims(pool, lane, count, seed, crate::grid::Dims::default())
 }
@@ -1299,6 +1392,14 @@ pub(crate) fn sample_encounter_spawns_with_dims(
 ///
 /// Returns `None` if the capital name isn't in the catalog (defensive — a
 /// typo'd capital just yields a boss-less sector rather than crashing).
+///
+/// Test-only thin wrapper since #199b — production [`generate_sector`] now
+/// calls [`capital_spawn_with_dims`] directly with the boss's rolled `Dims`.
+/// Kept under `#[cfg(test)] #[allow(dead_code)]` so a future regression
+/// test pinning the canonical 5×4 boss placement can call it directly;
+/// currently no test uses it.
+#[cfg(test)]
+#[allow(dead_code)]
 fn capital_spawn(capital_name: &str, lane: u8, catalog: &Catalog) -> Option<ShipSpawn> {
     capital_spawn_with_dims(capital_name, lane, catalog, crate::grid::Dims::default())
 }
@@ -1712,6 +1813,7 @@ mod tests {
             }],
             hazards: vec![],
             is_boss: false,
+            ..Default::default()
         };
         let player = make_player(3, 8); // pre-board cell shouldn't matter
         let board =
@@ -1761,6 +1863,7 @@ mod tests {
             ],
             hazards: vec![],
             is_boss: false,
+            ..Default::default()
         };
         let board = build_encounter_board(&enc, make_player(0, 10), |spawn| {
             Some(fallback_ship_for_spawn(spawn))
@@ -1803,6 +1906,7 @@ mod tests {
             ],
             hazards: vec![],
             is_boss: false,
+            ..Default::default()
         };
         let board = build_encounter_board(&enc, make_player(0, 10), |spawn| {
             Some(fallback_ship_for_spawn(spawn))
@@ -1969,16 +2073,18 @@ mod tests {
         // v2 (C4): non-boss encounters fan enemies across the BACK ROWS, all
         // bow=S, never on the front-centre player cell. (The proper back-row
         // distribution coverage is the tester's #17; this is the green-keeping
-        // smoke check.)
-        let ppos = player_start_pos();
+        // smoke check.) #199b: each encounter has its own dims, so player
+        // start + back-row test must use the encounter's dims, and the cap
+        // (was lane-5 → 2) becomes per-shape `max_enemies_in(e.dims)`.
         for e in &sector.encounters[..sector.encounters.len() - 1] {
             assert!(!e.is_boss);
             assert!(!e.enemy_ships.is_empty());
+            let ppos = player_start_pos_in(e.dims);
             for sp in &e.enemy_ships {
                 assert_ne!(sp.pos, ppos, "enemies never spawn on the player cell");
                 assert!(
-                    sp.pos.row < crate::grid::ROWS - 1,
-                    "enemies on the back rows"
+                    sp.pos.row < e.dims.front_row(),
+                    "enemies on the back rows of e.dims",
                 );
                 assert_eq!(
                     sp.facing,
@@ -1987,8 +2093,8 @@ mod tests {
                 );
                 assert_eq!(
                     sp.cell,
-                    sp.pos.to_index(),
-                    "invariant A: legacy cell tracks pos"
+                    sp.pos.to_index_in(e.dims),
+                    "invariant A: legacy cell tracks pos.to_index_in(e.dims)",
                 );
                 assert!(
                     pool.class_ids.contains(&sp.class_id),
@@ -1996,8 +2102,18 @@ mod tests {
                     sp.class_id,
                 );
             }
-            // Lane-5 sector → 2 enemies per encounter (encounter_enemy_count).
-            assert_eq!(e.enemy_ships.len(), 2);
+            // #199b per-shape cap: each rolled `e.dims` has its own
+            // `max_enemies_in`. Lane-5 caller asks for 2 enemies, but on a
+            // small rolled `dims` (e.g. 2×2) the cap is 1 — assert
+            // `len <= min(lane_count, cap)`.
+            let lane_count = encounter_enemy_count(cat.sectors[1].lane);
+            let cap = max_enemies_in(e.dims);
+            assert!(
+                !e.enemy_ships.is_empty() && e.enemy_ships.len() <= lane_count.min(cap),
+                "{} enemies on {:?} (lane_count {lane_count}, cap {cap})",
+                e.enemy_ships.len(),
+                e.dims,
+            );
         }
     }
 
@@ -2190,6 +2306,7 @@ mod tests {
                 enemy_ships,
                 hazards: vec![],
                 is_boss: false,
+                ..Default::default()
             },
             make_player(0, 10),
             |spawn| Some(fallback_ship_for_spawn(spawn)),
@@ -2313,13 +2430,21 @@ mod tests {
             cat.sectors.len(),
             "one runtime Sector per SectorDef"
         );
-        // Lane sizes carry through (Ion Reefs is lane 7 → 3 enemies/encounter).
+        // Lane sizes feed `encounter_enemy_count` (Ion Reefs is lane 7 → 3),
+        // but per-encounter shape cap (`max_enemies_in(e.dims)`, #199b) is
+        // the binding ceiling. Assert `non_boss.len()` is in
+        // `1..=min(3, max_enemies_in(e.dims))` so the test holds whether a
+        // 5x4 was rolled (cap 4 → 3 enemies) or a smaller shape was (cap 1-3).
         let ion = &campaign[2];
         let non_boss = ion.encounters.iter().find(|e| !e.is_boss).unwrap();
-        assert_eq!(
+        let lane_count = 3usize;
+        let cap = max_enemies_in(non_boss.dims);
+        let upper = lane_count.min(cap);
+        assert!(
+            !non_boss.enemy_ships.is_empty() && non_boss.enemy_ships.len() <= upper,
+            "{} enemies on {:?} (lane_count {lane_count}, cap {cap}, upper {upper})",
             non_boss.enemy_ships.len(),
-            3,
-            "lane 7 → 3 enemies per encounter"
+            non_boss.dims,
         );
     }
 
@@ -2564,6 +2689,7 @@ mod tests {
             }],
             hazards: vec![],
             is_boss: false,
+            ..Default::default()
         };
         let p1 = make_player(0, 10);
         let p2 = make_player(0, 10);
@@ -2609,6 +2735,7 @@ mod tests {
             }],
             hazards: vec![],
             is_boss: false,
+            ..Default::default()
         };
         let board = build_encounter_board_with_dims(&enc, make_player(0, 10), d, |spawn| {
             Some(fallback_ship_for_spawn(spawn))
@@ -2657,6 +2784,7 @@ mod tests {
                 enemy_ships: spawns.clone(),
                 hazards: vec![],
                 is_boss: false,
+                ..Default::default()
             },
             make_player(0, 10),
             d,
@@ -2705,6 +2833,7 @@ mod tests {
                 enemy_ships: spawns.clone(),
                 hazards: vec![],
                 is_boss: false,
+                ..Default::default()
             },
             make_player(0, 10),
             d,
@@ -2766,6 +2895,7 @@ mod tests {
             ],
             hazards: vec![],
             is_boss: false,
+            ..Default::default()
         };
         let board = build_encounter_board_with_dims(&enc, make_player(0, 10), d, |spawn| {
             Some(fallback_ship_for_spawn(spawn))
@@ -2804,6 +2934,7 @@ mod tests {
             }],
             hazards: vec![],
             is_boss: false,
+            ..Default::default()
         };
         let board = build_encounter_board_with_dims(&enc, make_player(0, 10), d, |spawn| {
             Some(fallback_ship_for_spawn(spawn))

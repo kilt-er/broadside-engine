@@ -56,7 +56,7 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::grid::{Axis, Dir4, Dir8, Facing, Pos, Range};
+use crate::grid::{Axis, Dims, Dir4, Dir8, Facing, Pos, Range};
 
 /* =========================================================================
  * 0. v2 spatial migration — additive 2D fields (blueprint lane task A3)
@@ -105,6 +105,16 @@ const fn default_facing() -> Facing {
 /// (`optimal_range`): `Adjacent`. Removed at CONTRACT.
 const fn default_range() -> Range {
     Range::Adjacent
+}
+
+/// Serde default for [`EncounterDef::dims`] (#199b): the canonical 5x4 grid
+/// (`Dims::default()`). Hand-authored encounter JSON without a `dims` field
+/// (every fixture before the variable-encounter-size flip) deserialises to
+/// 5x4, preserving back-compat. The campaign generator overrides this with
+/// the rolled per-encounter grid when [`crate::runs::VARIABLE_ENCOUNTER_DIMS`]
+/// is on.
+const fn default_dims() -> Dims {
+    Dims::new(crate::grid::COLS, crate::grid::ROWS)
 }
 
 /// Canonical transitional derivation of the v2 [`Facing`] from the legacy 1-D
@@ -1410,7 +1420,13 @@ pub struct Sector {
 
 /// A single battle within a [`Sector`] — spawn templates for the enemy
 /// fleet and the hazards already on the board when the encounter opens.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// `Default` (#199b) gives every field a sensible zero value so call sites
+/// adding a single field (e.g. `dims`) can spread `..Default::default()`
+/// without listing the rest. Default `dims` is [`Dims::default`] (5x4) so a
+/// `..Default::default()` spread on a pre-#199b struct-literal preserves
+/// the canonical grid.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EncounterDef {
     pub id: String,
     pub enemy_ships: Vec<ShipSpawn>,
@@ -1418,6 +1434,19 @@ pub struct EncounterDef {
     /// [`Hazard`] shape — there are no spawn-only fields yet.
     pub hazards: Vec<Hazard>,
     pub is_boss: bool,
+    /// **#199b (variable-encounter-size flip):** the per-encounter grid
+    /// [`Dims`] this battle is fought on. Default is `Dims::default()` (the
+    /// canonical 5x4 grid) via [`default_dims`]; hand-authored fixtures /
+    /// JSON catalogs that don't specify `dims` keep the legacy 5x4 layout
+    /// for back-compat. The campaign generator rolls a real per-encounter
+    /// shape from the pool `{2x2..5x4}` here when
+    /// [`crate::runs::VARIABLE_ENCOUNTER_DIMS`] is on; with the flag off,
+    /// every encounter stays 5x4. Read by
+    /// [`crate::runs::build_encounter_board`] (which routes through
+    /// [`crate::runs::build_encounter_board_with_dims`] using this field)
+    /// so EVERY existing caller picks up the rolled dims for free.
+    #[serde(default = "default_dims")]
+    pub dims: Dims,
 }
 
 /// Spawn template for one ship at encounter start. `class_id` refers to a
@@ -2108,6 +2137,7 @@ mod tests {
                 ttl: None,
             }],
             is_boss: false,
+            ..Default::default()
         };
         let sector = Sector {
             id: "training_grounds".into(),

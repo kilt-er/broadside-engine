@@ -505,6 +505,7 @@ mod tests {
             ],
             hazards: vec![],
             is_boss: false,
+            ..Default::default()
         };
         let earned = salvage_for_encounter_win(&enc, |spawn| {
             // Map skiff -> hull 3, warlord (with override 7) -> hull 7.
@@ -528,6 +529,7 @@ mod tests {
             }],
             hazards: vec![],
             is_boss: true,
+            ..Default::default()
         };
         let earned = salvage_for_encounter_win(&enc, |spawn| {
             Some(ship_with_hull(
@@ -555,6 +557,7 @@ mod tests {
             }],
             hazards: vec![],
             is_boss: false,
+            ..Default::default()
         };
         award_run_salvage(&mut run, &enc, |spawn| {
             Some(ship_with_hull(&spawn.class_id, 3))
@@ -579,6 +582,7 @@ mod tests {
             }],
             hazards: vec![],
             is_boss: true, // 1 salvage * 2 = 2; saturates at u32::MAX
+            ..Default::default()
         };
         award_run_salvage(&mut run, &enc, |spawn| {
             Some(ship_with_hull(&spawn.class_id, 3))
@@ -836,6 +840,7 @@ mod tests {
             }],
             hazards: vec![],
             is_boss: true,
+            ..Default::default()
         }
     }
 
@@ -887,6 +892,7 @@ mod tests {
             }],
             hazards: vec![],
             is_boss: false,
+            ..Default::default()
         };
         award_run_salvage_with_catalog(&mut run, &enc, &cat, 5, |spawn| {
             Some(ship_with_hull(&spawn.class_id, 3))

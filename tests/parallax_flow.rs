@@ -129,6 +129,7 @@ fn empty_encounter(id: &str, is_boss: bool) -> EncounterDef {
         enemy_ships: Vec::new(),
         hazards: Vec::new(),
         is_boss,
+        ..Default::default()
     }
 }
 

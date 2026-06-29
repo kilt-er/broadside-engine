@@ -175,6 +175,7 @@ fn cap_filled_encounter(dims: Dims) -> EncounterDef {
         enemy_ships: spawns,
         hazards: Vec::new(),
         is_boss: false,
+        ..Default::default()
     }
 }
 

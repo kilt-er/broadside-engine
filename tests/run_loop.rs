@@ -348,6 +348,7 @@ fn encounter(id: &str, spawns: Vec<ShipSpawn>, is_boss: bool) -> EncounterDef {
         enemy_ships: spawns,
         hazards: Vec::new(),
         is_boss,
+        ..Default::default()
     }
 }
 
@@ -507,7 +508,11 @@ fn queue_player_combat_action(board: &mut Board) {
         }
     };
 
-    if let Some(p) = board.cells[ppos.to_index()].as_mut() {
+    // #199b: route the player-cell lookup through board.dims() so the test
+    // driver works on the rolled per-encounter size (was a 5x4-baked
+    // `to_index()` panicking on a 2x2 board).
+    let dims = board.dims();
+    if let Some(p) = board.cells[ppos.to_index_in(dims)].as_mut() {
         p.queue = vec![action];
     }
 }
