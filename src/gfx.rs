@@ -94,14 +94,19 @@ pub fn scene_h() -> u32 {
 static GRID_PITCH_STEP: std::sync::atomic::AtomicU32 =
     std::sync::atomic::AtomicU32::new(BOOT_GRID_PITCH_STEP);
 
-/// (#165 Bruce) The grid pitch step the game BOOTS at. Bruce's pick: step 2 of 8 —
-/// the board starts tilted partway toward top-down rather than the flat chase-cam
-/// (step 0). `G` still cycles the full 0..=8 arc from here.
-pub const BOOT_GRID_PITCH_STEP: u32 = 2;
+/// (#165 Bruce) The grid pitch step the game BOOTS at. Bruce's original pick was
+/// step 2 of 8 with a 30° flat floor; the new flatter end (#P7-prep) lowered the
+/// floor to 20° + extended the arc to 10 steps, so the boot step is now 4 of 10 —
+/// math: `20° + 4/10 · (72° − 20°) = 40.8°`, same effective look-down as the prior
+/// `30° + 2/8 · 42° = 40.5°`. `G` cycles the full 0..=10 arc; step 0 (20°) is the
+/// new HORIZON-VISIBLE flatter floor Bruce wanted for the P7 distance-preview
+/// look. Steps 1..3 ≈ 25°/30°/35° (the old `step 0 = 30°` lives at step ≈ 2 now).
+pub const BOOT_GRID_PITCH_STEP: u32 = 4;
 
-/// Number of pitch steps from chase-cam (step 0) to near-top-down (the last step).
-/// ~5° each toward overhead; 8 steps ≈ a 40° swing past the ~20° base.
-pub const GRID_PITCH_STEPS: u32 = 8;
+/// Number of pitch steps from the flatter chase-cam (step 0 ≈ 20°) to
+/// near-top-down (the last step ≈ 72°). ~5.2° each toward overhead;
+/// 10 steps × 5.2° ≈ a 52° swing past the new 20° flat floor.
+pub const GRID_PITCH_STEPS: u32 = 10;
 
 /// The live pitch as `t` ∈ [0, 1] for [`crate::projector::ProjectorConfig::with_pitch`]
 /// (`0` chase-cam, `1` near-overhead). Step `n` → `n / GRID_PITCH_STEPS`.

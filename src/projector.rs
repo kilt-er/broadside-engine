@@ -816,9 +816,17 @@ pub fn vanishing_point(cfg: &ProjectorConfig) -> Point2 {
 const UNIFIED_FOV_Y_DEG: f32 = 52.0;
 /// Camera look-down pitch (degrees below horizontal) at grid-pitch `t = 0`.
 /// (#188 Bruce live shot) 22° was too shallow — near-row hull projected into the
-/// bottom HUD band. 30° tips the camera more top-down so the near row projects
-/// further from the horizon (higher on screen), clearing the HUD/card strip.
-const UNIFIED_PITCH_DEG: f32 = 30.0;
+/// bottom HUD band. 30° tipped the near row up out of the menu, was the previous
+/// floor.
+///
+/// (#P7-prep Bruce) Lowered to 20° to expose the HORIZON for the upcoming
+/// distance-preview boards (P7) — they sit on the SAME ground plane at deeper Z
+/// through the unified camera, so flatter pitch lets the player see further back
+/// along the receding plane. The near-row-clears-HUD invariant from #188 is
+/// preserved at the new BOOT step (step 4 of 10 = ~40.8° effective look-down,
+/// matching the prior boot's 40.5°); step 0 = 20° is now an OPT-IN flatter view
+/// reachable via G that prioritises horizon visibility over HUD clearance.
+const UNIFIED_PITCH_DEG: f32 = 20.0;
 /// Camera look-down pitch at full grid-pitch (`t = 1`, the `G` arc → near top-down).
 const UNIFIED_TOPDOWN_PITCH_DEG: f32 = 72.0;
 /// World Z of the board's NEAR edge (front of the near row) — how far the board
