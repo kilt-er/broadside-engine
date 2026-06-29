@@ -948,8 +948,21 @@ struct TweenAnchor {
     /// The ship's facing BEFORE the move (the turn's start) — for the rotation
     /// tween (shortest-path yaw lerp).
     from_facing: Facing,
-    /// When the input fired. Elapsed > `TWEEN_DURATION_MS` ⇒ resolved + evictable.
+    /// When the input fired. Elapsed > duration ⇒ resolved + evictable.
     started_at: Instant,
+    /// (#210 P5) Optional fractional-cell START override. When `Some`, the
+    /// `cell_frac` lerp eases FROM this point (not `from_pos` cast to f32) —
+    /// lets the warp-in plant a "ship enters from row -2" anchor that the
+    /// unified pass slides smoothly down into the real `to_pos` row. Negative
+    /// (or > ROWS) values are honoured directly so the ship reads as coming
+    /// from off-board / out of parallax depth. `None` ⇒ the legacy
+    /// `from_pos as f32` integer-cell baseline (move/turn tween path).
+    from_cell_frac: Option<[f32; 2]>,
+    /// (#210 P5) Optional duration override in milliseconds. When `Some`, the
+    /// tween eases over this many ms instead of `TWEEN_DURATION_MS` — needed
+    /// because the warp-in plays over `WARP_ROUND_SECS` (~1 s) while the
+    /// per-input move/turn tween is much shorter. `None` ⇒ `TWEEN_DURATION_MS`.
+    dur_ms_override: Option<f32>,
 }
 
 /// Phase 3 demo state machine. The bin transitions between these on
@@ -1440,6 +1453,37 @@ impl App {
         out
     }
 
+    /// (#210 P5) Plant warp-in anchors for every ship on the just-swapped-in
+    /// board so the existing `tween_2d` pipeline eases each ship FROM an
+    /// off-board start point TO its real `Pos` over the warp window.
+    ///
+    /// Source point: `from_cell_frac = [ship.pos.col, -2.0]` — two rows BEHIND
+    /// the back row so the ship reads as coming "out of parallax depth"
+    /// (Pos's `usize` row can't go negative; the `from_cell_frac` override
+    /// path accepts any f32). Eased over `kind.warp_secs() * 1000` ms,
+    /// matching the Transitioning window so the slide-in completes exactly
+    /// when the warp ends.
+    ///
+    /// Facing isn't tweened (ships warp in already facing their final dir);
+    /// `from_facing == ship.facing` keeps the rotation lerp a no-op.
+    fn plant_warp_in_anchors(&mut self, kind: TransitionKind, now: Instant) {
+        let dur_ms = kind.warp_secs() * 1000.0;
+        for ship in self.board.cells.iter().flatten() {
+            let from_col = ship.pos.col as f32;
+            let from_row = -2.0_f32;
+            self.tween_anchors.insert(
+                ship.id.clone(),
+                TweenAnchor {
+                    from_pos: ship.pos,
+                    from_facing: ship.facing,
+                    started_at: now,
+                    from_cell_frac: Some([from_col, from_row]),
+                    dur_ms_override: Some(dur_ms),
+                },
+            );
+        }
+    }
+
     /// Record fresh tween anchors after `apply_intent` ran: for every ship whose
     /// logical pos OR facing changed vs its pre-mutation snapshot, plant an
     /// anchor at the OLD pos/facing so the next frames interpolate from there.
@@ -1462,6 +1506,11 @@ impl App {
                     from_pos,
                     from_facing,
                     started_at: now,
+                    // (#210 P5) Move/turn tween uses the legacy integer-cell
+                    // baseline + the legacy short duration; only the warp-in
+                    // anchor populates these overrides.
+                    from_cell_frac: None,
+                    dur_ms_override: None,
                 },
             );
         }
@@ -1478,14 +1527,22 @@ impl App {
         now: Instant,
     ) -> hud::Tween2d {
         use broadside_engine::projector::grid_cell_quad;
+        // Legacy default duration for the projectile-slide loop below + the
+        // ship move/turn tween baseline. The P5 warp-in eases over its own
+        // longer override (`anchor.dur_ms_override`); ordnance has no
+        // override path yet.
         let dur_ms = TWEEN_DURATION_MS as f32;
         let mut tw = hud::Tween2d::default();
         for ship in self.board.cells.iter().flatten() {
             let Some(anchor) = self.tween_anchors.get(&ship.id) else {
                 continue;
             };
+            // (#210 P5) Honor the anchor's optional duration override —
+            // warp-in anchors run for `WARP_ROUND_SECS * 1000`, move/turn
+            // anchors keep the legacy short `TWEEN_DURATION_MS`.
+            let ship_dur_ms = anchor.dur_ms_override.unwrap_or(dur_ms);
             let elapsed = now.duration_since(anchor.started_at).as_secs_f32() * 1000.0;
-            let t = (elapsed / dur_ms).clamp(0.0, 1.0);
+            let t = (elapsed / ship_dur_ms).clamp(0.0, 1.0);
             // Ease-out quad: 1 - (1 - t)^2 — crisp departure, soft arrival.
             let eased = 1.0 - (1.0 - t) * (1.0 - t);
             let from_q = grid_cell_quad(anchor.from_pos, cfg);
@@ -1497,11 +1554,17 @@ impl App {
             // snapping while every other 2-D HUD element tweens. At rest
             // (no anchor) this code path is skipped and push_ship_2d falls
             // back to the integer cell, so #188 alignment stays exact.
+            //
+            // (#210 P5) The warp-in anchor overrides the start point via
+            // `from_cell_frac` so the ship slides in from row -2 (or any
+            // off-board parallax-depth point) — falling back to the legacy
+            // integer-cell baseline when no override is set.
+            let from_frac = anchor
+                .from_cell_frac
+                .unwrap_or([anchor.from_pos.col as f32, anchor.from_pos.row as f32]);
             let cell_frac = [
-                anchor.from_pos.col as f32
-                    + (ship.pos.col as f32 - anchor.from_pos.col as f32) * eased,
-                anchor.from_pos.row as f32
-                    + (ship.pos.row as f32 - anchor.from_pos.row as f32) * eased,
+                from_frac[0] + (ship.pos.col as f32 - from_frac[0]) * eased,
+                from_frac[1] + (ship.pos.row as f32 - from_frac[1]) * eased,
             ];
             // (#209 hook 3) Read the in-flight kickback offset from the App's
             // persistent map (Tween2d itself is rebuilt every frame; kickback
@@ -2202,7 +2265,33 @@ impl ApplicationHandler for App {
                             };
                             if let Some(kind) = kind {
                                 if let Some(next) = self.build_current_board() {
-                                    self.pending_board = Some(next);
+                                    // (#210 P5) Swap the new board in NOW (at
+                                    // transition START, not END) + plant
+                                    // warp-in tween anchors for every ship on
+                                    // it so the existing `tween_2d` pipeline
+                                    // eases each ship FROM an off-board row
+                                    // (anchor `from_cell_frac` row = -2.0) TO
+                                    // its real Pos over `WARP_*_SECS`. The
+                                    // unified ship pass already reads
+                                    // `cell_frac` (#201 fix A) — no new render
+                                    // path needed. Reset per-encounter
+                                    // transients on the swap the same way the
+                                    // legacy modal-clear path did at warp END;
+                                    // `pending_board` is left None since the
+                                    // swap is immediate, and the warp-end tick
+                                    // just flips the demo state.
+                                    self.board = next;
+                                    self.tween_anchors.clear();
+                                    self.kickbacks.clear();
+                                    self.kill_bursts.clear();
+                                    self.particles.clear();
+                                    self.proj_anchors.clear();
+                                    self.exhaust.clear();
+                                    self.hull_flash.clear();
+                                    self.beat_playback = None;
+                                    self.queue_blocked_flash = None;
+                                    self.reinstall_audio();
+                                    self.plant_warp_in_anchors(kind, now);
                                     self.demo_state = DemoState::Transitioning(TransitionPhase {
                                         kind,
                                         started_at: now,
@@ -2249,26 +2338,17 @@ impl ApplicationHandler for App {
                 // EventBus, and flip back to Playing. The transition's
                 // duration is driven by `TransitionPhase::progress` against
                 // either `WARP_ROUND_SECS` or `WARP_LEVEL_SECS` per `kind`.
+                // (#210 P4+P5) Warp end: the board was swapped at the START
+                // of the transition (#P5 needs the warp-in anchors to lerp
+                // against the live incoming ships); when the warp window
+                // elapses, drop the warp-in anchors so ships rest at their
+                // logical cells + flip back to Playing so input unlocks.
                 if let DemoState::Transitioning(phase) = self.demo_state {
                     if phase.progress(now) >= 1.0 {
-                        // Defensive: progress maxed but no destination board
-                        // waiting (shouldn't happen — the Won handler always
-                        // builds `pending_board` before entering Transitioning).
-                        // Either way, flip back to Playing so the input gate
-                        // doesn't softlock.
-                        if let Some(next) = self.pending_board.take() {
-                            self.board = next;
-                            self.tween_anchors.clear();
-                            self.kickbacks.clear();
-                            self.kill_bursts.clear();
-                            self.particles.clear();
-                            self.proj_anchors.clear();
-                            self.exhaust.clear();
-                            self.hull_flash.clear();
-                            self.beat_playback = None;
-                            self.queue_blocked_flash = None;
-                            self.reinstall_audio();
-                        }
+                        // Tween anchors with `dur_ms_override` Some saturate
+                        // at t=1 in `tween_2d` anyway, so explicit clear keeps
+                        // the map small + #188 alignment exact post-warp.
+                        self.tween_anchors.clear();
                         self.demo_state = DemoState::Playing;
                     }
                 }
