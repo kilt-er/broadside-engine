@@ -484,11 +484,18 @@ fn main() {
         broadside_engine::gfx::scene_h() as f32,
     );
     let pitch_t = broadside_engine::gfx::grid_pitch_t();
-    let cfg = match broadside_engine::gfx::grid_mode() {
-        1 => base.with_stretch(pitch_t),
-        2 => base.with_stretch_straight(pitch_t),
-        3 => base.with_stretch_continuous(pitch_t),
-        _ => base.with_pitch(pitch_t),
+    // (UNIFY) BROADSIDE_UNIFIED=1 routes the grid through the unified real-perspective
+    // camera (the same one the hulls render through), so the capture verifies the
+    // unified coordinate system.
+    let cfg = if std::env::var("BROADSIDE_UNIFIED").is_ok_and(|v| v != "0") {
+        base.with_unified(pitch_t)
+    } else {
+        match broadside_engine::gfx::grid_mode() {
+            1 => base.with_stretch(pitch_t),
+            2 => base.with_stretch_straight(pitch_t),
+            3 => base.with_stretch_continuous(pitch_t),
+            _ => base.with_pitch(pitch_t),
+        }
     };
     let mut commands = compose_scene_2d_with(&board, &cfg, &gfx);
     // (#127) SALVAGE readout — the live bin draws this in its Playing overlay (not

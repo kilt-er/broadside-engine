@@ -224,6 +224,25 @@ pub struct ProjectorConfig {
     /// [`Self::with_stretch_continuous`]. Byte-identical at `stretch_t == 0` (block
     /// skipped). Takes precedence over `stretch_straight` when both are set.
     pub stretch_lines_continuous: bool,
+
+    /// (UNIFY, Bruce order) When `true`, [`grid_cell_quad`] projects each cell's
+    /// ground-plane world corners through the UNIFIED real-perspective camera
+    /// ([`unified_view_proj`]) instead of the hand-tuned `1/z` fan — the SAME camera
+    /// the 3-D hulls render through, so ships LIVE in the grid (nose→VP + per-column
+    /// outward lean fall out by construction) rather than being flat sprites pasted
+    /// on a separate projection. A SANE FOV ([`UNIFIED_FOV_Y_DEG`]) so a real hull at
+    /// a cell doesn't wrap the camera (the `1/z` fan's ~178° spread made that
+    /// impossible — #73). `false` (default) keeps the legacy fan byte-identical, so
+    /// every existing path + test is untouched until this is proven and made default.
+    /// Set via [`Self::with_unified`]; `pitch_t` (the `G` arc) still drives the
+    /// camera pitch in unified mode.
+    pub unified: bool,
+
+    /// (UNIFY) The grid-pitch arc `t ∈ [0,1]` (the `G` key), carried so the unified
+    /// camera can read it for its look-down angle. In the legacy fan path the pitch
+    /// is baked into `horizon_y`/`z_far` via [`Self::with_pitch`]; the unified camera
+    /// needs the raw `t` to lerp its real pitch, so it rides here. `0` at boot-step 0.
+    pub pitch_t: f32,
 }
 
 impl Default for ProjectorConfig {
@@ -287,6 +306,8 @@ impl ProjectorConfig {
             stretch_t: 0.0, // (#140) pure perspective by default — byte-identical to today
             stretch_straight: false, // (#142) curved stretch by default
             stretch_lines_continuous: false, // (#151) stepped (per-cell) by default
+            unified: false, // (UNIFY) legacy fan by default — zero regression
+            pitch_t: 0.0,   // (UNIFY) boot grid-pitch step 0
         }
     }
 }
@@ -329,6 +350,19 @@ impl ProjectorConfig {
         Self {
             z_far,
             horizon_y,
+            ..self
+        }
+    }
+
+    /// (UNIFY, Bruce order) Switch [`grid_cell_quad`] to the UNIFIED real-perspective
+    /// camera ([`unified_view_proj`]) — the grid AND the 3-D hulls then share ONE
+    /// camera/coordinate system, so ships live in the grid (nose→VP + per-column lean
+    /// by construction). `t` is the grid-pitch arc (the `G` key) driving the camera's
+    /// look-down. The bin selects this mode in place of the stretch/pitch fan modes.
+    pub const fn with_unified(self, t: f32) -> Self {
+        Self {
+            unified: true,
+            pitch_t: t,
             ..self
         }
     }
@@ -459,6 +493,12 @@ impl ProjectorConfig {
 /// neighbouring cells share edges exactly (no seams, no overlap). `depth_scale`
 /// is taken at the cell's **center** depth.
 pub fn grid_cell_quad(pos: Pos, cfg: &ProjectorConfig) -> CellQuad {
+    // (UNIFY) When the unified camera is active, the cell quad IS the perspective
+    // projection of the cell's ground-plane world corners — the same camera the
+    // 3-D hulls render through, so grid + ships share one coordinate system.
+    if cfg.unified {
+        return unified_cell_quad(pos, cfg);
+    }
     // Row `pos.row` is bracketed by boundaries `b_far = pos.row` (its far edge)
     // and `b_near = pos.row + 1` (its near edge), counted from the far edge.
     let d_far = cfg.boundary_d(pos.row);
@@ -756,6 +796,245 @@ pub fn vanishing_point(cfg: &ProjectorConfig) -> Point2 {
     Point2::new(center_x, vp_y)
 }
 
+// ===========================================================================
+// UNIFIED real-perspective camera (Bruce order: grid + ships share ONE camera).
+//
+// The legacy fan above is an exact `1/z` pinhole but at a ~178° effective FOV, so
+// a real hull placed in it wraps the camera (#73). This camera draws the SAME
+// board as a flat grid on the ground plane (y=0) seen by a SANE-FOV perspective
+// camera; the 3-D hulls render through the identical `view_proj` at their cells,
+// so they live in the grid (nose→VP + per-column outward lean by construction).
+//
+// World layout (1 cell = 1 unit): columns along +X centred on 0 (col 0 = left);
+// rows along +Z with the NEAR row (row ROWS-1) at the front (small Z) and the FAR
+// row (row 0) deepest. Ground plane y = 0; +Y is up. Camera sits above & behind
+// the near edge, pitched down, looking at the board centre.
+// ===========================================================================
+
+/// Vertical field of view (degrees) of the unified camera — a SANE lens so a real
+/// hull at a cell projects without wrapping. Tunable look.
+const UNIFIED_FOV_Y_DEG: f32 = 52.0;
+/// Camera look-down pitch (degrees below horizontal) at grid-pitch `t = 0`.
+const UNIFIED_PITCH_DEG: f32 = 22.0;
+/// Camera look-down pitch at full grid-pitch (`t = 1`, the `G` arc → near top-down).
+const UNIFIED_TOPDOWN_PITCH_DEG: f32 = 72.0;
+/// World Z of the board's NEAR edge (front of the near row) — how far the board
+/// sits in front of the camera's look-at reference.
+const UNIFIED_Z_FRONT: f32 = 1.3;
+/// Camera orbit distance from the look-at target (world units).
+const UNIFIED_CAM_DIST: f32 = 5.5;
+/// Look-at height above the ground (world units) — larger aims the camera higher,
+/// pushing the board DOWN on screen (chase-cam: board in the lower ~⅔, horizon near
+/// mid-screen).
+const UNIFIED_TARGET_Y: f32 = 1.1;
+
+/// The unified camera's look-down pitch (radians) for this `cfg`, lerped along the
+/// `G` grid-pitch arc ([`ProjectorConfig::pitch_t`]).
+fn unified_pitch_rad(cfg: &ProjectorConfig) -> f32 {
+    let t = cfg.pitch_t.clamp(0.0, 1.0);
+    (UNIFIED_PITCH_DEG + (UNIFIED_TOPDOWN_PITCH_DEG - UNIFIED_PITCH_DEG) * t).to_radians()
+}
+
+/// World-space look-at target (board centre on the ground, lifted by
+/// [`UNIFIED_TARGET_Y`]).
+fn unified_target(cfg: &ProjectorConfig) -> [f32; 3] {
+    let z_center = UNIFIED_Z_FRONT + cfg.rows as f32 * 0.5;
+    [0.0, UNIFIED_TARGET_Y, z_center]
+}
+
+/// World-space camera eye: orbit [`UNIFIED_CAM_DIST`] from the target at the
+/// look-down pitch, behind the near edge (smaller Z) and above.
+fn unified_eye(cfg: &ProjectorConfig) -> [f32; 3] {
+    let p = unified_pitch_rad(cfg);
+    let t = unified_target(cfg);
+    [
+        t[0],
+        t[1] + UNIFIED_CAM_DIST * p.sin(),
+        t[2] - UNIFIED_CAM_DIST * p.cos(),
+    ]
+}
+
+/// The unified camera's `view_proj` (column-major, RH, clip-z `0..1`, looking down
+/// `-z`) — the SAME matrix the grid cells AND the 3-D hulls project through. Pure
+/// function of `cfg` (frame size, cols/rows, pitch arc), so the renderer and the
+/// CPU-side cell projection never disagree.
+pub fn unified_view_proj(cfg: &ProjectorConfig) -> [f32; 16] {
+    let aspect = cfg.frame_w / cfg.frame_h.max(1.0);
+    let proj = u_perspective(UNIFIED_FOV_Y_DEG.to_radians(), aspect, 0.1, 100.0);
+    let view = u_look_at(unified_eye(cfg), unified_target(cfg), [0.0, 1.0, 0.0]);
+    u_mul4(proj, view)
+}
+
+/// World-space ground-plane corners of cell `pos`, ordered to match
+/// [`CellQuad::corners`]: `[far-left, far-right, near-right, near-left]` (top-left,
+/// top-right, bottom-right, bottom-left on screen — "far" = deeper = higher).
+pub fn cell_world_corners(pos: Pos, cfg: &ProjectorConfig) -> [[f32; 3]; 4] {
+    let cols = cfg.cols.max(1) as f32;
+    let rows = cfg.rows.max(1) as f32;
+    // Camera looks down +Z with +Y up, so world +X maps to screen LEFT. We want col
+    // to increase LEFT→RIGHT on screen, so the screen-left edge of cell `col` is the
+    // LARGER world X (boundary `col`), the screen-right edge the smaller (boundary
+    // `col+1`).
+    let left_x = cols * 0.5 - pos.col as f32;
+    let right_x = cols * 0.5 - (pos.col as f32 + 1.0);
+    // Row pos.row occupies Z ∈ [near_z, far_z]; near row (row rows-1) front at Z_FRONT.
+    let near_z = UNIFIED_Z_FRONT + (rows - 1.0 - pos.row as f32);
+    let far_z = near_z + 1.0;
+    [
+        [left_x, 0.0, far_z],   // far-left  (top-left)
+        [right_x, 0.0, far_z],  // far-right (top-right)
+        [right_x, 0.0, near_z], // near-right (bottom-right)
+        [left_x, 0.0, near_z],  // near-left (bottom-left)
+    ]
+}
+
+/// World-space ground-plane centre of cell `pos` (where a hull is seated/yawed).
+pub fn cell_world_center(pos: Pos, cfg: &ProjectorConfig) -> [f32; 3] {
+    let cols = cfg.cols.max(1) as f32;
+    let rows = cfg.rows.max(1) as f32;
+    // See cell_world_corners: world +X = screen LEFT, so col increasing right→ smaller X.
+    let x = cols * 0.5 - (pos.col as f32 + 0.5);
+    let z = UNIFIED_Z_FRONT + (rows - 1.0 - pos.row as f32) + 0.5;
+    [x, 0.0, z]
+}
+
+/// World-space direction a ship heading `N` (up-lane) points: deeper into the
+/// board, `+Z`. The renderer yaws the hull about `+Y` from this so E/S/W follow.
+/// (Provided so the ship pass + tests share the convention.)
+pub const UNIFIED_HEADING_N: [f32; 3] = [0.0, 0.0, 1.0];
+
+/// Project a world point through the unified `view_proj` `m` to virtual-pixel
+/// screen space (origin top-left, y-down). `None` if behind the camera.
+pub fn unified_project(m: &[f32; 16], p: [f32; 3], cfg: &ProjectorConfig) -> Option<Point2> {
+    let x = m[0] * p[0] + m[4] * p[1] + m[8] * p[2] + m[12];
+    let y = m[1] * p[0] + m[5] * p[1] + m[9] * p[2] + m[13];
+    let w = m[3] * p[0] + m[7] * p[1] + m[11] * p[2] + m[15];
+    if w <= 1e-4 {
+        return None;
+    }
+    let ndc_x = x / w;
+    let ndc_y = y / w;
+    Some(Point2::new(
+        (ndc_x * 0.5 + 0.5) * cfg.frame_w,
+        (0.5 - ndc_y * 0.5) * cfg.frame_h,
+    ))
+}
+
+/// Clip-w (≈ camera distance) of a world point through `m` — used for the
+/// depth-scale normalisation (on-screen size ∝ `1/w`).
+fn unified_clip_w(m: &[f32; 16], p: [f32; 3]) -> f32 {
+    m[3] * p[0] + m[7] * p[1] + m[11] * p[2] + m[15]
+}
+
+/// [`grid_cell_quad`] for the UNIFIED camera: project the cell's four ground
+/// corners + centre through [`unified_view_proj`], and set `depth_scale` from the
+/// `1/w` ratio against the near row (so near ≈ 1.0, far shrinks — same semantics as
+/// the fan path). The screen quad is a true perspective trapezoid, so the grid and
+/// any hull rendered through the same matrix agree by construction.
+fn unified_cell_quad(pos: Pos, cfg: &ProjectorConfig) -> CellQuad {
+    let m = unified_view_proj(cfg);
+    let wc = cell_world_corners(pos, cfg);
+    let project = |p: [f32; 3]| {
+        unified_project(&m, p, cfg)
+            .unwrap_or_else(|| Point2::new(cfg.frame_w * 0.5, cfg.frame_h * 0.5))
+    };
+    let c0 = project(wc[0]);
+    let c1 = project(wc[1]);
+    let c2 = project(wc[2]);
+    let c3 = project(wc[3]);
+    let center_w = cell_world_center(pos, cfg);
+    let center = project(center_w);
+    // depth_scale: near-row-normalised 1/w (near ≈ 1.0, far < 1.0).
+    let w_near = unified_clip_w(&m, cell_world_center(Pos::new(pos.col, cfg.rows - 1), cfg));
+    let w_cell = unified_clip_w(&m, center_w);
+    let depth_scale = if w_cell.abs() > 1e-4 {
+        (w_near / w_cell).clamp(0.05, 1.0)
+    } else {
+        1.0
+    };
+    CellQuad {
+        corners: [c0.to_array(), c1.to_array(), c2.to_array(), c3.to_array()],
+        center: center.to_array(),
+        depth_scale,
+    }
+}
+
+// --- small column-major mat4 helpers for the unified camera (RH, clip-z 0..1) ---
+
+fn u_perspective(fov_y: f32, aspect: f32, near: f32, far: f32) -> [f32; 16] {
+    let f = 1.0 / (fov_y * 0.5).tan();
+    let nf = near - far;
+    [
+        f / aspect,
+        0.0,
+        0.0,
+        0.0, //
+        0.0,
+        f,
+        0.0,
+        0.0, //
+        0.0,
+        0.0,
+        far / nf,
+        -1.0, //
+        0.0,
+        0.0,
+        (far * near) / nf,
+        0.0,
+    ]
+}
+
+fn u_look_at(eye: [f32; 3], center: [f32; 3], up: [f32; 3]) -> [f32; 16] {
+    let sub = |a: [f32; 3], b: [f32; 3]| [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+    let cross = |a: [f32; 3], b: [f32; 3]| {
+        [
+            a[1] * b[2] - a[2] * b[1],
+            a[2] * b[0] - a[0] * b[2],
+            a[0] * b[1] - a[1] * b[0],
+        ]
+    };
+    let dot = |a: [f32; 3], b: [f32; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    let norm = |v: [f32; 3]| {
+        let m = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt().max(1e-8);
+        [v[0] / m, v[1] / m, v[2] / m]
+    };
+    let f = norm(sub(eye, center)); // +z points toward the eye (RH, look down -z)
+    let s = norm(cross(up, f));
+    let u = cross(f, s);
+    [
+        s[0],
+        u[0],
+        f[0],
+        0.0, //
+        s[1],
+        u[1],
+        f[1],
+        0.0, //
+        s[2],
+        u[2],
+        f[2],
+        0.0, //
+        -dot(s, eye),
+        -dot(u, eye),
+        -dot(f, eye),
+        1.0,
+    ]
+}
+
+fn u_mul4(a: [f32; 16], b: [f32; 16]) -> [f32; 16] {
+    let mut out = [0.0f32; 16];
+    for c in 0..4 {
+        for r in 0..4 {
+            let mut sum = 0.0;
+            for k in 0..4 {
+                sum += a[k * 4 + r] * b[c * 4 + k];
+            }
+            out[c * 4 + r] = sum;
+        }
+    }
+    out
+}
+
 /// Convenience: project every in-bounds [`Pos`] to its [`CellQuad`], in flat
 /// row-major order (the same order as [`crate::grid::all_positions`]). Handy for
 /// the renderer's per-frame cell pass and for tests.
@@ -908,6 +1187,70 @@ mod tests {
             "far row center y {} should be above (less than) near row center y {}",
             far.center[1],
             near.center[1]
+        );
+    }
+
+    /// (UNIFY) The unified camera produces a SANE, correctly-oriented grid AND — the
+    /// crux of the #73 fix — a hull-sized box at every cell projects in FRONT of the
+    /// camera to a sane screen position (it does NOT wrap, the failure the legacy fan
+    /// forced). Plus the same grid invariants as the fan: col 0 screen-left, far row
+    /// higher, depth_scale shrinks far<near<=1.
+    #[test]
+    fn unified_grid_is_sane_and_a_hull_does_not_wrap() {
+        let c = ProjectorConfig::for_scene(480.0, 270.0).with_unified(0.0);
+        // Orientation: col 0 is screen-LEFT of the last col on the near row.
+        let near_l = grid_cell_quad(Pos::new(0, ROWS - 1), &c);
+        let near_r = grid_cell_quad(Pos::new(COLS - 1, ROWS - 1), &c);
+        assert!(
+            near_l.center[0] < near_r.center[0],
+            "col 0 ({}) must be screen-left of col {} ({})",
+            near_l.center[0],
+            COLS - 1,
+            near_r.center[0]
+        );
+        // Middle column sits ~on the frame centre (symmetric board).
+        let mid = grid_cell_quad(Pos::new(COLS / 2, ROWS - 1), &c);
+        assert!(
+            (mid.center[0] - c.frame_w * 0.5).abs() < 2.0,
+            "middle column should be ~centred, got {}",
+            mid.center[0]
+        );
+        // Far row higher (smaller y) than near row.
+        let far = grid_cell_quad(Pos::new(2, 0), &c);
+        assert!(far.center[1] < near_l.center[1], "far row should be higher");
+        // NO WRAP: a hull-sized box (±0.6 around each cell centre, up to +0.6 tall)
+        // projects in front of the camera to a sane screen position at EVERY cell —
+        // the thing the ~178° fan made impossible (#73).
+        let m = unified_view_proj(&c);
+        for row in 0..ROWS {
+            for col in 0..COLS {
+                let ctr = cell_world_center(Pos::new(col, row), &c);
+                for dx in [-0.6f32, 0.6] {
+                    for dz in [-0.6f32, 0.6] {
+                        for dy in [0.0f32, 0.6] {
+                            let p = [ctr[0] + dx, ctr[1] + dy, ctr[2] + dz];
+                            let s = unified_project(&m, p, &c)
+                                .expect("hull corner is in front of the camera (no wrap)");
+                            assert!(
+                                s.x > -300.0
+                                    && s.x < c.frame_w + 300.0
+                                    && s.y > -300.0
+                                    && s.y < c.frame_h + 300.0,
+                                "cell {col},{row} hull corner projects sane, got {},{}",
+                                s.x,
+                                s.y
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        // depth_scale shrinks with depth, near ~1.
+        let dn = grid_cell_quad(Pos::new(2, ROWS - 1), &c).depth_scale;
+        let df = grid_cell_quad(Pos::new(2, 0), &c).depth_scale;
+        assert!(
+            df < dn && dn <= 1.0 && df > 0.0,
+            "depth_scale should shrink far {df} < near {dn} <= 1"
         );
     }
 
