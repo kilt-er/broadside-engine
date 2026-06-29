@@ -3045,9 +3045,19 @@ impl ApplicationHandler for App {
                                     broadside_engine::gfx::CinematicPhase::Warp
                                     | broadside_engine::gfx::CinematicPhase::Snap
                                     | broadside_engine::gfx::CinematicPhase::Settle => {
-                                        // Hold near, full bright — board is "here".
-                                        let z = rest_z_offset * 0.3;
-                                        (z, 0.9)
+                                        // (#213 E fix, Bruce: "Z and alpha settings
+                                        // don't appear updated") The late phases
+                                        // previously HARDCODED tint=0.9 + z=rest*0.3,
+                                        // ignoring the live B/N + Z/X dials entirely.
+                                        // Read the dial values per-frame here too so
+                                        // Bruce sees the late-phase preview respect
+                                        // his dial input; bias by 0.7→0.85 toward
+                                        // full alpha + 0.3→0.2 toward Z=0 so the
+                                        // preview still visibly lands while staying
+                                        // dial-driven.
+                                        let z = rest_z_offset * 0.2;
+                                        let a = rest_tint_alpha + (1.0 - rest_tint_alpha) * 0.85;
+                                        (z, a.clamp(0.0, 1.0))
                                     }
                                 }
                             }
