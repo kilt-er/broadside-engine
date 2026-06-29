@@ -608,10 +608,10 @@ pub fn phase_from_progress(t: f32) -> (CinematicPhase, f32) {
 
 /// (#213 / Bruce priority dial #1) At-depth preview Z offset (world units) —
 /// distance from the current back row to the upcoming-board's near edge.
-/// Live `Z` / `X` step. Default 8.0 (Bruce's capture-sweep pick; tight ~5,
-/// loose ~12). Used for the persistent preview AND the cinematic next-grid
+/// Live `Z` / `X` step. Default 12.5 (Bruce's dialed-in pick; tight ~5,
+/// loose ~12+). Used for the persistent preview AND the cinematic next-grid
 /// start depth so dialing one dials the other.
-pub const BOOT_PREVIEW_Z_OFFSET: f32 = 8.0;
+pub const BOOT_PREVIEW_Z_OFFSET: f32 = 12.5;
 static PREVIEW_Z_MILLI: std::sync::atomic::AtomicI32 =
     std::sync::atomic::AtomicI32::new((BOOT_PREVIEW_Z_OFFSET * 1000.0) as i32);
 
@@ -634,8 +634,8 @@ pub fn step_preview_z(delta: f32) -> f32 {
 
 /// (#213 / Bruce priority dial #2) At-depth preview tint alpha — opacity of
 /// the upcoming-grid wireframe + ship markers. Live `B` / `N` step. Default
-/// 0.55 (Bruce-tunable from 0.0 invisible to 1.0 fully bright).
-pub const BOOT_PREVIEW_TINT_ALPHA: f32 = 0.55;
+/// 0.30 (Bruce's dialed-in pick; tunable 0.0 invisible to 1.0 fully bright).
+pub const BOOT_PREVIEW_TINT_ALPHA: f32 = 0.30;
 static PREVIEW_TINT_MILLI: std::sync::atomic::AtomicU32 =
     std::sync::atomic::AtomicU32::new((BOOT_PREVIEW_TINT_ALPHA * 1000.0) as u32);
 
