@@ -506,14 +506,41 @@ fn projected_cell_world_center_equals_grid_cell_quad_center_on_far_row() {
  * (c) HEADLESS SMOKE — unified projection initialises + produces sane output
  * ====================================================================== */
 
+/// `pitch_t` values at which the in-frame smoke gate is asserted strictly.
+///
+/// **Why a subset of [`PITCH_T_SWEEP`].** `pitch_t = 0` is the boot
+/// chase-cam (Bruce's default playtime regime); `pitch_t = 0.5` is the mid-
+/// arc the `G` key passes through. Both project the whole board inside the
+/// 480×270 frame at the live cell-scale defaults.
+///
+/// **Why pitch_t = 1.0 is INTENTIONALLY excluded** (#206 lead ruling,
+/// 2026-06-29). Bruce ratified a wide cell-scale default (#206 brings
+/// `BOOT_UNIFIED_GRID_CELL_SCALE` to 1.90 — a wider board). At full G
+/// (`pitch_t = 1.0`, the debug top-down) the wider board's far row
+/// overflows the top of the frame (cell(0, 0) projects to screen-y ≈ -25
+/// at the post-#206 defaults). That's an ACCEPTED cross-dial limitation —
+/// `unified_target_y_anchored` already documents that the anchor coupling
+/// only holds exactly at `pitch_t = 0 + cell_scale = 1.0`; #200 extends
+/// that to the dial-stacking note. Full-G is a debug-key inspection mode,
+/// not a gameplay default, so a wide-board hull peeking above the top edge
+/// at full top-down is a known cosmetic — NOT a regression to guard.
+///
+/// What still holds at pitch_t = 1.0: see
+/// [`unified_projection_returns_finite_screen_y_at_full_top_down`] below —
+/// `unified_project` MUST still return `Some(finite)` (no behind-camera,
+/// no NaN), just outside the in-frame window.
+const PITCH_T_IN_FRAME_REGIME: [f32; 2] = [0.0, 0.5];
+
 #[test]
 fn unified_projection_initialises_and_projects_every_cell_in_frame() {
     let _g = CamDistGuard::pin_boot();
-    // Smoke gate: at every pitch step, every cell's world centre projects to
-    // a finite screen point in [0, frame_w] × [0, frame_h]. Catches the class
-    // of "near-row hull lands behind the camera" / "back-row hull off the top
-    // of the frame" bugs that were the #188 symptom.
-    for &pitch_t in &PITCH_T_SWEEP {
+    // Smoke gate: at the gameplay-pitch regime (boot + mid-arc), every
+    // cell's world centre projects to a finite screen point in
+    // [0, frame_w] × [0, frame_h]. Catches the class of "near-row hull
+    // lands behind the camera" / "back-row hull off the top of the frame"
+    // bugs that were the #188 symptom. Skips full-G (pitch_t = 1.0); see
+    // [`PITCH_T_IN_FRAME_REGIME`] for the cross-dial rationale.
+    for &pitch_t in &PITCH_T_IN_FRAME_REGIME {
         let cfg = unified_cfg(pitch_t);
         let vp = unified_view_proj(&cfg);
         for row in 0..ROWS {
@@ -549,6 +576,51 @@ fn unified_projection_initialises_and_projects_every_cell_in_frame() {
                          projected behind the camera"
                     );
                 }
+            }
+        }
+    }
+}
+
+#[test]
+fn unified_projection_returns_finite_screen_y_at_full_top_down() {
+    let _g = CamDistGuard::pin_boot();
+    // Companion to the in-frame smoke: at full G (pitch_t = 1.0, the debug
+    // top-down key) the wide-cell-scale default (#206) intentionally lets
+    // the far row overflow the frame top — that's a documented cross-dial
+    // limitation (see [`PITCH_T_IN_FRAME_REGIME`]). But the projection
+    // itself must still be MATHEMATICALLY sound — no behind-camera, no
+    // NaN/inf — so a regression that broke the unified path at the full
+    // top-down extreme would surface here even if the cosmetic in-frame
+    // gate doesn't apply. The bar is "the math doesn't blow up," not "the
+    // hull fits the window."
+    let cfg = unified_cfg(1.0);
+    let vp = unified_view_proj(&cfg);
+    for row in 0..ROWS {
+        for col in 0..COLS {
+            let p = Pos::new(col, row);
+            let world = cell_world_center(p, &cfg);
+            let s = unified_project(&vp, world, &cfg)
+                .unwrap_or_else(|| panic!("cell {p:?} at pitch_t=1.0 projected behind the camera"));
+            assert!(
+                s.x.is_finite() && s.y.is_finite(),
+                "cell {p:?} at pitch_t=1.0 projected to non-finite ({}, {})",
+                s.x,
+                s.y,
+            );
+            for corner in cell_world_corners(p, &cfg) {
+                let c = unified_project(&vp, corner, &cfg);
+                assert!(
+                    c.is_some(),
+                    "cell {p:?} corner {corner:?} at pitch_t=1.0 projected behind the camera",
+                );
+                let pt = c.expect("checked Some above");
+                assert!(
+                    pt.x.is_finite() && pt.y.is_finite(),
+                    "cell {p:?} corner {corner:?} at pitch_t=1.0 projected to non-finite \
+                     ({}, {})",
+                    pt.x,
+                    pt.y,
+                );
             }
         }
     }
