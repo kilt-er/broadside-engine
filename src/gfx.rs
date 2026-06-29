@@ -430,6 +430,34 @@ pub fn adjust_grid_cell_scale(delta: f32) -> f32 {
     next
 }
 
+/// (#207 Bruce) Live LATERAL camera-pan offset (world units, signed). Positive
+/// = look-at shifts in world `+X`, which (world `+X` = screen LEFT, per
+/// `cell_world_corners`) slides the whole grid + hulls RIGHT on screen — the
+/// "parallax-style" shift Bruce specified to uncut an outside-lane ship on a
+/// 5x4 board. Read by [`crate::projector::unified_target`] +
+/// [`crate::projector::unified_eye`] so grid lines and ship hulls share the
+/// same offset by construction (#188 alignment holds — both ends shift the
+/// same X line, the look-down vector is unchanged). Default = 0.0 = no shift.
+/// Stored as i32 millimetres so we can use a stdlib atomic (no `AtomicF32`);
+/// resolution 0.001 world unit, plenty for an eased per-frame pan.
+static UNIFIED_LATERAL_X_MILLI: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+
+/// (#207) Read the live lateral pan offset (world units, signed).
+pub fn unified_lateral_x_offset() -> f32 {
+    UNIFIED_LATERAL_X_MILLI.load(std::sync::atomic::Ordering::Relaxed) as f32 / 1000.0
+}
+
+/// (#207) Set the lateral pan offset directly (world units, signed). The bin
+/// eases this per frame toward a target offset chosen by board state (outside-
+/// lane occupancy on a 5x4 board); the projector reads the latched value to
+/// translate the look-at + eye laterally.
+pub fn set_unified_lateral_x_offset(x: f32) {
+    UNIFIED_LATERAL_X_MILLI.store(
+        (x * 1000.0).round() as i32,
+        std::sync::atomic::Ordering::Relaxed,
+    );
+}
+
 /// (UNIFY) Vertical lift (world units) of the hull above the ground plane so it
 /// sits ON the grid rather than half-buried at its mesh origin. (#188 Bruce: enemies
 /// "float above their cells" — diagnosis: _03.glb Y-bbox is [-1.48, +1.32], so at

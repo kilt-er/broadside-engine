@@ -925,15 +925,22 @@ fn unified_target_y_anchored(cfg: &ProjectorConfig) -> f32 {
 
 /// World-space look-at target (board centre on the ground, lifted by the
 /// [`unified_target_y_anchored`] coupling so the near edge stays parked across
-/// the `-`/`=` zoom range).
+/// the `-`/`=` zoom range, and laterally panned by
+/// [`crate::gfx::unified_lateral_x_offset`] so an outside-lane ship on the 5x4
+/// board gets pulled in-frame per #207).
 fn unified_target(cfg: &ProjectorConfig) -> [f32; 3] {
     let z_center = UNIFIED_Z_FRONT + cfg.rows as f32 * 0.5;
-    [0.0, unified_target_y_anchored(cfg), z_center]
+    [
+        crate::gfx::unified_lateral_x_offset(),
+        unified_target_y_anchored(cfg),
+        z_center,
+    ]
 }
 
 /// World-space camera eye: orbit [`crate::gfx::unified_cam_dist`] (live, #192)
 /// from the target at the look-down pitch, behind the near edge (smaller Z) and
-/// above.
+/// above. Shares the look-at's X (lateral pan) so the camera translates
+/// laterally without rotating — grid + hulls slide together (#188 holds).
 fn unified_eye(cfg: &ProjectorConfig) -> [f32; 3] {
     let p = unified_pitch_rad(cfg);
     let t = unified_target(cfg);

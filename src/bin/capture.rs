@@ -301,6 +301,17 @@ fn main() {
         broadside_engine::gfx::set_anchor_mode_centered(true);
         log::info!("capture: anchor mode -> CTR (centered)");
     }
+    // (#207) BROADSIDE_LATERAL_X=F sets the live lateral pan offset (world
+    // units, signed) so headless captures verify the parallax-style edge-lane
+    // shift. The live bin EASES the offset toward a board-derived target
+    // every frame; here we jam it directly to the value Bruce wants to
+    // observe (single-frame harness has no wall-clock ease).
+    if let Ok(v) = std::env::var("BROADSIDE_LATERAL_X") {
+        if let Ok(x) = v.parse::<f32>() {
+            broadside_engine::gfx::set_unified_lateral_x_offset(x);
+            log::info!("capture: lateral pan offset -> {x:.2} world units");
+        }
+    }
     // (#140/#142/#151) Optional grid-mode env (mirrors the `T` cycle), so the pitch-arc
     // shots show each mode. BROADSIDE_GRID_CONTINUOUS=1 -> continuous-straight (mode 3);
     // BROADSIDE_GRID_STRAIGHT=1 -> stretch-straight stepped (mode 2);
