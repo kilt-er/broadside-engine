@@ -878,19 +878,11 @@ const KICKBACK_DECAY_PER_SEC: f32 = 3.5;
 /// continuous-flow transition between consecutive encounters takes (no modal,
 /// just an animated parallax slide). Bruce's tunable Q2 ruling = ~1.0 s.
 /// Consumed by [`TransitionPhase::progress`] when `kind == Round`.
-///
-/// (#210 P3 additive) Dead until P4 wires the warp entry; the `#[allow]`
-/// keeps the type+const additive without a noisy warning during the gap.
-#[allow(dead_code)]
 const WARP_ROUND_SECS: f32 = 1.0;
 /// (#210 P3 Bruce) Level-warp duration in seconds — the longer warp for a
 /// sector→sector boundary (the player slides forward INTO the waypoint).
 /// Bruce's tunable Q2 ruling = ~2.0 s. Consumed by
 /// [`TransitionPhase::progress`] when `kind == Waypoint`.
-///
-/// (#210 P3 additive) Dead until P4 wires the warp entry; the `#[allow]`
-/// keeps the type+const additive without a noisy warning during the gap.
-#[allow(dead_code)]
 const WARP_LEVEL_SECS: f32 = 2.0;
 
 /// (#210 P3) Which kind of continuous-flow transition is in flight — Round
@@ -898,11 +890,7 @@ const WARP_LEVEL_SECS: f32 = 2.0;
 /// warp duration via [`TransitionKind::warp_secs`]. Phase 1: only these two;
 /// later phases may add e.g. Death (slow-mo) but per the plan that lives on a
 /// separate `DemoState::Dying` variant.
-///
-/// (#210 P3 additive) Variants are dead until P4 wires construction sites;
-/// the `#[allow]` keeps the additive type clean.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[allow(dead_code)]
 enum TransitionKind {
     /// Encounter→encounter within a sector. Short warp.
     Round,
@@ -914,9 +902,6 @@ impl TransitionKind {
     /// The warp duration (seconds) for this kind — `WARP_ROUND_SECS` for
     /// `Round`, `WARP_LEVEL_SECS` for `Waypoint`. Sole tunable knob (the only
     /// other phase-1 lever Bruce can dial without touching code).
-    ///
-    /// (#210 P3 additive) Dead until P4; `#[allow]` keeps the API additive.
-    #[allow(dead_code)]
     const fn warp_secs(self) -> f32 {
         match self {
             Self::Round => WARP_ROUND_SECS,
@@ -944,10 +929,6 @@ impl TransitionPhase {
     /// `1.0` ⇒ the warp window has elapsed and the caller should swap in
     /// the next board + flip the demo state back to `Playing`. Saturates at
     /// `1.0` so a slow frame doesn't overshoot.
-    ///
-    /// (#210 P3 additive) Dead until P4 polls per-frame; `#[allow]` keeps the
-    /// helper additive.
-    #[allow(dead_code)]
     fn progress(self, now: Instant) -> f32 {
         let elapsed = now.duration_since(self.started_at).as_secs_f32();
         (elapsed / self.kind.warp_secs()).clamp(0.0, 1.0)
@@ -975,12 +956,19 @@ struct TweenAnchor {
 /// every `apply_intent` call. `Playing` is the normal turn-by-turn
 /// state; the other three are modal overlays that gate input.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[allow(dead_code)] // (#210 P3) Transitioning is unconstructed until P4 wires it
 enum DemoState {
     /// Live encounter — normal `apply_intent` flow.
     Playing,
     /// Last encounter cleared. 1/2/3 chooses repair / upgrade /
     /// continue. Everything else is swallowed except Esc.
+    ///
+    /// (#210 P4) Replaced by `Transitioning(Round)` at the round-clear
+    /// site — the variant is kept for now so the match arms in
+    /// `apply_path_choice` + the render+input handlers don't need a
+    /// cascading rewrite; nothing constructs it. P9 or a later cleanup
+    /// can drop it once `push_between_encounter_overlay` is fully
+    /// retired.
+    #[allow(dead_code)]
     EncounterComplete,
     /// Final encounter of final sector cleared. Enter restarts the
     /// run from sector 0.
@@ -1041,6 +1029,15 @@ struct App {
     /// [`tween_2d`] into [`hud::VisualShip2d::kickback`]; cleared on encounter
     /// restart alongside `tween_anchors`.
     kickbacks: HashMap<String, [f32; 2]>,
+    /// (#210 P4) Pre-built destination board for the in-flight warp transition.
+    /// Set at transition START (so the destination is materialised the moment
+    /// the player clears the round; Piece 5 will later pre-position enemies at
+    /// parallax depth using this board's spawn cells). Taken + swapped in at
+    /// transition END. `None` outside a `DemoState::Transitioning` window.
+    /// Board itself is non-`Copy` so it can't live inside `TransitionPhase`
+    /// without breaking `DemoState`'s `Copy` derive — App-side option keeps
+    /// the enum cheap to match on.
+    pending_board: Option<Board>,
     /// The campaign — list of sectors the run progresses through.
     /// Built once at startup from [`placeholder_sectors`] and not
     /// rebuilt on Restart.
@@ -1188,6 +1185,7 @@ impl App {
             catalog,
             tween_anchors: HashMap::new(),
             kickbacks: HashMap::new(),
+            pending_board: None,
             sectors,
             run: Run::new(Self::fresh_player_ship()),
             demo_state: DemoState::Playing,
@@ -1336,6 +1334,7 @@ impl App {
         self.demo_state = DemoState::Playing;
         self.tween_anchors.clear();
         self.kickbacks.clear(); // (#209 hook 3) no stale recoil across encounters
+        self.pending_board = None; // (#210 P4) abandon any in-flight warp on restart
         self.kill_bursts.clear(); // (#90) no stale bursts into the fresh board
         self.particles.clear(); // (#119) no stale explosion particles into the fresh board
         self.proj_anchors.clear(); // (#178) no stale torpedo slide anchors into the fresh board
@@ -1948,13 +1947,14 @@ impl ApplicationHandler for App {
                         }
                         return;
                     }
-                    // `Playing` falls through to the rest of the handler; the
-                    // additive `Transitioning(_)` variant (#210 P3) shares the
-                    // same fall-through behaviour until P4 replaces it with the
-                    // proper input-gate (swallow all input mid-warp the way
-                    // `BeatPlayback` does). Until P4 the variant is never
-                    // constructed so the arm is unreachable in practice.
-                    DemoState::Playing | DemoState::Transitioning(_) => {}
+                    DemoState::Transitioning(_) => {
+                        // (#210 P4) Swallow all input during the warp — the
+                        // transition's wall-clock progress is driven by
+                        // RedrawRequested above. Symmetric with RunDefeated /
+                        // RunComplete's early-return pattern.
+                        return;
+                    }
+                    DemoState::Playing => {}
                 }
 
                 // (#97 Enter footgun) During active Playing combat, Enter is a NO-OP.
@@ -2181,7 +2181,50 @@ impl ApplicationHandler for App {
                             // loaded; no-op otherwise (placeholder campaign
                             // has no capitals to reward).
                             self.award_encounter_salvage();
-                            self.demo_state = DemoState::EncounterComplete;
+                            // (#210 P4) Continuous-flow round transition —
+                            // replaces the old modal `EncounterComplete` gate.
+                            // Advance the run IMMEDIATELY (so #210 P2's
+                            // `Board.level` cursor sees the new round + the
+                            // parallax queue tweens during the warp), build
+                            // the destination board, and start a Transitioning
+                            // window classified by the advance kind:
+                            //   NextEncounter -> Round   (~1 s, intra-sector)
+                            //   NextSector    -> Waypoint(~2 s, sector boundary)
+                            //   Victorious    -> RunComplete (P9 will route
+                            //     this through a Waypoint warp + end card).
+                            //   AlreadyEnded  -> shouldn't reach here from
+                            //     Won, but defensive no-op.
+                            let advance = advance_after_win(&mut self.run, &self.sectors);
+                            let kind = match advance {
+                                AdvanceResult::NextEncounter => Some(TransitionKind::Round),
+                                AdvanceResult::NextSector => Some(TransitionKind::Waypoint),
+                                AdvanceResult::Victorious | AdvanceResult::AlreadyEnded => None,
+                            };
+                            if let Some(kind) = kind {
+                                if let Some(next) = self.build_current_board() {
+                                    self.pending_board = Some(next);
+                                    self.demo_state = DemoState::Transitioning(TransitionPhase {
+                                        kind,
+                                        started_at: now,
+                                    });
+                                } else {
+                                    // Defensive: AdvanceResult promised
+                                    // another encounter but the builder
+                                    // returned None. Fall back to the
+                                    // legacy RunComplete card so the run
+                                    // doesn't softlock mid-warp.
+                                    self.demo_state = DemoState::RunComplete;
+                                }
+                            } else if matches!(advance, AdvanceResult::Victorious) {
+                                // P9 will route this through a Waypoint warp
+                                // + final end-card; until then keep the
+                                // existing RunComplete card so the run still
+                                // terminates cleanly.
+                                self.demo_state = DemoState::RunComplete;
+                            }
+                            // `AlreadyEnded` here is a no-op (defensive) — it
+                            // shouldn't reach this arm because we only enter
+                            // on `Won`, but if it does, leave the state alone.
                         }
                         EncounterOutcome::Lost => {
                             mark_defeated(&mut self.run);
@@ -2198,6 +2241,37 @@ impl ApplicationHandler for App {
             }
             WindowEvent::RedrawRequested => {
                 let now = Instant::now();
+                // (#210 P4) Continuous-flow warp tick — when a Transitioning
+                // window has elapsed, swap the pre-built `pending_board` in,
+                // clear per-encounter transients (tween anchors, kickbacks,
+                // particle pools, beat playback) the same way `restart_run`
+                // does on a fresh run, re-install audio on the new board's
+                // EventBus, and flip back to Playing. The transition's
+                // duration is driven by `TransitionPhase::progress` against
+                // either `WARP_ROUND_SECS` or `WARP_LEVEL_SECS` per `kind`.
+                if let DemoState::Transitioning(phase) = self.demo_state {
+                    if phase.progress(now) >= 1.0 {
+                        // Defensive: progress maxed but no destination board
+                        // waiting (shouldn't happen — the Won handler always
+                        // builds `pending_board` before entering Transitioning).
+                        // Either way, flip back to Playing so the input gate
+                        // doesn't softlock.
+                        if let Some(next) = self.pending_board.take() {
+                            self.board = next;
+                            self.tween_anchors.clear();
+                            self.kickbacks.clear();
+                            self.kill_bursts.clear();
+                            self.particles.clear();
+                            self.proj_anchors.clear();
+                            self.exhaust.clear();
+                            self.hull_flash.clear();
+                            self.beat_playback = None;
+                            self.queue_blocked_flash = None;
+                            self.reinstall_audio();
+                        }
+                        self.demo_state = DemoState::Playing;
+                    }
+                }
                 // (#133) BEAT driver: while a committed volley is playing out, release
                 // the next queued player beam every BEAT_SECS. Each released beam is
                 // pushed onto board.fire_events (both beam-render paths animate the new
