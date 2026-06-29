@@ -837,11 +837,11 @@ const UNIFIED_Z_FRONT: f32 = 1.3;
 /// (#188) 0.6→0.3 raised the board for the bottom HUD; (#193 Bruce verified)
 /// 0.3 is the locked default at d=5.5.
 ///
-/// (#197 Bruce) From this anchor (d=5.5, t_y=0.3) the NEAR-ROW screen-y is
-/// computed once and then [`unified_target_y_anchored`] back-solves t_y for any
-/// other d so the near edge stays PARKED at the same screen-y while the board
-/// grows UPWARD into the empty sky — zoom no longer pushes the near row into
-/// the bottom menu.
+/// (#197 Bruce) From this anchor (`d=5.5`, `t_y=0.3`) the NEAR-ROW `screen_y`
+/// is computed once and then [`unified_target_y_anchored`] solves for `t_y` at
+/// any other `d` so the near edge stays PARKED at the same `screen_y` while the
+/// board grows UPWARD into the empty sky — zoom no longer pushes the near row
+/// into the bottom menu.
 const UNIFIED_TARGET_Y_DEFAULT: f32 = 0.3;
 
 /// The unified camera's look-down pitch (radians) for this `cfg`, lerped along the
@@ -852,38 +852,41 @@ fn unified_pitch_rad(cfg: &ProjectorConfig) -> f32 {
 }
 
 /// (#197 Bruce) Live look-at height that ANCHORS the board's near row at a
-/// fixed screen-y above the bottom menu. As [`gfx::unified_cam_dist`] (`-`/`=`)
-/// scales the camera distance, this function back-solves t_y so the projected
-/// screen-y of the near row's centre is invariant — only the FAR edge moves
+/// fixed `screen_y` above the bottom menu. As [`gfx::unified_cam_dist`] (`-`/`=`)
+/// scales the camera distance, this function solves for `t_y` so the projected
+/// `screen_y` of the near row's centre is invariant — only the FAR edge moves
 /// (board grows UP into the sky), the near edge stays parked.
 ///
 /// Derivation (camera-up = (0, cos p, sin p), camera-forward = (0, -sin p, cos p)):
-///   view-Y_near = -t_y·cos p + (near_z - z_target)·sin p          (d cancels)
-///   view-Z_near =  t_y·sin p + d + (near_z - z_target)·cos p
-///   screen_y ∝ view_y / view_z = k  (constant by design)
-/// Solving for t_y at any d, given the anchor ratio k computed once at the
-/// default pair (d₀ = `gfx::BOOT_UNIFIED_CAM_DIST`, t_y₀ = [`UNIFIED_TARGET_Y_DEFAULT`]).
+///   `view_y_near` = `-t_y·cos p + (near_z - z_target)·sin p`          (`d` cancels)
+///   `view_z_near` = ` t_y·sin p + d + (near_z - z_target)·cos p`
+///   `screen_y` ∝ `view_y / view_z` = `k`  (constant by design)
+/// Solving for `t_y` at any `d`, given the anchor ratio `k` computed once at
+/// the default pair (`d₀` = [`crate::gfx::BOOT_UNIFIED_CAM_DIST`],
+/// `t_y₀` = [`UNIFIED_TARGET_Y_DEFAULT`]).
 ///
 /// Limitation (#200, PARKED — reviewer-a math-audit follow-up): the anchor
-/// ratio `k` is back-solved ONCE from a fixed default pair
-/// (d₀ = [`crate::gfx::BOOT_UNIFIED_CAM_DIST`] = 5.5, t_y₀ = [`UNIFIED_TARGET_Y_DEFAULT`] = 0.3)
-/// that was tuned at pitch = [`UNIFIED_PITCH_DEG`] (30°) AND cell scale = 1.0.
-/// The closed-form is exact + distance-invariant within those constraints (the
-/// `d·sin·cos` terms cancel in `view-Y_near`), so dialling zoom in ISOLATION
-/// holds the near edge to within ~1 px. But STACKING dials breaks the anchor:
-/// pressing `G` (grid-pitch) or `K`/`L` (cell scale ≠ 1) FIRST and THEN zooming
-/// shifts the parked near-row by tens of px at the [3.5, 7.0] extremes — `k`
-/// was computed against a stale (pitch, scale) baseline that no longer matches
-/// the live geometry. The common path (zoom alone) is fine; full fix is to
-/// recompute (d₀, t_y₀) against the live pitch + cell-scale on each call so
-/// the anchor stays exact across the cross-dial product space. Don't pre-do —
-/// Bruce dials zoom in isolation today; revisit if he combines and sees drift.
+/// ratio `k` is solved ONCE from a fixed default pair
+/// (`d₀` = [`crate::gfx::BOOT_UNIFIED_CAM_DIST`] = 5.5,
+/// `t_y₀` = [`UNIFIED_TARGET_Y_DEFAULT`] = 0.3) that was tuned at
+/// pitch = [`UNIFIED_PITCH_DEG`] (30°) AND cell scale = 1.0. The closed-form
+/// is exact + distance-invariant within those constraints (the `d·sin·cos`
+/// terms cancel in `view_y_near`), so dialling zoom in ISOLATION holds the
+/// near edge to within ~1 px. But STACKING dials breaks the anchor: pressing
+/// `G` (grid-pitch) or `K`/`L` (cell scale ≠ 1) FIRST and THEN zooming shifts
+/// the parked near-row by tens of px at the [3.5, 7.0] extremes — `k` was
+/// computed against a stale (pitch, scale) baseline that no longer matches the
+/// live geometry. The common path (zoom alone) is fine; full fix is to
+/// recompute (`d₀`, `t_y₀`) against the live pitch + cell-scale on each call
+/// so the anchor stays exact across the cross-dial product space. Don't
+/// pre-do — Bruce dials zoom in isolation today; revisit if he combines and
+/// sees drift.
 ///
 /// (#198 Bruce) Branches on [`crate::gfx::anchor_mode_centered`]: when true,
-/// returns 0.0 so the look-at sits on the board centroid (ground plane, z =
-/// z_center) — the board's centroid then projects to screen centre, giving a
-/// vertically CENTERED pose (equal margin top + bottom). The default (false)
-/// runs the closed-form snap-to-menu solve below.
+/// returns 0.0 so the look-at sits on the board centroid (ground plane,
+/// `z = z_center`) — the board's centroid then projects to screen centre,
+/// giving a vertically CENTERED pose (equal margin top + bottom). The default
+/// (false) runs the closed-form snap-to-menu solve below.
 fn unified_target_y_anchored(cfg: &ProjectorConfig) -> f32 {
     if crate::gfx::anchor_mode_centered() {
         // Mode B: look at the board's ground centroid. The look-at point
