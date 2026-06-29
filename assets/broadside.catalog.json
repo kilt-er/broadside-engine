@@ -1205,7 +1205,8 @@
       "sector": "Citadel",
       "corrupt": false,
       "sP1": 5,
-      "sP7": 11
+      "sP7": 11,
+      "footprint": "pair"
     },
     {
       "id": "secret",

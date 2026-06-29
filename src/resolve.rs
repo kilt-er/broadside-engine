@@ -290,8 +290,15 @@ pub fn fire_player_queue(ship_id: &str, board: &mut Board, content: &dyn Content
 
     // Clear the queue. The ship may have been destroyed during effect
     // application; only clear if it still exists.
-    if let Some((_, ship)) = find_cell_by_id_mut(board, ship_id) {
+    if let Some((primary_idx, ship)) = find_cell_by_id_mut(board, ship_id) {
         ship.queue.clear();
+        // #214 multi-cell boss: queue cleared on the primary; propagate to
+        // the tail mirror so any reader at the tail cell sees the empty
+        // queue. No-op for single-cell ships.
+        let dims = board.dims();
+        if let Some(p) = Pos::from_index_in(primary_idx, dims) {
+            refresh_tail_mirror(p, board);
+        }
     }
 }
 
@@ -357,11 +364,21 @@ pub fn advance_ordnance(board: &mut Board, content: &dyn Content) {
 /// loop iterates these to drive [`tick_enemy`] per enemy without reaching into
 /// `board.cells` itself; `run_world_phase` uses the same list so the composed
 /// (headless) path and the decoupled (live) path enumerate enemies identically.
+///
+/// **#214 multi-cell boss:** dedupe by id so a 1×2 boss (same `Ship` clone in
+/// TWO `Board::cells` slots) only ticks ONCE per world phase. Without this,
+/// the boss would fire its queue twice and decide twice every round.
 pub fn live_enemy_ids(board: &Board) -> Vec<String> {
-    enemy_initiative(board)
-        .into_iter()
-        .filter_map(|c| board.cells[c].as_ref().map(|s| s.id.clone()))
-        .collect()
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for c in enemy_initiative(board) {
+        if let Some(s) = board.cells[c].as_ref() {
+            if seen.insert(s.id.clone()) {
+                out.push(s.id.clone());
+            }
+        }
+    }
+    out
 }
 
 /// Tick ONE enemy: the fire-then-decide step for a single enemy. Called once
@@ -800,6 +817,15 @@ fn run_action(
     } else {
         None
     };
+    // #214 multi-cell boss: heat / cooldown / locked_out just changed on the
+    // PRIMARY (find_cell_by_id_mut guards to primary). Refresh the tail
+    // mirror so any reader at the tail cell sees the post-action state.
+    // No-op for single-cell ships.
+    if let Some(c) = post_cell {
+        if let Some(p) = Pos::from_index_in(c, dims) {
+            refresh_tail_mirror(p, board);
+        }
+    }
     // `onDamageDealt` fires UNCONDITIONALLY — once per fired action — to match
     // the TS `executeQueue`, which emits `{ board, source: ship }` on every
     // loop iteration regardless of whether the firing ship survived (in TS
@@ -828,11 +854,25 @@ fn run_action(
 /// that previously re-indexed and `.expect()`-ed the slot can no longer
 /// panic. Callers that need only the index take `.map(|(i, _)| i)`.
 fn find_cell_by_id<'b>(board: &'b Board, ship_id: &str) -> Option<(usize, &'b Ship)> {
-    board
-        .cells
-        .iter()
-        .enumerate()
-        .find_map(|(i, c)| c.as_ref().filter(|s| s.id == ship_id).map(|s| (i, s)))
+    // #214 multi-cell boss: a 1×2 boss has the same Ship clone in TWO slots
+    // — the PRIMARY (where slot==pos.to_index) and a tail mirror. Mutating
+    // the mirror writes through to nothing canonical, so for a Pair boss
+    // this lookup must resolve to the PRIMARY. The guard only fires for
+    // ships with `tail.is_some()` so legacy 1-D fixtures (every ship at
+    // `pos=(0,0)`, slot derived from `cell`) stay unaffected.
+    let dims = board.dims();
+    board.cells.iter().enumerate().find_map(|(i, c)| {
+        c.as_ref().filter(|s| s.id == ship_id).and_then(|s| {
+            if s.tail.is_some() {
+                // Pair boss: keep only the primary slot.
+                Pos::from_index_in(i, dims)
+                    .filter(|sp| *sp == s.pos)
+                    .map(|_| (i, s))
+            } else {
+                Some((i, s))
+            }
+        })
+    })
 }
 
 /// `&mut` companion to [`find_cell_by_id`] — locates the ship by id and hands
@@ -840,11 +880,21 @@ fn find_cell_by_id<'b>(board: &'b Board, ship_id: &str) -> Option<(usize, &'b Sh
 /// then write the ship's fields (clearing the queue, banking heat / cooldown).
 /// Same structural guarantee: no separate re-index + `.expect()`.
 fn find_cell_by_id_mut<'b>(board: &'b mut Board, ship_id: &str) -> Option<(usize, &'b mut Ship)> {
-    board
-        .cells
-        .iter_mut()
-        .enumerate()
-        .find_map(|(i, c)| c.as_mut().filter(|s| s.id == ship_id).map(|s| (i, s)))
+    // #214 multi-cell boss: PRIMARY-slot guard (mirror of `find_cell_by_id`).
+    // Gated on `tail.is_some()` so single-cell ships and legacy 1-D fixtures
+    // pass through unchanged.
+    let dims = board.dims();
+    board.cells.iter_mut().enumerate().find_map(|(i, c)| {
+        c.as_mut().filter(|s| s.id == ship_id).and_then(|s| {
+            if s.tail.is_some() {
+                Pos::from_index_in(i, dims)
+                    .filter(|sp| *sp == s.pos)
+                    .map(|_| (i, s))
+            } else {
+                Some((i, s))
+            }
+        })
+    })
 }
 
 /* =============================================================================
@@ -1016,7 +1066,11 @@ pub fn end_of_turn(board: &mut Board, content: &dyn Content) {
         if let Some(target) = board.cells.get(tcell).and_then(|c| c.as_ref()) {
             if let Some(incoming_from) = crate::geometry2d::direction_to(ev.to_pos, ev.from_pos) {
                 let zone = crate::geometry2d::facing_zone(target.facing, incoming_from);
-                under_fire.insert((tcell, zone));
+                // #214: normalize to the PRIMARY's slot so a tail-mirror hit
+                // also pauses regen on the boss (the regen loop below keys
+                // on primary cells via the deduped `ships_of`).
+                let primary_idx = target.pos.to_index_in(dims);
+                under_fire.insert((primary_idx, zone));
             }
         }
     }
@@ -1056,6 +1110,14 @@ pub fn end_of_turn(board: &mut Board, content: &dyn Content) {
             }
         }
         tick_statuses(*c, board, content);
+        // #214 multi-cell boss: propagate the post-tick primary state to the
+        // tail mirror (cooldowns/heat/shield/statuses just changed in place).
+        // No-op for single-cell ships. Done per-ship after its own mutations
+        // (tick_statuses can call destroy, which clears the mirror, so the
+        // refresh is only meaningful when the ship survived).
+        if let Some(p) = Pos::from_index_in(*c, dims) {
+            refresh_tail_mirror(p, board);
+        }
     }
     // Subsystem OnTurnEnd pass (Phase 2 task #61). Runs AFTER base
     // dissipation so HeatSink stacks additively on the canonical -1, and
@@ -1281,6 +1343,33 @@ fn first_target_along(board: &Board, from: Pos, dir: Dir8) -> Option<Pos> {
 /// arc + 3-band range. The SINGLE source for firing AND the `ThreatMap` telegraph.
 /// See the module-level firing-direction contract above. Pure + deterministic.
 pub fn resolve_targeting_2d(a: &Action, board: &Board, ship_pos: Pos) -> Vec<Pos> {
+    let cells = resolve_targeting_2d_raw(a, board, ship_pos);
+    // #214 multi-cell boss: a splash / AoE that covers BOTH cells of a 1×2 boss
+    // would otherwise emit two `apply_damage_2d` calls against the same primary
+    // (the second already redirected to the primary), DOUBLING the hit. Dedupe
+    // by ship id so each ship takes the shot once. Single-cell ships are
+    // unaffected (every cell maps to a unique id). Order-preserving: the first
+    // cell that touches each id wins, so the firing-ray walk's natural ordering
+    // is kept.
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut out = Vec::with_capacity(cells.len());
+    for p in cells {
+        match board.ship_id_at(p) {
+            Some(id) => {
+                let id = id.to_owned();
+                if seen.insert(id) {
+                    out.push(p);
+                }
+            }
+            // No occupant -> not a multi-cell concern; keep (DEPLOY / spawn
+            // patterns target empty cells deliberately).
+            None => out.push(p),
+        }
+    }
+    out
+}
+
+fn resolve_targeting_2d_raw(a: &Action, board: &Board, ship_pos: Pos) -> Vec<Pos> {
     let t = &a.targeting;
     let Some(ship) = board.ship_at(ship_pos) else {
         return Vec::new();
@@ -1513,11 +1602,28 @@ pub fn apply_damage_2d(
 ) {
     // Runtime grid size for Pos->slot conversions (width migration).
     let dims = board.dims();
-    let target_idx = target_pos.to_index_in(dims);
     // Bail if the target cell is empty (matches the 1-D guard).
-    if board.ship_at(target_pos).is_none() {
+    let Some(hit_ship) = board.ship_at(target_pos) else {
         return;
-    }
+    };
+    // #214 multi-cell boss: a hit landing on the TAIL mirror must resolve
+    // against the PRIMARY (canonical hull/state). The mirror clone's `pos`
+    // points at the primary; if it differs from `target_pos` we're on the
+    // tail and redirect ALL subsequent writes (target-lock consume, shield
+    // pool, hull, destroy) to the primary slot. The `atk_pos` and the
+    // incoming-direction computation use the ORIGINAL `target_pos` so the
+    // shield zone reflects the cell the shot actually struck, not where the
+    // canonical ship lives — a long boss takes a flank hit on its tail half
+    // as a flank hit, not a bow hit on the head. Gated on `tail.is_some()`
+    // so legacy 1-D fixtures (every ship at `pos=(0,0)` regardless of slot)
+    // stay unaffected — for them the redirect would be both wrong and
+    // unnecessary.
+    let primary_pos = if hit_ship.tail.is_some() {
+        hit_ship.pos
+    } else {
+        target_pos
+    };
+    let target_idx = primary_pos.to_index_in(dims);
 
     // 1. Range band (2-D Chebyshev) + optional falloff. Same disable predicate
     //    as 1-D (one DAMAGE effect with `band_falloff: Some(false)` disables it
@@ -1547,8 +1653,9 @@ pub fn apply_damage_2d(
     //    silently disabled any `Far`-keyed subsystem like Marksman in 2-D).
     dmg = apply_modifiers(dmg, atk_pos.to_index_in(dims), band, board, content);
 
-    // 3. Target-lock doubles the hit and is consumed.
-    if let Some(target) = board.ship_at_mut(target_pos) {
+    // 3. Target-lock doubles the hit and is consumed. Write to the PRIMARY
+    //    so a tail-mirror hit doesn't leave the canonical lock in place (#214).
+    if let Some(target) = board.ship_at_mut(primary_pos) {
         if let Some(p) = target
             .statuses
             .iter()
@@ -1564,7 +1671,10 @@ pub fn apply_damage_2d(
     //    meaningful incoming direction — treat as a zone-less hit on the bow
     //    (only a degenerate self-collision reaches this). Real hits give a
     //    cardinal (direct) or diagonal (splash/ordnance); `facing_zone` is total.
-    let post_shield_dmg = if let Some(target) = board.ship_at_mut(target_pos) {
+    //    Zone is computed from the ACTUAL impact cell (`target_pos`) so a
+    //    boss's tail-half hit reads its real flank; the shield POOL (and
+    //    therefore the consumed charge) lives on the PRIMARY (#214).
+    let post_shield_dmg = if let Some(target) = board.ship_at_mut(primary_pos) {
         let zone = match crate::geometry2d::direction_to(target_pos, atk_pos) {
             Some(incoming_from) => crate::geometry2d::facing_zone(target.facing, incoming_from),
             None => crate::types::HullZone::Bow,
@@ -1580,8 +1690,8 @@ pub fn apply_damage_2d(
     };
     let final_dmg = post_shield_dmg;
 
-    // 5. Hull subtraction + emit + destroy check.
-    let killed = if let Some(target) = board.ship_at_mut(target_pos) {
+    // 5. Hull subtraction + emit + destroy check. PRIMARY (#214).
+    let killed = if let Some(target) = board.ship_at_mut(primary_pos) {
         target.hull -= final_dmg;
         target.hull <= 0
     } else {
@@ -1594,7 +1704,13 @@ pub fn apply_damage_2d(
         });
     }
     if killed {
+        // `destroy` clears BOTH primary + tail slots for a 1×2 boss (#214).
         destroy(target_idx, board, content);
+    } else {
+        // Survivor: propagate the primary's mutated hull / shield / status
+        // state to the tail mirror so any reader at the tail cell sees
+        // the canonical post-hit values (#214). No-op for single-cell ships.
+        refresh_tail_mirror(primary_pos, board);
     }
 }
 
@@ -2014,13 +2130,57 @@ fn apply_on_hit_mod(
  * Helpers — real implementations.
  * ========================================================================== */
 
-/// All live ships on the board, cloned for snapshot iteration.
+/// All live ships on the board, cloned for snapshot iteration. **#214
+/// multi-cell boss:** a 1×2 boss is stored as the same `Ship` clone in TWO
+/// `Board::cells` slots, so the raw `cells.iter().filter_map` yields TWO
+/// entries for it. Dedupe by id (the primary's `s.pos == slot_pos`, the
+/// mirror's `s.pos != slot_pos`) so callers see each ship once.
 pub fn ships_of(board: &Board) -> Vec<Ship> {
+    let dims = board.dims();
     board
         .cells
         .iter()
-        .filter_map(std::clone::Clone::clone)
+        .enumerate()
+        .filter_map(|(i, c)| {
+            c.as_ref().and_then(|s| {
+                if s.tail.is_some() {
+                    // Pair boss: keep only the PRIMARY slot
+                    // (slot==pos.to_index). Drops the tail mirror.
+                    Pos::from_index_in(i, dims)
+                        .filter(|sp| *sp == s.pos)
+                        .map(|_| s.clone())
+                } else {
+                    // Single-cell ship + legacy 1-D fixtures: pass through
+                    // (every slot is canonical).
+                    Some(s.clone())
+                }
+            })
+        })
         .collect()
+}
+
+/// Refresh a 1×2 boss's tail mirror after the primary slot was mutated
+/// (#214). The mirror holds a CLONE of the primary `Ship`, so any write to
+/// the primary (HP, status, queue, heat, cooldowns, …) must be propagated
+/// or readers seeing `Board::ship_at(tail)` get stale data. No-op for a
+/// single-cell ship (`ship.tail == None`). Cheap: one clone, two slot
+/// writes; idempotent.
+fn refresh_tail_mirror(primary_pos: Pos, board: &mut Board) {
+    let dims = board.dims();
+    let primary_idx = primary_pos.to_index_in(dims);
+    let (tail_pos, clone) = match board.cells.get(primary_idx).and_then(Option::as_ref) {
+        Some(s) => match s.tail {
+            Some(t) => (t, s.clone()),
+            None => return,
+        },
+        None => return,
+    };
+    let tail_idx = tail_pos.to_index_in(dims);
+    if let Some(slot) = board.cells.get_mut(tail_idx) {
+        if slot.as_ref().is_some_and(|s| s.id == clone.id) {
+            *slot = Some(clone);
+        }
+    }
 }
 
 /// Cells of every enemy ship, in lane order. The TS `enemyInitiative` says
@@ -2140,7 +2300,28 @@ fn in_allowed_band(band: &[RangeBand], a: usize, b: usize) -> bool {
 /// `resolve.ts`. If an entry with the same `kind` already exists, the
 /// duration becomes `max(existing, new)`.
 pub fn add_status(cell: usize, kind: StatusKind, duration: i32, board: &mut Board) {
-    let Some(ship) = board.cells[cell].as_mut() else {
+    // #214 multi-cell boss: if this slot is a tail mirror, redirect to the
+    // PRIMARY so the status lands on the canonical ship. Detection is
+    // surgical: only redirect when the slot is BOTH (a) a multi-cell boss
+    // (`tail.is_some()`) AND (b) the recovered slot Pos differs from
+    // `ship.pos` (the mirror's `pos` still points at the primary; the
+    // primary's matches its slot). Single-cell ships and legacy 1-D fixtures
+    // (where every ship sits at `pos=(0,0)` regardless of `cell`) are
+    // untouched, so this change is invisible to non-boss content.
+    let dims = board.dims();
+    let primary_cell = match board.cells.get(cell).and_then(Option::as_ref) {
+        Some(s) if s.tail.is_some() => {
+            let primary_idx = s.pos.to_index_in(dims);
+            if primary_idx == cell {
+                cell // already the primary slot
+            } else {
+                primary_idx
+            }
+        }
+        Some(_) => cell, // single-cell ship: no redirect
+        None => return,
+    };
+    let Some(ship) = board.cells[primary_cell].as_mut() else {
         return;
     };
     if let Some(existing) = ship.statuses.iter_mut().find(|s| s.kind == kind) {
@@ -2151,6 +2332,12 @@ pub fn add_status(cell: usize, kind: StatusKind, duration: i32, board: &mut Boar
             duration,
             face: None,
         });
+    }
+    // Refresh the tail mirror so a reader on the tail cell sees the new
+    // status set. No-op for single-cell ships (refresh_tail_mirror gates on
+    // `ship.tail.is_some()`).
+    if let Some(p) = Pos::from_index_in(primary_cell, dims) {
+        refresh_tail_mirror(p, board);
     }
 }
 
@@ -2200,16 +2387,51 @@ pub fn skips_turn(board: &Board, cell: usize) -> bool {
 /// damage pipeline including subsystem modifiers — a `ReactorBreach` hitting
 /// a flank could legitimately trigger a Marksman bonus.
 pub fn destroy(cell: usize, board: &mut Board, content: &dyn Content) {
-    // Pull the ship out of the cell. Reactor-breach trait check needs the
-    // traits list, which we capture before the cell is cleared.
-    let Some(ship) = board.cells[cell].take() else {
+    // #214 multi-cell boss: if `cell` is a tail mirror, redirect to the
+    // PRIMARY. Surgical detection: only redirect when the slot is a
+    // multi-cell boss (`tail.is_some()`) AND the recovered primary index
+    // differs from `cell`. Single-cell ships and legacy 1-D fixtures stay
+    // unaffected.
+    let dims = board.dims();
+    let primary_cell = match board.cells.get(cell).and_then(Option::as_ref) {
+        Some(s) if s.tail.is_some() => {
+            let p = s.pos.to_index_in(dims);
+            if p == cell {
+                cell
+            } else {
+                p
+            }
+        }
+        Some(_) => cell,
+        None => return,
+    };
+    // Pull the ship out of the PRIMARY cell. Reactor-breach trait check
+    // needs the traits list, which we capture before the cell is cleared.
+    let Some(ship) = board.cells[primary_cell].take() else {
         return;
     };
+    // #214 multi-cell boss: also clear the tail mirror slot so no orphaned
+    // clone is left behind. `ship.tail` is `Some(tail_pos)` only for a 1x2
+    // boss whose primary is `primary_cell`; the mirror at the tail slot
+    // carries the SAME ship id, and we just took the primary out so the
+    // board now has at most one orphan slot to clear (the mirror). For a
+    // single-cell ship `tail` is `None` and this is a no-op.
+    if let Some(tail_pos) = ship.tail {
+        let tail_idx = tail_pos.to_index_in(dims);
+        if let Some(slot) = board.cells.get_mut(tail_idx) {
+            if slot.as_ref().is_some_and(|s| s.id == ship.id) {
+                *slot = None;
+            }
+        }
+    }
     let has_reactor_breach = ship
         .traits
         .iter()
         .any(|t| matches!(t, crate::types::Trait::ReactorBreach));
-    let owner_cell = cell;
+    // Source the splash/emit from the PRIMARY (#214) so a tail-routed kill
+    // still emits OnLethal at the canonical cell and the reactor-breach
+    // splash radiates from the head, not a phantom tail slot.
+    let owner_cell = primary_cell;
     board.destroys_this_window += 1;
 
     if has_reactor_breach {
@@ -2920,8 +3142,13 @@ fn resolve_self_move_2d(
             let Some(adj) = crate::grid::offset_in(ship_pos, dir, 1, dims) else {
                 return;
             };
-            if board.ship_at(adj).is_none() {
-                return;
+            // #214 multi-cell boss: the boss is immovable, can't be tractor-
+            // swapped. Either cell (primary or tail mirror) reports
+            // `tail.is_some()` via `ship_at`, so this gates both halves.
+            match board.ship_at(adj) {
+                None => return,
+                Some(o) if o.tail.is_some() => return,
+                Some(_) => {}
             }
             let i = ship_pos.to_index_in(dims);
             let j = adj.to_index_in(dims);
@@ -3143,7 +3370,16 @@ fn resolve_target_move_2d(
     content: &dyn Content,
 ) {
     use crate::types::DisplaceMode;
-    if board.ship_at(target_pos).is_none() {
+    // #214 multi-cell boss: a 1×2 boss is IMMOVABLE — never displace it
+    // (push / pull / swap all bail). `tail.is_some()` is the boss marker.
+    // Bails BEFORE the empty-cell guard because a tail-mirror hit still
+    // shows as occupied; reading the slot's ship + checking `.tail` covers
+    // both the primary and tail-cell entry points.
+    if let Some(t) = board.ship_at(target_pos) {
+        if t.tail.is_some() {
+            return;
+        }
+    } else {
         return;
     }
     // Runtime grid size for every Pos<->slot conversion + offset walk below

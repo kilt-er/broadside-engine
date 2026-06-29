@@ -64,8 +64,9 @@ use broadside_engine::resolve::{
 };
 use broadside_engine::runs::{
     advance_after_win, boss_ship_for_spawn, build_encounter_board, capital_boss_ship_for_spawn,
-    current_encounter, encounter_outcome, fallback_ship_for_spawn, generate_campaign,
-    is_capital_spawn, mark_defeated, placeholder_sectors, AdvanceResult, EncounterOutcome,
+    capital_footprint, current_encounter, encounter_outcome, fallback_ship_for_spawn,
+    generate_campaign, is_capital_spawn, mark_defeated, place_capital_pair, placeholder_sectors,
+    AdvanceResult, EncounterOutcome,
 };
 use broadside_engine::subsystems::{HEAT_SINK, POINT_BLANK_DOCTRINE};
 use broadside_engine::types::{
@@ -1334,6 +1335,33 @@ impl App {
         // call site (App::new, restart_run, advance_after_win arms) gets the
         // assignment for free.
         board.level = Self::run_cursor(&self.run);
+        // #214 multi-cell boss: scan spawns for any whose CapitalDef has
+        // `footprint: Pair`, lift the single-cell ship `build_encounter_board`
+        // just placed, and re-place it as a 1×2 via `place_capital_pair`. The
+        // primary slot stays where the encounter authored it; the tail
+        // extends one cell forward of the bow (or falls back behind). On a
+        // degenerate grid where neither tail candidate fits, the helper
+        // degrades to a 1×1 placement and returns false — the fight is still
+        // playable, just single-cell.
+        if let Some(cat) = catalog {
+            use broadside_engine::types::Footprint;
+            // Snapshot the spawn list so we don't borrow the board while we
+            // mutate it. Each spawn's `pos` is authoritative for the slot the
+            // single-cell placement put the ship in.
+            let pair_spawns: Vec<_> = enc
+                .enemy_ships
+                .iter()
+                .filter(|s| capital_footprint(&s.class_id, cat) == Footprint::Pair)
+                .map(|s| s.pos)
+                .collect();
+            for primary in pair_spawns {
+                let dims = board.dims();
+                let primary_idx = primary.to_index_in(dims);
+                if let Some(ship) = board.cells.get_mut(primary_idx).and_then(Option::take) {
+                    let _ = place_capital_pair(&mut board, ship, primary);
+                }
+            }
+        }
         Some(board)
     }
 
