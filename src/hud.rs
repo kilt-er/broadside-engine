@@ -519,6 +519,19 @@ pub fn compose_scene_2d_tweened(
     time_s: f32,
 ) -> Vec<DrawCommand> {
     let mut out = Vec::with_capacity(256);
+    // (#P7) Upcoming-board distance preview — draw FIRST so the current board's
+    // wireframe layers over it (deeper boards read fainter, behind the playable
+    // grid). Env-gated for the P7 checkpoint: BROADSIDE_P7_PREVIEW_Z = world z
+    // offset (e.g. "5.0" → an upcoming board 5 world units deeper than the
+    // current back row). Unset = no upcoming preview (legacy compose). Once
+    // Bruce confirms the look, this becomes always-on driven by the campaign
+    // cursor (Board.level → N upcoming boards at increasing depth).
+    if let Some(z_off) = std::env::var("BROADSIDE_P7_PREVIEW_Z")
+        .ok()
+        .and_then(|s| s.parse::<f32>().ok())
+    {
+        push_upcoming_grid_2d(&mut out, cfg, z_off, 0.55);
+    }
     push_grid_2d(&mut out, cfg);
 
     // Player weapon-arc legibility: outline the cells the PLAYER's weapons bear
@@ -1488,6 +1501,60 @@ fn push_grid_2d(out: &mut Vec<DrawCommand>, cfg: &ProjectorConfig) {
                 LANE_STROKE
             };
             outline_cell_2d(out, &q, color);
+        }
+    }
+}
+
+/// (#P7) Render an UPCOMING board's grid wireframe at a world-space `z_offset`
+/// deeper than the current board, through the SAME unified camera. Each cell's
+/// four ground corners are computed via [`projector::cell_world_corners_offset`]
+/// then projected through [`projector::unified_view_proj`] —
+/// [`projector::unified_project`] returns `None` for points behind the camera,
+/// in which case the cell is skipped (only happens at extreme `z_offset` values
+/// far past the back row, where the offset board would project off-screen
+/// anyway). The wire color dims with depth via `tint_alpha` so deeper boards
+/// read fainter than the playable foreground.
+pub fn push_upcoming_grid_2d(
+    out: &mut Vec<DrawCommand>,
+    cfg: &ProjectorConfig,
+    z_offset: f32,
+    tint_alpha: f32,
+) {
+    use crate::grid::Pos as GridPos;
+    use crate::grid::{COLS, ROWS};
+    let m = crate::projector::unified_view_proj(cfg);
+    let alpha = tint_alpha.clamp(0.0, 1.0);
+    let stroke = [
+        LANE_STROKE[0],
+        LANE_STROKE[1],
+        LANE_STROKE[2],
+        LANE_STROKE[3] * alpha,
+    ];
+    let tick = [
+        LANE_TICK[0],
+        LANE_TICK[1],
+        LANE_TICK[2],
+        LANE_TICK[3] * alpha,
+    ];
+    for row in 0..ROWS {
+        for col in 0..COLS {
+            let w =
+                crate::projector::cell_world_corners_offset(GridPos::new(col, row), cfg, z_offset);
+            // Project each world corner; skip the cell if any corner is behind
+            // the camera (saves overlapping-edges-on-the-near-plane artifacts).
+            // unified_project returns projector::Point2; push_line takes
+            // perspective::Point2 — same {x, y} shape, just convert via fields.
+            let proj = |w: [f32; 3]| {
+                crate::projector::unified_project(&m, w, cfg).map(|p| Point2 { x: p.x, y: p.y })
+            };
+            let projected: Option<[Point2; 4]> =
+                (|| Some([proj(w[0])?, proj(w[1])?, proj(w[2])?, proj(w[3])?]))();
+            let Some(p) = projected else { continue };
+            let color = if row == ROWS - 1 { tick } else { stroke };
+            push_line(out, p[0], p[1], 1.0, color);
+            push_line(out, p[1], p[2], 1.0, color);
+            push_line(out, p[2], p[3], 1.0, color);
+            push_line(out, p[3], p[0], 1.0, color);
         }
     }
 }

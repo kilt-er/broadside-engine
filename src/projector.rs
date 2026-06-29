@@ -1018,6 +1018,36 @@ pub fn cell_world_center_frac(col: f32, row: f32, cfg: &ProjectorConfig) -> [f32
     [x, 0.0, z]
 }
 
+/// (#P7) Z-OFFSET variant of [`cell_world_corners`] — same ground-plane corners,
+/// shifted along +Z by `z_offset` (deeper into the screen). Used by the at-depth
+/// preview pipeline to render an UPCOMING board behind the current one on the
+/// same receding ground plane, through the SHARED [`unified_view_proj`]. At
+/// `z_offset = 0.0` this returns exactly [`cell_world_corners`].
+pub fn cell_world_corners_offset(pos: Pos, cfg: &ProjectorConfig, z_offset: f32) -> [[f32; 3]; 4] {
+    let mut c = cell_world_corners(pos, cfg);
+    for v in &mut c {
+        v[2] += z_offset;
+    }
+    c
+}
+
+/// (#P7) Z-OFFSET variant of [`cell_world_center_frac`] — same ground-plane
+/// centre, shifted along +Z by `z_offset`. Mirrors
+/// [`cell_world_corners_offset`] so a ship rendered at the offset board's
+/// `(col, row)` cell aligns with the offset grid cell quad by construction
+/// (#188 alignment guard holds at any `z_offset` because the offset is added
+/// uniformly to both corners and centre).
+pub fn cell_world_center_frac_offset(
+    col: f32,
+    row: f32,
+    cfg: &ProjectorConfig,
+    z_offset: f32,
+) -> [f32; 3] {
+    let mut c = cell_world_center_frac(col, row, cfg);
+    c[2] += z_offset;
+    c
+}
+
 /// World-space direction a ship heading `N` (up-lane) points: deeper into the
 /// board, `+Z`. The renderer yaws the hull about `+Y` from this so E/S/W follow.
 /// (Provided so the ship pass + tests share the convention.)
