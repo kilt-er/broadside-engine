@@ -1506,12 +1506,20 @@ impl App {
     /// board so the existing `tween_2d` pipeline eases each ship FROM an
     /// off-board start point TO its real `Pos` over the warp window.
     ///
-    /// Source point: `from_cell_frac = [ship.pos.col, -2.0]` — two rows BEHIND
-    /// the back row so the ship reads as coming "out of parallax depth"
-    /// (Pos's `usize` row can't go negative; the `from_cell_frac` override
-    /// path accepts any f32). Eased over `kind.warp_secs() * 1000` ms,
-    /// matching the Transitioning window so the slide-in completes exactly
-    /// when the warp ends.
+    /// Source point: `from_cell_frac = [ship.pos.col, -1.0]` — one row BEHIND
+    /// the back row so the ship visibly enters the frame "just above the grid"
+    /// then slides down into its cell (Pos's `usize` row can't go negative;
+    /// the `from_cell_frac` override path accepts any f32). Eased over
+    /// `kind.warp_secs() * 1000` ms, matching the Transitioning window so the
+    /// slide-in completes exactly when the warp ends.
+    ///
+    /// Why row -1, not deeper: the unified-perspective camera projects row=-2
+    /// (z ≈ 11.75 at the boot cell scale) to a tiny ship sprite at the
+    /// horizon, mostly hidden by the top-edge HUD enemies panel — the slide
+    /// is mathematically there but the early half is invisible-small. Bruce's
+    /// playtest read that as a "pop". Row=-1 keeps ships visible the whole
+    /// warp; the truly-FROM-DEEP read needs streaks/trails (parallax P7
+    /// follow-up), not a deeper start point alone.
     ///
     /// Facing isn't tweened (ships warp in already facing their final dir);
     /// `from_facing == ship.facing` keeps the rotation lerp a no-op.
@@ -1519,7 +1527,7 @@ impl App {
         let dur_ms = kind.warp_secs() * 1000.0;
         for ship in self.board.cells.iter().flatten() {
             let from_col = ship.pos.col as f32;
-            let from_row = -2.0_f32;
+            let from_row = -1.0_f32;
             self.tween_anchors.insert(
                 ship.id.clone(),
                 TweenAnchor {
