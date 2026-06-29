@@ -1669,37 +1669,57 @@ pub fn push_upcoming_ships_2d(
         let projected: Option<[Point2; 4]> =
             (|| Some([proj(w[0])?, proj(w[1])?, proj(w[2])?, proj(w[3])?]))();
         let Some(p) = projected else { continue };
-        // Shrink the projected quad inward so the marker reads as a small
-        // hull seated in the cell, not the cell-sized fill. Tightened from
-        // 0.7 → 0.55 (more visible negative space between marker + cell
-        // edge) so the marker reads as a discrete ship icon, not "the cell
-        // is colored". Boss marker gets the full 0.7 so it visually looms
-        // larger at the deepest layer (per #210 P9 "boss looms distinct").
+        // (#213 item 5) SHIP-SHAPED MARKER: instead of an inset coloured cell
+        // (Bruce: "highlighted squares not ship-shaped; want SHIPS approaching,
+        // not coloured cells"), draw a bow-on triangular silhouette pointing
+        // SOUTH (toward the player). The enemy approaches the camera, so its
+        // bow points down on screen. Triangle apex = bow at the near edge of
+        // the cell; base = stern at the far edge. The triangle is inset within
+        // the cell so the marker reads as a small ship within its tile, not as
+        // a cell fill. Boss marker is larger (shrink 0.85 vs 0.65) so it
+        // visually LOOMS at depth per #210 P9.
+        let shrink = if is_boss { 0.85 } else { 0.65 };
         let cx = (p[0].x + p[2].x) * 0.5;
         let cy = (p[0].y + p[2].y) * 0.5;
-        let shrink = if is_boss { 0.75 } else { 0.55 };
         let inset = |q: Point2| Point2 {
             x: cx + (q.x - cx) * shrink,
             y: cy + (q.y - cy) * shrink,
         };
-        let q = [inset(p[0]), inset(p[1]), inset(p[2]), inset(p[3])];
+        // Cell corner indices match cell_world_corners ordering:
+        //   p[0] = far-left  (top-left  on screen, "stern-left" of the ship)
+        //   p[1] = far-right (top-right on screen, "stern-right")
+        //   p[2] = near-right (bottom-right, near the player)
+        //   p[3] = near-left  (bottom-left,  near the player)
+        // Bow apex = midpoint of the near edge (between p[2] and p[3]).
+        // Stern corners = far corners (p[0], p[1]).
+        let stern_l = inset(p[0]);
+        let stern_r = inset(p[1]);
+        let near_l = inset(p[3]);
+        let near_r = inset(p[2]);
+        let bow = Point2 {
+            x: (near_l.x + near_r.x) * 0.5,
+            y: (near_l.y + near_r.y) * 0.5,
+        };
+        // Draw the filled bow-on ship triangle as a degenerate quad
+        // (PolygonInstance is a quad; collapsing p2 + p3 onto the bow apex
+        // gives a triangle that the existing pipeline already renders
+        // correctly — same trick the kill-burst spike uses elsewhere).
         out.push(DrawCommand::Polygon(PolygonInstance::flat(
             [
-                [q[0].x, q[0].y],
-                [q[1].x, q[1].y],
-                [q[2].x, q[2].y],
-                [q[3].x, q[3].y],
+                [stern_l.x, stern_l.y],
+                [stern_r.x, stern_r.y],
+                [bow.x, bow.y],
+                [bow.x, bow.y],
             ],
             fill,
             atlas::cell_uvs(atlas::SOLID_WHITE),
         )));
         // (#213 legibility) Brighter outline so the marker reads even at
-        // low alpha — Bruce can dial tint way down without losing the
-        // marker shape entirely.
-        push_line(out, q[0], q[1], 1.0, stroke);
-        push_line(out, q[1], q[2], 1.0, stroke);
-        push_line(out, q[2], q[3], 1.0, stroke);
-        push_line(out, q[3], q[0], 1.0, stroke);
+        // low alpha — Bruce can dial tint way down without losing the ship
+        // shape entirely. Three sides = stern, port flank, starboard flank.
+        push_line(out, stern_l, stern_r, 1.0, stroke); // stern
+        push_line(out, stern_r, bow, 1.0, stroke); // starboard flank
+        push_line(out, bow, stern_l, 1.0, stroke); // port flank
     }
 }
 
