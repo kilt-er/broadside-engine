@@ -1263,9 +1263,26 @@ impl App {
             .map_or(1, |s| s.patrol_tier);
         let player = Self::fresh_player_ship();
         let catalog = self.catalog.as_ref();
-        Some(build_encounter_board(enc, player, |spawn| {
+        let mut board = build_encounter_board(enc, player, |spawn| {
             Some(synth_enemy_for_spawn(spawn, catalog, patrol_tier))
-        }))
+        });
+        // (#210 P2) Light up Board.level (dormant since #57) so the parallax
+        // background's depth-focus tween advances per round. Cursor = sector ×
+        // (rounds-per-sector) + completed_encounters; matches content's P1
+        // ENCOUNTERS_PER_SECTOR = 4. Single source — every build_current_board
+        // call site (App::new, restart_run, advance_after_win arms) gets the
+        // assignment for free.
+        board.level = Self::run_cursor(&self.run);
+        Some(board)
+    }
+
+    /// (#210 P2) Linear "round number" across the whole campaign, used as the
+    /// `Board.level` cursor that feeds [`Gfx::update_background`]'s focus-tween.
+    /// Multiplier reads [`runs::ENCOUNTERS_PER_SECTOR`] directly so the
+    /// cursor + content's P1 stay in lockstep automatically.
+    const fn run_cursor(run: &Run) -> usize {
+        run.current_sector_idx * broadside_engine::runs::ENCOUNTERS_PER_SECTOR as usize
+            + run.completed_encounters as usize
     }
 
     /// Award salvage for the just-cleared encounter into `self.run`. Called
