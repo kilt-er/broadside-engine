@@ -1155,10 +1155,10 @@ fn generated_spawn_pool_campaign_plays_through_to_victory() {
         bosses_beaten, 2,
         "both capital bosses (The Dasher, The Impaler) were beaten"
     );
-    // ENCOUNTERS_PER_SECTOR (2) pool encounters + 1 boss in each of the two
-    // combat sectors = 6; Staging contributes none.
+    // ENCOUNTERS_PER_SECTOR (4, #210) pool encounters + 1 boss in each of the
+    // two combat sectors = 10; Staging contributes none.
     assert_eq!(
-        encounters_played, 6,
-        "played 2 pool encounters + 1 boss in each of the 2 combat sectors",
+        encounters_played, 10,
+        "played 4 pool encounters + 1 boss in each of the 2 combat sectors",
     );
 }

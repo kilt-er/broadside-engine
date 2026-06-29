@@ -1051,9 +1051,16 @@ const _: fn() = || {
  * ====================================================================== */
 
 /// Default non-boss encounters generated per sector before the capital
-/// fight. Doc-silent balance knob — start at 2 (a short sector reads well;
-/// the boss is the third beat). Flagged for bruce.
-pub const ENCOUNTERS_PER_SECTOR: u32 = 2;
+/// fight. **#210 parallax-flow piece 1:** bumped 2 → 4 so each sector
+/// runs as 4 rounds + 1 boss = 5 beats per level. Locks the round count
+/// Bruce's parallax-progression cadence reads against (every round bumps
+/// the parallax background one step; the boss closes the level). Bruce-
+/// ratified; flagged here so further re-tuning is one-line.
+///
+/// Boss-at-end still holds at any count — [`generate_sector`] pushes the
+/// capital encounter AFTER this loop, so the last encounter in the
+/// returned sector is always the boss (when the sector has one).
+pub const ENCOUNTERS_PER_SECTOR: u32 = 4;
 
 /// Deterministic hash PRNG (mirrors the `wang_hash` used render-side in
 /// hud.rs; kept local so runs.rs doesn't reach across the render boundary).
