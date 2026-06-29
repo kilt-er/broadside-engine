@@ -436,6 +436,14 @@ pub struct VisualShip2d {
     /// (instead of snapping on the integer cell while everything else tweened).
     /// At rest equal to `[ship.pos.col, ship.pos.row]` cast to f32.
     pub cell_frac: [f32; 2],
+    /// (#209 hook 3) Per-fire recoil offset in virtual-pixel space — the bin
+    /// pushes a small vector OPPOSITE the shot direction onto the firing
+    /// ship's `VisualShip2d` on each `FireEvent` emit, then eases it back to
+    /// zero every frame (exponential decay). [`push_ship_2d`] adds this to
+    /// `center` when laying out the hull so the ship visibly jolts backward on
+    /// each shot. Zero at rest ⇒ no recoil. Restored to `[0.0, 0.0]` when the
+    /// tween itself is rebuilt (turn boundary).
+    pub kickback: [f32; 2],
 }
 
 /// (#79) Per-ship visual tween overrides for the 2-D live path, keyed by
@@ -1519,7 +1527,7 @@ const fn pt(p: [f32; 2]) -> Point2 {
 /// All FLAT (a Y-axis ground yaw). The exact ± signs are CALIBRATED by capture
 /// (all 4 cardinals must be DISTINCT + correct: N→VP, S→camera, E/W→perpendicular).
 #[allow(clippy::match_same_arms)] // deliberate facing->yaw mapping table; arms kept explicit
-const fn loft_facing_ground_yaw(facing: Facing) -> f32 {
+pub const fn loft_facing_ground_yaw(facing: Facing) -> f32 {
     match facing {
         Facing::Bow(Dir4::N) => 0.0,
         Facing::Bow(Dir4::E) => 90.0,
@@ -1583,6 +1591,16 @@ fn push_ship_2d(
     // (#79) Mid-move/turn: use the bin's interpolated render position/facing so
     // the ship SLIDES + ROTATES; absent ⇒ snap to the logical cell.
     let mut center = vis.map_or(q.center, |v| v.center);
+    // (#209 hook 3) Per-fire recoil offset: the bin pushes a small kickback
+    // vector onto the firing ship's VisualShip2d when a FireEvent fires, then
+    // eases it back to zero each frame. Sum onto `center` so the ship visibly
+    // jolts backward on each shot, then settles. At rest kickback is [0, 0],
+    // so this is a no-op for any unfired/incoming ship + the static-capture
+    // path (which has no Tween2d entries at all).
+    if let Some(v) = vis {
+        center[0] += v.kickback[0];
+        center[1] += v.kickback[1];
+    }
     let near_edge_width = vis.map_or_else(|| q.near_edge_width(), |v| v.near_edge_width);
     // (#118) Gentle IDLE BOB so a resting ship reads as alive (Bruce). A small
     // vertical sine on a per-ship phase offset (so the fleet doesn't bob in

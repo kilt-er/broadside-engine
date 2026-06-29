@@ -867,6 +867,13 @@ const EXPLOSION_PARTICLE_COLOR: [f32; 4] = [1.0, 0.72, 0.32, 1.0];
 /// just locked for the brief playback. Tunable (Bruce dials the feel).
 const BEAT_SECS: f32 = 0.5;
 
+/// (#209 hook 3) Per-second decay rate for the kickback recoil offset.
+/// `decay = exp(-rate * dt)`, so rate = 3.5 gives ~97% loss/sec — a fast
+/// snap-back, kickback fully settles in ~0.5 s. Tunable; if Bruce wants a
+/// slower drift-back drop the constant. Used in the per-frame kickback
+/// decay loop in `RedrawRequested`.
+const KICKBACK_DECAY_PER_SEC: f32 = 3.5;
+
 /// (#79) Per-ship "where + which way was this ship before the move, and when did
 /// the slide/turn begin?" anchor. Recorded by `App::record_tween_anchors` after
 /// each input mutation; consumed by `App::tween_2d` each frame to ease the
@@ -940,6 +947,12 @@ struct App {
     /// input mutates the board; the redraw path interpolates `from_cell`
     /// → `ship.cell` over `TWEEN_DURATION_MS` using ease-out quad.
     tween_anchors: HashMap<String, TweenAnchor>,
+    /// (#209 hook 3) Per-ship recoil offset in virtual-pixel space. Pushed
+    /// when a `FireEvent` fires (vector OPPOSITE the shot direction, magnitude
+    /// per-archetype), exponentially decayed every frame toward zero. Read by
+    /// [`tween_2d`] into [`hud::VisualShip2d::kickback`]; cleared on encounter
+    /// restart alongside `tween_anchors`.
+    kickbacks: HashMap<String, [f32; 2]>,
     /// The campaign — list of sectors the run progresses through.
     /// Built once at startup from [`placeholder_sectors`] and not
     /// rebuilt on Restart.
@@ -1086,6 +1099,7 @@ impl App {
             content,
             catalog,
             tween_anchors: HashMap::new(),
+            kickbacks: HashMap::new(),
             sectors,
             run: Run::new(Self::fresh_player_ship()),
             demo_state: DemoState::Playing,
@@ -1216,6 +1230,7 @@ impl App {
             .unwrap_or_else(render_example_board);
         self.demo_state = DemoState::Playing;
         self.tween_anchors.clear();
+        self.kickbacks.clear(); // (#209 hook 3) no stale recoil across encounters
         self.kill_bursts.clear(); // (#90) no stale bursts into the fresh board
         self.particles.clear(); // (#119) no stale explosion particles into the fresh board
         self.proj_anchors.clear(); // (#178) no stale torpedo slide anchors into the fresh board
@@ -1263,6 +1278,7 @@ impl App {
                             self.board = next;
                             self.demo_state = DemoState::Playing;
                             self.tween_anchors.clear();
+                            self.kickbacks.clear();
                             self.reinstall_audio();
                         } else {
                             // Shouldn't happen — advance_after_win
@@ -1383,6 +1399,15 @@ impl App {
                 anchor.from_pos.row as f32
                     + (ship.pos.row as f32 - anchor.from_pos.row as f32) * eased,
             ];
+            // (#209 hook 3) Read the in-flight kickback offset from the App's
+            // persistent map (Tween2d itself is rebuilt every frame; kickback
+            // is per-fire transient that DECAYS across frames so it has to
+            // live outside the per-frame tween).
+            let kickback = self
+                .kickbacks
+                .get(&ship.id)
+                .copied()
+                .unwrap_or([0.0_f32, 0.0_f32]);
             tw.visual.insert(
                 ship.id.clone(),
                 hud::VisualShip2d {
@@ -1398,6 +1423,37 @@ impl App {
                         eased,
                     ),
                     cell_frac,
+                    kickback,
+                },
+            );
+        }
+        // (#209 hook 3) For ships WITHOUT a tween anchor that have a live
+        // (non-zero) kickback, synthesise a VisualShip2d at their rest cell so
+        // the recoil offset still applies. At rest with zero kickback this
+        // loop adds nothing and push_ship_2d falls back to the integer cell —
+        // byte-identical to the no-kickback path.
+        for ship in self.board.cells.iter().flatten() {
+            if tw.visual.contains_key(&ship.id) {
+                continue;
+            }
+            let Some(&kickback) = self.kickbacks.get(&ship.id) else {
+                continue;
+            };
+            if kickback[0] == 0.0 && kickback[1] == 0.0 {
+                continue;
+            }
+            let q = grid_cell_quad(ship.pos, cfg);
+            let cell_frac = [ship.pos.col as f32, ship.pos.row as f32];
+            tw.visual.insert(
+                ship.id.clone(),
+                hud::VisualShip2d {
+                    center: q.center,
+                    near_edge_y: q.corners[3][1],
+                    near_edge_width: q.near_edge_width(),
+                    depth_scale: q.depth_scale,
+                    facing_yaw_deg: hud::loft_facing_ground_yaw(ship.facing),
+                    cell_frac,
+                    kickback,
                 },
             );
         }
@@ -2061,6 +2117,55 @@ impl ApplicationHandler for App {
                             self.particles
                                 .spawn_burst(c, 8, EXPLOSION_PARTICLE_COLOR, 0.25);
                         }
+                        // (#209 hook 3) KICKBACK: push a small recoil vector
+                        // OPPOSITE the shot direction onto the firing ship —
+                        // the on-screen direction from target back to attacker
+                        // (we use screen-space deltas of the cell centers so
+                        // the kickback reads in projected pixels, the same
+                        // space push_ship_2d composes in).
+                        if let Some(firing_id) = self
+                            .board
+                            .cells
+                            .iter()
+                            .flatten()
+                            .find(|s| s.pos == fe.from_pos)
+                            .map(|s| s.id.clone())
+                        {
+                            let pcfg = scene_projector();
+                            let from_c =
+                                broadside_engine::projector::grid_cell_quad(fe.from_pos, &pcfg)
+                                    .center;
+                            let to_c =
+                                broadside_engine::projector::grid_cell_quad(fe.to_pos, &pcfg)
+                                    .center;
+                            let dx = to_c[0] - from_c[0];
+                            let dy = to_c[1] - from_c[1];
+                            let len = dx.hypot(dy);
+                            if len > 0.001 {
+                                let nx = dx / len;
+                                let ny = dy / len;
+                                // Magnitude bumps for heavier archetypes; the
+                                // catch-all (Displacement/Control/Movement/…)
+                                // shares Beam's light recoil — those archetypes
+                                // currently don't fire weaponized `FireEvent`s
+                                // but a non-zero default keeps the recoil
+                                // visible if any future archetype shoots.
+                                let mag = match fe.archetype {
+                                    broadside_engine::types::WeaponArchetype::Ordnance => 10.0,
+                                    broadside_engine::types::WeaponArchetype::Broadside => 8.0,
+                                    _ => 5.0,
+                                };
+                                let existing = self
+                                    .kickbacks
+                                    .get(&firing_id)
+                                    .copied()
+                                    .unwrap_or([0.0, 0.0]);
+                                self.kickbacks.insert(
+                                    firing_id,
+                                    [existing[0] - nx * mag, existing[1] - ny * mag],
+                                );
+                            }
+                        }
                         // Re-push the beam so it draws + animates this frame.
                         self.board.fire_events.push(fe);
                     }
@@ -2161,6 +2266,19 @@ impl ApplicationHandler for App {
                 // (#119) Advance the explosion particle pool at the same wall-clock dt;
                 // stays empty (cheap no-op) until a ship death seeds a burst.
                 let particles_active = self.particles.advance(dt);
+                // (#209 hook 3) Decay each ship's per-frame kickback offset
+                // toward zero exponentially. `decay` is the per-second
+                // retention factor (e.g. 0.05 = lose 95% per second). Drop
+                // entries that have settled within ~0.05 px so the map
+                // doesn't accrete forever. No-op when empty.
+                if !self.kickbacks.is_empty() {
+                    let decay = (-KICKBACK_DECAY_PER_SEC * dt).exp();
+                    self.kickbacks.retain(|_, k| {
+                        k[0] *= decay;
+                        k[1] *= decay;
+                        k[0].abs() > 0.05 || k[1].abs() > 0.05
+                    });
+                }
                 // (#178 step 3) EXHAUST TRAIL: for each torpedo still SLIDING (has a live
                 // anchor), seed a few short-lived warm embers at its interpolated STERN
                 // (a bit behind the nose, opposite heading8) so a flickering trail streams
