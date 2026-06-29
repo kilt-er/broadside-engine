@@ -2064,11 +2064,18 @@ impl ApplicationHandler for App {
                         // Re-push the beam so it draws + animates this frame.
                         self.board.fire_events.push(fe);
                     }
-                    // Empty queue -> playback done, unlock input.
+                    // (#209 hook 2) Empty queue AND no effect still
+                    // animating -> playback done, unlock input. The extra
+                    // `!vfx.is_active()` gate makes the turn WAIT until the
+                    // last beam actually lands/explodes (Bruce: "ships are
+                    // LOCKED until the effect hits the opponent"). Lock
+                    // duration is dialable via ShotBeam.per_archetype.life_secs
+                    // from the VFX editor — longer life = longer per-shot hold.
                     if self
                         .beat_playback
                         .as_ref()
                         .is_some_and(|p| p.pending.is_empty())
+                        && !self.vfx.is_active()
                     {
                         self.beat_playback = None;
                     }
