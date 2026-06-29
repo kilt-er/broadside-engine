@@ -94,14 +94,15 @@ pub fn scene_h() -> u32 {
 static GRID_PITCH_STEP: std::sync::atomic::AtomicU32 =
     std::sync::atomic::AtomicU32::new(BOOT_GRID_PITCH_STEP);
 
-/// (#165 Bruce) The grid pitch step the game BOOTS at. Bruce's original pick was
-/// step 2 of 8 with a 30° flat floor; the new flatter end (#P7-prep) lowered the
-/// floor to 20° + extended the arc to 10 steps, so the boot step is now 4 of 10 —
-/// math: `20° + 4/10 · (72° − 20°) = 40.8°`, same effective look-down as the prior
-/// `30° + 2/8 · 42° = 40.5°`. `G` cycles the full 0..=10 arc; step 0 (20°) is the
-/// new HORIZON-VISIBLE flatter floor Bruce wanted for the P7 distance-preview
-/// look. Steps 1..3 ≈ 25°/30°/35° (the old `step 0 = 30°` lives at step ≈ 2 now).
-pub const BOOT_GRID_PITCH_STEP: u32 = 4;
+/// (#165/#P7 Bruce) The grid pitch step the game BOOTS at. Bruce's #P7-greenlight
+/// pick: step 0 — the FLAT 20° horizon floor. Bruce wants the distance-preview
+/// look (upcoming boards visible toward the horizon) ON BY DEFAULT, not as a
+/// `G`-cycle destination, so the boot view IS the flat preview view. `G` still
+/// cycles the full 0..=10 arc up to near-top-down (~72°) for in-game tipping;
+/// math: `20° + n/10 · (72° − 20°)` per step. Step 4 (40.8°) was the prior boot
+/// pick, matching the legacy `30° + 2/8 · 42° = 40.5°` chase-cam look — kept
+/// reachable via `G` × 4, but no longer the default.
+pub const BOOT_GRID_PITCH_STEP: u32 = 0;
 
 /// Number of pitch steps from the flatter chase-cam (step 0 ≈ 20°) to
 /// near-top-down (the last step ≈ 72°). ~5.2° each toward overhead;
@@ -148,9 +149,10 @@ static GRID_MODE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::n
 /// boot pick but its column edges visibly KINK at each row line ("everything is
 /// called straight … I want straight lines not stepped"); both modes 2 and 3 carry
 /// "STRAIGHT" in the readout, which is why the two looked indistinguishable by tag.
-/// Combined with [`BOOT_GRID_PITCH_STEP`] = 2 the board boots reading
-/// "PITCH 2/8 STRAIGHT+" (partway tilted, truly straight converging lines). `T`
-/// still cycles all four modes from here.
+/// Combined with [`BOOT_GRID_PITCH_STEP`] = 0 (the flat 20° horizon floor, #P7)
+/// the board boots reading "PITCH 0/10 STRAIGHT" (flat with truly straight
+/// converging lines — the at-depth distance-preview look). `T` still cycles
+/// all four modes from here.
 pub const BOOT_GRID_MODE: u32 = 3;
 
 /// Number of grid modes the `T` key cycles through (drawbridge / stretch-curved /
