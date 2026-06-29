@@ -25,7 +25,7 @@
 
 use broadside_engine::geometry::default_shield_profile;
 use broadside_engine::gfx::Gfx;
-use broadside_engine::grid::{Dir4, Facing, Pos, COLS, ROWS};
+use broadside_engine::grid::{Dir4, Facing, Pos, COLS};
 use broadside_engine::hud::compose_scene_2d_with;
 use broadside_engine::projector::ProjectorConfig;
 use broadside_engine::runs::{enemy_spawn_facing, player_spawn_facing, player_start_pos};
@@ -647,18 +647,42 @@ fn main() {
     // from the campaign cursor. Reads the live preview Z + tint dials so a
     // headless snapshot reflects Bruce's currently-dialled values.
     {
-        let stand_in_spawns = [
-            Pos::new(1, 0), // back row of upcoming board
-            Pos::new(2, 1),
-            Pos::new(3, 2),
-            Pos::new(2, 3), // front row of upcoming board
-        ];
+        // (#213 preview centering proof) BROADSIDE_PREVIEW_DIMS=CxR overrides
+        // the preview's dims independently of the playable board's dims, so a
+        // capture run can prove the preview centers correctly even when the
+        // current + upcoming boards have DIFFERENT widths. Default = canonical
+        // 5x4 (matches the prior hardcoded path).
+        let preview_dims = std::env::var("BROADSIDE_PREVIEW_DIMS")
+            .ok()
+            .and_then(|s| {
+                let lower = s.to_ascii_lowercase();
+                let mut it = lower.split('x');
+                let c = it.next()?.parse::<usize>().ok()?;
+                let r = it.next()?.parse::<usize>().ok()?;
+                if c == 0 || r == 0 {
+                    return None;
+                }
+                Some((c, r))
+            })
+            .unwrap_or((COLS, broadside_engine::grid::ROWS));
+        // Spawns clamped into the preview's dims so the stand-in markers
+        // always fall in-board even on tiny preview shapes.
+        let stand_in_spawns: Vec<Pos> = [(1, 0), (0, 0), (preview_dims.0 - 1, 0)]
+            .into_iter()
+            .filter_map(|(c, r)| {
+                if c < preview_dims.0 && r < preview_dims.1 {
+                    Some(Pos::new(c, r))
+                } else {
+                    None
+                }
+            })
+            .collect();
         broadside_engine::hud::prepend_upcoming_board_2d(
             &mut commands,
             &cfg,
             broadside_engine::gfx::preview_z_offset(),
-            COLS,
-            ROWS,
+            preview_dims.0,
+            preview_dims.1,
             &stand_in_spawns,
             false,
             broadside_engine::gfx::preview_tint_alpha(),
