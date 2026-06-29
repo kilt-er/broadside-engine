@@ -200,6 +200,14 @@ impl CombatVfx {
         }
     }
 
+    /// Swap the active [`VfxConfig`] in place (the VFX editor's live-tune path).
+    /// Already-spawned effects continue with their existing styling; subsequently
+    /// spawned effects pick up the new config — exactly what authoring wants
+    /// (drag a slider, the next `observe`-triggered effect uses the new value).
+    pub fn set_config(&mut self, cfg: VfxConfig) {
+        self.cfg = cfg;
+    }
+
     /// Diff `board` against the previous frame and spawn effects for the
     /// changes. Read-only over `board`. Call once per frame BEFORE [`advance`].
     pub fn observe(&mut self, board: &Board) {
@@ -730,6 +738,13 @@ impl ParticlePool {
     #[must_use]
     pub fn with_config(cfg: ParticleBurst) -> Self {
         Self { cfg, ..Self::new() }
+    }
+
+    /// Swap the active [`ParticleBurst`] config in place (live-tune). Already-
+    /// spawned particles continue with their existing speeds/sizes; subsequently
+    /// spawned bursts use the new values.
+    pub fn set_config(&mut self, cfg: ParticleBurst) {
+        self.cfg = cfg;
     }
 
     /// Seed `n` particles at `center` (screen space) flying outward with a
