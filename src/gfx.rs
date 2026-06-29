@@ -223,6 +223,59 @@ pub fn toggle_angle_overlay() -> bool {
     next
 }
 
+/// (UNIFY, Bruce order) Live toggle for the UNIFIED camera: the grid AND the 3-D
+/// hulls render through ONE real-perspective camera ([`crate::projector::unified_view_proj`])
+/// instead of the legacy `1/z` fan + separate per-ship loft bake. OFF by default
+/// (the legacy path is byte-identical) until proven; the bin's `U` key flips it.
+/// Read by [`scene_projector_cfg`] (so the grid + every projector-derived overlay
+/// reproject) AND by the loft render loop (so the hulls take the unified ship pass).
+static UNIFIED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Whether the unified camera is active (see [`UNIFIED`]).
+pub fn unified_enabled() -> bool {
+    UNIFIED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Flip the unified camera on/off (the `U` key); returns the new state.
+pub fn toggle_unified() -> bool {
+    let next = !unified_enabled();
+    UNIFIED.store(next, std::sync::atomic::Ordering::Relaxed);
+    next
+}
+
+/// Force the unified camera on/off (the capture bin sets it from its env so the
+/// headless shot matches the live `U` toggle).
+pub fn set_unified(on: bool) {
+    UNIFIED.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// (UNIFY) World-unit scale applied to a hull mesh in the unified ship pass. The
+/// imported hulls are ~12 units long; one grid cell is 1 world unit, so ~0.12
+/// makes a hull fill ~1.4 cells. Tunable look (Bruce dials final size).
+const UNIFIED_SHIP_SCALE: f32 = 0.12;
+/// (UNIFY) Vertical lift (world units) of the hull above the ground plane so it
+/// sits ON the grid rather than half-buried at its mesh origin.
+const UNIFIED_SHIP_LIFT: f32 = 0.0;
+
+/// (UNIFY) THE single place that builds the live scene [`crate::projector::ProjectorConfig`]
+/// from the global look state — the grid pitch arc ([`grid_pitch_t`]), the grid
+/// MODE ([`grid_mode`]), and the unified toggle ([`unified_enabled`]) — so the bin,
+/// the capture, and the loft render loop never drift. Unified takes precedence over
+/// the stretch/pitch fan modes (it IS the camera, not a fan tweak).
+pub fn scene_projector_cfg(frame_w: f32, frame_h: f32) -> crate::projector::ProjectorConfig {
+    let base = crate::projector::ProjectorConfig::for_scene(frame_w, frame_h);
+    let t = grid_pitch_t();
+    if unified_enabled() {
+        return base.with_unified(t);
+    }
+    match grid_mode() {
+        1 => base.with_stretch(t),
+        2 => base.with_stretch_straight(t),
+        3 => base.with_stretch_continuous(t),
+        _ => base.with_pitch(t),
+    }
+}
+
 /// (#140 Bruce ship-tilt) The LIVE loft-camera pitch (degrees) the player + enemy
 /// 3-D hulls render at, so the hulls TILT to stay PARALLEL to the grid plane as the
 /// `G` pitch arc raises. At grid-pitch step 0 this is exactly
@@ -504,6 +557,16 @@ pub struct LoftShipInstance {
     /// ±90 — all FLAT on the grid. Set by `hud` from `ship.facing`; the renderer
     /// adds it to the base yaw so all 4 cardinals render as distinct flat poses.
     pub facing_yaw_deg: f32,
+    /// (UNIFY) The ship's grid cell `[col, row]` — the unified ship pass places the
+    /// hull at this cell's WORLD point ([`crate::projector::cell_world_center`]) and
+    /// renders it through the grid's own camera, so it lives in the grid. (The legacy
+    /// per-cell blit path ignores this and uses the screen quad above.)
+    pub cell: [u32; 2],
+    /// (UNIFY) The hull's world HEADING yaw (radians) about `+Y` for the unified
+    /// model matrix: local prow `+X` rotates to the facing direction (N = up-lane
+    /// `+Z`, etc.). Set by `hud` from `ship.facing`. Distinct from `facing_yaw_deg`
+    /// (the legacy ortho-loft ground yaw), which the unified path does not use.
+    pub unified_yaw_rad: f32,
 }
 
 impl From<SpriteInstance> for DrawCommand {
@@ -2181,6 +2244,95 @@ impl Gfx {
             .write_buffer(&self.blit.ubo, 0, bytemuck::bytes_of(&blit));
     }
 
+    /// (UNIFY) Render the WHOLE loft fleet as real 3-D hulls through the unified
+    /// camera ([`crate::projector::unified_view_proj`]) — the same camera the grid is
+    /// drawn with — then blit the posterized output FULL-SCREEN over the offscreen
+    /// scene. Because every hull goes through the grid's own projection, the fleet
+    /// LIVES in the grid: nose→VP + per-column outward lean fall out of the
+    /// perspective, no per-ship bake/blit fudging. Each hull is placed at its cell's
+    /// world point ([`crate::projector::cell_world_center`]) and yawed to its world
+    /// heading ([`LoftShipInstance::unified_yaw_rad`]). Replaces the per-cell loft
+    /// blit when [`unified_enabled`]. `cleared` tracks whether the offscreen has been
+    /// cleared yet (the full-screen blit clears on the first draw of the frame).
+    fn render_unified_fleet(&self, loft_quads: &[LoftShipInstance], cleared: &mut bool) {
+        let cfg = scene_projector_cfg(scene_w() as f32, scene_h() as f32);
+        let view_proj = crate::projector::unified_view_proj(&cfg);
+        // Build the per-hull (vbuf, vcount, model) draw list; scoped so the
+        // immutable borrow of `self.loft_meshes` drops before the blit below.
+        {
+            let mut draws: Vec<(&wgpu::Buffer, u32, [f32; 16])> =
+                Vec::with_capacity(loft_quads.len());
+            for lq in loft_quads {
+                let Some(mesh) = self.loft_meshes.get(&lq.kind) else {
+                    continue;
+                };
+                if !self.loft_poses.contains_key(lq.ship_id.as_str()) {
+                    continue;
+                }
+                let pos = crate::grid::Pos::new(lq.cell[0] as usize, lq.cell[1] as usize);
+                let mut center = crate::projector::cell_world_center(pos, &cfg);
+                center[1] += UNIFIED_SHIP_LIFT; // sit ON the plane, not half-buried
+                let model =
+                    crate::loft_gpu::unified_model(center, lq.unified_yaw_rad, UNIFIED_SHIP_SCALE);
+                draws.push((&mesh.vbuf, mesh.vcount, model));
+            }
+            if draws.is_empty() {
+                return;
+            }
+            self.loft
+                .render_unified_ships(&self.device, &self.queue, view_proj, &draws);
+        }
+
+        // Blit the posterized fleet FULL-SCREEN onto the offscreen scene (over the
+        // grid, under the HUD). Full-frame quad in virtual-pixel space.
+        let (w, h) = (scene_w() as f32, scene_h() as f32);
+        let qu = LoftQuadUniform {
+            p0: [0.0, 0.0],
+            p1: [w, 0.0],
+            p2: [w, h],
+            p3: [0.0, h],
+            px_to_ndc: [2.0 / w, 2.0 / h],
+            _pad: [0.0, 0.0],
+        };
+        self.queue
+            .write_buffer(&self.loft_blit.quad_ubo, 0, bytemuck::bytes_of(&qu));
+        let bg = self
+            .loft_blit
+            .bind_group(&self.device, self.loft.output_view());
+        let load = if *cleared {
+            wgpu::LoadOp::Load
+        } else {
+            wgpu::LoadOp::Clear(CLEAR)
+        };
+        let mut enc = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("loft unified fleet blit"),
+            });
+        {
+            let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("loft unified fleet blit"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &self.offscreen_view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                    depth_slice: None,
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            pass.set_pipeline(&self.loft_blit.pipeline);
+            pass.set_bind_group(0, &bg, &[]);
+            pass.draw(0..6, 0..1);
+        }
+        self.queue.submit(std::iter::once(enc.finish()));
+        *cleared = true;
+    }
+
     /// Render one frame. `commands` is the full draw command list in
     /// back-to-front order; the scene compositor in [`crate::hud`] builds it.
     /// Consecutive same-variant commands are batched into a single GPU draw.
@@ -2455,12 +2607,28 @@ impl Gfx {
             };
 
         let mut i = 0usize;
+        // (UNIFY) The unified ship pass renders the WHOLE fleet through one camera
+        // in a single shot the first time a loft batch is hit; later loft batches
+        // are no-ops. This flag gates that.
+        let mut unified_ships_done = false;
         while i < batches.len() {
             // Drain the non-loft run preceding the next loft ship.
             let next = flush_scene_run(self, &batches, i, cleared);
             if next > i {
                 cleared = true;
                 i = next;
+                continue;
+            }
+            // (UNIFY) Unified path: render every loft ship as real 3-D geometry
+            // through the SAME camera the grid uses (so the fleet lives in the
+            // grid), then blit the whole posterized output full-screen. Done once,
+            // on the first loft batch (composites over the grid, under the HUD).
+            if unified_enabled() && matches!(batches[i].kind, BatchKind::LoftShip(_)) {
+                if !unified_ships_done {
+                    self.render_unified_fleet(&loft_quads, &mut cleared);
+                    unified_ships_done = true;
+                }
+                i += 1;
                 continue;
             }
             // `i` is a loft-ship batch. Render its 3D hull at its pose into the

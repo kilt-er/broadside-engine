@@ -1114,6 +1114,164 @@ impl LoftGpu {
         }
         let _ = &self.out_tex; // kept alive; view borrows it
     }
+
+    /// (UNIFY) Render a WHOLE FLEET of hulls through ONE shared `view_proj` (the
+    /// [`crate::projector::unified_view_proj`] the grid uses) into the loft target,
+    /// each at its own `model` matrix (cell world transform + heading yaw), then
+    /// posterize once. Because every hull goes through the SAME camera the grid is
+    /// drawn with, the fleet LIVES in the grid — nose→VP + per-column outward lean
+    /// emerge from the perspective, no per-ship bake/blit fudging.
+    ///
+    /// Ships share ONE `scene_ubo`, which a single submit can't rebind between
+    /// draws, so each hull is its own encoder+submit into the SAME target with
+    /// `LoadOp::Load` (the first CLEARS) and depth `StoreOp::Store`, so later hulls
+    /// depth-test against earlier ones (correct mutual occlusion). A final encoder
+    /// posterizes `scene_view → out_view`. The caller then blits `out_view`
+    /// FULL-SCREEN (not per-cell) — the hulls are already at their true screen
+    /// positions from the camera. House key/fill/ambient lights (world-space, so the
+    /// yawed hulls relight correctly). `ships` = `(vbuf, vcount, model)` per hull.
+    pub fn render_unified_ships(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        view_proj: [f32; 16],
+        ships: &[(&wgpu::Buffer, u32, [f32; 16])],
+    ) {
+        // House lights (match render_ship's gameplay path).
+        let laz = (-50.0f32).to_radians();
+        let lel = (60.0f32).to_radians();
+        let key_dir = normalize3([lel.cos() * laz.sin(), lel.sin(), lel.cos() * laz.cos()]);
+        let fill_dir = normalize3([4.0, 2.0, -3.0]);
+        let amb = Self::ambient();
+        queue.write_buffer(
+            &self.bands_ubo,
+            0,
+            bytemuck::bytes_of(&PostUniform {
+                bands: BANDS,
+                _pad0: 0.0,
+                _pad1: 0.0,
+                _pad2: 0.0,
+            }),
+        );
+
+        // Pass 1: each hull into the SHARED scene target. First clears; the rest
+        // load + depth-test against it. One submit per hull so the per-hull model
+        // uniform isn't coalesced away.
+        for (i, (vbuf, vcount, model)) in ships.iter().enumerate() {
+            let scene = SceneUniform {
+                view_proj,
+                model: *model,
+                key_dir: [key_dir[0], key_dir[1], key_dir[2], 1.6],
+                fill_dir: [fill_dir[0], fill_dir[1], fill_dir[2], 0.45],
+                ambient: [amb[0], amb[1], amb[2], 1.0],
+            };
+            queue.write_buffer(&self.scene_ubo, 0, bytemuck::bytes_of(&scene));
+            let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("loft unified hull"),
+            });
+            let (color_load, depth_load) = if i == 0 {
+                (
+                    wgpu::LoadOp::Clear(wgpu::Color {
+                        r: 0.0,
+                        g: 0.0,
+                        b: 0.0,
+                        a: 0.0,
+                    }),
+                    wgpu::LoadOp::Clear(1.0),
+                )
+            } else {
+                (wgpu::LoadOp::Load, wgpu::LoadOp::Load)
+            };
+            {
+                let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("loft unified hull pass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &self.scene_view,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: color_load,
+                            store: wgpu::StoreOp::Store,
+                        },
+                        depth_slice: None,
+                    })],
+                    depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                        view: &self.depth_view,
+                        depth_ops: Some(wgpu::Operations {
+                            load: depth_load,
+                            store: wgpu::StoreOp::Store, // persist for the next hull
+                        }),
+                        stencil_ops: None,
+                    }),
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                });
+                pass.set_pipeline(&self.hull_pipeline);
+                pass.set_bind_group(0, &self.scene_bg, &[]);
+                pass.set_vertex_buffer(0, vbuf.slice(..));
+                pass.draw(0..*vcount, 0..1);
+            }
+            queue.submit(std::iter::once(enc.finish()));
+        }
+
+        // Pass 2: posterize the whole scene → out_view (one shot).
+        let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("loft unified posterize"),
+        });
+        {
+            let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("loft unified posterize pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &self.out_view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: 0.0,
+                            g: 0.0,
+                            b: 0.0,
+                            a: 0.0,
+                        }),
+                        store: wgpu::StoreOp::Store,
+                    },
+                    depth_slice: None,
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            pass.set_pipeline(&self.post_pipeline);
+            pass.set_bind_group(0, &self.post_bg, &[]);
+            pass.draw(0..3, 0..1);
+        }
+        queue.submit(std::iter::once(enc.finish()));
+    }
+}
+
+/// (UNIFY) Build a hull's MODEL matrix (column-major) for the unified camera:
+/// scale the mesh to `scale`, yaw it about `+Y` by `yaw_rad` to its world heading,
+/// and translate to the cell's ground-plane world `center`. The hull's local prow
+/// (`+X`) maps to the heading direction; keel (`+Y`) stays world-up (flat on the
+/// plane). `yaw_rad` is `atan2(-dir.z, dir.x)` of the desired world heading (so
+/// local `+X` → that heading) — see [`crate::projector`] heading conventions.
+pub fn unified_model(center: [f32; 3], yaw_rad: f32, scale: f32) -> [f32; 16] {
+    let (s, c) = (yaw_rad.sin(), yaw_rad.cos());
+    [
+        scale * c,
+        0.0,
+        -scale * s,
+        0.0, // col0 = scaled image of local +X
+        0.0,
+        scale,
+        0.0,
+        0.0, // col1 = scaled +Y (up)
+        scale * s,
+        0.0,
+        scale * c,
+        0.0, // col2 = scaled image of local +Z
+        center[0],
+        center[1],
+        center[2],
+        1.0, // col3 = translation
+    ]
 }
 
 /// (#76) Create the loft offscreen targets at `(w, h)`: the scene-color view,

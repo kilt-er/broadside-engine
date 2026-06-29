@@ -112,17 +112,13 @@ const fn keycode_to_key(code: KeyCode) -> Option<Key> {
 /// invariant. ONE place builds it so every projected element (grid, cells, movement,
 /// threats, ordnance) shares the identical projection (single spatial source).
 fn scene_projector() -> ProjectorConfig {
-    let base = ProjectorConfig::for_scene(
+    // (UNIFY) Delegates to the ONE shared builder so the grid, every projector-
+    // derived overlay, AND gfx's loft ship pass all agree — including the `U`
+    // unified-camera toggle (which supersedes the stretch/pitch fan modes).
+    broadside_engine::gfx::scene_projector_cfg(
         broadside_engine::gfx::scene_w() as f32,
         broadside_engine::gfx::scene_h() as f32,
-    );
-    let t = broadside_engine::gfx::grid_pitch_t();
-    match broadside_engine::gfx::grid_mode() {
-        1 => base.with_stretch(t),
-        2 => base.with_stretch_straight(t),
-        3 => base.with_stretch_continuous(t),
-        _ => base.with_pitch(t),
-    }
+    )
 }
 
 /* =============================================================================
@@ -1581,6 +1577,18 @@ impl ApplicationHandler for App {
                     if code == KeyCode::KeyO {
                         let on = broadside_engine::gfx::toggle_angle_overlay();
                         log::info!("angle overlay: {}", if on { "ON" } else { "OFF" });
+                        if let Some(win) = self.window.as_ref() {
+                            win.request_redraw();
+                        }
+                        return;
+                    }
+                    // (UNIFY, Bruce order) `U` toggles the UNIFIED camera: grid + 3-D
+                    // hulls render through ONE real-perspective camera, so ships LIVE
+                    // in the grid (nose→VP + per-column outward lean). Renderer-owned
+                    // raw binding like G/T/O.
+                    if code == KeyCode::KeyU {
+                        let on = broadside_engine::gfx::toggle_unified();
+                        log::info!("unified camera: {}", if on { "ON" } else { "OFF" });
                         if let Some(win) = self.window.as_ref() {
                             win.request_redraw();
                         }

@@ -488,6 +488,9 @@ fn main() {
     // camera (the same one the hulls render through), so the capture verifies the
     // unified coordinate system.
     let cfg = if std::env::var("BROADSIDE_UNIFIED").is_ok_and(|v| v != "0") {
+        // Set the global too, so gfx's loft loop runs the unified 3-D ship pass
+        // (the hulls render through the same camera as the grid below).
+        broadside_engine::gfx::set_unified(true);
         base.with_unified(pitch_t)
     } else {
         match broadside_engine::gfx::grid_mode() {

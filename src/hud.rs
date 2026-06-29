@@ -1531,6 +1531,22 @@ const fn loft_facing_ground_yaw(facing: Facing) -> f32 {
     }
 }
 
+/// (UNIFY) The hull's WORLD heading yaw (radians) about `+Y` for the unified ship
+/// pass: the angle that rotates the hull's local prow (`+X`) onto its facing
+/// direction in the unified camera's world (N = up-lane `+Z`; S = `−Z` toward the
+/// camera; E = screen-right `−X`; W = screen-left `+X` — matching
+/// [`crate::projector`]'s X-flip where world `+X` is screen-left). `ψ = atan2(−dir.z,
+/// dir.x)` so local `+X → dir`. Fed into [`crate::loft_gpu::unified_model`].
+fn unified_heading_yaw(facing: Facing) -> f32 {
+    let dir = match facing {
+        Facing::Bow(Dir4::N) | Facing::Broadside(Axis::NorthSouth) => [0.0f32, 0.0, 1.0],
+        Facing::Bow(Dir4::S) => [0.0, 0.0, -1.0],
+        Facing::Bow(Dir4::E) | Facing::Broadside(Axis::EastWest) => [-1.0, 0.0, 0.0],
+        Facing::Bow(Dir4::W) => [1.0, 0.0, 0.0],
+    };
+    (-dir[2]).atan2(dir[0])
+}
+
 /// (#79) SHORTEST-PATH interpolate the ground-plane facing yaw from `from`→`to`
 /// by `t∈[0,1]`, so a Q/E quarter-turn ROTATES the hull smoothly instead of
 /// snapping ±90. Both endpoints are [`loft_facing_ground_yaw`]; the delta is
@@ -1663,6 +1679,9 @@ fn push_ship_2d(
                 // core hook): N→up-lane/VP, S→camera, E/W→broadside flanks. (#79)
                 // Mid-turn this is the interpolated yaw so the hull rotates smoothly.
                 facing_yaw_deg,
+                // (UNIFY) cell + world heading for the unified ship pass.
+                cell: [ship.pos.col as u32, ship.pos.row as u32],
+                unified_yaw_rad: unified_heading_yaw(ship.facing),
             }));
             // (#138) Shield pips removed — the per-face cyan squares read as mystery
             // clutter (Bruce); the total shield is in the bottom SHLD bar.
@@ -1750,6 +1769,9 @@ fn push_ship_2d(
                 kind: loft_kind,
                 aim_at: center,
                 facing_yaw_deg,
+                // (UNIFY) cell + world heading for the unified ship pass.
+                cell: [ship.pos.col as u32, ship.pos.row as u32],
+                unified_yaw_rad: unified_heading_yaw(ship.facing),
             }));
             // (#112) NO per-enemy overlay (no arrow/pips/bars/telegraph) — the
             // decluttered hull + the separate threat-cell outline carry the read.
@@ -2289,6 +2311,9 @@ fn push_ship(
             aim_at: [cx, p.y],
             // Legacy 1-D: keep the up-lane stern-on orientation (no facing yaw).
             facing_yaw_deg: 0.0,
+            // (UNIFY) Legacy 1-D path never runs the unified pass; fill defaults.
+            cell: [0, 0],
+            unified_yaw_rad: 0.0,
         }));
         return;
     }
