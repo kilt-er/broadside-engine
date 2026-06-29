@@ -55,7 +55,7 @@ pub const FIXED_UPSCALE: u32 = 4;
 /// (#135 Bruce) The scene/background BOOT-default resolution: 640×360 (the middle
 /// [`SCENE_RES_PRESETS`] step). Bruce wants the whole-scene canvas to boot crisper
 /// than the 480×270 floor — this is the value a fresh [`Gfx`] starts at (the way
-/// 480×300 is the ship-loft boot default, #91). `;`/`'` still cycle from here.
+/// 640×400 is the ship-loft boot default, #91/#213). `;`/`'` still cycle from here.
 pub const BOOT_SCENE_W: u32 = 640;
 pub const BOOT_SCENE_H: u32 = 360;
 

@@ -14,7 +14,7 @@
 //! That posterized texture is what the existing `gfx` 2D compositor blits into
 //! the lane via its `TexturedShip` path — so the rest of the renderer never
 //! sees 3D or depth. The ship buffer is a RUNTIME size ([`LOFT_RES_PRESETS`],
-//! cycled live with `,`/`.`); it BOOTS at [`DEFAULT_LOFT_RES`] (480×300, Bruce's
+//! cycled live with `,`/`.`); it BOOTS at [`DEFAULT_LOFT_RES`] (640×400, Bruce's
 //! pick — crisp out of the gate) and can step down to the chunky [`LOW_W`]×
 //! [`LOW_H`] (160×100) floor. At [`BANDS`] (8) posterize bands; this is the SHIP
 //! resolution only, independent of the 2D compositor / HUD virtual res.
@@ -56,14 +56,14 @@ pub const LOW_H: u32 = 100;
 pub const LOFT_RES_PRESETS: [(u32, u32); 5] =
     [(160, 100), (220, 138), (320, 200), (480, 300), (640, 400)];
 
-/// (#76) The SHIP-loft res the game LAUNCHES at — Bruce's pick after the A/B:
-/// "480 for the ship is the winner." So the hull boots CRISP (480×300) instead of
-/// the chunky 160×100 floor (which forced a cycle-up every run). `,`/`.` still
-/// cycle all five [`LOFT_RES_PRESETS`] for experimentation; this only sets the
-/// initial [`LoftGpu`] target size. = `LOFT_RES_PRESETS[3]` (480×300 — Bruce's
-/// boot pick, NOT the new 640 ceiling); [`LOW_W`]/[`LOW_H`] (160×100) remain the
-/// chunky floor preset, no longer the boot default.
-pub const DEFAULT_LOFT_RES: (u32, u32) = LOFT_RES_PRESETS[3];
+/// (#76, #213) The SHIP-loft res the game LAUNCHES at — Bruce's #213 pick now
+/// the 640×400 crisp ceiling. The hull boots at the finest preset out of the
+/// gate (the 480 step was the prior boot pick before #205 added the 640 step;
+/// Bruce A/B'd the 640 against it and 640 won). `,`/`.` still cycle all five
+/// [`LOFT_RES_PRESETS`] for experimentation; this only sets the initial
+/// [`LoftGpu`] target size. = `LOFT_RES_PRESETS[4]` (640×400 — Bruce's #213
+/// boot pick); [`LOW_W`]/[`LOW_H`] (160×100) remain the chunky floor preset.
+pub const DEFAULT_LOFT_RES: (u32, u32) = LOFT_RES_PRESETS[4];
 
 /// The next ship-res preset after `(w, h)` (wraps). If `(w, h)` isn't in the
 /// list, returns the first preset. See [`LOFT_RES_PRESETS`].
@@ -441,7 +441,7 @@ pub struct LoftGpu {
     /// (#76) The SHIP offscreen size — runtime now, not the [`LOW_W`]/[`LOW_H`]
     /// const, so Bruce can cycle the ship-pixel chunkiness live ([`Self::resize`]
     /// recreates the three targets + `post_bg` at the new size). Initialised to
-    /// [`DEFAULT_LOFT_RES`] (480×300, Bruce's pick). The 2D compositor / HUD
+    /// [`DEFAULT_LOFT_RES`] (640×400, Bruce's #213 pick). The 2D compositor / HUD
     /// virtual res is untouched.
     low_w: u32,
     low_h: u32,
@@ -565,8 +565,8 @@ impl LoftGpu {
 
         // ---- offscreen scene color + depth + final posterized output ----
         // (#76) Created at the runtime ship res via the shared helper so
-        // [`Self::resize`] can rebuild them. Boots at [`DEFAULT_LOFT_RES`] (480×300,
-        // Bruce's pick) — crisp out of the gate, not the chunky 160×100 floor.
+        // [`Self::resize`] can rebuild them. Boots at [`DEFAULT_LOFT_RES`] (640×400,
+        // Bruce's #213 pick) — crispest out of the gate, not the chunky 160×100 floor.
         let (low_w, low_h) = DEFAULT_LOFT_RES;
         let (scene_view, depth_view, out_tex, out_view) = make_loft_targets(device, low_w, low_h);
 
@@ -1734,9 +1734,10 @@ mod tests {
         // LOW_W/LOW_H is the chunky FLOOR preset (preset[0]) — still a valid cycle
         // stop, no longer the boot default.
         assert_eq!((LOW_W, LOW_H), LOFT_RES_PRESETS[0]);
-        // The BOOT default (Bruce's pick) is 480×300, the crisp end — and must be
-        // an in-cycle preset so `,`/`.` from it land cleanly (not the off-list snap).
-        assert_eq!(DEFAULT_LOFT_RES, (480, 300));
+        // The BOOT default (Bruce's #213 pick) is 640×400, the crispest end — and
+        // must be an in-cycle preset so `,`/`.` from it land cleanly (not the
+        // off-list snap). Was 480×300 prior to #213.
+        assert_eq!(DEFAULT_LOFT_RES, (640, 400));
         assert!(
             LOFT_RES_PRESETS.contains(&DEFAULT_LOFT_RES),
             "boot default must be one of the cyclable presets"

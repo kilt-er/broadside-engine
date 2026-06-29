@@ -19,7 +19,7 @@
 //! | `R` / `Space` | `CommitTurn` | Run `resolve_round`; re-renders next frame |
 //! | `Enter` | `Restart` (end-state ONLY) | Restart the run — accepted ONLY on a run-end overlay (defeat / victory). A NO-OP during active combat (#97: it used to rebuild the board mid-fight) |
 //! | `1` / `2` / `3` (overloaded) | Path choice | While the `EncounterComplete` overlay is up: 1 = repair (+2 hull), 2 = upgrade (placeholder), 3 = continue to next encounter |
-//! | `,` / `.` | ship-render res (#76) | Cycle the loft offscreen size `160×100 → 220×138 → 320×200 → 480×300` (live) |
+//! | `,` / `.` | ship-render res (#76) | Cycle the loft offscreen size `160×100 → 220×138 → 320×200 → 480×300 → 640×400` (live; boots at 640×400 per #213) |
 //! | `;` / `'` | scene res (#76) | Cycle the whole-scene offscreen size `480×270 → 640×360 → 960×540` (live; 480 is the min + default; everything scales together) |
 //! | `Esc` | exit | Close the window |
 //!
