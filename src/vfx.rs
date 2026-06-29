@@ -220,6 +220,11 @@ pub struct CombatVfx {
     /// Look/timing params. Defaults to [`VfxConfig::default`] (== the old
     /// constants); the VFX editor overrides via [`Self::with_config`].
     cfg: VfxConfig,
+    /// (#209 hook 1) Wall-clock seconds the pool has been alive, advanced by
+    /// [`Self::advance`]. Drives the READY-glow pulse phase for any ship with a
+    /// non-empty queue (so the glow oscillates at a constant rate independent
+    /// of which effects are alive). Read-only outside [`Self::emit`].
+    anim_clock: f32,
 }
 
 impl CombatVfx {
@@ -363,6 +368,10 @@ impl CombatVfx {
             e.age += dt;
         }
         self.effects.retain(Effect::alive);
+        // (#209 hook 1) Tick the wall-clock for the READY-glow pulse phase
+        // independent of effect lifetimes — the glow has to pulse smoothly
+        // while the queue is held even when no transient effect is alive.
+        self.anim_clock += dt;
         !self.effects.is_empty()
     }
 
@@ -418,7 +427,14 @@ impl CombatVfx {
             }
         }
         // Telegraph: live cue above any enemy holding a queued action.
+        // (#209 hook 1) READY-glow: pulsing aura around ANY ship (player +
+        // enemy) with a non-empty queue — Bruce's "weapons charge while queued"
+        // cue. Player-symmetric, where the existing telegraph cue above is
+        // intentionally enemy-only (player has their own queue HUD strip).
         for s in board.cells.iter().flatten() {
+            if !s.queue.is_empty() {
+                emit_ready_glow(out, cfg, s, self.anim_clock, &self.cfg.telegraph_fire);
+            }
             if s.faction == Faction::Enemy && !s.queue.is_empty() {
                 emit_telegraph(out, cfg, s, &self.cfg.telegraph_fire);
             }
@@ -732,6 +748,48 @@ fn emit_telegraph(
         atlas::cell_uvs(atlas::SOLID_WHITE),
     )));
 }
+
+/// (#209 hook 1) READY-glow: a low, pulsing aura around any ship currently
+/// holding a queued action — Bruce's "weapons charge while queued" cue. Drawn
+/// HUGGING the cell quad (size = ~55% of the near-edge width), pulse phase
+/// driven by `anim_clock` (wall-clock secs from [`CombatVfx::anim_clock`]).
+/// Player-symmetric — runs for ANY faction with a non-empty queue.
+///
+/// Reuses [`TelegraphFire`]'s `color` + `alpha` so the editor's existing
+/// telegraph slider tab tunes the ready-glow without new schema fields (alpha
+/// is dimmed to 0.6× here so the glow reads as STEADY charge, distinct from
+/// the discharge pop). A future `TelegraphFire.ready_glow_hz` schema field
+/// lets the editor author the pulse rate too; today it's the constant
+/// [`READY_GLOW_HZ`].
+fn emit_ready_glow(
+    out: &mut Vec<DrawCommand>,
+    cfg_proj: &ProjectorConfig,
+    ship: &Ship,
+    anim_clock: f32,
+    cfg: &TelegraphFire,
+) {
+    let q = grid_cell_quad(ship.pos, cfg_proj);
+    let pulse = 0.55 + 0.45 * (anim_clock * std::f32::consts::TAU * READY_GLOW_HZ).sin();
+    // Use the cell-quad's wider (bottom = near) edge as the size baseline so
+    // the glow tracks live cell scale (#195) + camera zoom (#192) + perspective
+    // automatically. Corners are [top-left, top-right, bottom-right, bottom-left];
+    // bottom width = corners[2].x - corners[3].x.
+    let near_w = (q.corners[2][0] - q.corners[3][0]).abs();
+    let size = near_w * 0.55;
+    let alpha = cfg.color.0[3] * pulse * 0.6;
+    out.push(DrawCommand::Sprite(SpriteInstance::axis_aligned(
+        q.center,
+        [size, size],
+        [cfg.color.0[0], cfg.color.0[1], cfg.color.0[2], alpha],
+        atlas::cell_uvs(atlas::SOLID_WHITE),
+    )));
+}
+
+/// (#209 hook 1) Pulse rate for the READY-glow aura — 1.5 Hz feels "alive but
+/// not twitchy" per the design note. Reuses [`TelegraphFire`]'s alpha/colour
+/// for now; if Bruce wants per-effect pulse-rate dialling we can add a
+/// `TelegraphFire.ready_glow_hz` schema field later (one-line addition).
+const READY_GLOW_HZ: f32 = 1.5;
 
 /* =============================================================================
  * Procedural particle pool (#119) — SCREEN-SPACE, for the live 2-D board.
@@ -1146,7 +1204,15 @@ mod tests {
         let vfx = CombatVfx::new();
         let mut out = Vec::new();
         vfx.emit(&mut out, &board, &cfg);
-        assert_eq!(out.len(), 1, "one telegraph cue for the queued enemy");
+        // (#209 hook 1) Queued ship now also gets a READY-glow aura, so a
+        // queued enemy emits TWO cues: the steady glow (any-faction) + the
+        // enemy-only telegraph chevron. The original telegraph contract is
+        // preserved in the second draw.
+        assert_eq!(
+            out.len(),
+            2,
+            "ready-glow + telegraph cue for the queued enemy"
+        );
     }
 
     // ---- (#119) particle pool ----
