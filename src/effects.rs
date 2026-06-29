@@ -79,7 +79,36 @@ impl EffectCatalog {
     pub fn get(&self, id: &str) -> Option<&EffectDef> {
         self.effects.iter().find(|e| e.id == id)
     }
+
+    /// Read a catalog from `path`. Returns:
+    /// - `Ok(Some(cat))` when the file parses,
+    /// - `Ok(None)` when the file does not exist (the game's "no authored
+    ///   tunings, use defaults" case),
+    /// - `Err(_)` with a `String` describing the io or decode failure.
+    ///
+    /// Counterpart to `broadside_vfx_editor`'s save: the editor writes via
+    /// [`Self::to_json_string`] + atomic `fs::rename`; the game reads here.
+    pub fn load_from_disk(path: impl AsRef<std::path::Path>) -> Result<Option<Self>, String> {
+        let path = path.as_ref();
+        if !path.exists() {
+            return Ok(None);
+        }
+        let s = std::fs::read_to_string(path).map_err(|e| format!("read {}: {e}", path.display()))?;
+        let cat = Self::from_json_str(&s).map_err(|e| format!("decode {}: {e}", path.display()))?;
+        Ok(Some(cat))
+    }
 }
+
+/// Stable [`EffectDef::id`] keys the editor writes + the game reads back. Shared
+/// constants so `broadside_vfx_editor`'s `Params::to_catalog` and the engine's
+/// `VfxConfig::from_catalog` cannot drift on either side. One id per
+/// [`EffectKind`] variant.
+pub const ID_SHOT_BEAM: &str = "shot_beam";
+pub const ID_HIT_FLASH: &str = "hit_flash";
+pub const ID_EXPLOSION: &str = "explosion";
+pub const ID_TRAIL: &str = "trail";
+pub const ID_TELEGRAPH_FIRE: &str = "telegraph_fire";
+pub const ID_PARTICLE_BURST: &str = "particle_burst";
 
 /// One authored effect: a stable lookup `id` plus its per-family parameters.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

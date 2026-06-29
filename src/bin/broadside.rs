@@ -1048,6 +1048,37 @@ impl App {
         // skips them (content.action(id) = None) and enemies never shoot.
         // insert-if-absent: the hand-tuned player weapons keep precedence.
         let content = build_content(catalog.as_ref());
+
+        // Piece B: try-load authored VFX tunings from `assets/effects.json`. The
+        // standalone `broadside_vfx_editor` writes this file. Missing/unparsable
+        // is NOT an error — log and fall back to in-code defaults (== today's
+        // stock look). Path resolved off `CARGO_MANIFEST_DIR` so the bin
+        // succeeds from any cwd (mirrors the catalog loader).
+        let effects_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("assets/effects.json");
+        let vfx_cfg = match broadside_engine::effects::EffectCatalog::load_from_disk(&effects_path) {
+            Ok(Some(cat)) => {
+                log::info!(
+                    "effects: loaded {} authored entries from {}",
+                    cat.effects.len(),
+                    effects_path.display()
+                );
+                broadside_engine::vfx::VfxConfig::from_catalog(&cat)
+            }
+            Ok(None) => {
+                log::info!(
+                    "effects: no {} (default look)",
+                    effects_path.display()
+                );
+                broadside_engine::vfx::VfxConfig::default()
+            }
+            Err(e) => {
+                log::warn!("effects: load failed ({e}); using defaults");
+                broadside_engine::vfx::VfxConfig::default()
+            }
+        };
+        let particle_cfg = vfx_cfg.particle_burst.clone();
+
         #[allow(unused_mut)]
         let mut app = Self {
             window: None,
@@ -1060,16 +1091,16 @@ impl App {
             sectors,
             run: Run::new(Self::fresh_player_ship()),
             demo_state: DemoState::Playing,
-            vfx: broadside_engine::vfx::CombatVfx::new(),
+            vfx: broadside_engine::vfx::CombatVfx::with_config(vfx_cfg),
             ability_hud: broadside_engine::hud::AbilityHud::new(),
             frame_clock: 0.0,
             last_frame: Instant::now(),
             player_hull_prev: None,
             hit_flash: 0.0,
             kill_bursts: Vec::new(),
-            particles: broadside_engine::vfx::ParticlePool::new(),
+            particles: broadside_engine::vfx::ParticlePool::with_config(particle_cfg.clone()),
             proj_anchors: HashMap::new(),
-            exhaust: broadside_engine::vfx::ParticlePool::new(),
+            exhaust: broadside_engine::vfx::ParticlePool::with_config(particle_cfg),
             hull_flash: std::collections::HashMap::new(),
             beat_playback: None,
             queue_blocked_flash: None,

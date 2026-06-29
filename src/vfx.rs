@@ -160,6 +160,38 @@ pub struct VfxConfig {
     pub particle_burst: ParticleBurst,
 }
 
+impl VfxConfig {
+    /// Build a [`VfxConfig`] by overlaying authored entries from an
+    /// [`crate::effects::EffectCatalog`] on top of [`Self::default`]. Entries
+    /// are looked up by the stable id constants in [`crate::effects`]
+    /// (`ID_SHOT_BEAM`, `ID_HIT_FLASH`, …) so the editor's `to_catalog` and
+    /// this loader cannot drift. Variant mismatches (e.g. a `ShotBeam` id
+    /// carrying a `HitFlash` payload) are ignored, not silently misassigned;
+    /// missing ids keep their defaults. Combined with the schema's
+    /// `#[serde(default)]` this makes partial / hand-edited JSON safe —
+    /// anything absent stays at the game's stock look.
+    #[must_use]
+    pub fn from_catalog(cat: &crate::effects::EffectCatalog) -> Self {
+        use crate::effects::{
+            EffectKind, ID_EXPLOSION, ID_HIT_FLASH, ID_PARTICLE_BURST, ID_SHOT_BEAM,
+            ID_TELEGRAPH_FIRE, ID_TRAIL,
+        };
+        let mut cfg = Self::default();
+        for def in &cat.effects {
+            match (def.id.as_str(), &def.kind) {
+                (ID_SHOT_BEAM, EffectKind::ShotBeam(v)) => cfg.shot_beam = v.clone(),
+                (ID_HIT_FLASH, EffectKind::HitFlash(v)) => cfg.hit_flash = v.clone(),
+                (ID_EXPLOSION, EffectKind::Explosion(v)) => cfg.explosion = v.clone(),
+                (ID_TRAIL, EffectKind::Trail(v)) => cfg.trail = v.clone(),
+                (ID_TELEGRAPH_FIRE, EffectKind::TelegraphFire(v)) => cfg.telegraph_fire = v.clone(),
+                (ID_PARTICLE_BURST, EffectKind::ParticleBurst(v)) => cfg.particle_burst = v.clone(),
+                _ => {}
+            }
+        }
+        cfg
+    }
+}
+
 /// The process-wide default [`VfxConfig`] — the SINGLE SOURCE the game reads.
 /// Both [`CombatVfx::default`] and the 2-D scene compositor
 /// ([`crate::hud::push_fire_2d`], via [`archetype_beam_style`] /
