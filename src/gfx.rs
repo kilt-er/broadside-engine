@@ -302,9 +302,12 @@ pub const UNIFIED_CAM_DIST_MAX: f32 = 7.0;
 /// Bruce ~14 stops across the [3.5, 7.0] band — coarse enough to feel each press,
 /// fine enough to dial the exact framing.
 pub const UNIFIED_CAM_DIST_STEP: f32 = 0.25;
-/// (#192) Boot value — #191's locked default (5.0, the minimal shrink that
-/// clears the bottom menu). Within `[UNIFIED_CAM_DIST_MIN, UNIFIED_CAM_DIST_MAX]`.
-pub const BOOT_UNIFIED_CAM_DIST: f32 = 5.0;
+/// (#192/#193 Bruce verify) Boot value — bumped 5.0 → 5.5 after Bruce verified
+/// the shrink-only capture at 5.5 was a cleaner default than #191's 5.0 (more
+/// margin between near row + bottom menu, board sits in a clearer central band).
+/// Within `[UNIFIED_CAM_DIST_MIN, UNIFIED_CAM_DIST_MAX]`. The `-` / `=` keys still
+/// dial freely from this seat.
+pub const BOOT_UNIFIED_CAM_DIST: f32 = 5.5;
 
 /// (#192) Live unified-camera orbit distance stored as `dist * 1000` rounded to
 /// u32 so we can use a stdlib atomic (no `AtomicF32`). Resolution = 0.001, plenty

@@ -826,18 +826,18 @@ const UNIFIED_TOPDOWN_PITCH_DEG: f32 = 72.0;
 const UNIFIED_Z_FRONT: f32 = 1.3;
 // (#192 Bruce) Unified-camera orbit distance is now LIVE — read from the
 // gfx-side atomic so the `-` / `=` keys dial the board size at runtime without
-// a rebuild. Boot value = [`gfx::BOOT_UNIFIED_CAM_DIST`] (5.0, #191's locked
-// default — the minimal shrink that clears the bottom menu). Clamped into
-// `[gfx::UNIFIED_CAM_DIST_MIN, gfx::UNIFIED_CAM_DIST_MAX]` = [3.5, 7.0] by the
-// adjuster. Per-column lean + cell-center alignment are distance-independent
-// invariants (covered by `tests/render_orientation.rs`).
+// a rebuild. Boot value = [`gfx::BOOT_UNIFIED_CAM_DIST`] (5.5, #193 verified
+// default — cleaner bottom margin than the original #191 5.0 lock). Clamped
+// into `[gfx::UNIFIED_CAM_DIST_MIN, gfx::UNIFIED_CAM_DIST_MAX]` = [3.5, 7.0].
+// Per-column lean + cell-center alignment are distance-independent invariants
+// (covered by `tests/render_orientation.rs`).
 /// Look-at height above the ground (world units). (#188) 0.6→0.3 raised the board
-/// for the bottom HUD; (#191 Bruce v4) 0.3→0.0 vertically centers the now-shrunk
-/// (CAM_DIST 5.0) board so the near row is comfortably above the bottom menu +
-/// the back row clears the ENEMIES status panel. NOTE: at CAM_DIST 5.0 the
-/// 0.0 value centers a smaller board — it is NOT the v3 "pan a full-size board
-/// up" that Bruce rejected (that was 0.0 at CAM_DIST 3.7).
-const UNIFIED_TARGET_Y: f32 = 0.0;
+/// for the bottom HUD; (#191 v4 ALT) bumped to 0.0 at CAM_DIST 5.0 to vertically
+/// center the smaller board. (#193 Bruce verified) Restored to 0.3 because the
+/// 5.5 default (the verified cleaner shrink) reads best with the slight lower-
+/// center bias — board sits in a clear central band with starfield above + clean
+/// gap to the menu below.
+const UNIFIED_TARGET_Y: f32 = 0.3;
 
 /// The unified camera's look-down pitch (radians) for this `cfg`, lerped along the
 /// `G` grid-pitch arc ([`ProjectorConfig::pitch_t`]).
