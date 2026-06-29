@@ -513,7 +513,7 @@ fn projected_cell_world_center_equals_grid_cell_quad_center_on_far_row() {
 /// arc the `G` key passes through. Both project the whole board inside the
 /// 480×270 frame at the live cell-scale defaults.
 ///
-/// **Why pitch_t = 1.0 is INTENTIONALLY excluded** (#206 lead ruling,
+/// **Why `pitch_t = 1.0` is INTENTIONALLY excluded** (#206 lead ruling,
 /// 2026-06-29). Bruce ratified a wide cell-scale default (#206 brings
 /// `BOOT_UNIFIED_GRID_CELL_SCALE` to 1.90 — a wider board). At full G
 /// (`pitch_t = 1.0`, the debug top-down) the wider board's far row
@@ -525,7 +525,7 @@ fn projected_cell_world_center_equals_grid_cell_quad_center_on_far_row() {
 /// not a gameplay default, so a wide-board hull peeking above the top edge
 /// at full top-down is a known cosmetic — NOT a regression to guard.
 ///
-/// What still holds at pitch_t = 1.0: see
+/// What still holds at `pitch_t = 1.0`: see
 /// [`unified_projection_returns_finite_screen_y_at_full_top_down`] below —
 /// `unified_project` MUST still return `Some(finite)` (no behind-camera,
 /// no NaN), just outside the in-frame window.
