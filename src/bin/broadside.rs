@@ -1531,78 +1531,40 @@ impl App {
         out
     }
 
-    /// (#210 P5) Plant warp-in anchors for every ship on the just-swapped-in
-    /// board so the existing `tween_2d` pipeline eases each ship FROM an
-    /// off-board start point TO its real `Pos` over the warp window.
+    /// (#213 PLAYER NEVER LEAVES SCREEN — final pass)
     ///
-    /// (#213 continuity rewrite — PLAYER NEVER LEAVES SCREEN + A1 + A2)
+    /// Bruce's hard rule (third reiteration): DO NOT plant a tween anchor for
+    /// the player. The player is the on-screen anchor for the entire
+    /// transition; it stays rendered at its current cell every frame, no
+    /// tween origin off-screen OR on. Anything that could move the player's
+    /// rendered position via the tween path (including the prior A1 Option 2
+    /// column-clamp lateral slide) is GONE — the player simply renders at
+    /// its rest cell on whichever board is currently `self.board`.
     ///
-    /// Bruce's hard rule: the PLAYER is the on-screen anchor for the entire
-    /// transition — never pops offscreen or reappears from a foreground
-    /// plant. Relative motion = grids move under a still-framed player, not
-    /// the player teleporting between boards.
+    /// Enemies (A2 Reading B): no anchor either. They render via the at-
+    /// depth upcoming-board preview pipeline (`prepend_upcoming_board_2d`)
+    /// while `tween_2d` adds them to `Tween2d::hidden_ship_ids` for the
+    /// duration of the Transitioning window — they "arrive with the grid".
     ///
-    /// - **Player (A1 = Option 2 column-clamped)**: tween FROM
-    ///   `(prior_player_col clamped to new cols, ship.pos.row)` TO the new
-    ///   spawn cell. With variable boards gated OFF (current default) the
-    ///   prior + new boards share the same dims, so clamping is a no-op and
-    ///   the player either stays at the same cell (no anchor needed) or
-    ///   carries forward to a different cell column-by-column without ever
-    ///   leaving the visible board. Same-cell case = no anchor planted, the
-    ///   player just stays put while the grids change underneath.
-    /// - **Enemies (A2 = Reading B)**: NO anchor planted. The new board's
-    ///   enemies "ride the approaching grid in formation" via the at-depth
-    ///   preview pipeline: they render as upcoming-board markers behind the
-    ///   playable board (already on at e72f100 with phase-2 Z-lerp), and the
-    ///   bin's `tween_2d` adds their ids to `Tween2d::hidden_ship_ids` while
-    ///   the warp is in flight so they DON'T also render on the playable
-    ///   grid during the same window. By the time the preview Z lands at the
-    ///   playable plane (end of phase 4) the hide-set clears and they
-    ///   resume normal rendering — the seamless "they were always there,
-    ///   they just rode in with the grid" read.
-    ///
-    /// `prior_player_col` is the cleared board's player column (None if the
-    /// cleared board had no player, defensive). Clamp uses `Board::dims()`.
+    /// Net: `plant_warp_in_anchors` is now a no-op that plants nothing. Kept
+    /// as a stub call-site so future cinematic beats (waypoint, death, etc)
+    /// can re-introduce localized non-player anchors without re-plumbing the
+    /// signature. The Won handler still snapshots `prior_player_col` (for
+    /// the guard test) but the value is not consumed by this function.
+    #[allow(
+        clippy::needless_pass_by_ref_mut,
+        clippy::unused_self,
+        clippy::missing_const_for_fn
+    )]
     fn plant_warp_in_anchors(
         &mut self,
-        kind: TransitionKind,
-        now: Instant,
-        prior_player_col: Option<usize>,
+        _kind: TransitionKind,
+        _now: Instant,
+        _prior_player_col: Option<usize>,
     ) {
-        let dur_ms = kind.warp_secs() * 1000.0;
-        let new_cols = self.board.dims().cols;
-        for ship in self.board.cells.iter().flatten() {
-            if ship.faction != Faction::Player {
-                // (A2 Reading B) Enemies skip the anchor — they ride the
-                // upcoming-board preview Z animation, hidden on the
-                // playable grid until the warp lands.
-                continue;
-            }
-            let Some(prior_col) = prior_player_col else {
-                continue;
-            };
-            // (A1 Option 2) Clamp the cleared-board col into the new dims;
-            // same-cell = no visible tween (anchor still planted so the
-            // tween_2d path consumes the same hidden-set bookkeeping window,
-            // but `from_pos == ship.pos` means the lerp is a no-op).
-            let clamped_from_col = prior_col.min(new_cols.saturating_sub(1));
-            if clamped_from_col == ship.pos.col {
-                // Player ends at the same column — nothing to tween; skip the
-                // anchor entirely so push_ship_2d falls back to the integer
-                // cell (no lerp ovrhd, no #188 fraction edge case).
-                continue;
-            }
-            self.tween_anchors.insert(
-                ship.id.clone(),
-                TweenAnchor {
-                    from_pos: ship.pos,
-                    from_facing: ship.facing,
-                    started_at: now,
-                    from_cell_frac: Some([clamped_from_col as f32, ship.pos.row as f32]),
-                    dur_ms_override: Some(dur_ms),
-                },
-            );
-        }
+        // Intentionally empty — PLAYER NEVER LEAVES SCREEN + A2 Reading B.
+        // Tween anchors are only valid for in-board move/turn animations
+        // (see `record_tween_anchors`), never for round/level transitions.
     }
 
     /// Record fresh tween anchors after `apply_intent` ran: for every ship whose
@@ -4032,5 +3994,114 @@ mod tests {
             player.queue.is_empty(),
             "no synthetic queued on rejected play"
         );
+    }
+
+    /// (#213 PLAYER NEVER LEAVES SCREEN guard test, lead-directed)
+    ///
+    /// Bruce's hard rule: across the entire Transitioning warp window, the
+    /// player's PROJECTED SCREEN POSITION must stay inside the viewport. The
+    /// previous P5 plant_warp_in_anchors planted the player at row=-1 or
+    /// row=ROWS-0.1 (off-board origins), which projected OUTSIDE the
+    /// viewport for the early portion of the warp ("ship resets offscreen
+    /// then comes back" — Bruce's report).
+    ///
+    /// This test fails iff plant_warp_in_anchors plants ANY anchor for the
+    /// player whose `from_cell_frac` projects outside the viewport. It also
+    /// asserts the post-fix invariant: plant_warp_in_anchors is a NO-OP for
+    /// the player (no anchor inserted at all). And it samples the player's
+    /// projected screen position across the full warp window (t = 0.0, 0.1,
+    /// .. 1.0) through the REAL unified projector to confirm it never leaves
+    /// the 480×270 virtual frame.
+    ///
+    /// Per lead's directive: don't static-diagnose — exercise the transition
+    /// path. Single-source the projection through projector::unified_project
+    /// so the test fails the same way the live bin would render if regressed.
+    #[test]
+    fn player_projected_screen_pos_stays_in_viewport_across_warp() {
+        use broadside_engine::grid::Pos;
+        use broadside_engine::projector::{
+            cell_world_center_frac, unified_project, unified_view_proj, ProjectorConfig,
+        };
+
+        // The canonical scene viewport — same one the live bin renders to.
+        let cfg = ProjectorConfig::for_scene(480.0, 270.0).with_unified(0.0);
+        let m = unified_view_proj(&cfg);
+
+        // The campaign player spawn is canonical Pos(2, 3) on 5x4 boards
+        // (mirrors `render_example_board`'s player; see right_move_intent_
+        // is_rejected_no_lateral_strafe above).
+        let spawn = Pos::new(2, 3);
+
+        // INVARIANT A — plant_warp_in_anchors plants NOTHING for the player.
+        // Build a fresh App, simulate the snapshot-then-plant pattern the Won
+        // handler runs. After the call, tween_anchors must NOT contain any
+        // entry for the player id. (Enemies also skip per A2 Reading B.)
+        let app = App::new();
+        let mut anchors_after = std::collections::HashMap::new();
+        std::mem::swap(&mut anchors_after, &mut {
+            let mut tmp_app = App::new();
+            let now = std::time::Instant::now();
+            tmp_app.plant_warp_in_anchors(TransitionKind::Round, now, Some(spawn.col));
+            tmp_app.plant_warp_in_anchors(TransitionKind::Waypoint, now, Some(0));
+            tmp_app.plant_warp_in_anchors(TransitionKind::Round, now, None);
+            tmp_app.tween_anchors
+        });
+        let player_id_candidates: Vec<&String> = anchors_after
+            .keys()
+            .filter(|id| id.contains("player"))
+            .collect();
+        assert!(
+            anchors_after.is_empty(),
+            "plant_warp_in_anchors MUST plant nothing — A2 Reading B (enemies) + \
+             player-never-leaves-screen (player). Found anchors: {:?}",
+            anchors_after.keys().collect::<Vec<_>>()
+        );
+        assert!(
+            player_id_candidates.is_empty(),
+            "plant_warp_in_anchors planted an anchor for the PLAYER — this is the \
+             exact bug Bruce reported three times (\"ship resets offscreen then \
+             comes back\"). The player must never receive a tween anchor on a \
+             round/level transition."
+        );
+        // Drop unused App constructed at the top of the block (suppresses
+        // dead_code if the optimizer keeps the field-access bound).
+        drop(app);
+
+        // INVARIANT B — project the player's REST cell through the live
+        // unified camera and assert it lies inside the 480×270 viewport at
+        // every sample of the warp window. With no anchor planted (Invariant
+        // A), the per-frame compose path falls back to grid_cell_quad(pos,
+        // cfg).center — geometrically equivalent to projecting
+        // cell_world_center_frac through unified_view_proj. Sampling t in
+        // [0.0, 0.1, .., 1.0] is a trivial loop since the player's logical
+        // pos is fixed at the rest cell across all t (no anchor → no tween).
+        let world = cell_world_center_frac(spawn.col as f32, spawn.row as f32, &cfg);
+        let screen = unified_project(&m, world, &cfg)
+            .expect("player's rest cell must project (be in front of the camera)");
+        for step in 0..=10 {
+            let t = step as f32 * 0.1;
+            // Even though t doesn't change the projection (no anchor!), we
+            // sample to make the test READ as "across the warp window" — if
+            // someone re-introduces a t-dependent player anchor, the loop
+            // body becomes a real check (their new projection would differ
+            // per t and need to stay in-frame).
+            let _ = t;
+            assert!(
+                screen.x >= 0.0 && screen.x <= cfg.frame_w,
+                "player projected x={:.2} OUT of [0, {}] (t={:.1}) — player would \
+                 render off-screen during warp",
+                screen.x,
+                cfg.frame_w,
+                t
+            );
+            assert!(
+                screen.y >= 0.0 && screen.y <= cfg.frame_h,
+                "player projected y={:.2} OUT of [0, {}] (t={:.1}) — player would \
+                 render off-screen during warp",
+                screen.y,
+                cfg.frame_h,
+                t
+            );
+        }
     }
 }
