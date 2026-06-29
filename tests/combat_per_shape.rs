@@ -281,9 +281,15 @@ fn enemy_count_equals_max_enemies_in_on_every_pool_shape() {
         let enc = cap_filled_encounter(dims);
         let board =
             build_encounter_board_with_dims(&enc, player_seed(dims), dims, build_enemy_from_spawn);
+        // Id-dedup (#214 boss): a 1×2 Pair boss occupies two slots with
+        // the same `Ship` clone, so counting (Pos, &Ship) entries would
+        // over-count a Pair by 1. Dedup by `s.id` to count ships, not
+        // occupied cells.
+        let mut seen = std::collections::HashSet::new();
         let enemy_count = live_ships(&board)
             .iter()
             .filter(|(_, s)| s.faction == Faction::Enemy)
+            .filter(|(_, s)| seen.insert(s.id.clone()))
             .count();
         assert_eq!(
             enemy_count, cap,

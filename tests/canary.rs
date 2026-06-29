@@ -234,10 +234,14 @@ fn no_strafe_maneuver_toward(pfacing: Facing, ppos: Pos, epos: Pos) -> Option<&'
 }
 
 fn enemies_left(b: &broadside_engine::types::Board) -> usize {
+    // Id-dedup (#214 boss): a 1×2 Pair boss has the same Ship clone in
+    // two slots; count unique ship ids, not occupied cells.
+    let mut seen = std::collections::HashSet::new();
     b.cells
         .iter()
         .flatten()
         .filter(|s| s.faction == Faction::Enemy)
+        .filter(|s| seen.insert(s.id.clone()))
         .count()
 }
 

@@ -188,11 +188,16 @@ pub fn board_2d(ships: Vec<Ship>) -> Board {
     }
 }
 
-/// Count the live `Faction::Enemy` ships on a board.
+/// Count the live `Faction::Enemy` SHIPS on a board (id-deduped). A 1×2
+/// Pair boss (#214) occupies two slots with the same `Ship` clone in each,
+/// so a naive slot count would over-count it by one. Deduping by `s.id`
+/// counts each ship exactly once regardless of footprint size.
 pub fn enemies_left(b: &Board) -> usize {
+    let mut seen = std::collections::HashSet::new();
     b.cells
         .iter()
         .flatten()
         .filter(|s| s.faction == Faction::Enemy)
+        .filter(|s| seen.insert(s.id.clone()))
         .count()
 }
