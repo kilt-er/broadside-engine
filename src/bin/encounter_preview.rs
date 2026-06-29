@@ -46,7 +46,7 @@ use broadside_engine::atlas;
 use broadside_engine::background::{visible_layers, ParallaxParams};
 use broadside_engine::geometry::default_shield_profile;
 use broadside_engine::gfx::{DrawCommand, Gfx, PolygonInstance, VIRTUAL_H, VIRTUAL_W};
-use broadside_engine::grid::{Facing, Pos, COLS};
+use broadside_engine::grid::{Facing, Pos, COLS, ROWS};
 use broadside_engine::hud::compose_scene_2d;
 use broadside_engine::projector::ProjectorConfig;
 use broadside_engine::runs::{enemy_spawn_facing, player_spawn_facing, player_start_pos};
@@ -147,6 +147,8 @@ fn build_demo_board(enemy_count: usize) -> Board {
 
     Board {
         size: COLS,
+        cols: COLS,
+        rows: ROWS,
         cells,
         ordnance: Vec::new(),
         hazards,

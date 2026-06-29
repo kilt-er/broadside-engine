@@ -82,6 +82,8 @@ fn empty_board(size: usize, ships: Vec<Option<Ship>>) -> Board {
     assert_eq!(ships.len(), size);
     Board {
         size,
+        cols: size,
+        rows: 1,
         cells: ships,
         ordnance: Vec::new(),
         hazards: (0..size).map(|_| Vec::new()).collect(),

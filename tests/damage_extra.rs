@@ -101,6 +101,8 @@ fn board(size: usize, cells: Vec<Option<Ship>>) -> Board {
     assert_eq!(cells.len(), size);
     Board {
         size,
+        cols: size,
+        rows: 1,
         cells,
         ordnance: Vec::new(),
         hazards: (0..size).map(|_| Vec::new()).collect(),

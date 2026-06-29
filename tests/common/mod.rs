@@ -173,6 +173,8 @@ pub fn board_2d(ships: Vec<Ship>) -> Board {
     }
     Board {
         size: broadside_engine::grid::COLS,
+        cols: broadside_engine::grid::COLS,
+        rows: broadside_engine::grid::ROWS,
         cells,
         ordnance: Vec::new(),
         hazards,

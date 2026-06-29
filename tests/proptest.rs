@@ -320,6 +320,8 @@ mod heat {
     fn board(size: usize, cells: Vec<Option<Ship>>) -> Board {
         Board {
             size,
+            cols: size,
+            rows: 1,
             cells,
             ordnance: Vec::new(),
             hazards: (0..size).map(|_| Vec::new()).collect(),
@@ -547,6 +549,8 @@ mod combat_2d {
         }
         Board {
             size: COLS,
+            cols: COLS,
+            rows: ROWS,
             cells,
             ordnance: Vec::new(),
             hazards: (0..CELLS).map(|_| Vec::new()).collect(),

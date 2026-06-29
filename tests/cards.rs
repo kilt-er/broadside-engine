@@ -76,6 +76,8 @@ fn board_with(size: usize, ships: Vec<Ship>) -> Board {
     }
     Board {
         size,
+        cols: size,
+        rows: 1,
         cells,
         ordnance: Vec::new(),
         hazards: (0..size).map(|_| Vec::new()).collect(),

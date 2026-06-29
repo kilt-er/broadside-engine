@@ -338,6 +338,8 @@ fn busy_board() -> Board {
 
     Board {
         size: 7,
+        cols: 7,
+        rows: 1,
         cells: vec![
             Some(player),
             None,

@@ -116,6 +116,8 @@ fn board(_size: usize, cells: Vec<Option<Ship>>) -> Board {
     }
     Board {
         size: broadside_engine::grid::COLS,
+        cols: broadside_engine::grid::COLS,
+        rows: broadside_engine::grid::ROWS,
         cells: grid,
         ordnance: Vec::new(),
         hazards: (0..broadside_engine::grid::CELLS)

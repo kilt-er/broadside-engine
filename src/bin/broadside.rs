@@ -675,6 +675,8 @@ fn render_example_board() -> Board {
 
     Board {
         size,
+        cols: COLS,
+        rows: ROWS,
         cells,
         ordnance: Vec::new(),
         hazards: (0..broadside_engine::grid::CELLS)

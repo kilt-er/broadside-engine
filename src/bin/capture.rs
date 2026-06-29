@@ -25,7 +25,7 @@
 
 use broadside_engine::geometry::default_shield_profile;
 use broadside_engine::gfx::Gfx;
-use broadside_engine::grid::{Dir4, Facing, Pos, COLS};
+use broadside_engine::grid::{Dir4, Facing, Pos, COLS, ROWS};
 use broadside_engine::hud::compose_scene_2d_with;
 use broadside_engine::projector::ProjectorConfig;
 use broadside_engine::runs::{enemy_spawn_facing, player_spawn_facing, player_start_pos};
@@ -145,6 +145,8 @@ fn capture_board(player_col: usize, player_row: usize, player_facing: Facing) ->
 
     Board {
         size: COLS,
+        cols: COLS,
+        rows: ROWS,
         cells,
         ordnance: Vec::new(),
         hazards: (0..broadside_engine::grid::CELLS)

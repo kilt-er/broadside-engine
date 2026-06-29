@@ -1268,6 +1268,8 @@ mod tests {
         cells[enemy_idx] = Some(enemy);
         let board = Board {
             size: crate::grid::COLS,
+            cols: crate::grid::COLS,
+            rows: crate::grid::ROWS,
             cells,
             ordnance: vec![],
             hazards: (0..crate::grid::CELLS).map(|_| vec![]).collect(),
@@ -1353,6 +1355,8 @@ mod tests {
 
         let mut board = Board {
             size: 5,
+            cols: 5,
+            rows: 1,
             cells: vec![Some(player), None, None, None, None],
             ordnance: vec![],
             hazards: (0..5).map(|_| vec![]).collect(),
@@ -1413,6 +1417,8 @@ mod tests {
 
         let mut board = Board {
             size: 7,
+            cols: 7,
+            rows: 1,
             cells: vec![Some(attacker), None, None, None, None, Some(target), None],
             ordnance: vec![],
             hazards: (0..7).map(|_| vec![]).collect(),
@@ -1480,6 +1486,8 @@ mod tests {
         player.heat = 5;
         let mut board = Board {
             size: 3,
+            cols: 3,
+            rows: 1,
             cells: vec![Some(player), None, None],
             ordnance: vec![],
             hazards: (0..3).map(|_| vec![]).collect(),
@@ -1526,6 +1534,8 @@ mod tests {
 
         let mut board = Board {
             size: 5,
+            cols: 5,
+            rows: 1,
             cells: vec![Some(player), Some(enemy_a), None, Some(enemy_b), None],
             ordnance: vec![],
             hazards: (0..5).map(|_| vec![]).collect(),

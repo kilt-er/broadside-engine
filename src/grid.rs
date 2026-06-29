@@ -40,13 +40,95 @@ use serde::{Deserialize, Serialize};
  * Grid dimensions
  * ====================================================================== */
 
-/// Lateral columns (the dodge axis). Blueprint decision #2: 5 wide.
+/// Default lateral columns (the dodge axis). Blueprint decision #2: 5 wide.
+///
+/// This is the **default** grid width used when a [`Board`](crate::types::Board)
+/// is created without an explicit size (e.g. [`Dims::default`], the campaign's
+/// current single-size spawn). The variable-size-encounter feature threads a
+/// runtime [`Dims`] off the live `Board` instead of reading this const; the
+/// const remains the canonical default so default boards stay 5×4 with zero
+/// behaviour change.
 pub const COLS: usize = 5;
-/// Depth rows. Blueprint decision #2: 4 deep.
+/// Default depth rows. Blueprint decision #2: 4 deep. See [`COLS`] for why this
+/// is a *default* rather than the only legal value.
 pub const ROWS: usize = 4;
-/// Total cells in the flat board vector (`COLS * ROWS`). The board is a
-/// `Vec<Option<Ship>>` of exactly this length, indexed by [`Pos::to_index`].
+/// Total cells in the *default* flat board vector (`COLS * ROWS`). A default
+/// board is a `Vec<Option<Ship>>` of exactly this length, indexed by
+/// [`Pos::to_index`]. A runtime-sized board uses [`Dims::cell_count`].
 pub const CELLS: usize = COLS * ROWS;
+
+/* =========================================================================
+ * Dims — a runtime grid size
+ * ====================================================================== */
+
+/// The runtime dimensions of a board: `cols` wide × `rows` deep.
+///
+/// Board dimensions were compile-time consts ([`COLS`]/[`ROWS`]); the
+/// variable-size-encounter feature makes them a **runtime value** carried on the
+/// [`Board`](crate::types::Board) so different encounters can spawn on different
+/// grids. `Dims` is the small value type that flows from a `Board` instance into
+/// the geometry helpers ([`Pos::to_index_in`], [`offset_in`], …).
+///
+/// [`Dims::default`] is the legacy `COLS × ROWS` grid, so any code that has not
+/// yet been threaded a runtime `Dims` behaves exactly as before.
+///
+/// NOTE (foundation step): [`Pos::to_index`] / [`Pos::from_index`] still use the
+/// default [`COLS`] width for the flat-vector mapping; making the flat index
+/// width-aware everywhere is a deeper follow-up (it touches ~130 call sites).
+/// `Dims` lands the *runtime carrier* + bounds/offset helpers first.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct Dims {
+    /// Lateral columns (`0..cols`), the dodge axis.
+    pub cols: usize,
+    /// Depth rows (`0..rows`).
+    pub rows: usize,
+}
+
+impl Default for Dims {
+    /// The legacy default grid: [`COLS`] × [`ROWS`] (5 × 4).
+    fn default() -> Self {
+        Self {
+            cols: COLS,
+            rows: ROWS,
+        }
+    }
+}
+
+impl Dims {
+    /// Construct an explicit grid size.
+    #[must_use]
+    pub const fn new(cols: usize, rows: usize) -> Self {
+        Self { cols, rows }
+    }
+
+    /// Total backing-vector length for this grid (`cols * rows`). A board's
+    /// `cells`/`hazards` Vecs are this long.
+    #[must_use]
+    pub const fn cell_count(self) -> usize {
+        self.cols * self.rows
+    }
+
+    /// `true` iff `pos` lies inside this grid. The runtime mirror of
+    /// [`Pos::in_bounds`] (which checks the default [`COLS`]/[`ROWS`]).
+    #[must_use]
+    pub const fn contains(self, pos: Pos) -> bool {
+        pos.col < self.cols && pos.row < self.rows
+    }
+
+    /// The centre column (`cols / 2`) — the player's spawn column on a default
+    /// grid is `COLS / 2`. Provided so centering reads a runtime dim.
+    #[must_use]
+    pub const fn center_col(self) -> usize {
+        self.cols / 2
+    }
+
+    /// The front row (`rows - 1`, nearest the player), or `0` on a degenerate
+    /// zero-row grid. The player anchors here (blueprint decision #8).
+    #[must_use]
+    pub const fn front_row(self) -> usize {
+        self.rows.saturating_sub(1)
+    }
+}
 
 /* =========================================================================
  * Pos — a grid coordinate
@@ -76,10 +158,39 @@ impl Pos {
         Self { col, row }
     }
 
-    /// `true` iff this position lies inside the `COLS × ROWS` grid.
+    /// `true` iff this position lies inside the *default* `COLS × ROWS` grid.
+    /// For a runtime-sized grid use [`Dims::contains`].
     #[must_use]
     pub const fn in_bounds(self) -> bool {
         self.col < COLS && self.row < ROWS
+    }
+
+    /// `true` iff this position lies inside the runtime `dims` grid. The
+    /// dimension-aware mirror of [`Pos::in_bounds`].
+    #[must_use]
+    pub const fn in_bounds_in(self, dims: Dims) -> bool {
+        dims.contains(self)
+    }
+
+    /// Row-major flat index for a board of width `dims.cols`
+    /// (`row * dims.cols + col`). The dimension-aware mirror of
+    /// [`Pos::to_index`]; use this for a runtime-sized board's `cells` vector.
+    #[must_use]
+    pub const fn to_index_in(self, dims: Dims) -> usize {
+        self.row * dims.cols + self.col
+    }
+
+    /// Inverse of [`Pos::to_index_in`] for a board of size `dims`: recover the
+    /// `Pos` for a flat index, or `None` if `index >= dims.cell_count()`.
+    #[must_use]
+    pub const fn from_index_in(index: usize, dims: Dims) -> Option<Self> {
+        if index >= dims.cell_count() {
+            return None;
+        }
+        Some(Self {
+            col: index % dims.cols,
+            row: index / dims.cols,
+        })
     }
 
     /// Row-major flat index into a length-[`CELLS`] `Vec<Option<Ship>>`
@@ -280,6 +391,46 @@ pub const fn offset(pos: Pos, dir: Dir8, dist: i32) -> Option<Pos> {
         col: col as usize,
         row: row as usize,
     })
+}
+
+/// Step `dist` cells from `pos` along `dir`, or `None` if the destination
+/// leaves the runtime `dims` grid (including underflow past `col`/`row` 0). The
+/// dimension-aware mirror of [`offset`]; use it for movement bounds on a
+/// runtime-sized board.
+#[must_use]
+pub const fn offset_in(pos: Pos, dir: Dir8, dist: i32, dims: Dims) -> Option<Pos> {
+    let (dc, dr) = dir.delta();
+    let col = (pos.col as i32) + dc * dist;
+    let row = (pos.row as i32) + dr * dist;
+    if col < 0 || row < 0 || col >= dims.cols as i32 || row >= dims.rows as i32 {
+        return None;
+    }
+    Some(Pos {
+        col: col as usize,
+        row: row as usize,
+    })
+}
+
+/// The in-bounds 8-neighbours of `pos` on the runtime `dims` grid, clockwise.
+/// The dimension-aware mirror of [`neighbors`].
+#[must_use]
+pub fn neighbors_in(pos: Pos, dims: Dims) -> Vec<Pos> {
+    Dir8::ALL
+        .iter()
+        .filter_map(|&d| offset_in(pos, d, 1, dims))
+        .collect()
+}
+
+/// Iterate every in-bounds [`Pos`] on the runtime `dims` grid in flat row-major
+/// order. The dimension-aware mirror of [`all_positions`].
+#[must_use]
+pub fn all_positions_in(dims: Dims) -> Vec<Pos> {
+    (0..dims.cell_count())
+        .map(|i| Pos {
+            col: i % dims.cols,
+            row: i / dims.cols,
+        })
+        .collect()
 }
 
 /// The in-bounds 8-neighbours of `pos`, in clockwise [`Dir8::ALL`] order.
@@ -696,6 +847,59 @@ mod tests {
             assert_eq!(neg.axis(), a);
             assert_eq!(pos.opposite(), neg);
         }
+    }
+
+    #[test]
+    fn dims_default_is_the_legacy_const_grid() {
+        let d = Dims::default();
+        assert_eq!((d.cols, d.rows), (COLS, ROWS));
+        assert_eq!(d.cell_count(), CELLS);
+        assert_eq!(d.center_col(), COLS / 2);
+        assert_eq!(d.front_row(), ROWS - 1);
+    }
+
+    #[test]
+    fn dim_aware_helpers_match_const_helpers_at_default_size() {
+        // The `_in` variants must be byte-identical to the const helpers when
+        // handed the default Dims — this is what guarantees the foundation step
+        // is behaviour-identical for every existing 5×4 board.
+        let d = Dims::default();
+        for i in 0..CELLS {
+            let p = Pos::from_index(i).unwrap();
+            assert_eq!(Pos::from_index_in(i, d), Some(p));
+            assert_eq!(p.to_index_in(d), p.to_index());
+            assert_eq!(p.in_bounds_in(d), p.in_bounds());
+            for dir in Dir8::ALL {
+                assert_eq!(offset_in(p, dir, 1, d), offset(p, dir, 1));
+            }
+            assert_eq!(neighbors_in(p, d), neighbors(p));
+        }
+        assert_eq!(Pos::from_index_in(CELLS, d), None);
+        assert_eq!(all_positions_in(d), all_positions());
+    }
+
+    #[test]
+    fn dim_aware_helpers_respect_a_non_default_size() {
+        // A 3-wide × 2-deep grid: the flat index uses the runtime width, and
+        // bounds clamp to the smaller grid.
+        let d = Dims::new(3, 2);
+        assert_eq!(d.cell_count(), 6);
+        assert_eq!(Pos::new(2, 1).to_index_in(d), 5); // row 1 * cols 3 + col 2
+        assert_eq!(Pos::from_index_in(5, d), Some(Pos::new(2, 1)));
+        assert_eq!(Pos::from_index_in(6, d), None);
+        assert!(Pos::new(2, 1).in_bounds_in(d));
+        assert!(!Pos::new(3, 1).in_bounds_in(d)); // off the narrower grid
+        assert!(!Pos::new(2, 2).in_bounds_in(d)); // off the shallower grid
+        assert_eq!(offset_in(Pos::new(2, 1), Dir8::E, 1, d), None);
+        assert_eq!(offset_in(Pos::new(2, 1), Dir8::S, 1, d), None);
+        assert_eq!(all_positions_in(d).len(), 6);
+    }
+
+    #[test]
+    fn dims_serde_roundtrips() {
+        let d = Dims::new(7, 5);
+        let s = serde_json::to_string(&d).unwrap();
+        assert_eq!(serde_json::from_str::<Dims>(&s).unwrap(), d);
     }
 
     #[test]

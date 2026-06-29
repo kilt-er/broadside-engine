@@ -1556,6 +1556,8 @@ mod tests {
         ));
         Board {
             size: crate::grid::COLS,
+            cols: crate::grid::COLS,
+            rows: crate::grid::ROWS,
             cells,
             ordnance: Vec::new(),
             hazards: (0..crate::grid::CELLS).map(|_| Vec::new()).collect(),

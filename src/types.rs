@@ -222,6 +222,18 @@ pub enum Faction {
 pub struct Board {
     /// Lane length. The TS uses 5, 7, or 9.
     pub size: usize,
+    /// **Runtime grid width** (lateral columns, the dodge axis).
+    ///
+    /// Board dimensions were the compile-time consts [`crate::grid::COLS`] /
+    /// [`crate::grid::ROWS`]; the variable-size-encounter feature makes them a
+    /// runtime value so different encounters can spawn on different grids.
+    /// Defaults to [`crate::grid::COLS`] (5) for every existing call site — read
+    /// it via [`Board::dims`] rather than the const so gameplay bounds/centering
+    /// follow the *actual* board being operated on.
+    pub cols: usize,
+    /// **Runtime grid depth** (rows). Defaults to [`crate::grid::ROWS`] (4).
+    /// See [`Board::cols`].
+    pub rows: usize,
     /// `cells[i]` is `Some(ship)` if a ship is at lane index `i`, else `None`.
     pub cells: Vec<Option<Ship>>,
     /// Live torpedoes / missiles travelling the lane.
@@ -255,6 +267,15 @@ pub struct Board {
 }
 
 impl Board {
+    /// This board's runtime grid size as a [`crate::grid::Dims`]. Gameplay
+    /// bounds/centering should read this (threaded from the live `Board`) rather
+    /// than the [`crate::grid::COLS`]/[`crate::grid::ROWS`] consts, so a
+    /// variable-size encounter operates on its actual grid.
+    #[must_use]
+    pub const fn dims(&self) -> crate::grid::Dims {
+        crate::grid::Dims::new(self.cols, self.rows)
+    }
+
     /// Borrow the ship occupying `pos`, or `None` if the cell is empty / `pos`
     /// is out of range (**v2, A3 Board EXPAND** — the 2-D occupancy query).
     ///
@@ -1495,6 +1516,25 @@ pub struct BoardSnapshot {
     /// `fire_events`, recomputed on load.)
     #[serde(default)]
     pub level: usize,
+    /// Persisted runtime grid width, mirroring [`Board::cols`].
+    /// `#[serde(default = ...)]` → [`crate::grid::COLS`] so saves written before
+    /// the variable-size feature load as the legacy 5-wide grid.
+    #[serde(default = "default_cols")]
+    pub cols: usize,
+    /// Persisted runtime grid depth, mirroring [`Board::rows`]; defaults to
+    /// [`crate::grid::ROWS`] for pre-feature saves.
+    #[serde(default = "default_rows")]
+    pub rows: usize,
+}
+
+/// Serde default for [`BoardSnapshot::cols`] — the legacy grid width.
+const fn default_cols() -> usize {
+    crate::grid::COLS
+}
+
+/// Serde default for [`BoardSnapshot::rows`] — the legacy grid depth.
+const fn default_rows() -> usize {
+    crate::grid::ROWS
 }
 
 impl From<&Board> for BoardSnapshot {
@@ -1509,6 +1549,8 @@ impl From<&Board> for BoardSnapshot {
             hazards: board.hazards.clone(),
             patrol: board.patrol,
             level: board.level,
+            cols: board.cols,
+            rows: board.rows,
         }
     }
 }
@@ -1526,6 +1568,8 @@ impl BoardSnapshot {
             hazards: self.hazards,
             patrol: self.patrol,
             level: self.level,
+            cols: self.cols,
+            rows: self.rows,
             bus,
             destroys_this_window: 0,
             // Transient render state; a loaded board starts with none.
@@ -1970,6 +2014,8 @@ mod tests {
 
         let mut board = Board {
             size: 1,
+            cols: crate::grid::COLS,
+            rows: crate::grid::ROWS,
             cells: vec![None],
             ordnance: vec![],
             hazards: vec![vec![]],
@@ -2251,6 +2297,8 @@ mod tests {
         };
         let mut board = Board {
             size: 3,
+            cols: crate::grid::COLS,
+            rows: crate::grid::ROWS,
             cells: vec![Some(ship), None, None],
             ordnance: vec![],
             hazards: vec![vec![], vec![], vec![]],

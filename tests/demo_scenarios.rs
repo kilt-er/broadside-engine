@@ -193,6 +193,8 @@ fn demo_board(scout_facing: Facing) -> Board {
 
     Board {
         size: broadside_engine::grid::COLS,
+        cols: broadside_engine::grid::COLS,
+        rows: broadside_engine::grid::ROWS,
         cells,
         ordnance: Vec::new(),
         hazards: (0..broadside_engine::grid::CELLS)

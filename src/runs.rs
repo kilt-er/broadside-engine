@@ -241,12 +241,15 @@ pub fn build_encounter_board<F>(
 where
     F: FnMut(&ShipSpawn) -> Option<Ship>,
 {
-    // v2 (A3 Board EXPAND): fixed len-CELLS (20) backing Vecs so the 2-D
-    // occupancy view (Board::ship_at(pos) = cells[pos.to_index()]) is valid over
-    // the whole 5×4 grid.
-    let mut cells: Vec<Option<Ship>> = (0..crate::grid::CELLS).map(|_| None).collect();
+    // v2 (A3 Board EXPAND): backing Vecs sized to the board's runtime grid so the
+    // 2-D occupancy view (Board::ship_at(pos) = cells[pos.to_index()]) is valid
+    // over the whole grid. FOUNDATION step: `dims` is the default 5×4 grid
+    // (`cell_count() == CELLS == 20`), so this is behaviour-identical; the
+    // variable-size-encounter step picks `dims` per encounter here.
+    let dims = crate::grid::Dims::default();
+    let mut cells: Vec<Option<Ship>> = (0..dims.cell_count()).map(|_| None).collect();
     let mut hazards: Vec<Vec<crate::types::Hazard>> =
-        (0..crate::grid::CELLS).map(|_| Vec::new()).collect();
+        (0..dims.cell_count()).map(|_| Vec::new()).collect();
 
     // Player at the front-centre cell, bow pointed N (into the board, toward the
     // enemies). Normalize both the 2-D pos/facing and the legacy 1-D
@@ -293,9 +296,11 @@ where
 
     Board {
         // `size` is the legacy 1-D lane length, kept for the transition window;
-        // 2-D placement uses the fixed CELLS grid. Report the grid width so any
+        // 2-D placement uses the runtime grid. Report the grid width so any
         // remaining 1-D reader sees a sane lane spanning the columns.
-        size: crate::grid::COLS,
+        size: dims.cols,
+        cols: dims.cols,
+        rows: dims.rows,
         cells,
         ordnance: Vec::new(),
         hazards,
@@ -1200,6 +1205,8 @@ mod tests {
         let size = cells.len();
         Board {
             size,
+            cols: size,
+            rows: 1,
             cells,
             ordnance: vec![],
             hazards: (0..size).map(|_| vec![]).collect(),

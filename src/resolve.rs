@@ -3348,6 +3348,8 @@ mod tests {
     fn make_board(size: usize, cells: Vec<Option<Ship>>) -> Board {
         Board {
             size,
+            cols: size,
+            rows: 1,
             cells,
             ordnance: Vec::new(),
             hazards: (0..size).map(|_| Vec::new()).collect(),
@@ -3462,6 +3464,8 @@ mod tests {
         }
         Board {
             size: crate::grid::COLS,
+            cols: crate::grid::COLS,
+            rows: crate::grid::ROWS,
             cells,
             ordnance: Vec::new(),
             hazards: (0..crate::grid::CELLS).map(|_| Vec::new()).collect(),
@@ -6236,6 +6240,10 @@ mod tests {
         }
         let mut b = make_board(crate::grid::CELLS, cells);
         b.hazards = (0..crate::grid::CELLS).map(|_| Vec::new()).collect();
+        // This is a 2-D 5×4 grid; correct the runtime dims make_board defaulted
+        // to a 1-D lane (cols=CELLS, rows=1).
+        b.cols = crate::grid::COLS;
+        b.rows = crate::grid::ROWS;
         b
     }
 
