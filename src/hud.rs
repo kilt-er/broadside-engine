@@ -3571,6 +3571,79 @@ pub fn push_enemy_info_panel_2d(out: &mut Vec<DrawCommand>, board: &Board) {
     }
 }
 
+/// (Bruce debug overlay, deliverable 1) The render orientation of `ship` as
+/// `(pitch, roll, yaw)` in DEGREES — the SINGLE SOURCE [`push_ship_angle_overlay`]
+/// reads, and the value the hull render is (to be) driven from, so the printed
+/// numbers can never disagree with what's drawn. Today: `pitch` = the shared
+/// loft-camera look-down ([`crate::gfx::loft_pitch_deg`]); `roll` = 0 (the hull
+/// lies FLAT on the plane — no bank); `yaw` = the ship's ground heading
+/// ([`loft_facing_ground_yaw`]: N=0 / E=90 / S=180 / W=-90), normalised to
+/// `[0, 360)`. The per-column lane lean folds into `yaw` here once it lands, so the
+/// overlay tracks it for free.
+pub fn ship_orientation_deg(ship: &Ship) -> (f32, f32, f32) {
+    let pitch = crate::gfx::loft_pitch_deg();
+    let roll = 0.0;
+    let yaw = loft_facing_ground_yaw(ship.facing).rem_euclid(360.0);
+    (pitch, roll, yaw)
+}
+
+/// (Bruce debug overlay, deliverable 1) Draw the `P R Y` (pitch / roll / yaw,
+/// degrees) orientation readout above EVERY ship (player + enemies), so orientation
+/// can be read NUMERICALLY while dialing in the per-column lane orientation + the
+/// grid/ship camera unification. Toggled by the bin's `O` key
+/// ([`crate::gfx::toggle_angle_overlay`]); the bin only calls this when enabled.
+/// Each label is centred on the ship's projected column and floated just above the
+/// hull's blit top (`near_edge_width / LOFT_TEXTURE_ASPECT` tall, seated at the
+/// cell's near edge — the same geometry [`push_ship_2d`] blits the hull into), so it
+/// clears the hull at every depth; scaled down with depth but floored to stay
+/// legible. Player = cyan, enemy = amber, so the two read apart. A 1px shadow keeps
+/// it readable over the starfield / a bright hull.
+pub fn push_ship_angle_overlay(out: &mut Vec<DrawCommand>, board: &Board, cfg: &ProjectorConfig) {
+    for ship in board.cells.iter().flatten() {
+        let (pitch, roll, yaw) = ship_orientation_deg(ship);
+        let q = grid_cell_quad(ship.pos, cfg);
+        let scale = q.depth_scale.max(0.5);
+        let pixel = (1.4 * scale).max(1.0);
+        let text = format!(
+            "P{} R{} Y{}",
+            pitch.round() as i32,
+            roll.round() as i32,
+            yaw.round() as i32
+        );
+        let advance = 6.0 * pixel; // 5px glyph + 1px space (matches push_text_left)
+        let total_w = text.len() as f32 * advance - pixel;
+        let cx = q.center[0];
+        // Anchor just above the hull's blit top: the hull seats at the cell's near
+        // (bottom) edge and extends UP by (near_edge_width / aspect), so the label
+        // floats above that — clears both the big near player hull and a small far
+        // enemy by construction.
+        let near_w = q.near_edge_width().max(16.0);
+        let hull_h = near_w / LOFT_TEXTURE_ASPECT;
+        let near_y = q.corners[3][1];
+        // Per-column vertical STAGGER so adjacent labels (the tightly-packed back
+        // row, whose labels are wider than the foreshortened cells) don't overprint
+        // each other — alternate columns lift one label-height.
+        let stagger = (ship.pos.col % 2) as f32 * (10.0_f32).max(8.0 * scale);
+        let y = near_y - hull_h - (8.0 * scale).max(4.0) - stagger;
+        let left = cx - total_w * 0.5;
+        let col = if ship.faction == Faction::Player {
+            [0.45, 0.95, 1.0, 0.95] // cyan = player
+        } else {
+            [1.0, 0.82, 0.32, 0.95] // amber = enemy
+        };
+        let shadow = [0.0, 0.0, 0.0, 0.8];
+        push_text_left(
+            out,
+            &text,
+            left + pixel * 0.5,
+            y + pixel * 0.5,
+            pixel,
+            shadow,
+        );
+        push_text_left(out, &text, left, y, pixel, col);
+    }
+}
+
 /// (#70) Live player POS + FACING readout, top-right just under SALVAGE — the
 /// ground-truth Bruce + the lead read instead of guessing from a capture. Shows
 /// the board cell `(col,row)` and the cardinal facing the strafe/reorient

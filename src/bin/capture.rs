@@ -506,6 +506,12 @@ fn main() {
         broadside_engine::hud::push_player_readout(&mut commands, p.pos, p.facing);
     }
     broadside_engine::hud::push_res_readout(&mut commands, gfx.loft_res(), gfx.scene_res());
+    // (Bruce debug) BROADSIDE_ANGLE_OVERLAY=1 draws the per-ship PITCH/ROLL/YAW
+    // labels (the bin's `O` toggle) so a headless capture can verify orientation
+    // numerically alongside the pixels.
+    if std::env::var("BROADSIDE_ANGLE_OVERLAY").is_ok_and(|v| v != "0") {
+        broadside_engine::hud::push_ship_angle_overlay(&mut commands, &board, &cfg);
+    }
     // (#90) VFX-demo kill burst at the destroyed enemy's cell — the bin emits this
     // off its prev-vs-current id diff each frame; here we append it directly so the
     // headless demo shows the post-kill burst.

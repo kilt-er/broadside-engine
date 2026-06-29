@@ -1574,6 +1574,18 @@ impl ApplicationHandler for App {
                         }
                         return;
                     }
+                    // (Bruce debug) `O` toggles the per-ship ANGLE OVERLAY — pitch/roll/
+                    // yaw text above every ship, for reading orientation numerically
+                    // while dialing in the per-column lane orientation + the grid/ship
+                    // camera unification. Renderer-owned raw binding like G/T.
+                    if code == KeyCode::KeyO {
+                        let on = broadside_engine::gfx::toggle_angle_overlay();
+                        log::info!("angle overlay: {}", if on { "ON" } else { "OFF" });
+                        if let Some(win) = self.window.as_ref() {
+                            win.request_redraw();
+                        }
+                        return;
+                    }
                 }
                 let Some(key) = keycode_to_key(code) else {
                     return;
@@ -2170,6 +2182,12 @@ impl ApplicationHandler for App {
                     // `,`/`.`) + SCENE <w>x<h> (cyclable via `;`/`'`), under the
                     // POS/FACE line.
                     hud::push_res_readout(&mut instances, gfx.loft_res(), gfx.scene_res());
+                    // (Bruce debug) Per-ship PITCH/ROLL/YAW overlay when toggled on
+                    // (`O`) — orientation read numerically while dialing in the
+                    // per-column lane orientation + the camera unification.
+                    if broadside_engine::gfx::angle_overlay_enabled() {
+                        hud::push_ship_angle_overlay(&mut instances, &self.board, &scene_cfg);
+                    }
                     // (#63) Controls legend removed — Bruce: the move-help text crowded
                     // the screen. Keybinds are discoverable in-game; no on-screen overlay.
                     // Player danger legibility (#67): screen hit-flash on damage.

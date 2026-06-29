@@ -202,6 +202,27 @@ pub fn toggle_grid_stretch() -> bool {
     next != 0
 }
 
+/// (Bruce debug overlay) Live toggle for the per-ship ANGLE OVERLAY — the
+/// pitch / roll / yaw readout drawn above every ship ([`crate::hud::push_ship_angle_overlay`])
+/// so the orientation can be read NUMERICALLY while dialing in the per-column
+/// lane orientation + the grid/ship camera unification. OFF by default (no
+/// clutter in normal play); the bin's `O` key flips it via [`toggle_angle_overlay`].
+/// A plain atomic flag like [`GRID_MODE`], so no signature threads through the
+/// render path — `hud` reads it where it composes the overlay.
+static ANGLE_OVERLAY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Whether the per-ship angle overlay is currently shown (see [`ANGLE_OVERLAY`]).
+pub fn angle_overlay_enabled() -> bool {
+    ANGLE_OVERLAY.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Flip the per-ship angle overlay on/off (the `O` key); returns the new state.
+pub fn toggle_angle_overlay() -> bool {
+    let next = !angle_overlay_enabled();
+    ANGLE_OVERLAY.store(next, std::sync::atomic::Ordering::Relaxed);
+    next
+}
+
 /// (#140 Bruce ship-tilt) The LIVE loft-camera pitch (degrees) the player + enemy
 /// 3-D hulls render at, so the hulls TILT to stay PARALLEL to the grid plane as the
 /// `G` pitch arc raises. At grid-pitch step 0 this is exactly
