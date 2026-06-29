@@ -874,6 +874,86 @@ const BEAT_SECS: f32 = 0.5;
 /// decay loop in `RedrawRequested`.
 const KICKBACK_DECAY_PER_SEC: f32 = 3.5;
 
+/// (#210 P3 Bruce) Round-warp duration in seconds — how long the
+/// continuous-flow transition between consecutive encounters takes (no modal,
+/// just an animated parallax slide). Bruce's tunable Q2 ruling = ~1.0 s.
+/// Consumed by [`TransitionPhase::progress`] when `kind == Round`.
+///
+/// (#210 P3 additive) Dead until P4 wires the warp entry; the `#[allow]`
+/// keeps the type+const additive without a noisy warning during the gap.
+#[allow(dead_code)]
+const WARP_ROUND_SECS: f32 = 1.0;
+/// (#210 P3 Bruce) Level-warp duration in seconds — the longer warp for a
+/// sector→sector boundary (the player slides forward INTO the waypoint).
+/// Bruce's tunable Q2 ruling = ~2.0 s. Consumed by
+/// [`TransitionPhase::progress`] when `kind == Waypoint`.
+///
+/// (#210 P3 additive) Dead until P4 wires the warp entry; the `#[allow]`
+/// keeps the type+const additive without a noisy warning during the gap.
+#[allow(dead_code)]
+const WARP_LEVEL_SECS: f32 = 2.0;
+
+/// (#210 P3) Which kind of continuous-flow transition is in flight — Round
+/// (encounter→encounter, ~1 s) or Waypoint (level→waypoint, ~2 s). Drives the
+/// warp duration via [`TransitionKind::warp_secs`]. Phase 1: only these two;
+/// later phases may add e.g. Death (slow-mo) but per the plan that lives on a
+/// separate `DemoState::Dying` variant.
+///
+/// (#210 P3 additive) Variants are dead until P4 wires construction sites;
+/// the `#[allow]` keeps the additive type clean.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)]
+enum TransitionKind {
+    /// Encounter→encounter within a sector. Short warp.
+    Round,
+    /// Sector→waypoint (level boundary). Longer warp.
+    Waypoint,
+}
+
+impl TransitionKind {
+    /// The warp duration (seconds) for this kind — `WARP_ROUND_SECS` for
+    /// `Round`, `WARP_LEVEL_SECS` for `Waypoint`. Sole tunable knob (the only
+    /// other phase-1 lever Bruce can dial without touching code).
+    ///
+    /// (#210 P3 additive) Dead until P4; `#[allow]` keeps the API additive.
+    #[allow(dead_code)]
+    const fn warp_secs(self) -> f32 {
+        match self {
+            Self::Round => WARP_ROUND_SECS,
+            Self::Waypoint => WARP_LEVEL_SECS,
+        }
+    }
+}
+
+/// (#210 P3) Continuous-flow transition phase data — when the warp started +
+/// which kind. Held inside [`DemoState::Transitioning`]. P3 is additive ONLY:
+/// no construction site yet, no behaviour change. P4 wires the actual round
+/// transition that builds + assigns one of these.
+///
+/// Wall-clock `Instant` matches the rest of the bin's animation timing
+/// (`BeatPlayback::next_at`, `TweenAnchor::started_at`, …) so the warp eases
+/// with the same frame model as the existing transients.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct TransitionPhase {
+    kind: TransitionKind,
+    started_at: Instant,
+}
+
+impl TransitionPhase {
+    /// Lifetime fraction `[0.0, 1.0]` for this transition, given `now`.
+    /// `1.0` ⇒ the warp window has elapsed and the caller should swap in
+    /// the next board + flip the demo state back to `Playing`. Saturates at
+    /// `1.0` so a slow frame doesn't overshoot.
+    ///
+    /// (#210 P3 additive) Dead until P4 polls per-frame; `#[allow]` keeps the
+    /// helper additive.
+    #[allow(dead_code)]
+    fn progress(self, now: Instant) -> f32 {
+        let elapsed = now.duration_since(self.started_at).as_secs_f32();
+        (elapsed / self.kind.warp_secs()).clamp(0.0, 1.0)
+    }
+}
+
 /// (#79) Per-ship "where + which way was this ship before the move, and when did
 /// the slide/turn begin?" anchor. Recorded by `App::record_tween_anchors` after
 /// each input mutation; consumed by `App::tween_2d` each frame to ease the
@@ -895,6 +975,7 @@ struct TweenAnchor {
 /// every `apply_intent` call. `Playing` is the normal turn-by-turn
 /// state; the other three are modal overlays that gate input.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)] // (#210 P3) Transitioning is unconstructed until P4 wires it
 enum DemoState {
     /// Live encounter — normal `apply_intent` flow.
     Playing,
@@ -909,6 +990,13 @@ enum DemoState {
     /// `WinState::Defeat` (which is per-encounter) — this flips on
     /// `mark_defeated` and the Run carries the flag forward.
     RunDefeated,
+    /// (#210 P3) Continuous-flow warp in flight (Round or Waypoint) — replaces
+    /// the prior modal `EncounterComplete` / `RunComplete` between-encounter
+    /// gates with an animated transition. P3 only ADDS this variant; P4 wires
+    /// the actual entry/exit + input-gating. Until P4, this variant is
+    /// constructed nowhere and the no-op match arms below preserve current
+    /// behaviour byte-for-byte.
+    Transitioning(TransitionPhase),
 }
 
 /// (#133 Bruce) In-turn BEAT playback of the player's committed volley. On a
@@ -1843,7 +1931,13 @@ impl ApplicationHandler for App {
                         }
                         return;
                     }
-                    DemoState::Playing => {}
+                    // `Playing` falls through to the rest of the handler; the
+                    // additive `Transitioning(_)` variant (#210 P3) shares the
+                    // same fall-through behaviour until P4 replaces it with the
+                    // proper input-gate (swallow all input mid-warp the way
+                    // `BeatPlayback` does). Until P4 the variant is never
+                    // constructed so the arm is unreachable in practice.
+                    DemoState::Playing | DemoState::Transitioning(_) => {}
                 }
 
                 // (#97 Enter footgun) During active Playing combat, Enter is a NO-OP.
@@ -2643,7 +2737,11 @@ impl ApplicationHandler for App {
                 // Compose no longer auto-pushes — the bin owns the
                 // overlay decision since #77.
                 match demo_state {
-                    DemoState::Playing => {}
+                    // `Playing` draws no modal; the additive `Transitioning(_)`
+                    // (#210 P3) shares the same no-op render until P4 paints
+                    // the warp (parallax tween + Waypoint banner). The variant
+                    // is unconstructed in P3, so this arm is unreachable.
+                    DemoState::Playing | DemoState::Transitioning(_) => {}
                     DemoState::EncounterComplete => {
                         push_between_encounter_overlay(
                             &mut instances,
