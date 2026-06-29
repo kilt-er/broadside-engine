@@ -490,6 +490,145 @@ pub fn set_unified_lateral_x_offset(x: f32) {
 /// cell line Bruce reads as "the ship's cell").
 const UNIFIED_SHIP_LIFT: f32 = 0.18;
 
+// ============================================================================
+// (#213) Live phase-duration dials for the round-warp cinematic. Bruce's
+// "full but tunable" ruling: the 5-beat sequence plays on EVERY transition
+// (Round + Waypoint); each beat duration is dialled live so he can scale
+// individual phases (or collapse one to zero ms = effectively skipped) by
+// eye during playtest, then later trim the full per-round cinematic when
+// it drags over 20 rounds. Stored as u32 milliseconds; resolution 1 ms is
+// plenty (the warp window is at most a few seconds).
+// ============================================================================
+
+/// (#213) Boot phase 1 (fade current grid + non-player ships) — 150 ms.
+pub const BOOT_PHASE1_FADE_MS: u32 = 150;
+/// (#213) Boot phase 2 (mutual approach: player + grid converge) — 400 ms.
+pub const BOOT_PHASE2_APPROACH_MS: u32 = 400;
+/// (#213) Boot phase 3 (warp stretch — hulls smear along velocity) — 200 ms.
+pub const BOOT_PHASE3_WARP_MS: u32 = 200;
+/// (#213) Boot phase 4 (snap into rest cells; brief settle) — 100 ms.
+pub const BOOT_PHASE4_SNAP_MS: u32 = 100;
+/// (#213) Boot phase 5 (post-snap idle before Playing handoff) — 150 ms.
+pub const BOOT_PHASE5_SETTLE_MS: u32 = 150;
+
+static PHASE1_FADE_MS: std::sync::atomic::AtomicU32 =
+    std::sync::atomic::AtomicU32::new(BOOT_PHASE1_FADE_MS);
+static PHASE2_APPROACH_MS: std::sync::atomic::AtomicU32 =
+    std::sync::atomic::AtomicU32::new(BOOT_PHASE2_APPROACH_MS);
+static PHASE3_WARP_MS: std::sync::atomic::AtomicU32 =
+    std::sync::atomic::AtomicU32::new(BOOT_PHASE3_WARP_MS);
+static PHASE4_SNAP_MS: std::sync::atomic::AtomicU32 =
+    std::sync::atomic::AtomicU32::new(BOOT_PHASE4_SNAP_MS);
+static PHASE5_SETTLE_MS: std::sync::atomic::AtomicU32 =
+    std::sync::atomic::AtomicU32::new(BOOT_PHASE5_SETTLE_MS);
+
+/// (#213) Per-phase duration in ms — live-dialled for round-warp tuning.
+#[must_use]
+pub fn phase1_fade_ms() -> u32 {
+    PHASE1_FADE_MS.load(std::sync::atomic::Ordering::Relaxed)
+}
+#[must_use]
+pub fn phase2_approach_ms() -> u32 {
+    PHASE2_APPROACH_MS.load(std::sync::atomic::Ordering::Relaxed)
+}
+#[must_use]
+pub fn phase3_warp_ms() -> u32 {
+    PHASE3_WARP_MS.load(std::sync::atomic::Ordering::Relaxed)
+}
+#[must_use]
+pub fn phase4_snap_ms() -> u32 {
+    PHASE4_SNAP_MS.load(std::sync::atomic::Ordering::Relaxed)
+}
+#[must_use]
+pub fn phase5_settle_ms() -> u32 {
+    PHASE5_SETTLE_MS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// (#213) Total round-warp window (seconds) = sum of the 5 phase dials.
+/// Replaces the legacy `WARP_ROUND_SECS = 1.0` constant: any phase dial
+/// change immediately changes the total window so `TransitionPhase::
+/// progress` divides against the live value. Bruce collapses unwanted
+/// beats to ~0 ms to shorten the cinematic per-round.
+#[must_use]
+pub fn round_warp_total_secs() -> f32 {
+    let total_ms = phase1_fade_ms()
+        + phase2_approach_ms()
+        + phase3_warp_ms()
+        + phase4_snap_ms()
+        + phase5_settle_ms();
+    total_ms as f32 / 1000.0
+}
+
+/// (#213) Cinematic phases — outputs of `phase_from_progress(t)` against the
+/// live phase dials. `Done` = post-warp settle window ended; the bin flips
+/// `TransitionPhase` → `Playing` on `progress >= 1.0`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CinematicPhase {
+    Fade,
+    Approach,
+    Warp,
+    Snap,
+    Settle,
+}
+
+/// (#213) Map a 0..=1 transition progress to the active phase (per current
+/// live dials), and the 0..=1 progress WITHIN that phase. Pure read of the
+/// 5 phase dials, no state.
+#[must_use]
+pub fn phase_from_progress(t: f32) -> (CinematicPhase, f32) {
+    let p1 = phase1_fade_ms() as f32;
+    let p2 = phase2_approach_ms() as f32;
+    let p3 = phase3_warp_ms() as f32;
+    let p4 = phase4_snap_ms() as f32;
+    let p5 = phase5_settle_ms() as f32;
+    let total = (p1 + p2 + p3 + p4 + p5).max(1.0);
+    let elapsed_ms = t.clamp(0.0, 1.0) * total;
+    // Step through cumulative boundaries; sub-progress = (elapsed - lo) / span.
+    let (lo1, hi1) = (0.0, p1);
+    let (lo2, hi2) = (hi1, hi1 + p2);
+    let (lo3, hi3) = (hi2, hi2 + p3);
+    let (lo4, hi4) = (hi3, hi3 + p4);
+    let (lo5, hi5) = (hi4, hi4 + p5);
+    let local = |lo: f32, hi: f32| -> f32 {
+        let span = (hi - lo).max(1e-3);
+        ((elapsed_ms - lo) / span).clamp(0.0, 1.0)
+    };
+    if elapsed_ms < hi1 || p1 < 1.0 && elapsed_ms <= lo1 {
+        (CinematicPhase::Fade, local(lo1, hi1))
+    } else if elapsed_ms < hi2 {
+        (CinematicPhase::Approach, local(lo2, hi2))
+    } else if elapsed_ms < hi3 {
+        (CinematicPhase::Warp, local(lo3, hi3))
+    } else if elapsed_ms < hi4 {
+        (CinematicPhase::Snap, local(lo4, hi4))
+    } else {
+        (CinematicPhase::Settle, local(lo5, hi5))
+    }
+}
+
+/// (#213) Cycle a single phase duration up by `step_ms` (wrap at `max_ms`).
+/// Bruce holds Shift + 1..5 to step each phase.
+pub fn cycle_phase_ms(idx: u8, step_ms: u32, max_ms: u32) -> u32 {
+    let cell = match idx {
+        1 => &PHASE1_FADE_MS,
+        2 => &PHASE2_APPROACH_MS,
+        3 => &PHASE3_WARP_MS,
+        4 => &PHASE4_SNAP_MS,
+        5 => &PHASE5_SETTLE_MS,
+        _ => return 0,
+    };
+    let cur = cell.load(std::sync::atomic::Ordering::Relaxed);
+    // Wrap at max so the live key stays bounded; 0 is a valid value (collapses
+    // the beat to "instant skip" without removing the phase from the sequence).
+    let next = if cur.saturating_add(step_ms) > max_ms {
+        0
+    } else {
+        cur + step_ms
+    };
+    cell.store(next, std::sync::atomic::Ordering::Relaxed);
+    next
+}
+
 /// (UNIFY) THE single place that builds the live scene [`crate::projector::ProjectorConfig`]
 /// from the global look state — the grid pitch arc ([`grid_pitch_t`]), the grid
 /// MODE ([`grid_mode`]), and the unified toggle ([`unified_enabled`]) — so the bin,

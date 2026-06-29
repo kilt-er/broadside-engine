@@ -4002,6 +4002,66 @@ pub fn push_res_readout(out: &mut Vec<DrawCommand>, ship: (u32, u32), scene: (u3
     }
 }
 
+/// (#213) Five-line BOTTOM-RIGHT readout of the live per-phase warp dials
+/// (`F2..F6` step them, 50 ms / press, wrap at 1000). Each line is `P<n>
+/// <NNN>` (ms). Above the existing res/scale/cam/cell/anchor stack so the
+/// bottom-right reads top→bottom: phase dials, then standard debug stack.
+/// Only the lines whose dial differs from the boot const are drawn, so the
+/// default play stays uncluttered; once Bruce touches a dial it lights up.
+pub fn push_phase_dials_readout(out: &mut Vec<DrawCommand>) {
+    const DIM: [f32; 4] = [0.62, 0.70, 0.80, 0.85];
+    let pixel = 1.0;
+    let advance = 5.0 * pixel + pixel;
+    let right_pad = 4.0;
+    let canvas_w = crate::gfx::scene_w() as f32;
+    let h = crate::gfx::scene_h() as f32;
+    let right_align = |out: &mut Vec<DrawCommand>, text: &str, y: f32| {
+        let total_w = text.len() as f32 * advance - pixel;
+        let start_x = canvas_w - total_w - right_pad;
+        push_text_left(out, text, start_x, y, pixel, DIM);
+    };
+    let dials = [
+        (
+            1u8,
+            crate::gfx::phase1_fade_ms(),
+            crate::gfx::BOOT_PHASE1_FADE_MS,
+        ),
+        (
+            2u8,
+            crate::gfx::phase2_approach_ms(),
+            crate::gfx::BOOT_PHASE2_APPROACH_MS,
+        ),
+        (
+            3u8,
+            crate::gfx::phase3_warp_ms(),
+            crate::gfx::BOOT_PHASE3_WARP_MS,
+        ),
+        (
+            4u8,
+            crate::gfx::phase4_snap_ms(),
+            crate::gfx::BOOT_PHASE4_SNAP_MS,
+        ),
+        (
+            5u8,
+            crate::gfx::phase5_settle_ms(),
+            crate::gfx::BOOT_PHASE5_SETTLE_MS,
+        ),
+    ];
+    let any_off_boot = dials.iter().any(|(_, cur, boot)| cur != boot);
+    if !any_off_boot {
+        return;
+    }
+    // Stack from h-100 upward, 10 px line height.
+    let mut y = h - 100.0;
+    for (idx, cur, _) in dials {
+        right_align(out, &format!("P{idx} {cur}"), y);
+        y -= 10.0;
+    }
+    // Total round-warp window summary at the top of the stack.
+    let total_ms = (crate::gfx::round_warp_total_secs() * 1000.0).round() as u32;
+    right_align(out, &format!("WARP {total_ms}"), y);
+}
+
 /// Minimalist controls legend, bottom-left corner. Dim single-column text,
 /// no background panel — just a quiet reminder of the keybindings that
 /// doesn't crowd the lane. Labels mirror the bin's `keycode_to_key` /
@@ -4083,6 +4143,7 @@ pub fn push_controls_popup(out: &mut Vec<DrawCommand>) {
         "LBKT RBKT    SHIP SCALE",
         "MINUS PLUS   BOARD ZOOM",
         "K L          GRID CELL",
+        "F2 F6        WARP PHASE 1 5",
         "F1           TOGGLE THIS",
     ];
 

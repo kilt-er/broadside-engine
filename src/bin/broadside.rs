@@ -904,16 +904,12 @@ const BEAT_SECS: f32 = 0.5;
 /// decay loop in `RedrawRequested`.
 const KICKBACK_DECAY_PER_SEC: f32 = 3.5;
 
-/// (#210 P3 Bruce) Round-warp duration in seconds — how long the
-/// continuous-flow transition between consecutive encounters takes (no modal,
-/// just an animated parallax slide). Bruce's tunable Q2 ruling = ~1.0 s.
-/// Consumed by [`TransitionPhase::progress`] when `kind == Round`.
-const WARP_ROUND_SECS: f32 = 1.0;
-/// (#210 P3 Bruce) Level-warp duration in seconds — the longer warp for a
-/// sector→sector boundary (the player slides forward INTO the waypoint).
-/// Bruce's tunable Q2 ruling = ~2.0 s. Consumed by
-/// [`TransitionPhase::progress`] when `kind == Waypoint`.
-const WARP_LEVEL_SECS: f32 = 2.0;
+/// (#213) Level-warp duration MULTIPLIER over the round-warp total.
+/// `Waypoint` runs for `WAYPOINT_WARP_MULT × round_warp_total_secs()`, so
+/// when Bruce dials the per-phase round budgets the level boundary still
+/// reads as the "longer" pause by the same ratio. Default 2.0 (Bruce's
+/// Q2 ruling = level is twice the round window).
+const WAYPOINT_WARP_MULT: f32 = 2.0;
 
 /// (#210 P8) Total duration of the continuous-death animation in seconds —
 /// slow-mo player explosion plays over the FIRST half, stats overlay appears
@@ -940,13 +936,16 @@ enum TransitionKind {
 }
 
 impl TransitionKind {
-    /// The warp duration (seconds) for this kind — `WARP_ROUND_SECS` for
-    /// `Round`, `WARP_LEVEL_SECS` for `Waypoint`. Sole tunable knob (the only
-    /// other phase-1 lever Bruce can dial without touching code).
-    const fn warp_secs(self) -> f32 {
+    /// (#213) The warp duration (seconds) for this kind — derived live from
+    /// the 5 per-phase dials (`gfx::phase{1..5}_*_ms`). `Round` runs for the
+    /// sum of the dials; `Waypoint` runs for that × [`WAYPOINT_WARP_MULT`].
+    /// Bruce dialing a phase down shortens BOTH kinds proportionally, so the
+    /// 1:2 round:level ratio stays intact while the absolute lengths shrink.
+    fn warp_secs(self) -> f32 {
+        let round = broadside_engine::gfx::round_warp_total_secs();
         match self {
-            Self::Round => WARP_ROUND_SECS,
-            Self::Waypoint => WARP_LEVEL_SECS,
+            Self::Round => round,
+            Self::Waypoint => round * WAYPOINT_WARP_MULT,
         }
     }
 }
@@ -2043,6 +2042,34 @@ impl ApplicationHandler for App {
                         }
                         return;
                     }
+                    // (#213) F2..F6 step the FIVE per-phase round-warp duration
+                    // dials (gfx::PHASE{1..5}_*_MS). Each press adds 50 ms,
+                    // wraps to 0 past the 1000 ms cap so Bruce can cycle the
+                    // beat down to zero ms = effectively skipped + see the
+                    // sequence read tighter. F2 = phase 1 (fade), F3 = phase 2
+                    // (mutual approach), F4 = phase 3 (warp stretch), F5 =
+                    // phase 4 (snap), F6 = phase 5 (settle). Each key is free
+                    // in keycode_to_key (asserted None below). Round-warp +
+                    // level-warp totals derive live from these so every
+                    // transition reads the change immediately.
+                    if let Some(phase_idx) = match code {
+                        KeyCode::F2 => Some(1u8),
+                        KeyCode::F3 => Some(2u8),
+                        KeyCode::F4 => Some(3u8),
+                        KeyCode::F5 => Some(4u8),
+                        KeyCode::F6 => Some(5u8),
+                        _ => None,
+                    } {
+                        let next = broadside_engine::gfx::cycle_phase_ms(phase_idx, 50, 1000);
+                        log::info!(
+                            "phase {phase_idx} dial = {next} ms (round total {:.2} s)",
+                            broadside_engine::gfx::round_warp_total_secs()
+                        );
+                        if let Some(win) = self.window.as_ref() {
+                            win.request_redraw();
+                        }
+                        return;
+                    }
                     // (#196 Bruce) `F1` toggles the centered CONTROLS popup —
                     // listing every player + debug binding. Render-only, no
                     // gameplay state. F1 verified free in keycode_to_key (asserted
@@ -2927,11 +2954,49 @@ impl ApplicationHandler for App {
                         // world units past the back row of the current grid
                         // (legible gap, mid-frame, dialled by capture sweep
                         // #P7). Tint alpha 0.55 reads visibly but stays
-                        // clearly fainter than the playable grid. Both become
-                        // live-dial keys in a follow-up once Bruce eyeballs
-                        // the static look.
-                        let z_offset: f32 = 8.0;
-                        let tint_alpha: f32 = 0.55;
+                        // clearly fainter than the playable grid.
+                        let rest_z_offset: f32 = 8.0;
+                        let rest_tint_alpha: f32 = 0.55;
+                        // (#213) When a Transitioning window is in flight,
+                        // drive the upcoming grid IN — toward the player —
+                        // during phases 2..5 (the mutual-approach + warp +
+                        // snap + settle beats). Phase 1 (fade) leaves it at
+                        // rest. The grid Z lerps from `rest_z_offset` (deep)
+                        // toward 0 (overlaying the playable grid) as the
+                        // total warp progresses past phase 1. Tint also
+                        // brightens proportionally so the approaching grid
+                        // reads as it lands.
+                        let (z_offset, tint_alpha) = match demo_state {
+                            DemoState::Transitioning(phase) => {
+                                let now2 = std::time::Instant::now();
+                                let t = phase.progress(now2);
+                                let (current_phase, sub) =
+                                    broadside_engine::gfx::phase_from_progress(t);
+                                match current_phase {
+                                    broadside_engine::gfx::CinematicPhase::Fade => {
+                                        // Hold at rest; phase 1 only fades current grid.
+                                        (rest_z_offset, rest_tint_alpha)
+                                    }
+                                    broadside_engine::gfx::CinematicPhase::Approach => {
+                                        // Ease the upcoming grid forward; ease the
+                                        // tint up so it visibly "approaches".
+                                        let eased = 1.0 - (1.0 - sub) * (1.0 - sub);
+                                        let z = rest_z_offset * (1.0 - eased * 0.7);
+                                        let a =
+                                            rest_tint_alpha + (1.0 - rest_tint_alpha) * eased * 0.5;
+                                        (z, a.clamp(0.0, 1.0))
+                                    }
+                                    broadside_engine::gfx::CinematicPhase::Warp
+                                    | broadside_engine::gfx::CinematicPhase::Snap
+                                    | broadside_engine::gfx::CinematicPhase::Settle => {
+                                        // Hold near, full bright — board is "here".
+                                        let z = rest_z_offset * 0.3;
+                                        (z, 0.9)
+                                    }
+                                }
+                            }
+                            _ => (rest_z_offset, rest_tint_alpha),
+                        };
                         hud::prepend_upcoming_board_2d(
                             &mut instances,
                             &scene_cfg,
@@ -2967,6 +3032,10 @@ impl ApplicationHandler for App {
                     // `,`/`.`) + SCENE <w>x<h> (cyclable via `;`/`'`), under the
                     // POS/FACE line.
                     hud::push_res_readout(&mut instances, gfx.loft_res(), gfx.scene_res());
+                    // (#213) Per-phase warp dials readout (F2..F6 step them).
+                    // Hidden when all phases are at boot defaults, lights up the
+                    // moment Bruce touches any dial.
+                    hud::push_phase_dials_readout(&mut instances);
                     // (Bruce debug) Per-ship PITCH/ROLL/YAW overlay when toggled on
                     // (`O`) — orientation read numerically while dialing in the
                     // per-column lane orientation + the camera unification.
@@ -3361,6 +3430,13 @@ mod tests {
     fn keycode_translation_returns_none_for_unbound() {
         assert_eq!(keycode_to_key(KeyCode::KeyA), None);
         assert_eq!(keycode_to_key(KeyCode::F1), None);
+        // (#213) F2..F6 are raw-handler keys (per-phase warp dials); they must
+        // NOT map to a Key enum (would steal them from the dial handler).
+        assert_eq!(keycode_to_key(KeyCode::F2), None);
+        assert_eq!(keycode_to_key(KeyCode::F3), None);
+        assert_eq!(keycode_to_key(KeyCode::F4), None);
+        assert_eq!(keycode_to_key(KeyCode::F5), None);
+        assert_eq!(keycode_to_key(KeyCode::F6), None);
     }
 
     #[test]
