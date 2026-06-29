@@ -336,6 +336,50 @@ pub fn adjust_cam_dist(delta: f32) -> f32 {
     );
     next
 }
+
+/// (#195 Bruce) Minimum allowed grid cell-size multiplier for the live `K`
+/// adjuster. 0.5 = half-size cells (tight grid). Floor named so the band widens
+/// via a one-liner.
+pub const UNIFIED_GRID_CELL_SCALE_MIN: f32 = 0.5;
+/// (#195) Maximum allowed grid cell-size multiplier for the live `L` adjuster.
+/// 2.0 = double-size cells (wide grid).
+pub const UNIFIED_GRID_CELL_SCALE_MAX: f32 = 2.0;
+/// (#195) Per-press step size for the `K` / `L` cell-size adjuster. 0.1 gives
+/// ~15 stops across [0.5, 2.0] — coarse enough to feel each press.
+pub const UNIFIED_GRID_CELL_SCALE_STEP: f32 = 0.1;
+/// (#195) Boot value — 1.0 = the existing world cell spacing (1 world unit
+/// per cell), byte-equivalent default.
+pub const BOOT_UNIFIED_GRID_CELL_SCALE: f32 = 1.0;
+
+/// (#195) Live grid cell-size multiplier stored as `scale * 1000` rounded to
+/// u32 so we can use a stdlib atomic. Read by [`projector::cell_world_center`]
+/// AND [`projector::cell_world_corners`] (BOTH must read the same multiplier so
+/// the cell-center == grid-cell-center invariant holds — #188 regression guard).
+static GRID_CELL_SCALE_MILLI: std::sync::atomic::AtomicU32 =
+    std::sync::atomic::AtomicU32::new((BOOT_UNIFIED_GRID_CELL_SCALE * 1000.0) as u32);
+
+/// (#195) The live grid cell-size multiplier. Reads the atomic + converts back
+/// to f32. Safe to call from any thread / render hot path.
+pub fn unified_grid_cell_scale() -> f32 {
+    GRID_CELL_SCALE_MILLI.load(std::sync::atomic::Ordering::Relaxed) as f32 / 1000.0
+}
+
+/// (#195) Adjust the live grid cell-size multiplier by `delta` (positive grows
+/// the cells, negative shrinks them), clamping into
+/// `[UNIFIED_GRID_CELL_SCALE_MIN, UNIFIED_GRID_CELL_SCALE_MAX]`. Returns the new
+/// value. Bound to `K` (delta=-STEP) and `L` (delta=+STEP) in the bin.
+pub fn adjust_grid_cell_scale(delta: f32) -> f32 {
+    let next = (unified_grid_cell_scale() + delta).clamp(
+        UNIFIED_GRID_CELL_SCALE_MIN,
+        UNIFIED_GRID_CELL_SCALE_MAX,
+    );
+    GRID_CELL_SCALE_MILLI.store(
+        (next * 1000.0).round() as u32,
+        std::sync::atomic::Ordering::Relaxed,
+    );
+    next
+}
+
 /// (UNIFY) Vertical lift (world units) of the hull above the ground plane so it
 /// sits ON the grid rather than half-buried at its mesh origin. (#188 Bruce: enemies
 /// "float above their cells" — diagnosis: _03.glb Y-bbox is [-1.48, +1.32], so at

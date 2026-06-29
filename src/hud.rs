@@ -3770,6 +3770,12 @@ pub fn push_res_readout(out: &mut Vec<DrawCommand>, ship: (u32, u32), scene: (u3
     // at h-60 so it lives in the same right-aligned debug stack.
     let cam_centi = (crate::gfx::unified_cam_dist() * 100.0).round() as u32;
     right_align(out, &format!("CAM {cam_centi}"), h - 60.0);
+    // (#195 Bruce) Show the live grid cell-size multiplier (`K` / `L` adjuster).
+    // INTEGER hundredths matches SCALE / CAM convention: "CELL 100" = 1.00
+    // (default), "CELL 050" = 0.50 (tight), "CELL 200" = 2.00 (wide). Placed
+    // above CAM at h-70.
+    let cell_centi = (crate::gfx::unified_grid_cell_scale() * 100.0).round() as u32;
+    right_align(out, &format!("CELL {cell_centi}"), h - 70.0);
     // (#139) PITCH step (0 = chase-cam, GRID_PITCH_STEPS = near-top-down), read from
     // the gfx global. Placed at h-40, ABOVE the POS/FACE line (h-30, push_player_readout)
     // so the bottom-right debug stack doesn't overlap. Only shown when pitched off the

@@ -1646,6 +1646,34 @@ impl ApplicationHandler for App {
                         }
                         return;
                     }
+                    // (#195 Bruce) `K` shrinks the grid CELL world spacing (tighter
+                    // grid; ships stay centered in their cells); `L` grows it.
+                    // Clamp [UNIFIED_GRID_CELL_SCALE_MIN, UNIFIED_GRID_CELL_SCALE_MAX]
+                    // = [0.5, 2.0]. Live-read by projector::cell_world_center +
+                    // cell_world_corners (both, same multiplier — the #188 cell-
+                    // center == grid-cell-center invariant holds by construction).
+                    // K + L verified free in keycode_to_key (no K/L mapping) + the
+                    // raw G/T/O/U/[/]/-/= handlers above.
+                    if code == KeyCode::KeyK {
+                        let s = broadside_engine::gfx::adjust_grid_cell_scale(
+                            -broadside_engine::gfx::UNIFIED_GRID_CELL_SCALE_STEP,
+                        );
+                        log::info!("unified grid cell scale -> {s:.2}");
+                        if let Some(win) = self.window.as_ref() {
+                            win.request_redraw();
+                        }
+                        return;
+                    }
+                    if code == KeyCode::KeyL {
+                        let s = broadside_engine::gfx::adjust_grid_cell_scale(
+                            broadside_engine::gfx::UNIFIED_GRID_CELL_SCALE_STEP,
+                        );
+                        log::info!("unified grid cell scale -> {s:.2}");
+                        if let Some(win) = self.window.as_ref() {
+                            win.request_redraw();
+                        }
+                        return;
+                    }
                 }
                 let Some(key) = keycode_to_key(code) else {
                     return;

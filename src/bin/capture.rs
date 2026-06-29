@@ -281,6 +281,17 @@ fn main() {
             log::info!("capture: unified cam dist -> {d:.2}");
         }
     }
+    // (#195) Optional BROADSIDE_GRID_CELL_SCALE=F sets the live grid cell-size
+    // multiplier to F (clamped into the gfx min/max). Mirrors the cam-dist /
+    // ship-scale envs — single adjust_grid_cell_scale(F - current) routes
+    // through the same clamp + atomic store as the live `K` / `L` keys.
+    if let Ok(v) = std::env::var("BROADSIDE_GRID_CELL_SCALE") {
+        if let Ok(target) = v.parse::<f32>() {
+            let cur = broadside_engine::gfx::unified_grid_cell_scale();
+            let s = broadside_engine::gfx::adjust_grid_cell_scale(target - cur);
+            log::info!("capture: unified grid cell scale -> {s:.2}");
+        }
+    }
     // (#140/#142/#151) Optional grid-mode env (mirrors the `T` cycle), so the pitch-arc
     // shots show each mode. BROADSIDE_GRID_CONTINUOUS=1 -> continuous-straight (mode 3);
     // BROADSIDE_GRID_STRAIGHT=1 -> stretch-straight stepped (mode 2);

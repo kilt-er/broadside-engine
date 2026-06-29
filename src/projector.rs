@@ -880,15 +880,21 @@ pub fn unified_view_proj(cfg: &ProjectorConfig) -> [f32; 16] {
 pub fn cell_world_corners(pos: Pos, cfg: &ProjectorConfig) -> [[f32; 3]; 4] {
     let cols = cfg.cols.max(1) as f32;
     let rows = cfg.rows.max(1) as f32;
+    // (#195) Live cell-size multiplier — scales X spacing (from the grid centre
+    // line at x=0) AND Z spacing (forward of UNIFIED_Z_FRONT) by the same factor
+    // so the grid stays SQUARE + the cell-center == grid-cell-center invariant
+    // (#188) holds (the corner-average matches `cell_world_center` which uses
+    // the same scale).
+    let s = crate::gfx::unified_grid_cell_scale();
     // Camera looks down +Z with +Y up, so world +X maps to screen LEFT. We want col
     // to increase LEFT→RIGHT on screen, so the screen-left edge of cell `col` is the
     // LARGER world X (boundary `col`), the screen-right edge the smaller (boundary
     // `col+1`).
-    let left_x = cols * 0.5 - pos.col as f32;
-    let right_x = cols * 0.5 - (pos.col as f32 + 1.0);
+    let left_x = (cols * 0.5 - pos.col as f32) * s;
+    let right_x = (cols * 0.5 - (pos.col as f32 + 1.0)) * s;
     // Row pos.row occupies Z ∈ [near_z, far_z]; near row (row rows-1) front at Z_FRONT.
-    let near_z = UNIFIED_Z_FRONT + (rows - 1.0 - pos.row as f32);
-    let far_z = near_z + 1.0;
+    let near_z = UNIFIED_Z_FRONT + (rows - 1.0 - pos.row as f32) * s;
+    let far_z = near_z + s;
     [
         [left_x, 0.0, far_z],   // far-left  (top-left)
         [right_x, 0.0, far_z],  // far-right (top-right)
@@ -901,9 +907,11 @@ pub fn cell_world_corners(pos: Pos, cfg: &ProjectorConfig) -> [[f32; 3]; 4] {
 pub fn cell_world_center(pos: Pos, cfg: &ProjectorConfig) -> [f32; 3] {
     let cols = cfg.cols.max(1) as f32;
     let rows = cfg.rows.max(1) as f32;
+    // (#195) Same scale as cell_world_corners — ships auto-recenter as cells grow/shrink.
+    let s = crate::gfx::unified_grid_cell_scale();
     // See cell_world_corners: world +X = screen LEFT, so col increasing right→ smaller X.
-    let x = cols * 0.5 - (pos.col as f32 + 0.5);
-    let z = UNIFIED_Z_FRONT + (rows - 1.0 - pos.row as f32) + 0.5;
+    let x = (cols * 0.5 - (pos.col as f32 + 0.5)) * s;
+    let z = UNIFIED_Z_FRONT + (rows - 1.0 - pos.row as f32 + 0.5) * s;
     [x, 0.0, z]
 }
 
