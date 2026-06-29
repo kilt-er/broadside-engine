@@ -2908,11 +2908,24 @@ impl ApplicationHandler for App {
                 // Compose no longer auto-pushes — the bin owns the
                 // overlay decision since #77.
                 match demo_state {
-                    // `Playing` draws no modal; the additive `Transitioning(_)`
-                    // (#210 P3) shares the same no-op render until P4 paints
-                    // the warp (parallax tween + Waypoint banner). The variant
-                    // is unconstructed in P3, so this arm is unreachable.
-                    DemoState::Playing | DemoState::Transitioning(_) => {}
+                    DemoState::Playing => {}
+                    // (#210 P6) Waypoint warp: push a centered banner that
+                    // fades in then out over the ~2s warp so the level→
+                    // waypoint transition reads as a distinct stop. The
+                    // Round warp has no banner — its parallax depth shift +
+                    // warp-in tween is the cue. `sector_idx` is the run's
+                    // CURRENT (post-advance) index, so the banner names the
+                    // sector the player is arriving at.
+                    DemoState::Transitioning(phase) => {
+                        if phase.kind == TransitionKind::Waypoint {
+                            let t = phase.progress(now);
+                            hud::push_waypoint_banner(
+                                &mut instances,
+                                self.run.current_sector_idx,
+                                t,
+                            );
+                        }
+                    }
                     DemoState::EncounterComplete => {
                         push_between_encounter_overlay(
                             &mut instances,

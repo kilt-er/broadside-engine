@@ -4708,6 +4708,50 @@ fn push_text_left(
 /// the size of one font "pixel" in virtual pixels (typically 4 for
 /// title-style banners, 2 for body text). `y` is the vertical center
 /// of the rendered glyph row.
+/// (#210 P6) Public waypoint-scene banner — pushed by the bin during a
+/// `DemoState::Transitioning(Waypoint)` window so the level→waypoint warp
+/// reads as a distinct "arrival at a stop" beat, not just a longer board
+/// swap. The banner says `WAYPOINT — SECTOR {sector_idx+1}`; alpha fades in
+/// on the first half of the warp + back out on the second half via the
+/// `t` argument (0.0 at warp start, 1.0 at warp end). At rest (between
+/// warps) the bin doesn't call this — no draw cost.
+pub fn push_waypoint_banner(out: &mut Vec<DrawCommand>, sector_idx: usize, t: f32) {
+    // Fade envelope: tri-shape peaking at t=0.5. clamp at 0 so subpixel
+    // negatives don't try to push glyphs at zero alpha.
+    let fade = (1.0 - (2.0 * t - 1.0).abs()).clamp(0.0, 1.0);
+    if fade <= 0.0 {
+        return;
+    }
+    let center_y = crate::gfx::scene_h() as f32 / 2.0;
+    let banner = format!("WAYPOINT  SECTOR {}", sector_idx + 1);
+    push_centered_banner_alpha(out, &banner, center_y, 5.0, fade);
+    push_centered_banner_alpha(out, "INCOMING SECTOR", center_y - 60.0, 2.5, fade * 0.75);
+}
+
+/// Same as [`push_centered_banner`] but with a caller-controlled alpha so
+/// the banner can fade in/out smoothly over an animation window. Used by
+/// the P6 waypoint banner.
+fn push_centered_banner_alpha(
+    out: &mut Vec<DrawCommand>,
+    banner: &str,
+    y_center: f32,
+    pixel: f32,
+    alpha: f32,
+) {
+    let glyph_w_px = 5.0 * pixel;
+    let glyph_h_px = 7.0 * pixel;
+    let space_px = pixel;
+    let advance = glyph_w_px + space_px;
+    let total_w: f32 = banner.len() as f32 * advance - space_px;
+    let start_x = (crate::gfx::scene_w() as f32 - total_w) / 2.0;
+    let y = y_center - glyph_h_px / 2.0;
+    let color = [WHITE[0], WHITE[1], WHITE[2], WHITE[3] * alpha];
+    for (i, ch) in banner.chars().enumerate() {
+        let x = start_x + i as f32 * advance;
+        push_glyph_5x7(out, ch, x, y, pixel, color);
+    }
+}
+
 fn push_centered_banner(out: &mut Vec<DrawCommand>, banner: &str, y_center: f32, pixel: f32) {
     let glyph_w_px = 5.0 * pixel;
     let glyph_h_px = 7.0 * pixel;
