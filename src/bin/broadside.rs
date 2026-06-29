@@ -2305,11 +2305,20 @@ impl ApplicationHandler for App {
                                     self.demo_state = DemoState::RunComplete;
                                 }
                             } else if matches!(advance, AdvanceResult::Victorious) {
-                                // P9 will route this through a Waypoint warp
-                                // + final end-card; until then keep the
-                                // existing RunComplete card so the run still
-                                // terminates cleanly.
-                                self.demo_state = DemoState::RunComplete;
+                                // (#210 P9) Final-victory warp — route the
+                                // run-end through a Waypoint transition so it
+                                // reads as a continuous beat (same banner +
+                                // ~2s window as a sector boundary), not an
+                                // abrupt modal pop. No board swap — the run
+                                // is over, the current board (final boss
+                                // cleared) stays on screen as backdrop. The
+                                // warp-end tick checks `run.victorious` and
+                                // flips to RunComplete (existing end-card via
+                                // push_between_encounter_overlay).
+                                self.demo_state = DemoState::Transitioning(TransitionPhase {
+                                    kind: TransitionKind::Waypoint,
+                                    started_at: now,
+                                });
                             }
                             // `AlreadyEnded` here is a no-op (defensive) — it
                             // shouldn't reach this arm because we only enter
@@ -2338,18 +2347,26 @@ impl ApplicationHandler for App {
                 // EventBus, and flip back to Playing. The transition's
                 // duration is driven by `TransitionPhase::progress` against
                 // either `WARP_ROUND_SECS` or `WARP_LEVEL_SECS` per `kind`.
-                // (#210 P4+P5) Warp end: the board was swapped at the START
+                // (#210 P4+P5+P9) Warp end: the board was swapped at the START
                 // of the transition (#P5 needs the warp-in anchors to lerp
                 // against the live incoming ships); when the warp window
                 // elapses, drop the warp-in anchors so ships rest at their
-                // logical cells + flip back to Playing so input unlocks.
+                // logical cells + decide where to flip the demo state next:
+                //   - run.victorious  -> RunComplete (P9 final end-card; the
+                //     Waypoint warp on Victorious is a no-swap "fanfare beat"
+                //     before the YOU WIN card)
+                //   - else            -> Playing (normal round/waypoint)
                 if let DemoState::Transitioning(phase) = self.demo_state {
                     if phase.progress(now) >= 1.0 {
                         // Tween anchors with `dur_ms_override` Some saturate
                         // at t=1 in `tween_2d` anyway, so explicit clear keeps
                         // the map small + #188 alignment exact post-warp.
                         self.tween_anchors.clear();
-                        self.demo_state = DemoState::Playing;
+                        self.demo_state = if self.run.victorious {
+                            DemoState::RunComplete
+                        } else {
+                            DemoState::Playing
+                        };
                     }
                 }
                 // (#133) BEAT driver: while a committed volley is playing out, release
