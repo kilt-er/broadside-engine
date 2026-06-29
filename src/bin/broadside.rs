@@ -885,6 +885,17 @@ const WARP_ROUND_SECS: f32 = 1.0;
 /// [`TransitionPhase::progress`] when `kind == Waypoint`.
 const WARP_LEVEL_SECS: f32 = 2.0;
 
+/// (#210 P8) Total duration of the continuous-death animation in seconds —
+/// slow-mo player explosion plays over the FIRST half, stats overlay appears
+/// at the midpoint and persists until ENTER restart. Bruce-tunable.
+const DEATH_WINDOW_SECS: f32 = 3.5;
+
+/// (#210 P8) Slow-motion dt multiplier active during a `Dying` phase — the
+/// renderer keeps ticking but particle / hull-flash / vfx pools advance at
+/// 30% real-time so the explosion reads as a slow-burn moment rather than a
+/// half-second pop.
+const DEATH_DT_MULTIPLIER: f32 = 0.30;
+
 /// (#210 P3) Which kind of continuous-flow transition is in flight — Round
 /// (encounter→encounter, ~1 s) or Waypoint (level→waypoint, ~2 s). Drives the
 /// warp duration via [`TransitionKind::warp_secs`]. Phase 1: only these two;
@@ -932,6 +943,28 @@ impl TransitionPhase {
     fn progress(self, now: Instant) -> f32 {
         let elapsed = now.duration_since(self.started_at).as_secs_f32();
         (elapsed / self.kind.warp_secs()).clamp(0.0, 1.0)
+    }
+}
+
+/// (#210 P8) Continuous-death phase data — replaces the old `RunDefeated`
+/// modal pop with an animated slow-mo explosion + delayed stats overlay.
+/// Held inside `DemoState::Dying`. Wall-clock `Instant` matches the rest of
+/// the bin's animation timing; the t∈[0, 1] progress drives both the
+/// explosion playback (via the dt slow-mo multiplier in `RedrawRequested`)
+/// and the overlay fade-in (overlay appears at `t >= 0.5`). ENTER restarts
+/// from any frame inside the window.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct DeathPhase {
+    started_at: Instant,
+}
+
+impl DeathPhase {
+    /// Lifetime fraction `[0.0, 1.0]` for the death window. `1.0` means
+    /// the slow-mo explosion phase + the overlay fade are both complete
+    /// (the state STAYS at `Dying` waiting for ENTER restart).
+    fn progress(self, now: Instant) -> f32 {
+        let elapsed = now.duration_since(self.started_at).as_secs_f32();
+        (elapsed / DEATH_WINDOW_SECS).clamp(0.0, 1.0)
     }
 }
 
@@ -990,7 +1023,23 @@ enum DemoState {
     /// Enter restarts the run from sector 0. Distinct from
     /// `WinState::Defeat` (which is per-encounter) — this flips on
     /// `mark_defeated` and the Run carries the flag forward.
+    ///
+    /// (#210 P8) Replaced as the entry point by `Dying(DeathPhase)`. Still
+    /// reachable today only as the defensive fallback if a future code
+    /// path ever needs the legacy modal pop; the live death path now goes
+    /// `Lost → Dying → (ENTER) → restart_run` skipping this entirely.
+    /// `push_run_defeated_overlay_with_cause` is reused by the `Dying`
+    /// render arm so the overlay art stays the same.
+    #[allow(dead_code)]
     RunDefeated,
+    /// (#210 P8) Continuous-death flow — slow-mo player explosion plays
+    /// over the first half of `DEATH_WINDOW_SECS`, stats overlay fades in
+    /// at the midpoint, ENTER restarts at any time. Replaces the prior
+    /// modal `RunDefeated` pop with an animated beat that lets the loss
+    /// land emotionally before the restart prompt. Read by the slow-mo
+    /// `dt` gate in `RedrawRequested` (multiplies dt by `DEATH_DT_MULTIPLIER`)
+    /// + the render arm (gates the overlay on `phase.progress >= 0.5`).
+    Dying(DeathPhase),
     /// (#210 P3) Continuous-flow warp in flight (Round or Waypoint) — replaces
     /// the prior modal `EncounterComplete` / `RunComplete` between-encounter
     /// gates with an animated transition. P3 only ADDS this variant; P4 wires
@@ -2001,7 +2050,11 @@ impl ApplicationHandler for App {
                         }
                         return;
                     }
-                    DemoState::RunComplete | DemoState::RunDefeated => {
+                    DemoState::RunComplete | DemoState::RunDefeated | DemoState::Dying(_) => {
+                        // (#210 P8) `Dying` accepts ENTER to restart at any
+                        // frame inside the death window — Bruce can skip the
+                        // slow-mo if he wants. Same modal-key shape as the
+                        // legacy `RunDefeated` / `RunComplete` early-return.
                         if key == Key::Enter {
                             self.restart_run();
                             if let Some(w) = self.window.as_ref() {
@@ -2038,7 +2091,13 @@ impl ApplicationHandler for App {
                 // takes over.
                 if win_state(&self.board) == WinState::Defeat {
                     mark_defeated(&mut self.run);
-                    self.demo_state = DemoState::RunDefeated;
+                    // (#210 P8) Continuous-death entry — slow-mo explosion +
+                    // delayed stats overlay. ENTER restarts at any frame.
+                    // Local `Instant::now()` since the input handler's `now`
+                    // binding lives further down at the resolve-arm site.
+                    self.demo_state = DemoState::Dying(DeathPhase {
+                        started_at: Instant::now(),
+                    });
                     if let Some(w) = self.window.as_ref() {
                         w.request_redraw();
                     }
@@ -2326,7 +2385,10 @@ impl ApplicationHandler for App {
                         }
                         EncounterOutcome::Lost => {
                             mark_defeated(&mut self.run);
-                            self.demo_state = DemoState::RunDefeated;
+                            // (#210 P8) Continuous-death entry from the
+                            // resolve arm — same Dying phase as the
+                            // post-mutation check above.
+                            self.demo_state = DemoState::Dying(DeathPhase { started_at: now });
                         }
                         EncounterOutcome::InProgress => {}
                     }
@@ -2483,8 +2545,20 @@ impl ApplicationHandler for App {
                 // makes the VFX genuinely real-time (not an assumed 60 Hz) AND
                 // decoupled from turn resolution — the turn resolves in logic while
                 // these effects play out over real seconds.
-                let dt = (now.duration_since(self.last_frame).as_secs_f32()).clamp(0.0, 0.050);
+                let raw_dt = (now.duration_since(self.last_frame).as_secs_f32()).clamp(0.0, 0.050);
                 self.last_frame = now;
+                // (#210 P8) Slow-mo gate — during `Dying`, the particle /
+                // vfx / hull-flash pools run at `DEATH_DT_MULTIPLIER * dt`
+                // so the explosion plays as a long-burn beat instead of a
+                // half-second pop. All other dt-consumers (parallax tween,
+                // transition timer, idle bob) read the same slowed value so
+                // the whole frame breathes together. Outside `Dying`, raw_dt
+                // == dt — byte-identical to the prior path.
+                let dt = if matches!(self.demo_state, DemoState::Dying(_)) {
+                    raw_dt * DEATH_DT_MULTIPLIER
+                } else {
+                    raw_dt
+                };
                 // (#207 Bruce) PARALLAX-style lateral pan on 5x4 ONLY: when any
                 // ship occupies the leftmost (col 0) or rightmost (col cols-1)
                 // lane, shift the whole grid laterally to keep that ship in
@@ -2967,6 +3041,25 @@ impl ApplicationHandler for App {
                             salvage,
                             cause.as_deref(),
                         );
+                    }
+                    DemoState::Dying(phase) => {
+                        // (#210 P8) Continuous-death overlay — gated on
+                        // `progress >= 0.5` so the first half of the window
+                        // is JUST the slow-mo explosion on the frozen final
+                        // board, then the stats overlay appears for the back
+                        // half (full alpha — the existing
+                        // push_run_defeated_overlay_with_cause has no fade
+                        // parameter; the binary appearance at t=0.5 reads
+                        // as a beat, not a pop). Reuses the same overlay art
+                        // as the legacy RunDefeated path.
+                        if phase.progress(now) >= 0.5 {
+                            let cause = defeat_cause(&self.board);
+                            hud::push_run_defeated_overlay_with_cause(
+                                &mut instances,
+                                salvage,
+                                cause.as_deref(),
+                            );
+                        }
                     }
                 }
                 match gfx.render(&instances) {
