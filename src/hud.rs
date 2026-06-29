@@ -4942,8 +4942,8 @@ mod tests {
     fn empty_board(size: usize) -> Board {
         Board {
             size,
-            cols: size,
-            rows: 1,
+            cols: crate::grid::COLS,
+            rows: crate::grid::ROWS,
             cells: (0..size).map(|_| None).collect(),
             ordnance: Vec::new(),
             hazards: (0..size).map(|_| Vec::new()).collect(),

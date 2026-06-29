@@ -294,7 +294,9 @@ impl Board {
     /// meaningful on a board whose ships have been placed 2-D-natively.
     #[must_use]
     pub fn ship_at(&self, pos: Pos) -> Option<&Ship> {
-        self.cells.get(pos.to_index()).and_then(|c| c.as_ref())
+        self.cells
+            .get(pos.to_index_in(self.dims()))
+            .and_then(|c| c.as_ref())
     }
 
     /// Mutably borrow the ship occupying `pos` (the `mut` companion to
@@ -302,7 +304,8 @@ impl Board {
     /// O(1) `get_mut` + slot==pos invariant.
     #[must_use]
     pub fn ship_at_mut(&mut self, pos: Pos) -> Option<&mut Ship> {
-        self.cells.get_mut(pos.to_index()).and_then(|c| c.as_mut())
+        let idx = pos.to_index_in(self.dims());
+        self.cells.get_mut(idx).and_then(|c| c.as_mut())
     }
 
     /// Find the [`Pos`] of the ship with `id`, or `None` if absent
@@ -312,10 +315,11 @@ impl Board {
     /// invariant).
     #[must_use]
     pub fn find_pos_by_id(&self, id: &str) -> Option<Pos> {
+        let dims = self.dims();
         self.cells.iter().enumerate().find_map(|(i, c)| {
             c.as_ref()
                 .filter(|s| s.id == id)
-                .and_then(|_| Pos::from_index(i))
+                .and_then(|_| Pos::from_index_in(i, dims))
         })
     }
 }

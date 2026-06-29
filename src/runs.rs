@@ -257,17 +257,17 @@ where
     let player_pos = player_start_pos();
     player.pos = player_pos;
     player.facing = player_spawn_facing();
-    player.cell = player_pos.to_index();
+    player.cell = player_pos.to_index_in(dims);
     player.orientation = Orientation::BowOn { bow: LaneEnd::Fore };
-    cells[player_pos.to_index()] = Some(player);
+    cells[player_pos.to_index_in(dims)] = Some(player);
 
     // Place each enemy spawn at its 2-D pos (invariant A).
     for spawn in &encounter.enemy_ships {
-        if !spawn.pos.in_bounds() || spawn.pos == player_pos {
+        if !spawn.pos.in_bounds_in(dims) || spawn.pos == player_pos {
             // Off-grid or colliding with the player — skip (defensive).
             continue;
         }
-        let idx = spawn.pos.to_index();
+        let idx = spawn.pos.to_index_in(dims);
         if cells[idx].is_some() {
             continue; // a prior spawn already holds this cell
         }
@@ -289,8 +289,8 @@ where
 
     // Drop hazards into their 2-D cells.
     for h in &encounter.hazards {
-        if h.pos.in_bounds() {
-            hazards[h.pos.to_index()].push(h.clone());
+        if h.pos.in_bounds_in(dims) {
+            hazards[h.pos.to_index_in(dims)].push(h.clone());
         }
     }
 
@@ -1205,8 +1205,8 @@ mod tests {
         let size = cells.len();
         Board {
             size,
-            cols: size,
-            rows: 1,
+            cols: crate::grid::COLS,
+            rows: crate::grid::ROWS,
             cells,
             ordnance: vec![],
             hazards: (0..size).map(|_| vec![]).collect(),

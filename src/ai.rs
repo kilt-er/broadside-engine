@@ -55,7 +55,8 @@ const SPREAD_OVERLAP_PENALTY: i32 = 1;
 /// (no `resolve.rs` co-edit).
 pub fn decide_enemy_action(enemy_cell: usize, board: &mut Board, content: &dyn Content) {
     // Recover the enemy's 2-D position (invariant A: slot == pos.to_index()).
-    let Some(enemy_pos) = Pos::from_index(enemy_cell) else {
+    // Width migration: from_index_in(board.dims()) == from_index() on a 5x4 board.
+    let Some(enemy_pos) = Pos::from_index_in(enemy_cell, board.dims()) else {
         return; // out-of-grid index — nothing to decide
     };
 
@@ -371,16 +372,17 @@ pub fn decide_enemy_action(enemy_cell: usize, board: &mut Board, content: &dyn C
 /// Pure read; no new board state.
 fn allies_threatened_cells(self_pos: Pos, board: &Board, content: &dyn Content) -> Vec<Pos> {
     let order = enemy_initiative(board);
+    let dims = board.dims();
     // Index of the deciding enemy in the initiative order (by cell == pos index
     // under invariant A). If absent (shouldn't happen — it's a live enemy),
     // treat as "no earlier allies".
-    let self_idx = order.iter().position(|&c| c == self_pos.to_index());
+    let self_idx = order.iter().position(|&c| c == self_pos.to_index_in(dims));
     let Some(self_idx) = self_idx else {
         return Vec::new();
     };
     let mut out: Vec<Pos> = Vec::new();
     for &cell in &order[..self_idx] {
-        let Some(ally_pos) = Pos::from_index(cell) else {
+        let Some(ally_pos) = Pos::from_index_in(cell, dims) else {
             continue;
         };
         let Some(ally) = board.ship_at(ally_pos) else {

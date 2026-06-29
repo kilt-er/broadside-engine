@@ -109,8 +109,8 @@ fn solo_board() -> Board {
     cells[0] = Some(player);
     Board {
         size: 7,
-        cols: 7,
-        rows: 1,
+        cols: broadside_engine::grid::COLS,
+        rows: broadside_engine::grid::ROWS,
         cells,
         ordnance: Vec::new(),
         hazards: (0..7).map(|_| Vec::new()).collect(),

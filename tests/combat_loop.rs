@@ -182,8 +182,8 @@ impl Content for CombatContent {
 fn board(size: usize, cells: Vec<Option<Ship>>) -> Board {
     Board {
         size,
-        cols: size,
-        rows: 1,
+        cols: broadside_engine::grid::COLS,
+        rows: broadside_engine::grid::ROWS,
         cells,
         ordnance: Vec::new(),
         hazards: (0..size).map(|_| Vec::new()).collect(),

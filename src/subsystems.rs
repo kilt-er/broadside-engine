@@ -251,8 +251,8 @@ mod tests {
         }
         Board {
             size,
-            cols: size,
-            rows: 1,
+            cols: crate::grid::COLS,
+            rows: crate::grid::ROWS,
             cells,
             ordnance: Vec::new(),
             hazards: (0..size).map(|_| Vec::new()).collect(),

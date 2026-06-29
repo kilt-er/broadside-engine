@@ -338,8 +338,8 @@ fn busy_board() -> Board {
 
     Board {
         size: 7,
-        cols: 7,
-        rows: 1,
+        cols: broadside_engine::grid::COLS,
+        rows: broadside_engine::grid::ROWS,
         cells: vec![
             Some(player),
             None,

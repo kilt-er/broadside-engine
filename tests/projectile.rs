@@ -154,8 +154,8 @@ fn projectile_2d(
 fn board(size: usize, cells: Vec<Option<Ship>>, ordnance: Vec<Projectile>) -> Board {
     Board {
         size,
-        cols: size,
-        rows: 1,
+        cols: broadside_engine::grid::COLS,
+        rows: broadside_engine::grid::ROWS,
         cells,
         ordnance,
         hazards: (0..size).map(|_| Vec::new()).collect(),

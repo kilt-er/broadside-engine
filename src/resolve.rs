@@ -608,8 +608,14 @@ fn run_action(
     // Capture the firer's faction here (releases the `ship` borrow before the
     // R7 whiff block mutates `board.fire_events`).
     let ship_faction = ship.faction;
+    // Runtime grid size for every Pos<->flat-slot conversion below (width
+    // migration): on the default 5x4 board `to_index_in(dims) == to_index()`.
+    let dims = board.dims();
     let target_positions = resolve_targeting_2d(action, board, ship_pos);
-    let cells: Vec<usize> = target_positions.iter().map(|p| p.to_index()).collect();
+    let cells: Vec<usize> = target_positions
+        .iter()
+        .map(|p| p.to_index_in(dims))
+        .collect();
 
     // R7 — DODGE WHIFF. Before the "nothing bore" gate can swallow a vacated
     // shot, draw the miss. This ship telegraphed a threat set last phase
@@ -638,8 +644,8 @@ fn run_action(
             .collect();
         for pos in whiffed {
             board.fire_events.push(crate::types::FireEvent {
-                from_cell: ship_pos.to_index(),
-                to_cell: pos.to_index(),
+                from_cell: ship_pos.to_index_in(dims),
+                to_cell: pos.to_index_in(dims),
                 from_pos: ship_pos,
                 to_pos: pos,
                 archetype: action.archetype,
@@ -691,7 +697,7 @@ fn run_action(
                     // `target == target_pos.to_index()`). The renderer's #59
                     // exact beam + the R7 dodge-whiff draw between these.
                     from_pos: ship_pos,
-                    to_pos: Pos::from_index(target).unwrap_or(ship_pos),
+                    to_pos: Pos::from_index_in(target, dims).unwrap_or(ship_pos),
                     archetype: action.archetype,
                     attacker_faction,
                     hit: true,
@@ -745,7 +751,7 @@ fn run_action(
             match board.find_pos_by_id(ship_id) {
                 Some(cur_pos) => resolve_targeting_2d(action, board, cur_pos)
                     .iter()
-                    .map(|p| p.to_index())
+                    .map(|p| p.to_index_in(dims))
                     .collect(),
                 None => break, // attacker gone after the first pass
             }
@@ -933,6 +939,9 @@ pub fn advance_projectile_2d(projectile_id: &str, board: &mut Board, content: &d
         return;
     };
     let speed = board.ordnance[idx].speed;
+    // Runtime grid size for offset bounds + Pos<->slot conversions (width
+    // migration; == the const helpers on a default 5x4 board).
+    let dims = board.dims();
     for _ in 0..speed {
         // Re-find each step (the projectile may move within the vec).
         let Some(idx) = board.ordnance.iter().position(|p| p.id == projectile_id) else {
@@ -941,12 +950,12 @@ pub fn advance_projectile_2d(projectile_id: &str, board: &mut Board, content: &d
         let heading = board.ordnance[idx].heading8;
         let cur = board.ordnance[idx].pos;
         // Step one cell along the heading; off-grid removes the projectile.
-        let Some(new_pos) = crate::grid::offset(cur, heading, 1) else {
+        let Some(new_pos) = crate::grid::offset_in(cur, heading, 1, dims) else {
             board.ordnance.retain(|p| p.id != projectile_id);
             return;
         };
         board.ordnance[idx].pos = new_pos;
-        board.ordnance[idx].cell = new_pos.to_index(); // keep 1-D mirror in sync (invariant A)
+        board.ordnance[idx].cell = new_pos.to_index_in(dims); // keep 1-D mirror in sync (invariant A)
 
         // Hit a non-owner occupant?
         let owner_faction = board.ordnance[idx].owner_faction;
@@ -958,7 +967,8 @@ pub fn advance_projectile_2d(projectile_id: &str, board: &mut Board, content: &d
                 // from behind along the heading -> phantom attacker one cell back
                 // (clamped to new_pos if that's off-grid).
                 let payload = board.ordnance[idx].payload.clone();
-                let from = crate::grid::offset(new_pos, heading.opposite(), 1).unwrap_or(new_pos);
+                let from =
+                    crate::grid::offset_in(new_pos, heading.opposite(), 1, dims).unwrap_or(new_pos);
                 let dummy = dummy_weapon();
                 for fx in &payload {
                     match fx {
@@ -966,7 +976,7 @@ pub fn advance_projectile_2d(projectile_id: &str, board: &mut Board, content: &d
                             apply_damage_2d(new_pos, *amount, from, &dummy, board, content);
                         }
                         Effect::APPLY_STATUS { status, duration } => {
-                            add_status(new_pos.to_index(), *status, *duration, board);
+                            add_status(new_pos.to_index_in(dims), *status, *duration, board);
                         }
                         _ => {} // TS only handles these two on impact.
                     }
@@ -988,6 +998,8 @@ pub fn end_of_turn(board: &mut Board, content: &dyn Content) {
     // Collect the cells of every live ship up front so we can mutate them
     // by index without holding a borrow on `board.cells`.
     let cells: Vec<usize> = ships_of(board).iter().map(|s| s.cell).collect();
+    // Runtime grid size for Pos->slot conversions (width migration).
+    let dims = board.dims();
 
     // PROBE(option B): faces that took FIRE this round do NOT regen (under-fire
     // pause). Read it from `board.fire_events` (accumulated all round, cleared at
@@ -1000,7 +1012,7 @@ pub fn end_of_turn(board: &mut Board, content: &dyn Content) {
         if !ev.hit {
             continue;
         }
-        let tcell = ev.to_pos.to_index();
+        let tcell = ev.to_pos.to_index_in(dims);
         if let Some(target) = board.cells.get(tcell).and_then(|c| c.as_ref()) {
             if let Some(incoming_from) = crate::geometry2d::direction_to(ev.to_pos, ev.from_pos) {
                 let zone = crate::geometry2d::facing_zone(target.facing, incoming_from);
@@ -1239,10 +1251,10 @@ fn bearing_cardinals(facing: Facing, arc: Option<Arc>) -> Vec<Dir8> {
 /// [`crate::grid::offset`] so the bounds check (and the no-1-D-underflow-hack
 /// property the reviewer asked for, gate #1) is the grid's, not ad-hoc signed
 /// math.
-fn cells_along(from: Pos, dir: Dir8) -> Vec<Pos> {
+fn cells_along(from: Pos, dir: Dir8, dims: crate::grid::Dims) -> Vec<Pos> {
     let mut out = Vec::new();
     let mut k = 1;
-    while let Some(p) = crate::grid::offset(from, dir, k) {
+    while let Some(p) = crate::grid::offset_in(from, dir, k, dims) {
         out.push(p);
         k += 1;
     }
@@ -1253,7 +1265,7 @@ fn cells_along(from: Pos, dir: Dir8) -> Vec<Pos> {
 /// 2-D replacement for the 1-D `first_target_toward` — RE-DERIVED as a clean
 /// ray-walk over [`Board::ship_at`] (no negative-index probe).
 fn first_target_along(board: &Board, from: Pos, dir: Dir8) -> Option<Pos> {
-    cells_along(from, dir)
+    cells_along(from, dir, board.dims())
         .into_iter()
         .find(|p| board.ship_at(*p).is_some())
 }
@@ -1314,7 +1326,7 @@ pub fn resolve_targeting_2d(a: &Action, board: &Board, ship_pos: Pos) -> Vec<Pos
             // in-band occupant. `hits_all` -> every in-band occupant on the
             // ray; else just the first.
             for dir in bearing_cardinals(ship.facing, t.requires_arc) {
-                let line: Vec<Pos> = cells_along(ship_pos, dir)
+                let line: Vec<Pos> = cells_along(ship_pos, dir, board.dims())
                     .into_iter()
                     .filter(|p| in_band(*p) && board.ship_at(*p).is_some())
                     .collect();
@@ -1341,7 +1353,7 @@ pub fn resolve_targeting_2d(a: &Action, board: &Board, ship_pos: Pos) -> Vec<Pos
             for dir in bearing_cardinals(ship.facing, t.requires_arc) {
                 if let Some(center) = first_target_along(board, ship_pos, dir) {
                     let mut out = vec![center];
-                    out.extend(crate::grid::neighbors(center));
+                    out.extend(crate::grid::neighbors_in(center, board.dims()));
                     return out;
                 }
             }
@@ -1355,7 +1367,7 @@ pub fn resolve_targeting_2d(a: &Action, board: &Board, ship_pos: Pos) -> Vec<Pos
             let Some(&dir) = bearing_cardinals(ship.facing, t.requires_arc).first() else {
                 return Vec::new();
             };
-            match crate::grid::offset(ship_pos, dir, 1) {
+            match crate::grid::offset_in(ship_pos, dir, 1, board.dims()) {
                 Some(p) => vec![p],
                 None => Vec::new(),
             }
@@ -1499,7 +1511,9 @@ pub fn apply_damage_2d(
     board: &mut Board,
     content: &dyn Content,
 ) {
-    let target_idx = target_pos.to_index();
+    // Runtime grid size for Pos->slot conversions (width migration).
+    let dims = board.dims();
+    let target_idx = target_pos.to_index_in(dims);
     // Bail if the target cell is empty (matches the 1-D guard).
     if board.ship_at(target_pos).is_none() {
         return;
@@ -1531,7 +1545,7 @@ pub fn apply_damage_2d(
     //    2-D `Range` directly — the live path passes the ACTUAL 2-D band, no
     //    `Range -> RangeBand` collapse (the old shim dropped `Far -> Mid`, which
     //    silently disabled any `Far`-keyed subsystem like Marksman in 2-D).
-    dmg = apply_modifiers(dmg, atk_pos.to_index(), band, board, content);
+    dmg = apply_modifiers(dmg, atk_pos.to_index_in(dims), band, board, content);
 
     // 3. Target-lock doubles the hit and is consumed.
     if let Some(target) = board.ship_at_mut(target_pos) {
@@ -1621,6 +1635,9 @@ pub fn apply_effect(
     board: &mut Board,
     content: &dyn Content,
 ) {
+    // Runtime grid size for the slot<->Pos conversions below (width migration;
+    // == the const helpers on a default 5x4 board).
+    let dims = board.dims();
     match fx {
         Effect::DAMAGE { amount, .. } => {
             // The attacker's id, captured BEFORE any hit so the on-hit mod
@@ -1636,8 +1653,10 @@ pub fn apply_effect(
                     // the attacker's slot, so under invariant (A) both recover
                     // their Pos exactly. apply_damage_2d wires the 2-D Range
                     // falloff + facing_zone, KEEPING the ORDER.
-                    if let (Some(tp), Some(ap)) = (Pos::from_index(c), Pos::from_index(source_cell))
-                    {
+                    if let (Some(tp), Some(ap)) = (
+                        Pos::from_index_in(c, dims),
+                        Pos::from_index_in(source_cell, dims),
+                    ) {
                         apply_damage_2d(tp, *amount, ap, a, board, content);
                     }
                     // On-hit weapon mod (flak/incendiary/emp/targeting_laser/
@@ -1741,7 +1760,7 @@ pub fn apply_effect(
             // that grants lateral movement is exempt. `grants_lateral(a)` is the
             // single predicate that decides — the rule itself lives in
             // resolve_self_move_2d.
-            if let Some(source_pos) = Pos::from_index(source_cell) {
+            if let Some(source_pos) = Pos::from_index_in(source_cell, dims) {
                 resolve_self_move_2d(
                     source_pos,
                     *mode,
@@ -1759,9 +1778,9 @@ pub fn apply_effect(
             // R6b: live path -> 2-D. cells came from resolve_targeting_2d
             // (Pos->to_index shim) + source_cell is the actor's slot, so under
             // invariant (A) both recover their Pos exactly.
-            if let Some(source_pos) = Pos::from_index(source_cell) {
+            if let Some(source_pos) = Pos::from_index_in(source_cell, dims) {
                 for &c in cells {
-                    if let Some(target_pos) = Pos::from_index(c) {
+                    if let Some(target_pos) = Pos::from_index_in(c, dims) {
                         resolve_target_move_2d(
                             target_pos, source_pos, *mode, *distance, board, content,
                         );
@@ -1953,9 +1972,10 @@ fn apply_on_hit_mod(
             // burst as arriving from the detonation; `apply_damage_2d`'s
             // `direction_to` handles the diagonal `incoming_from` an 8-neighbour
             // splash produces (facing_zone is total over 8).
-            if let Some(hit_pos) = Pos::from_index(hit_cell) {
+            if let Some(hit_pos) = Pos::from_index_in(hit_cell, board.dims()) {
                 let dummy = dummy_weapon();
-                for n in crate::grid::neighbors(hit_pos) {
+                let dims = board.dims();
+                for n in crate::grid::neighbors_in(hit_pos, dims) {
                     if board.ship_at(n).is_some() {
                         apply_damage_2d(n, 1, hit_pos, &dummy, board, content);
                     }
@@ -2780,6 +2800,9 @@ fn resolve_self_move_2d(
     let Some(ship) = board.ship_at(ship_pos) else {
         return;
     };
+    // Runtime grid size for every offset bounds-walk + Pos<->slot conversion
+    // below (width migration; == the const helpers on a default 5x4 board).
+    let dims = board.dims();
     // Resolve the cardinal move direction, in precedence order:
     //   1. `direction_2d` — an explicit 2-D cardinal override (if a content
     //      author ever sets one; nothing does today).
@@ -2818,7 +2841,7 @@ fn resolve_self_move_2d(
     let (landing, collision_dmg): (Pos, i32) = match mode {
         MovementMode::THRUST => {
             // Always one cardinal step; distance ignored (THRUST is 1).
-            match crate::grid::offset(ship_pos, dir, 1) {
+            match crate::grid::offset_in(ship_pos, dir, 1, dims) {
                 None => (ship_pos, 1), // wall: stop, 1 collision
                 Some(next) if board.ship_at(next).is_some() => (ship_pos, 1), // occupant: stop, 1
                 Some(next) => (next, 0),
@@ -2830,7 +2853,7 @@ fn resolve_self_move_2d(
             let mut cur = ship_pos;
             let mut steps_taken = 0;
             for _ in 0..distance {
-                let Some(next) = crate::grid::offset(cur, dir, 1) else {
+                let Some(next) = crate::grid::offset_in(cur, dir, 1, dims) else {
                     break;
                 };
                 if board.ship_at(next).is_some() {
@@ -2849,7 +2872,7 @@ fn resolve_self_move_2d(
             let mut cur = ship_pos;
             let mut scanned = 0;
             while scanned < distance {
-                let Some(next) = crate::grid::offset(cur, dir, 1) else {
+                let Some(next) = crate::grid::offset_in(cur, dir, 1, dims) else {
                     break;
                 };
                 cur = next;
@@ -2860,7 +2883,7 @@ fn resolve_self_move_2d(
                 if board.ship_at(cur).is_none() {
                     return self_move_2d_commit(ship_pos, cur, 0, dir, board, content);
                 }
-                let Some(next) = crate::grid::offset(cur, dir, 1) else {
+                let Some(next) = crate::grid::offset_in(cur, dir, 1, dims) else {
                     // Ran off the lane before a free cell — clamp at `cur` (last
                     // in-bounds, occupied) is wrong; the 1-D version clamps to the
                     // edge it reached. `cur` IS the last in-bounds cell; bill 1
@@ -2874,14 +2897,14 @@ fn resolve_self_move_2d(
 
         MovementMode::JUMP => {
             // Blink: compute the target directly, no path scan.
-            match crate::grid::offset(ship_pos, dir, distance) {
+            match crate::grid::offset_in(ship_pos, dir, distance, dims) {
                 None => {
                     // Off-board: 1-D clamps to the edge + bills overflow. In 2-D
                     // "the edge along `dir`" isn't a single cell; settle on the
                     // farthest in-bounds cell along `dir` and bill the shortfall.
                     let mut cur = ship_pos;
                     let mut adv = 0;
-                    while let Some(next) = crate::grid::offset(cur, dir, 1) {
+                    while let Some(next) = crate::grid::offset_in(cur, dir, 1, dims) {
                         cur = next;
                         adv += 1;
                     }
@@ -2894,14 +2917,14 @@ fn resolve_self_move_2d(
 
         MovementMode::TRACTOR_SWAP => {
             // Swap with the first adjacent occupant along `dir`.
-            let Some(adj) = crate::grid::offset(ship_pos, dir, 1) else {
+            let Some(adj) = crate::grid::offset_in(ship_pos, dir, 1, dims) else {
                 return;
             };
             if board.ship_at(adj).is_none() {
                 return;
             }
-            let i = ship_pos.to_index();
-            let j = adj.to_index();
+            let i = ship_pos.to_index_in(dims);
+            let j = adj.to_index_in(dims);
             let mut source_ship = board.cells[i].take();
             let mut other_ship = board.cells[j].take();
             if let Some(s) = source_ship.as_mut() {
@@ -2933,12 +2956,14 @@ fn self_move_2d_commit(
     board: &mut Board,
     content: &dyn Content,
 ) {
+    // Runtime grid size for Pos<->slot conversions + the collision offset walk.
+    let dims = board.dims();
     if to != from {
-        // Bounds-safe: a real board is len CELLS (grid::offset never escapes
-        // 0..CELLS), but defensively never panic — if `to`'s slot is past the
-        // board's actual `cells` length (a short legacy/test board), the move
+        // Bounds-safe: a real board is len cell_count (grid::offset_in never
+        // escapes the grid), but defensively never panic — if `to`'s slot is past
+        // the board's actual `cells` length (a short legacy/test board), the move
         // can't land, so leave the ship in place rather than index OOB.
-        let (fi, ti) = (from.to_index(), to.to_index());
+        let (fi, ti) = (from.to_index_in(dims), to.to_index_in(dims));
         if ti >= board.cells.len() || fi >= board.cells.len() {
             return;
         }
@@ -2958,7 +2983,7 @@ fn self_move_2d_commit(
         // R4: now routes through the 2-D apply_damage_2d, so the directional-
         // shield ZONE is the TRUE 2-D collision face (was provisional on the 1-D
         // path, which mis-read the flat index as a lane position).
-        let phantom = crate::grid::offset(to, dir, 1).unwrap_or(to);
+        let phantom = crate::grid::offset_in(to, dir, 1, dims).unwrap_or(to);
         apply_damage_2d(to, collision_dmg, phantom, &dummy_weapon(), board, content);
     }
 }
@@ -3121,6 +3146,9 @@ fn resolve_target_move_2d(
     if board.ship_at(target_pos).is_none() {
         return;
     }
+    // Runtime grid size for every Pos<->slot conversion + offset walk below
+    // (width migration; == the const helpers on a default 5x4 board).
+    let dims = board.dims();
 
     // `Swap` is structurally distinct and returns here; `Push`/`Pull` share the
     // walk + collision body below and differ only in travel direction, so they
@@ -3133,7 +3161,7 @@ fn resolve_target_move_2d(
             if source_pos == target_pos {
                 return;
             }
-            let (i, j) = (target_pos.to_index(), source_pos.to_index());
+            let (i, j) = (target_pos.to_index_in(dims), source_pos.to_index_in(dims));
             if i >= board.cells.len() || j >= board.cells.len() {
                 return; // off-board (short test board) — can't swap
             }
@@ -3174,7 +3202,7 @@ fn resolve_target_move_2d(
     let mut cur = target_pos;
     let mut steps_taken = 0;
     for _ in 0..distance {
-        let Some(next) = crate::grid::offset(cur, dir, 1) else {
+        let Some(next) = crate::grid::offset_in(cur, dir, 1, dims) else {
             break;
         };
         if board.ship_at(next).is_some() {
@@ -3187,7 +3215,7 @@ fn resolve_target_move_2d(
 
     // Move the target if it actually moved (slot + pos together).
     if cur != target_pos {
-        let (from_i, to_i) = (target_pos.to_index(), cur.to_index());
+        let (from_i, to_i) = (target_pos.to_index_in(dims), cur.to_index_in(dims));
         if to_i < board.cells.len() && from_i < board.cells.len() {
             let mut t = board.cells[from_i]
                 .take()
@@ -3204,7 +3232,7 @@ fn resolve_target_move_2d(
     // directional-shield ZONE is the true 2-D collision face (direction_to(cur,
     // phantom) yields the travel axis).
     if remaining > 0 {
-        let phantom = crate::grid::offset(cur, dir, 1).unwrap_or(cur);
+        let phantom = crate::grid::offset_in(cur, dir, 1, dims).unwrap_or(cur);
         apply_damage_2d(cur, remaining, phantom, &dummy_weapon(), board, content);
     }
 }
@@ -3348,8 +3376,8 @@ mod tests {
     fn make_board(size: usize, cells: Vec<Option<Ship>>) -> Board {
         Board {
             size,
-            cols: size,
-            rows: 1,
+            cols: crate::grid::COLS,
+            rows: crate::grid::ROWS,
             cells,
             ordnance: Vec::new(),
             hazards: (0..size).map(|_| Vec::new()).collect(),
