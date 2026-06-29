@@ -254,12 +254,19 @@ pub fn set_unified(on: bool) {
 }
 
 /// (UNIFY) World-unit scale applied to a hull mesh in the unified ship pass. The
-/// imported hulls are ~12 units long; one grid cell is 1 world unit, so ~0.12
-/// makes a hull fill ~1.4 cells. Tunable look (Bruce dials final size).
-const UNIFIED_SHIP_SCALE: f32 = 0.12;
+/// imported hulls are ~12 units long; one grid cell is 1 world unit. (#188 Bruce
+/// pick) 0.10 = hull spans ~1.2 cells along the lane, hull width ~0.62 world units
+/// (~62% of a cell) — comfortable cell fit with the bow projecting slightly out of
+/// the near edge for "ship moving up the lane" read. Live cycle = #190.
+const UNIFIED_SHIP_SCALE: f32 = 0.10;
 /// (UNIFY) Vertical lift (world units) of the hull above the ground plane so it
-/// sits ON the grid rather than half-buried at its mesh origin.
-const UNIFIED_SHIP_LIFT: f32 = 0.0;
+/// sits ON the grid rather than half-buried at its mesh origin. (#188 Bruce: enemies
+/// "float above their cells" — diagnosis: _03.glb Y-bbox is [-1.48, +1.32], so at
+/// scale 0.12 the hull's keel sits at world Y = -0.178 (BELOW the ground plane the
+/// grid lines are drawn on), with the visible mass straddling above. Lifting by
+/// +0.18 seats the keel exactly on the grid plane so the hull's BOTTOM touches the
+/// cell line Bruce reads as "the ship's cell").
+const UNIFIED_SHIP_LIFT: f32 = 0.18;
 
 /// (UNIFY) THE single place that builds the live scene [`crate::projector::ProjectorConfig`]
 /// from the global look state — the grid pitch arc ([`grid_pitch_t`]), the grid
@@ -2259,20 +2266,22 @@ impl Gfx {
     /// blit when [`unified_enabled`]. `cleared` tracks whether the offscreen has been
     /// cleared yet (the full-screen blit clears on the first draw of the frame).
     fn render_unified_fleet(&self, loft_quads: &[LoftShipInstance], cleared: &mut bool) {
-        // (#84) The grid + cell-world math uses the SCENE size; the unified
-        // view_proj must use the LOFT target's aspect (the actual viewport the
-        // hulls render into — see `loft.output_size()`). Mixing scene-aspect
-        // view_proj with a loft-target viewport distorts X positions (a 480x270
-        // scene-aspect proj rendered into a 480x300 1.6:1 target stretches the
-        // grid's perspective horizontally, which hides the per-column lean the
-        // unified pass should produce). `cell_world_center` depends only on
-        // cols/rows so swapping frame_w/h for the view_proj is safe.
+        // (#188) Build view_proj from the SCENE config so SHIPS and GRID share ONE
+        // projection — same aspect, same FOV, same camera. The grid is drawn via
+        // `scene_projector_cfg(scene_w, scene_h)`, so the ships MUST go through the
+        // exact same cfg or back-row/edge-col ships drift OFF their cells (the
+        // earlier #84 attempt overrode frame_w/h to the loft TARGET aspect 1.6 to
+        // expose the per-column lean, but that aspect mismatch made back-row ships
+        // diverge horizontally from their grid cells — col 4 row 1 player rendered
+        // OUTSIDE the right grid edge). The loft offscreen is rendered into at
+        // scene-aspect view_proj, then full-screen blit to the scene quad: the blit
+        // resamples the (loft_h ≠ scene_h)-tall loft texture to the scene quad
+        // 1:1 horizontally and vertically scaled by scene_h/loft_h, which preserves
+        // the projected ship positions (the world→ndc→pixel chain matches the
+        // direct-render-to-scene case exactly). Per-column lean still emerges from
+        // world geometry (constant-X edges of a +Z-pointing hull converge to the VP).
         let cfg = scene_projector_cfg(scene_w() as f32, scene_h() as f32);
-        let (loft_w, loft_h) = self.loft.output_size();
-        let mut view_cfg = cfg;
-        view_cfg.frame_w = loft_w as f32;
-        view_cfg.frame_h = loft_h as f32;
-        let view_proj = crate::projector::unified_view_proj(&view_cfg);
+        let view_proj = crate::projector::unified_view_proj(&cfg);
         // Build the per-hull (vbuf, vcount, model) draw list; scoped so the
         // immutable borrow of `self.loft_meshes` drops before the blit below.
         {

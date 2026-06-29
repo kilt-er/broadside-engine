@@ -815,18 +815,28 @@ pub fn vanishing_point(cfg: &ProjectorConfig) -> Point2 {
 /// hull at a cell projects without wrapping. Tunable look.
 const UNIFIED_FOV_Y_DEG: f32 = 52.0;
 /// Camera look-down pitch (degrees below horizontal) at grid-pitch `t = 0`.
-const UNIFIED_PITCH_DEG: f32 = 22.0;
+/// (#188 Bruce live shot) 22° was too shallow — near-row hull projected into the
+/// bottom HUD band. 30° tips the camera more top-down so the near row projects
+/// further from the horizon (higher on screen), clearing the HUD/card strip.
+const UNIFIED_PITCH_DEG: f32 = 30.0;
 /// Camera look-down pitch at full grid-pitch (`t = 1`, the `G` arc → near top-down).
 const UNIFIED_TOPDOWN_PITCH_DEG: f32 = 72.0;
 /// World Z of the board's NEAR edge (front of the near row) — how far the board
 /// sits in front of the camera's look-at reference.
 const UNIFIED_Z_FRONT: f32 = 1.3;
-/// Camera orbit distance from the look-at target (world units).
-const UNIFIED_CAM_DIST: f32 = 5.5;
+/// (#188 Bruce) Camera orbit distance from the look-at target (world units). 5.5
+/// pulled the camera too far back so the grid filled only ~50% of the frame
+/// width; 3.7 brings it close enough that the grid spans ~80% — matching the
+/// legacy fan's frame-fill. Closer also makes per-column lean MORE visible at
+/// edge cols (the perspective convergence is steeper).
+const UNIFIED_CAM_DIST: f32 = 3.7;
 /// Look-at height above the ground (world units) — larger aims the camera higher,
 /// pushing the board DOWN on screen (chase-cam: board in the lower ~⅔, horizon near
-/// mid-screen).
-const UNIFIED_TARGET_Y: f32 = 1.1;
+/// mid-screen). (#188 Bruce live shot) Was 0.6, still framed the board in the
+/// bottom half + clipped the near-row hull under the HUD strip. 0.3 centers the
+/// board vertically in the playable area (above the HUD bar at y≈230), with the
+/// near row clear of the ability-tile strip.
+const UNIFIED_TARGET_Y: f32 = 0.3;
 
 /// The unified camera's look-down pitch (radians) for this `cfg`, lerped along the
 /// `G` grid-pitch arc ([`ProjectorConfig::pitch_t`]).

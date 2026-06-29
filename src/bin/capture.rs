@@ -518,6 +518,44 @@ fn main() {
         broadside_engine::hud::push_player_readout(&mut commands, p.pos, p.facing);
     }
     broadside_engine::hud::push_res_readout(&mut commands, gfx.loft_res(), gfx.scene_res());
+    // (#188 lead) LIVE-FIDELITY HUD layers — the live bin (bin/broadside.rs Playing
+    // overlay) ALWAYS draws these three bottom/edge bands every frame regardless of
+    // any queued state: ability tiles strip at the bottom-center, queue panel
+    // top-right, enemy info panel top-left. Without them the capture's PLAYABLE
+    // area is wrong (no bottom-band reserved → near-row hull "looks fine" headless
+    // but clips under the live HUD strip). Build representative tiles from the
+    // player's mounts so the strip is REAL, not env-gated demo data. Mirrors what
+    // build_ship_tiles + push_ability_tiles_2d do in the live bin.
+    {
+        use broadside_engine::hud::{AbilityIcon, AbilityTile};
+        let tiles: Vec<AbilityTile> = if let Some(p) = board
+            .cells
+            .iter()
+            .flatten()
+            .find(|s| s.faction == Faction::Player)
+        {
+            p.mounts
+                .iter()
+                .enumerate()
+                .map(|(i, _m)| AbilityTile {
+                    slot: (b'1' + i as u8) as char,
+                    icon: AbilityIcon::Beam,
+                    damage: 3,
+                    range: 1,
+                    cooldown: 0,
+                    cooldown_max: 0,
+                    queued_index: None,
+                    can_fire: true,
+                    arc: Some('F'),
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        broadside_engine::hud::push_ability_tiles_2d(&mut commands, &tiles);
+        broadside_engine::hud::push_player_queue_panel_2d(&mut commands, &tiles);
+        broadside_engine::hud::push_enemy_info_panel_2d(&mut commands, &board);
+    }
     // (Bruce debug) BROADSIDE_ANGLE_OVERLAY=1 draws the per-ship PITCH/ROLL/YAW
     // labels (the bin's `O` toggle) so a headless capture can verify orientation
     // numerically alongside the pixels.
