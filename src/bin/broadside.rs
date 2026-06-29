@@ -3045,6 +3045,39 @@ impl ApplicationHandler for App {
                     &scene_tween,
                     self.frame_clock,
                 );
+                // (#213 item 3) PHASE-1 PLAYABLE-PLANE FADE — during the
+                // Transitioning Fade phase only, alpha-multiply every Sprite +
+                // Polygon DrawCommand in the just-composed scene so the
+                // playable grid wireframe + cell tiles + hud bars + flat ship
+                // sprites visibly clear as the upcoming preview begins its
+                // approach. LoftShip + TexturedShip variants are NOT multiplied
+                // — those are the player's 3-D hero hull, which Bruce's hard
+                // rule says NEVER leaves the screen (the player tween from
+                // d807c57 keeps it moving across the warp).
+                if let DemoState::Transitioning(phase) = self.demo_state {
+                    let t = phase.progress(std::time::Instant::now());
+                    let (cur_phase, sub) = broadside_engine::gfx::phase_from_progress(t);
+                    if matches!(cur_phase, broadside_engine::gfx::CinematicPhase::Fade) {
+                        // sub eases 0 → 1 across phase 1; multiplier 1 → 0 so
+                        // the playable plane fades to invisible by phase-1 end.
+                        let mul = (1.0 - sub).clamp(0.0, 1.0);
+                        for cmd in &mut instances {
+                            match cmd {
+                                broadside_engine::gfx::DrawCommand::Sprite(s) => {
+                                    s.color[3] *= mul;
+                                }
+                                broadside_engine::gfx::DrawCommand::Polygon(p) => {
+                                    p.color[3] *= mul;
+                                }
+                                broadside_engine::gfx::DrawCommand::TexturedShip(_)
+                                | broadside_engine::gfx::DrawCommand::LoftShip(_) => {
+                                    // Player 3-D hull / textured-ship hero — never
+                                    // alpha-multiplied (PLAYER NEVER LEAVES SCREEN).
+                                }
+                            }
+                        }
+                    }
+                }
                 // (#213 / #P7) PERSISTENT NEXT-GRID PREVIEW — Bruce can't see the
                 // next encounter approaching, so always draw the upcoming board
                 // at deeper Z through the shared unified camera. Picks the next
