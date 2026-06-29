@@ -25,7 +25,9 @@
 //! unit-testable headless. The caller ([`crate::hud`] / the bin) advances
 //! lifetimes each frame and asks for the draw commands.
 
-use crate::effects::{Explosion, HitFlash, ParticleBurst, ShotBeam, TelegraphFire, Trail};
+use crate::effects::{
+    Explosion, ExplosionReflection, HitFlash, ParticleBurst, ShotBeam, TelegraphFire, Trail,
+};
 use crate::gfx::{DrawCommand, SpriteInstance};
 use crate::grid::Pos;
 use crate::projector::{grid_cell_quad, ProjectorConfig};
@@ -82,6 +84,13 @@ enum EffectKind {
     /// red pop at the telegraph slot above the cell, so the player sees the
     /// readied action discharge rather than silently becoming the next intent.
     TelegraphFire { pos: Pos },
+    /// (#209 hook 4) Distance-delayed light bounce off a SURVIVING ship when a
+    /// blast goes off elsewhere: `target_pos` is the surviving ship's cell;
+    /// `start_delay` is the per-instance seconds-of-silence BEFORE the glow
+    /// appears (chebyshev distance × `delay_per_cell`). The effect's total
+    /// `dur` = `start_delay + life_secs`, so the pool keeps the effect alive
+    /// long enough for the delayed glow to play. Drawn by `emit_reflection_glow`.
+    ExplosionReflection { target_pos: Pos, start_delay: f32 },
 }
 
 impl Effect {
@@ -164,6 +173,8 @@ pub struct VfxConfig {
     pub telegraph_fire: TelegraphFire,
     /// Screen-space particle-burst params.
     pub particle_burst: ParticleBurst,
+    /// (#209 hook 4) Distance-delayed explosion-reflection params.
+    pub explosion_reflection: ExplosionReflection,
 }
 
 impl VfxConfig {
@@ -179,8 +190,8 @@ impl VfxConfig {
     #[must_use]
     pub fn from_catalog(cat: &crate::effects::EffectCatalog) -> Self {
         use crate::effects::{
-            EffectKind, ID_EXPLOSION, ID_HIT_FLASH, ID_PARTICLE_BURST, ID_SHOT_BEAM,
-            ID_TELEGRAPH_FIRE, ID_TRAIL,
+            EffectKind, ID_EXPLOSION, ID_EXPLOSION_REFLECTION, ID_HIT_FLASH, ID_PARTICLE_BURST,
+            ID_SHOT_BEAM, ID_TELEGRAPH_FIRE, ID_TRAIL,
         };
         let mut cfg = Self::default();
         for def in &cat.effects {
@@ -191,6 +202,9 @@ impl VfxConfig {
                 (ID_TRAIL, EffectKind::Trail(v)) => cfg.trail = v.clone(),
                 (ID_TELEGRAPH_FIRE, EffectKind::TelegraphFire(v)) => cfg.telegraph_fire = v.clone(),
                 (ID_PARTICLE_BURST, EffectKind::ParticleBurst(v)) => cfg.particle_burst = v.clone(),
+                (ID_EXPLOSION_REFLECTION, EffectKind::ExplosionReflection(v)) => {
+                    cfg.explosion_reflection = v.clone();
+                }
                 _ => {}
             }
         }
@@ -290,6 +304,11 @@ impl CombatVfx {
     fn diff(&mut self, prev: &Snapshot, cur: &Snapshot) {
         // Ships: hull-drop → hit flash; vanished → explosion.
         for (id, &(prev_hull, prev_pos, _prev_faction)) in &prev.ships {
+            // (#209 hook 4) Both arms heavyweight (Some = hit flash; None =
+            // explosion + reflection-spawn loop) → match reads clearer than
+            // an if-let chain. Clippy's single-pattern heuristic misfires.
+            #[allow(clippy::single_match)]
+            #[allow(clippy::single_match_else)]
             match cur.ships.get(id) {
                 Some(&(cur_hull, cur_pos, _)) => {
                     if cur_hull < prev_hull {
@@ -309,6 +328,32 @@ impl CombatVfx {
                         EffectKind::Explosion { pos: prev_pos },
                         self.cfg.explosion.life_secs,
                     );
+                    // (#209 hook 4) Distance-delayed light bounce: for every
+                    // ship STILL ALIVE this frame, spawn one ExplosionReflection
+                    // with start_delay = chebyshev(blast, target) ×
+                    // delay_per_cell. The pool keeps each alive for
+                    // start_delay + life_secs so the delayed glow plays out.
+                    // Chebyshev (max abs delta) matches how a player reads
+                    // distance on a square grid (a diagonal-2 cell is "2 away",
+                    // not √2). Skips the dying ship itself by construction
+                    // (its id isn't in cur.ships).
+                    for (other_id, &(_, other_pos, _)) in &cur.ships {
+                        if other_id == id {
+                            continue;
+                        }
+                        let dx = (prev_pos.col as i32 - other_pos.col as i32).unsigned_abs();
+                        let dy = (prev_pos.row as i32 - other_pos.row as i32).unsigned_abs();
+                        let d = dx.max(dy) as f32;
+                        let start_delay = d * self.cfg.explosion_reflection.delay_per_cell;
+                        let dur = start_delay + self.cfg.explosion_reflection.life_secs;
+                        self.spawn(
+                            EffectKind::ExplosionReflection {
+                                target_pos: other_pos,
+                                start_delay,
+                            },
+                            dur,
+                        );
+                    }
                 }
             }
         }
@@ -424,6 +469,29 @@ impl CombatVfx {
                     e.t(),
                     &self.cfg.shot_beam,
                 ),
+                EffectKind::ExplosionReflection {
+                    target_pos,
+                    start_delay,
+                } => {
+                    // (#209 hook 4) The effect's TOTAL duration includes
+                    // start_delay; SILENT until age >= start_delay, then a
+                    // life_secs-long glow plays. local_t maps [delay,
+                    // delay+life] → [0, 1] so emit_reflection_glow's ease
+                    // operates on the post-delay window.
+                    if e.age < start_delay {
+                        continue;
+                    }
+                    let local_t = ((e.age - start_delay)
+                        / self.cfg.explosion_reflection.life_secs.max(0.001))
+                    .clamp(0.0, 1.0);
+                    emit_reflection_glow(
+                        out,
+                        cfg,
+                        target_pos,
+                        local_t,
+                        &self.cfg.explosion_reflection,
+                    );
+                }
             }
         }
         // Telegraph: live cue above any enemy holding a queued action.
@@ -790,6 +858,36 @@ fn emit_ready_glow(
 /// for now; if Bruce wants per-effect pulse-rate dialling we can add a
 /// `TelegraphFire.ready_glow_hz` schema field later (one-line addition).
 const READY_GLOW_HZ: f32 = 1.5;
+
+/// (#209 hook 4) A distance-delayed reflection glow on a surviving ship's cell.
+/// `local_t` is the post-delay 0→1 lifetime fraction (the caller subtracts
+/// `start_delay` from the effect age + divides by `life_secs`). Eased
+/// fade-in/fade-out: alpha = `peak_alpha · sin(π · t)`, so it ramps up then
+/// settles symmetrically over the life. Drawn as a single `SOLID_WHITE` quad at
+/// the cell centre, sized to the cell's near-edge width so the highlight tracks
+/// live cell scale (#195) + camera zoom (#192) automatically.
+fn emit_reflection_glow(
+    out: &mut Vec<DrawCommand>,
+    cfg_proj: &ProjectorConfig,
+    pos: Pos,
+    local_t: f32,
+    cfg: &ExplosionReflection,
+) {
+    let q = grid_cell_quad(pos, cfg_proj);
+    let near_w = (q.corners[2][0] - q.corners[3][0]).abs();
+    let size = near_w * 0.85;
+    let alpha = cfg.peak_alpha * (local_t * std::f32::consts::PI).sin().max(0.0);
+    if alpha <= 0.0 {
+        return;
+    }
+    let c = cfg.color.0;
+    out.push(DrawCommand::Sprite(SpriteInstance::axis_aligned(
+        q.center,
+        [size / 2.0, size / 2.0],
+        [c[0], c[1], c[2], alpha],
+        atlas::cell_uvs(atlas::SOLID_WHITE),
+    )));
+}
 
 /* =============================================================================
  * Procedural particle pool (#119) — SCREEN-SPACE, for the live 2-D board.

@@ -110,6 +110,9 @@ pub const ID_EXPLOSION: &str = "explosion";
 pub const ID_TRAIL: &str = "trail";
 pub const ID_TELEGRAPH_FIRE: &str = "telegraph_fire";
 pub const ID_PARTICLE_BURST: &str = "particle_burst";
+/// (#209 hook 4) Distance-delayed light bounce off a surviving ship when a blast
+/// goes off. One id per [`EffectKind::ExplosionReflection`].
+pub const ID_EXPLOSION_REFLECTION: &str = "explosion_reflection";
 
 /// One authored effect: a stable lookup `id` plus its per-family parameters.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -141,6 +144,13 @@ pub enum EffectKind {
     TelegraphFire(TelegraphFire),
     /// A radial screen-space particle burst (e.g. debris on a kill).
     ParticleBurst(ParticleBurst),
+    /// (#209 hook 4) Distance-delayed light bounce: when a ship explodes, every
+    /// surviving ship's hull lights up briefly with a delay proportional to its
+    /// chebyshev distance from the blast (fake light-travel-time). Editor
+    /// authors `color` / `life_secs` / `peak_alpha` / `delay_per_cell` — the
+    /// engine spawns one effect per surviving ship in the diff explosion
+    /// branch.
+    ExplosionReflection(ExplosionReflection),
 }
 
 /// Per-archetype beam style row — mirrors one arm of `vfx::archetype_beam_style`
@@ -326,6 +336,32 @@ pub struct ParticleBurst {
     /// Per-second velocity drag coefficient (`advance` `2.0` in `1 - 2*dt`).
     #[serde(default = "default_burst_drag")]
     pub drag: f32,
+}
+
+/// (#209 hook 4) Distance-delayed light bounce. When a ship explodes, every
+/// surviving ship lights up briefly with a delay proportional to its chebyshev
+/// distance from the blast — a fake light-travel-time cue that makes the blast
+/// feel like a real point source. `vfx.rs`'s `diff` explosion branch spawns
+/// one effect per surviving ship; `emit_reflection_glow` draws it once the
+/// per-instance delay elapses.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ExplosionReflection {
+    /// Bounce tint — defaults to a warm yellow-white so the reflection reads as
+    /// light from the blast, not as a hit.
+    #[serde(default = "default_reflection_color")]
+    pub color: Rgb,
+    /// Glow lifetime in seconds AFTER the per-instance delay elapses.
+    #[serde(default = "default_reflection_life_secs")]
+    pub life_secs: f32,
+    /// Peak alpha at mid-life — subtle (default ~0.35), it's a light bounce,
+    /// not a hit.
+    #[serde(default = "default_reflection_peak_alpha")]
+    pub peak_alpha: f32,
+    /// Seconds of delay per cell of chebyshev distance from the blast. Default
+    /// 0.08 s/cell ≈ 12 cells/sec "fake light speed" — slow enough to read on
+    /// a 5x4 board, fast enough not to bore. Tunable.
+    #[serde(default = "default_reflection_delay_per_cell")]
+    pub delay_per_cell: f32,
 }
 
 /* ---- defaults: the EXACT constants currently in vfx.rs ---------------------
@@ -523,6 +559,21 @@ const fn default_burst_drag() -> f32 {
     2.0
 }
 
+// -- ExplosionReflection (#209 hook 4) --
+const fn default_reflection_color() -> Rgb {
+    // Warm yellow-white — light bounce, not a hit.
+    Rgb([1.0, 0.85, 0.55])
+}
+const fn default_reflection_life_secs() -> f32 {
+    0.45
+}
+const fn default_reflection_peak_alpha() -> f32 {
+    0.35
+}
+const fn default_reflection_delay_per_cell() -> f32 {
+    0.08
+}
+
 // Default impls delegate to the same fns so `EffectKind` variants built in code
 // match the serde-default path exactly.
 impl Default for ShotBeam {
@@ -603,6 +654,17 @@ impl Default for ParticleBurst {
             size_max: default_burst_size_max(),
             dur_jitter: default_burst_dur_jitter(),
             drag: default_burst_drag(),
+        }
+    }
+}
+
+impl Default for ExplosionReflection {
+    fn default() -> Self {
+        Self {
+            color: default_reflection_color(),
+            life_secs: default_reflection_life_secs(),
+            peak_alpha: default_reflection_peak_alpha(),
+            delay_per_cell: default_reflection_delay_per_cell(),
         }
     }
 }
