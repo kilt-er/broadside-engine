@@ -311,12 +311,15 @@ pub fn set_unified(on: bool) {
 pub const UNIFIED_SHIP_SCALE_MIN: f32 = 0.05;
 /// (#190) Maximum allowed ship scale for the live `]` adjuster. Named so the band
 /// widens via a one-liner if Bruce wants larger hulls later.
-pub const UNIFIED_SHIP_SCALE_MAX: f32 = 0.15;
+pub const UNIFIED_SHIP_SCALE_MAX: f32 = 0.25;
 /// (#190) Per-press step size for the `[` / `]` ship-scale adjuster.
 pub const UNIFIED_SHIP_SCALE_STEP: f32 = 0.01;
-/// (#190) Boot value — Bruce's #188 pick (0.10). Within
-/// `[UNIFIED_SHIP_SCALE_MIN, UNIFIED_SHIP_SCALE_MAX]`.
-pub const BOOT_SHIP_SCALE: f32 = 0.10;
+/// (#206 Bruce ratified) Boot ship-scale = 0.15 — Bruce's dialed look after the
+/// morning playtest, supersedes #190's 0.10. Within
+/// `[UNIFIED_SHIP_SCALE_MIN, UNIFIED_SHIP_SCALE_MAX]`. The MAX was bumped
+/// 0.15→0.25 in this commit so the live `]` key still has headroom from the
+/// new default (was at the ceiling otherwise — no dial-up).
+pub const BOOT_SHIP_SCALE: f32 = 0.15;
 
 /// (#190) Live ship-scale stored as `scale * 1000` rounded to u32 so we can use a
 /// stdlib atomic (no `AtomicF32`). Resolution = 0.001, plenty for a 0.01-step
@@ -354,12 +357,12 @@ pub const UNIFIED_CAM_DIST_MAX: f32 = 7.0;
 /// Bruce ~14 stops across the [3.5, 7.0] band — coarse enough to feel each press,
 /// fine enough to dial the exact framing.
 pub const UNIFIED_CAM_DIST_STEP: f32 = 0.25;
-/// (#192/#193 Bruce verify) Boot value — bumped 5.0 → 5.5 after Bruce verified
-/// the shrink-only capture at 5.5 was a cleaner default than #191's 5.0 (more
-/// margin between near row + bottom menu, board sits in a clearer central band).
-/// Within `[UNIFIED_CAM_DIST_MIN, UNIFIED_CAM_DIST_MAX]`. The `-` / `=` keys still
-/// dial freely from this seat.
-pub const BOOT_UNIFIED_CAM_DIST: f32 = 5.5;
+/// (#206 Bruce ratified) Boot cam-dist = 5.75 — Bruce's dialed look after the
+/// morning playtest, supersedes #193's 5.5 (small step further back to give a
+/// hair more headroom above the back row at the new wider cell-scale 1.90).
+/// Within `[UNIFIED_CAM_DIST_MIN, UNIFIED_CAM_DIST_MAX]` = [3.5, 7.0]. The
+/// `-` / `=` keys still dial freely from this seat (~7 stops up, ~9 down).
+pub const BOOT_UNIFIED_CAM_DIST: f32 = 5.75;
 
 /// (#192) Live unified-camera orbit distance stored as `dist * 1000` rounded to
 /// u32 so we can use a stdlib atomic (no `AtomicF32`). Resolution = 0.001, plenty
@@ -395,13 +398,26 @@ pub fn adjust_cam_dist(delta: f32) -> f32 {
 pub const UNIFIED_GRID_CELL_SCALE_MIN: f32 = 0.5;
 /// (#195) Maximum allowed grid cell-size multiplier for the live `L` adjuster.
 /// 2.0 = double-size cells (wide grid).
-pub const UNIFIED_GRID_CELL_SCALE_MAX: f32 = 2.0;
+pub const UNIFIED_GRID_CELL_SCALE_MAX: f32 = 3.0;
 /// (#195) Per-press step size for the `K` / `L` cell-size adjuster. 0.1 gives
 /// ~15 stops across [0.5, 2.0] — coarse enough to feel each press.
 pub const UNIFIED_GRID_CELL_SCALE_STEP: f32 = 0.1;
-/// (#195) Boot value — 1.0 = the existing world cell spacing (1 world unit
-/// per cell), byte-equivalent default.
-pub const BOOT_UNIFIED_GRID_CELL_SCALE: f32 = 1.0;
+/// (#206 Bruce ratified) Boot cell-scale = 1.90 — Bruce's dialed look (wider
+/// cells; bigger board feel), supersedes #195's 1.0 byte-equivalent boot.
+/// The MAX was bumped 2.0→3.0 in this commit so the live `L` key still has
+/// dial-up headroom from the new default (was 0.10 away from the ceiling
+/// otherwise — one keypress).
+///
+/// Known cross-dial limitation (#200 cross-ref, accepted): at the new wider
+/// default + full grid-pitch (`G` arc → `t = 1.0`, top-down), the wide grid
+/// overflows the bottom of the in-frame regime — the in-frame guard in
+/// `tests/render_orientation.rs` deliberately asserts only at pitch 0/0.5
+/// (with a finite-not-NaN floor at `t = 1`) per the #206-prep relax. Full-G
+/// is a DEBUG dial; Bruce plays at pitch 0. Documented as the price of the
+/// wider default; do not lower cell-scale or push cam-dist further to "fit"
+/// full-G — that would compromise his ratified look. See also the closed-form
+/// anchor's dial-stacking note at [`crate::projector::unified_target_y_anchored`].
+pub const BOOT_UNIFIED_GRID_CELL_SCALE: f32 = 1.90;
 
 /// (#195) Live grid cell-size multiplier stored as `scale * 1000` rounded to
 /// u32 so we can use a stdlib atomic. Read by [`projector::cell_world_center`]
