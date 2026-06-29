@@ -442,6 +442,7 @@ mod tests {
             statuses: Vec::new(),
             traits: Vec::new(),
             klass: None,
+            tail: None,
         }
     }
 
@@ -772,6 +773,7 @@ mod tests {
             corrupt: false,
             salvage_p1: sp1,
             salvage_p7: sp7,
+            footprint: crate::types::Footprint::Single,
         }
     }
 

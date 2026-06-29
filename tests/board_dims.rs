@@ -100,6 +100,7 @@ fn marker_ship(id: String, pos: Pos, hull: i32) -> Ship {
             },
         },
         klass: None,
+        tail: None,
     }
 }
 

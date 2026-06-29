@@ -134,6 +134,7 @@ fn naked_ship(id: &str, faction: Faction, pos: Pos, hull: i32, facing: Facing) -
         statuses: Vec::new(),
         traits: Vec::new(),
         klass: None,
+        tail: None,
     }
 }
 

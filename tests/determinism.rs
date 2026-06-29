@@ -258,6 +258,7 @@ fn ship(
         statuses,
         traits: Vec::new(),
         klass: None,
+        tail: None,
     }
 }
 

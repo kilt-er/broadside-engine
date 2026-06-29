@@ -87,6 +87,7 @@ fn make_ship(id: &str, faction: Faction, pos: Pos, facing: Facing) -> Ship {
         statuses: Vec::new(),
         traits: Vec::new(),
         klass: None,
+        tail: None,
     }
 }
 

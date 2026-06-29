@@ -5983,6 +5983,7 @@ mod tests {
             statuses: Vec::new(),
             traits: Vec::new(),
             klass: None,
+            tail: None,
         }
     }
 

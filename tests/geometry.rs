@@ -58,6 +58,7 @@ fn ship_at(cell: usize, orientation: Orientation) -> Ship {
         statuses: vec![],
         traits: vec![],
         klass: None,
+        tail: None,
     }
 }
 

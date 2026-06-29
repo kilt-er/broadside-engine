@@ -116,6 +116,7 @@ fn ship(id: &str, faction: Faction, cell: usize, hull: i32, bow: LaneEnd, weapon
         statuses: Vec::new(),
         traits: Vec::new(),
         klass: None,
+        tail: None,
     }
 }
 

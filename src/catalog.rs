@@ -523,6 +523,7 @@ pub fn ship_from_enemy_def_at_tier(
         statuses: Vec::new(),
         traits,
         klass: Some(def.id.clone()),
+        tail: None,
     }
 }
 

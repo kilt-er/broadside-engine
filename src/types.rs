@@ -323,14 +323,42 @@ impl Board {
     /// 1-D `find_cell_by_id`). Scans [`Board::cells`] (`O(CELLS)`); returns the
     /// slot's [`Pos`] (which equals the ship's `pos` under the slot==pos
     /// invariant).
+    ///
+    /// **Primary-slot invariant (#214 multi-cell boss):** returns the slot
+    /// whose [`Pos`] equals `ship.pos` — i.e. the PRIMARY slot, never the
+    /// tail mirror. For a 1×2 boss the same `Ship` is stored as a clone in
+    /// both slots; the primary is the canonical one (hull/state live there).
+    /// The scan resolves this by comparing the recovered slot [`Pos`] against
+    /// `ship.pos`; the tail slot is `ship.tail` (≠ `ship.pos`) so it is
+    /// skipped.
     #[must_use]
     pub fn find_pos_by_id(&self, id: &str) -> Option<Pos> {
         let dims = self.dims();
         self.cells.iter().enumerate().find_map(|(i, c)| {
-            c.as_ref()
-                .filter(|s| s.id == id)
-                .and_then(|_| Pos::from_index_in(i, dims))
+            c.as_ref().filter(|s| s.id == id).and_then(|s| {
+                let slot_pos = Pos::from_index_in(i, dims)?;
+                // Primary-slot guard (#214): a 1×2 boss has the same clone in
+                // both slots; only the slot whose Pos matches the ship's own
+                // `pos` is the primary. The tail mirror sits at `ship.tail`,
+                // which never equals `ship.pos`, so this filter drops it.
+                (slot_pos == s.pos).then_some(slot_pos)
+            })
         })
+    }
+
+    /// The id of the ship occupying `pos`, whether `pos` is the ship's PRIMARY
+    /// slot or its tail mirror (#214 multi-cell boss). For a single-cell ship
+    /// this is identical to `self.ship_at(pos).map(|s| s.id.as_str())`. For a
+    /// 1×2 boss it returns the same id on either of its two slots, so callers
+    /// can ask "what ship is on this cell?" without caring about which half of
+    /// the footprint they hit.
+    ///
+    /// Useful for targeting / collision / picking: a player shot at the tail
+    /// cell must resolve to the boss, not a phantom second ship. Pairs with
+    /// [`Board::find_pos_by_id`] (which always returns the primary `Pos`).
+    #[must_use]
+    pub fn ship_id_at(&self, pos: Pos) -> Option<&str> {
+        self.ship_at(pos).map(|s| s.id.as_str())
     }
 }
 
@@ -493,6 +521,39 @@ pub struct Ship {
     /// Optional class id; dispatches the ship's Signature action.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub klass: Option<String>,
+    /// **v2 additive** (#214 multi-cell boss): the second cell this ship
+    /// occupies, for the 1×2 sector-end boss footprint. `None` for every
+    /// single-cell ship (the default). When `Some(tail)`, the ship is stored
+    /// as a CLONE in both [`Board::cells`] slots — `pos` is the **primary**
+    /// (canonical: hull/state live here) and `tail` is a **read-only mirror**
+    /// of the same `Ship` to make the cell hittable and blocking. Spawn placement
+    /// ([`crate::runs`]) writes the clone to both slots; the resolver maintains
+    /// the mirror on damage/move/destroy.
+    ///
+    /// Strictly 1×2 (no 1×3+). Orientation: tail is the cell one step forward
+    /// of `pos` along the ship's bow direction (so a `Bow(S)` boss has its
+    /// tail at `pos + (0, +1)`).
+    ///
+    /// `#[serde(default, skip_serializing_if = "Option::is_none")]` keeps every
+    /// existing fixture / save unchanged: a single-cell ship serializes with
+    /// no `tail` key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tail: Option<crate::grid::Pos>,
+}
+
+impl Ship {
+    /// Every cell this ship occupies — `[pos]` for the single-cell default, or
+    /// `[pos, tail]` for the 1×2 boss (#214). Returned by value to keep the
+    /// API stable as we may grow other multi-cell footprints later, but today
+    /// it is at most two entries. The PRIMARY slot ([`Ship::pos`]) is always
+    /// first; the resolver / renderer can treat index 0 as canonical.
+    #[must_use]
+    pub fn footprint(&self) -> Vec<crate::grid::Pos> {
+        match self.tail {
+            Some(t) => vec![self.pos, t],
+            None => vec![self.pos],
+        }
+    }
 }
 
 /// A hull zone's defence. `armour` is permanent directional reduction (bow
@@ -1304,6 +1365,30 @@ pub struct CapitalDef {
     /// canonical catalog always supplies it.
     #[serde(rename = "sP7", default)]
     pub salvage_p7: i32,
+    /// Hull footprint on the grid (#214). Defaults to [`Footprint::Single`] so
+    /// every existing capital entry — and the canonical catalog — parse
+    /// unchanged. The level-end boss authors `"footprint": "pair"` to occupy
+    /// 1×2 (two adjacent cells sharing one HP pool); [`crate::runs`] consumes
+    /// this on spawn placement and the resolver/renderer treat the second
+    /// cell as a mirror of the first.
+    #[serde(default)]
+    pub footprint: Footprint,
+}
+
+/// Authored grid footprint for a capital ship (#214). `Single` is the default
+/// (one cell, the historical behavior of every capital); `Pair` is the level-end
+/// boss's 1×2 footprint — two adjacent cells along the bow axis, sharing one
+/// HP pool. Strictly two variants by design ruling: "exactly 1×2, NOT
+/// arbitrary multi-cell"; a future bigger boss would add a new variant rather
+/// than parameterize this enum.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Footprint {
+    /// One grid cell (default for every non-boss / classic-boss entry).
+    #[default]
+    Single,
+    /// Two adjacent grid cells along the bow axis (the 1×2 level-end boss).
+    Pair,
 }
 
 /// A weapon mod (`Action.mod` is its id). The TS shape is `{ id, name, cd, desc }`.
@@ -1876,6 +1961,7 @@ mod tests {
             statuses: vec![],
             traits: vec![],
             klass: None,
+            tail: None,
         };
         let json = serde_json::to_string(&s).unwrap();
         let back: Ship = serde_json::from_str(&json).unwrap();
@@ -2215,6 +2301,7 @@ mod tests {
             }],
             traits: vec![Trait::Agile],
             klass: Some("wanderer".into()),
+            tail: None,
         };
         let run = Run {
             current_sector_idx: 2,
@@ -2270,6 +2357,7 @@ mod tests {
             statuses: vec![],
             traits: vec![],
             klass: Some("wanderer".into()),
+            tail: None,
         };
         let run = Run::new(player.clone());
         assert_eq!(run.current_sector_idx, 0);
@@ -2328,6 +2416,7 @@ mod tests {
             statuses: vec![],
             traits: vec![],
             klass: Some("wanderer".into()),
+            tail: None,
         };
         let mut board = Board {
             size: 3,
