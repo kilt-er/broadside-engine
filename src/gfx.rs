@@ -2589,9 +2589,9 @@ impl Gfx {
                 let Some(mesh) = self.loft_meshes.get(&lq.kind) else {
                     continue;
                 };
-                if !self.loft_poses.contains_key(lq.ship_id.as_str()) {
+                let Some(pose) = self.loft_poses.get(lq.ship_id.as_str()) else {
                     continue;
-                }
+                };
                 // (#201 fix A) Read the FRACTIONAL cell so a tweened ship's hull
                 // SLIDES cell-to-cell through this pass instead of snapping. When
                 // the ship is at rest cell_frac == cell (cast to f32), so this
@@ -2602,11 +2602,20 @@ impl Gfx {
                     lq.cell_frac[1],
                     &cfg,
                 );
-                center[1] += UNIFIED_SHIP_LIFT; // sit ON the plane, not half-buried
-                let model = crate::loft_gpu::unified_model(
+                // sit ON the plane, not half-buried.
+                center[1] += UNIFIED_SHIP_LIFT;
+                // (#208) Wire ShipPose's idle bob+roll into the unified pass —
+                // the legacy ortho path consumed these via yaw_deg() + idle_bob(),
+                // but the unified path was a fresh bypass (same class as the
+                // pre-#201 tween snap). Roll is applied as a hull-local rotation
+                // about +X (deck rocks side-to-side, no bow wiggle = #188 guard
+                // holds at non-zero idle phase); bob nudges world Y.
+                let model = crate::loft_gpu::unified_model_with_idle(
                     center,
                     lq.unified_yaw_rad,
                     unified_ship_scale(),
+                    pose.idle_roll_rad(),
+                    pose.idle_bob_world(),
                 );
                 draws.push((&mesh.vbuf, mesh.vcount, model));
             }

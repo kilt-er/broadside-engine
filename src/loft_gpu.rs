@@ -151,6 +151,12 @@ const IDLE_ROLL_DEG: f32 = 1.5;
 const IDLE_BOB_PX: f32 = 1.5;
 const IDLE_ROLL_HZ: f32 = 0.18;
 const IDLE_BOB_HZ: f32 = 0.13;
+/// (#208) Idle vertical bob amplitude in WORLD units for the unified pass.
+/// 0.04 world cells ≈ 4% of one cell, projects to a small screen-space rise/
+/// settle (more pronounced on near rows, naturally) — restores the visible
+/// "ship breathes" cue Bruce noted missing from the unified hull. The screen-
+/// pixel constant [`IDLE_BOB_PX`] (1.5 px) stays for the legacy ortho path.
+const IDLE_BOB_WORLD: f32 = 0.04;
 
 impl ShipPose {
     pub const fn new(orientation: Orientation) -> Self {
@@ -210,9 +216,33 @@ impl ShipPose {
     }
 
     /// Vertical idle bob in virtual pixels — the caller adds this to the
-    /// ship's screen-space y so a resting ship gently rises/settles.
+    /// ship's screen-space y so a resting ship gently rises/settles. Used by the
+    /// LEGACY per-cell ortho-loft path; the unified pass reads
+    /// [`Self::idle_bob_world`] instead (world units, not screen pixels).
     pub fn idle_bob(&self) -> f32 {
         (self.idle_t * IDLE_BOB_HZ * std::f32::consts::TAU).cos() * IDLE_BOB_PX
+    }
+
+    /// (#208) Idle roll (radians) — rotation about the hull's own prow axis
+    /// (local `+X`) so the deck rocks gently side-to-side. Read by the unified
+    /// pass (via [`unified_model_with_idle`]); the legacy ortho-loft path folds
+    /// the same `IDLE_ROLL_DEG` into [`Self::yaw_deg`] instead.
+    pub fn idle_roll_rad(&self) -> f32 {
+        let deg = (self.idle_t * IDLE_ROLL_HZ * std::f32::consts::TAU).sin() * IDLE_ROLL_DEG;
+        deg.to_radians()
+    }
+
+    /// (#208) Idle vertical bob in WORLD units (not screen pixels) — added to
+    /// the hull's world `center[1]` so a resting unified-camera ship gently
+    /// rises/settles. Amplitude is `IDLE_BOB_WORLD` (a small fraction of one
+    /// world cell), independent of camera zoom; the screen-space amplitude
+    /// scales with the perspective projection naturally.
+    ///
+    /// `sin(t·ω)` (not `cos`) so a fresh pose at `idle_t = 0` reads zero — the
+    /// captured/at-rest first frame stays byte-identical to the no-idle path,
+    /// matching the `idle_roll_rad` phase + the #188 alignment guard contract.
+    pub fn idle_bob_world(&self) -> f32 {
+        (self.idle_t * IDLE_BOB_HZ * std::f32::consts::TAU).sin() * IDLE_BOB_WORLD
     }
 
     /// True while a reorient tween is in flight (the caller keeps requesting
@@ -1253,25 +1283,50 @@ impl LoftGpu {
 /// (`+X`) maps to the heading direction; keel (`+Y`) stays world-up (flat on the
 /// plane). `yaw_rad` is `atan2(-dir.z, dir.x)` of the desired world heading (so
 /// local `+X` → that heading) — see [`crate::projector`] heading conventions.
+///
+/// Delegates to [`unified_model_with_idle`] with zero idle (the rest-state path
+/// callers want — keeps any out-of-engine consumer's existing call sites valid).
 pub fn unified_model(center: [f32; 3], yaw_rad: f32, scale: f32) -> [f32; 16] {
-    let (s, c) = (yaw_rad.sin(), yaw_rad.cos());
+    unified_model_with_idle(center, yaw_rad, scale, 0.0, 0.0)
+}
+
+/// (#208) Same as [`unified_model`], plus a low-amplitude idle: `roll_rad` rocks
+/// the hull about its own prow axis (local `+X`), and `bob_world` adds a vertical
+/// world-unit offset to `center[1]` so a resting ship gently rises/settles. The
+/// composition is `T · R_y · R_x · S` so the roll is applied IN HULL-LOCAL space
+/// before the world yaw — i.e. the deck rocks side-to-side regardless of facing,
+/// rather than wiggling the bow direction (which would break the #188 cell-align
+/// guard at non-zero idle phase). At `roll_rad = 0, bob_world = 0` this is
+/// byte-identical to [`unified_model`].
+pub fn unified_model_with_idle(
+    center: [f32; 3],
+    yaw_rad: f32,
+    scale: f32,
+    roll_rad: f32,
+    bob_world: f32,
+) -> [f32; 16] {
+    let (sy, cy) = (yaw_rad.sin(), yaw_rad.cos());
+    let (sr, cr) = (roll_rad.sin(), roll_rad.cos());
+    // col0 = R_y · R_x · e_x = R_y · e_x  (roll fixes the prow axis)
+    // col1 = R_y · R_x · e_y = R_y · (0, cos ρ, sin ρ)
+    // col2 = R_y · R_x · e_z = R_y · (0, -sin ρ, cos ρ)
     [
-        scale * c,
+        scale * cy,
         0.0,
-        -scale * s,
+        -scale * sy,
         0.0, // col0 = scaled image of local +X
-        0.0,
-        scale,
-        0.0,
-        0.0, // col1 = scaled +Y (up)
-        scale * s,
-        0.0,
-        scale * c,
-        0.0, // col2 = scaled image of local +Z
+        scale * sy * sr,
+        scale * cr,
+        scale * cy * sr,
+        0.0, // col1 = scaled image of local +Y (with idle roll)
+        scale * sy * cr,
+        -scale * sr,
+        scale * cy * cr,
+        0.0, // col2 = scaled image of local +Z (with idle roll)
         center[0],
-        center[1],
+        center[1] + bob_world,
         center[2],
-        1.0, // col3 = translation
+        1.0, // col3 = translation (with idle bob)
     ]
 }
 
