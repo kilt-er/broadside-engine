@@ -367,6 +367,19 @@ impl ProjectorConfig {
         }
     }
 
+    /// (#199b / #213 item 4) Override the projector's [`Self::cols`] + [`Self::rows`]
+    /// for variable-board encounters. `for_scene` defaults to [`crate::grid::COLS`] x
+    /// [`crate::grid::ROWS`] (5x4) so every existing call site stays byte-identical;
+    /// the bin chains `.with_dims(self.board.dims().cols, self.board.dims().rows)`
+    /// per frame so the playable grid wireframe + every projector-derived overlay
+    /// (cell quads, ship cell projection, fire beams, kill bursts) lay out at the
+    /// live board's dims. The preview path also uses the same dims-aware cell math
+    /// via `cell_world_corners_offset_dims`, so the upcoming-board preview at depth
+    /// and the playable board it becomes share ONE projection contract.
+    pub const fn with_dims(self, cols: usize, rows: usize) -> Self {
+        Self { cols, rows, ..self }
+    }
+
     /// (#140 Bruce) STRETCH mode: set the [`Self::stretch_t`] blend toward a uniform
     /// top-down grid. `t = 0` = pure perspective (unchanged); `t = 1` = a uniform
     /// square top-down board with ~constant cell (=> ship) size. The bin steps `t`
@@ -1712,6 +1725,46 @@ mod tests {
         // The center column still lands on the (now-doubled) frame centre.
         let mid = grid_cell_quad(Pos::new(COLS / 2, ROWS - 1), &big);
         assert!(approx(mid.center[0], big.frame_w * 0.5, 1e-3));
+    }
+
+    /// (#213 item 4 / #199b) `with_dims` overrides `cfg.cols/cfg.rows` so a
+    /// variable-board encounter lays out at its `EncounterDef` dims. Step-0
+    /// invariant: chaining `.with_dims(COLS, ROWS)` is byte-identical to the
+    /// default (the bin's old 5x4 path stays unchanged). And: at 3x3 the
+    /// `grid_cell_quad` of the center (1, 1) cell projects to roughly the
+    /// frame's horizontal centre line, proving the projection respects the
+    /// shrunken grid (rather than treating it as the 5x4 (1, 1) offset which
+    /// would be left of centre).
+    #[test]
+    fn with_dims_step0_identity_and_3x3_centers_at_frame_center() {
+        let base = cfg().with_unified(0.0);
+        // Step-0: with_dims(COLS, ROWS) is byte-identical to the default.
+        let same = base.with_dims(COLS, ROWS);
+        assert_eq!(same.cols, base.cols);
+        assert_eq!(same.rows, base.rows);
+        let q_b = grid_cell_quad(Pos::new(COLS / 2, ROWS - 1), &base);
+        let q_s = grid_cell_quad(Pos::new(COLS / 2, ROWS - 1), &same);
+        assert_eq!(q_b, q_s);
+
+        // At 3x3 the centre cell (1, 1) lands roughly at the frame horizontal
+        // centre (within a small tolerance — perspective makes "exactly the
+        // centre" depend on the camera). At 5x4 the same (1, 1) would be
+        // LEFT of centre — proving the projector reads the new dims.
+        let three = base.with_dims(3, 3);
+        let mid_3x3 = grid_cell_quad(Pos::new(1, 1), &three);
+        let frame_cx = three.frame_w * 0.5;
+        assert!(
+            (mid_3x3.center[0] - frame_cx).abs() < 4.0,
+            "3x3 centre cell (1,1) should project near frame_w/2 ({} vs {})",
+            mid_3x3.center[0],
+            frame_cx
+        );
+
+        // Sanity: dims override is independent — cols can differ from rows
+        // (e.g. a 4x2 from the #199b dims pool).
+        let four_by_two = base.with_dims(4, 2);
+        assert_eq!(four_by_two.cols, 4);
+        assert_eq!(four_by_two.rows, 2);
     }
 
     /// (#139) `with_pitch` keeps the grid's front-to-back screen DEPTH CONSTANT as it

@@ -121,6 +121,18 @@ fn scene_projector() -> ProjectorConfig {
     )
 }
 
+/// (#213 item 4 / #199b) Dims-aware variant of [`scene_projector`] — chains
+/// `.with_dims(board.dims())` so the grid + every projector-derived overlay
+/// lay out at the LIVE board's variable encounter shape (2x2 .. 5x4 from the
+/// #199b dims pool) instead of the compile-time 5x4 default. The same camera
+/// otherwise; `with_dims` only rewrites `cfg.cols / cfg.rows`. Render-path
+/// hot-loop and player-targeting overlays both call this so the player's aim
+/// math and the visible grid agree on the same dims.
+fn scene_projector_for_board(board: &broadside_engine::types::Board) -> ProjectorConfig {
+    let dims = board.dims();
+    scene_projector().with_dims(dims.cols, dims.rows)
+}
+
 /* =============================================================================
  * Applying an Intent to the board.
  *
@@ -2358,7 +2370,7 @@ impl ApplicationHandler for App {
                                 // dead ship's PROJECTED screen position (same kill
                                 // signal). Once per death (we're in the resolve
                                 // branch, not per-frame), so it doesn't re-seed.
-                                let pcfg = scene_projector();
+                                let pcfg = scene_projector_for_board(&self.board);
                                 let c =
                                     broadside_engine::projector::grid_cell_quad(pos, &pcfg).center;
                                 self.particles
@@ -2385,7 +2397,7 @@ impl ApplicationHandler for App {
                     // — so the player SEES the ordnance launch on the commit turn, not
                     // just a mystery hit when it lands a turn later. push_ordnance_2d
                     // then draws it travelling each subsequent turn.
-                    let pcfg = scene_projector();
+                    let pcfg = scene_projector_for_board(&self.board);
                     for proj in &self.board.ordnance {
                         if proj.owner_faction == Faction::Player
                             && !prev_ordnance.contains(&proj.id)
@@ -2627,7 +2639,7 @@ impl ApplicationHandler for App {
                     if let Some(fe) = due {
                         // Impact spark on the struck cell, timed to the beat.
                         if fe.hit {
-                            let pcfg = scene_projector();
+                            let pcfg = scene_projector_for_board(&self.board);
                             let c = broadside_engine::projector::grid_cell_quad(fe.to_pos, &pcfg)
                                 .center;
                             self.particles
@@ -2647,7 +2659,7 @@ impl ApplicationHandler for App {
                             .find(|s| s.pos == fe.from_pos)
                             .map(|s| s.id.clone())
                         {
-                            let pcfg = scene_projector();
+                            let pcfg = scene_projector_for_board(&self.board);
                             let from_c =
                                 broadside_engine::projector::grid_cell_quad(fe.from_pos, &pcfg)
                                     .center;
@@ -2814,7 +2826,7 @@ impl ApplicationHandler for App {
                 // measured dt + emitted after compose.
                 {
                     use broadside_engine::grid::Dir8;
-                    let pcfg = scene_projector();
+                    let pcfg = scene_projector_for_board(&self.board);
                     let dur_ms = TWEEN_DURATION_MS as f32;
                     for proj in &self.board.ordnance {
                         let Some(&(from_pos, started_at)) = self.proj_anchors.get(&proj.id) else {
@@ -2943,7 +2955,12 @@ impl ApplicationHandler for App {
                 // change the resolution. At the 480×270 default `for_scene` ==
                 // `default()`, so this is identical to the old fixed path until a
                 // cycle. Built from the gfx scene-size globals (free fns, no borrow).
-                let scene_cfg = scene_projector();
+                // (#213 item 4 / #199b) Dims-aware projector — chains
+                // `.with_dims(self.board.dims())` so the playable grid + every
+                // projector-derived overlay lay out at the LIVE board's variable
+                // encounter shape. Without this the playable plane locks at 5x4
+                // regardless of board.dims (Bruce: "next grid pops to 5x4").
+                let scene_cfg = scene_projector_for_board(&self.board);
                 // (#79) Per-ship slide/turn tween for THIS frame — computed BEFORE
                 // the gfx mutable borrow (it reads &self). Empty when nothing is
                 // mid-move, so the render is identical to the static path at rest.

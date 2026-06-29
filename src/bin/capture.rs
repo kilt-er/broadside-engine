@@ -570,7 +570,7 @@ fn main() {
     // also propagates to gfx's loft loop so its ship pass matches.
     let unified_on = !std::env::var("BROADSIDE_UNIFIED").is_ok_and(|v| v == "0");
     broadside_engine::gfx::set_unified(unified_on);
-    let cfg = if unified_on {
+    let cfg_no_dims = if unified_on {
         base.with_unified(pitch_t)
     } else {
         match broadside_engine::gfx::grid_mode() {
@@ -580,6 +580,11 @@ fn main() {
             _ => base.with_pitch(pitch_t),
         }
     };
+    // (#213 item 4 / #199b) Mirror the live bin: chain `.with_dims(board.dims())`
+    // so the playable grid wireframe + every projector-derived overlay lay out
+    // at the captured board's variable encounter shape (rather than 5x4).
+    let board_dims = board.dims();
+    let cfg = cfg_no_dims.with_dims(board_dims.cols, board_dims.rows);
     let mut commands = compose_scene_2d_with(&board, &cfg, &gfx);
     // (#213/#P7) Mirror the live bin's persistent at-depth preview so headless
     // capture reads the SAME view Bruce will see at boot. Stand-in spawns

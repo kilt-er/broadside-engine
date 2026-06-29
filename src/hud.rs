@@ -1493,11 +1493,21 @@ fn push_weapon_arcs_2d(out: &mut Vec<DrawCommand>, board: &Board, cfg: &Projecto
 /// glance.
 fn push_grid_2d(out: &mut Vec<DrawCommand>, cfg: &ProjectorConfig) {
     use crate::grid::Pos as GridPos;
-    use crate::grid::{COLS, ROWS};
-    for row in 0..ROWS {
-        for col in 0..COLS {
+    // (#213 item 4) Iterate cfg.cols/cfg.rows so a variable-board encounter
+    // (e.g. 3x3 / 2x2 / 4x3 from the #199b dims pool) draws its playable grid
+    // at the LIVE dims. The bin chains `.with_dims(self.board.dims().cols,
+    // self.board.dims().rows)` on the per-frame scene cfg, so every projector
+    // callsite that reads cfg.cols/cfg.rows picks the right shape — including
+    // grid_cell_quad's column-boundary math at projector.rs `boundary_x`.
+    // Defaults to grid::COLS/ROWS = 5x4 in `for_scene` for backwards-compat,
+    // so any callsite that doesn't chain with_dims (tests, headless capture's
+    // legacy path) stays byte-identical.
+    let cols = cfg.cols;
+    let rows = cfg.rows;
+    for row in 0..rows {
+        for col in 0..cols {
             let q = grid_cell_quad(GridPos::new(col, row), cfg);
-            let color = if row == ROWS - 1 {
+            let color = if row + 1 == rows {
                 LANE_TICK // brighter front row
             } else {
                 LANE_STROKE
