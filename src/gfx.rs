@@ -3253,6 +3253,35 @@ impl Gfx {
                     center[0] -= prow_x * k;
                     center[2] -= prow_z * k;
                 }
+                // (#305 render-path probe) Log the ACTUAL projected screen-x of
+                // this hull through the SAME view_proj the GPU pipeline uses —
+                // ground truth for warp-seam continuity verification. Gated by
+                // BROADSIDE_RENDER_PROBE so off by default = byte-identical.
+                // Previous capture probes projected through a fabricated cfg
+                // (cfg.with_dims(p_cols, p_rows)) that didn't match what
+                // render_unified_fleet built, leading to a misleading "Δ=0"
+                // report. Reading from view_proj here eliminates that gap.
+                if std::env::var("BROADSIDE_RENDER_PROBE").is_ok_and(|v| v != "0") {
+                    if let Some(p) = crate::projector::unified_project(&view_proj, center, &cfg) {
+                        log::info!(
+                            "render-probe ship_id={} kind={:?} cell_frac=[{:.3},{:.3}] z_offset={:+.3} lane_offset={:+.3} | center=[{:+.3},{:+.3},{:+.3}] cfg_dims={}x{} cfg_lane_align={:+.3} | screen_x={:.2} screen_y={:.2}",
+                            lq.ship_id.as_str(),
+                            lq.kind,
+                            lq.cell_frac[0],
+                            lq.cell_frac[1],
+                            lq.z_offset,
+                            lq.lane_align_world_offset,
+                            center[0],
+                            center[1],
+                            center[2],
+                            cfg.cols,
+                            cfg.rows,
+                            crate::gfx::unified_lane_align_x(),
+                            p.x,
+                            p.y,
+                        );
+                    }
+                }
                 // (#208) Wire ShipPose's idle bob+roll into the unified pass —
                 // the legacy ortho path consumed these via yaw_deg() + idle_bob(),
                 // but the unified path was a fresh bypass (same class as the
