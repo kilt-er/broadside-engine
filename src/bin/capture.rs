@@ -743,16 +743,42 @@ fn main() {
     //   - Pose-sync the pending board's enemies down below alongside the
     //     live player so the at-depth LoftShips find a pose + render
     //     (without this they'd silently skip in render_unified_fleet).
+    // (cross-dim parity-flip capture rig 2026-06-30) BROADSIDE_PENDING_DIMS=
+    // CxR env knob makes the pending (n+1) board a DIFFERENT shape than the
+    // live (n) board, so the headless capture can stage real parity-flip
+    // transitions (e.g. live 5x4 + pending 2x2) and measure preview-enemy
+    // screen-x against post-swap. Without this knob the pending board
+    // mirrors the live dims (no parity flip) — fine for the player path
+    // (which the player blink verification proved at any single dims) but
+    // INSUFFICIENT for the enemy-jump fix (Option A's lane_align_world_offset
+    // only triggers on cross-dim swaps). Format mirrors BROADSIDE_DIMS.
+    // Falls back to live `board_dims` when unset / malformed.
+    let pending_dims: broadside_engine::grid::Dims = std::env::var(
+        "BROADSIDE_PENDING_DIMS",
+    )
+    .ok()
+    .and_then(|s| {
+        let lower = s.to_ascii_lowercase();
+        let mut it = lower.split('x');
+        let c = it.next()?.parse::<usize>().ok()?;
+        let r = it.next()?.parse::<usize>().ok()?;
+        if c == 0 || r == 0 {
+            return None;
+        }
+        Some(broadside_engine::grid::Dims::new(c, r))
+    })
+    .unwrap_or(board_dims);
     let pending_board: Option<Board> = if warp_t_pre.is_some() {
         // The pending board uses the canonical (player front-center,
-        // enemies back row) spawn at the same dims as the live capture
-        // board — matches what App::build_current_board() outputs.
+        // enemies back row) spawn at `pending_dims` (live dims by
+        // default; BROADSIDE_PENDING_DIMS overrides for parity-flip
+        // captures). Matches what App::build_current_board() outputs.
         // Player facing Bow(N) at front-center is the runs::
         // player_start_pos() / player_spawn_facing() canonical state.
         use broadside_engine::runs::player_start_pos_in;
-        let p_pos = player_start_pos_in(board_dims);
+        let p_pos = player_start_pos_in(pending_dims);
         let pending = capture_board_with_dims(
-            board_dims,
+            pending_dims,
             p_pos.col,
             p_pos.row,
             broadside_engine::grid::Facing::Bow(Dir4::N),
@@ -770,7 +796,11 @@ fn main() {
             }
         }
         log::info!(
-            "capture: faithful warp — stripped n enemies from live board; pending n+1 board built ({} enemies)",
+            "capture: faithful warp — live {}x{} (stripped n enemies); pending n+1 {}x{} built ({} enemies)",
+            board_dims.cols,
+            board_dims.rows,
+            pending_dims.cols,
+            pending_dims.rows,
             pending
                 .cells
                 .iter()
@@ -1191,6 +1221,47 @@ fn main() {
                     warp_t,
                     preview_lane_align_offset,
                 );
+                // (cross-dim parity-flip enemy-continuity probe 2026-06-30)
+                // Mirror exactly what gfx::render_unified_fleet does for an
+                // at-depth preview hull: subtract `lane_align_world_offset`
+                // from world-x BEFORE projecting through the unified camera.
+                // Lets a headless capture prove the at-depth preview screen-x
+                // equals the post-swap live screen-x (Δ must be 0) on real
+                // cross-dim parity flips like 5x4 → 2x2. Uses the NEW dims
+                // projector cfg (matching the preview emit's `with_dims(
+                // p_cols, p_rows)`), so the projection is the n+1 grid + the
+                // n+1 enemy's NEW col/row — exactly what the live bin renders
+                // during Transitioning. Logs through `log::info!` so the
+                // env-gated info filter picks it up without a dedicated flag.
+                if let Some(first) = preview_spawns.first() {
+                    let preview_cfg = cfg.with_dims(p_cols, p_rows);
+                    let mut world =
+                        broadside_engine::projector::cell_world_center_frac_offset(
+                            first.col as f32,
+                            first.row as f32,
+                            &preview_cfg,
+                            z_offset,
+                        );
+                    world[0] -= preview_lane_align_offset;
+                    let m = broadside_engine::projector::unified_view_proj(&preview_cfg);
+                    if let Some(p) =
+                        broadside_engine::projector::unified_project(&m, world, &preview_cfg)
+                    {
+                        log::info!(
+                            "capture: enemy-probe preview-enemy col {} row {} on {}x{} z={:+.3} | world_x={:+.3} lane_align={:+.3} offset={:+.3} | screen_x={:.2} screen_y={:.2}",
+                            first.col,
+                            first.row,
+                            p_cols,
+                            p_rows,
+                            z_offset,
+                            world[0],
+                            broadside_engine::gfx::unified_lane_align_x(),
+                            preview_lane_align_offset,
+                            p.x,
+                            p.y,
+                        );
+                    }
+                }
             } else {
                 broadside_engine::hud::prepend_upcoming_board_2d(
                     &mut commands,
