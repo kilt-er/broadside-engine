@@ -985,6 +985,93 @@ fn outgoing_grid_alpha_mul(phase: broadside_engine::gfx::CinematicPhase, sub: f3
     }
 }
 
+/// (CINEMATIC REBUILD phase c 2026-06-30) Per-phase `(z_offset, tint_alpha)`
+/// for the AT-DEPTH preview during a Transitioning window. Drives the
+/// upcoming grid from its rest depth/tint toward EXACTLY `(0.0, 1.0)` by
+/// the END of `Settle` (t = 1.0), so the demo-state swap to `Playing` is
+/// VISUALLY INVISIBLE: at the seam, the preview's grid + ship markers
+/// project at z=0 and tint=1, which is byte-equivalent to where the
+/// playable plane renders at full alpha after the swap.
+///
+/// The pre-rebuild bug: the late phases (Warp/Snap/Settle) hardcoded
+/// `z = rest * 0.2, a = rest + (1-rest) * 0.85` — close but NOT equal to
+/// `(0.0, 1.0)`. So at the swap moment, the preview disappeared (Playing
+/// state stops rendering it) AND the playable plane re-appeared at full
+/// alpha at z=0, with a small but visible jump because the preview was
+/// still at z=rest*0.2 (a smaller grid) and tint=~0.92 (slightly dimmer).
+/// Combined with the hide-set clearing at Settle, this read as the
+/// "blink" + "ship blink-redraw" Bruce complained about.
+///
+/// The fix: per-phase target points walking through `(rest, rest_a)` →
+/// `(rest*0.6, rest_a + (1-rest_a)*0.30)` →
+/// `(rest*0.25, rest_a + (1-rest_a)*0.65)` →
+/// `(rest*0.05, rest_a + (1-rest_a)*0.92)` → `(0.0, 1.0)`. Each phase's
+/// `sub` (0..1) eases between consecutive target points.
+///
+/// (b)'s outgoing fade goes to 0 during Fade; (c)'s preview lerp drives
+/// the upcoming TO the playable plane position by t=1.0; together the
+/// pre-swap and post-swap frames render identically at the preview's
+/// final location.
+fn preview_seam_lerp(
+    phase: broadside_engine::gfx::CinematicPhase,
+    sub: f32,
+    rest_z: f32,
+    rest_a: f32,
+) -> (f32, f32) {
+    use broadside_engine::gfx::CinematicPhase;
+    // Anchor points at the START of each phase (sub=0). Settle anchor =
+    // (0, 1) means by the time we ENTER Settle (sub=0), the preview has
+    // already landed. The Settle phase itself just HOLDS at (0, 1) so the
+    // demo-state swap at t=1.0 is a no-op visually.
+    let approach_start_z = rest_z;
+    let approach_start_a = rest_a;
+    let warp_start_z = rest_z * 0.6;
+    let warp_start_a = rest_a + (1.0 - rest_a) * 0.30;
+    let snap_start_z = rest_z * 0.25;
+    let snap_start_a = rest_a + (1.0 - rest_a) * 0.65;
+    let settle_start_z = 0.0;
+    let settle_start_a = 1.0;
+    // sub^2 ease-in within each segment so the preview accelerates as
+    // it approaches the seam (slow far away, fast near the camera).
+    let eased = sub * sub;
+    let lerp = |a: f32, b: f32, t: f32| a + (b - a) * t;
+    match phase {
+        CinematicPhase::Fade => {
+            // Hold at rest — preview not moving yet (outgoing grid is fading).
+            (rest_z, rest_a)
+        }
+        CinematicPhase::Approach => {
+            // (rest, rest_a) → (warp_start_z, warp_start_a)
+            (
+                lerp(approach_start_z, warp_start_z, eased),
+                lerp(approach_start_a, warp_start_a, eased).clamp(0.0, 1.0),
+            )
+        }
+        CinematicPhase::Warp => {
+            // (warp_start_z, warp_start_a) → (snap_start_z, snap_start_a)
+            (
+                lerp(warp_start_z, snap_start_z, eased),
+                lerp(warp_start_a, snap_start_a, eased).clamp(0.0, 1.0),
+            )
+        }
+        CinematicPhase::Snap => {
+            // (snap_start_z, snap_start_a) → (settle_start_z=0, settle_start_a=1)
+            (
+                lerp(snap_start_z, settle_start_z, eased),
+                lerp(snap_start_a, settle_start_a, eased).clamp(0.0, 1.0),
+            )
+        }
+        CinematicPhase::Settle => {
+            // HOLD at (0, 1) so the seam at t=1.0 is byte-stable. Both
+            // the pre-swap (Transitioning at t=1.0, preview at z=0/a=1)
+            // and post-swap (Playing, playable plane at native z=0/a=1)
+            // render the same grid at the same projected coords.
+            let _ = eased;
+            (settle_start_z, settle_start_a)
+        }
+    }
+}
+
 /// (#210 P8) Total duration of the continuous-death animation in seconds —
 /// slow-mo player explosion plays over the FIRST half, stats overlay appears
 /// at the midpoint and persists until ENTER restart. Bruce-tunable.
@@ -3217,44 +3304,25 @@ impl ApplicationHandler for App {
                         // total warp progresses past phase 1. Tint also
                         // brightens proportionally so the approaching grid
                         // reads as it lands.
+                        // (CINEMATIC REBUILD phase c 2026-06-30) Drive the
+                        // preview's (z_offset, tint_alpha) through
+                        // preview_seam_lerp so it lands at EXACTLY (0.0, 1.0)
+                        // by the START of Settle and holds there. The pre-swap
+                        // (Transitioning t=1.0) and post-swap (Playing) frames
+                        // render the same grid at the same coords → invisible
+                        // seam. See helper docs for the per-phase anchors.
                         let (z_offset, tint_alpha) = match demo_state {
                             DemoState::Transitioning(phase) => {
                                 let now2 = std::time::Instant::now();
                                 let t = phase.progress(now2);
                                 let (current_phase, sub) =
                                     broadside_engine::gfx::phase_from_progress(t);
-                                match current_phase {
-                                    broadside_engine::gfx::CinematicPhase::Fade => {
-                                        // Hold at rest; phase 1 only fades current grid.
-                                        (rest_z_offset, rest_tint_alpha)
-                                    }
-                                    broadside_engine::gfx::CinematicPhase::Approach => {
-                                        // Ease the upcoming grid forward; ease the
-                                        // tint up so it visibly "approaches".
-                                        let eased = 1.0 - (1.0 - sub) * (1.0 - sub);
-                                        let z = rest_z_offset * (1.0 - eased * 0.7);
-                                        let a =
-                                            rest_tint_alpha + (1.0 - rest_tint_alpha) * eased * 0.5;
-                                        (z, a.clamp(0.0, 1.0))
-                                    }
-                                    broadside_engine::gfx::CinematicPhase::Warp
-                                    | broadside_engine::gfx::CinematicPhase::Snap
-                                    | broadside_engine::gfx::CinematicPhase::Settle => {
-                                        // (#213 E fix, Bruce: "Z and alpha settings
-                                        // don't appear updated") The late phases
-                                        // previously HARDCODED tint=0.9 + z=rest*0.3,
-                                        // ignoring the live B/N + Z/X dials entirely.
-                                        // Read the dial values per-frame here too so
-                                        // Bruce sees the late-phase preview respect
-                                        // his dial input; bias by 0.7→0.85 toward
-                                        // full alpha + 0.3→0.2 toward Z=0 so the
-                                        // preview still visibly lands while staying
-                                        // dial-driven.
-                                        let z = rest_z_offset * 0.2;
-                                        let a = rest_tint_alpha + (1.0 - rest_tint_alpha) * 0.85;
-                                        (z, a.clamp(0.0, 1.0))
-                                    }
-                                }
+                                preview_seam_lerp(
+                                    current_phase,
+                                    sub,
+                                    rest_z_offset,
+                                    rest_tint_alpha,
+                                )
                             }
                             _ => (rest_z_offset, rest_tint_alpha),
                         };

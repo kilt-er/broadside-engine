@@ -768,31 +768,51 @@ fn main() {
                 }
             })
             .collect();
-        // (#213 t-knob) When BROADSIDE_WARP_T is set, override z_offset +
-        // tint_alpha per phase so the upcoming grid visibly approaches across
-        // the strip (Fade = rest, Approach = ease forward + brighten, Warp+
-        // Snap+Settle = near-final). Mirrors the bin's render-time lerp at
-        // broadside.rs:3158-3197. Without the env, the dial-driven defaults
-        // are used (the existing live-bin parity capture).
+        // (#213 t-knob + CINEMATIC REBUILD phase c 2026-06-30) When
+        // BROADSIDE_WARP_T is set, drive the preview's (z_offset, tint_alpha)
+        // through the same per-phase anchor lerp as the bin's
+        // preview_seam_lerp at broadside.rs (the helper near the warp
+        // consts). The pre-rebuild capture mirrored the bin's late-phase
+        // bug (z=rest*0.2 + a≈0.92 — close but NOT z=0/a=1), so the t=1.0
+        // strip frame showed the preview at near-final but with a visible
+        // gap from the playable plane. Now both bin + capture land the
+        // preview at EXACTLY (0, 1) by the START of Settle and HOLD there
+        // — so the t=1.0 frame is byte-equivalent to a Playing-state
+        // frame at the same camera, making the demo-state swap invisible.
         let rest_z = broadside_engine::gfx::preview_z_offset();
         let rest_a = broadside_engine::gfx::preview_tint_alpha();
         let (z_offset, tint_alpha) = match warp_t {
             Some(t) => {
                 let (phase, sub) = broadside_engine::gfx::phase_from_progress(t);
+                // Per-phase START anchors (sub=0). Settle anchor = (0, 1).
+                let approach_start_z = rest_z;
+                let approach_start_a = rest_a;
+                let warp_start_z = rest_z * 0.6;
+                let warp_start_a = rest_a + (1.0 - rest_a) * 0.30;
+                let snap_start_z = rest_z * 0.25;
+                let snap_start_a = rest_a + (1.0 - rest_a) * 0.65;
+                let settle_start_z = 0.0;
+                let settle_start_a = 1.0;
+                let eased = sub * sub;
+                let lerp = |a: f32, b: f32, t: f32| a + (b - a) * t;
                 match phase {
                     broadside_engine::gfx::CinematicPhase::Fade => (rest_z, rest_a),
-                    broadside_engine::gfx::CinematicPhase::Approach => {
-                        let eased = 1.0 - (1.0 - sub) * (1.0 - sub);
-                        let z = rest_z * (1.0 - eased * 0.7);
-                        let a = rest_a + (1.0 - rest_a) * eased * 0.5;
-                        (z, a.clamp(0.0, 1.0))
-                    }
-                    broadside_engine::gfx::CinematicPhase::Warp
-                    | broadside_engine::gfx::CinematicPhase::Snap
-                    | broadside_engine::gfx::CinematicPhase::Settle => {
-                        let z = rest_z * 0.2;
-                        let a = rest_a + (1.0 - rest_a) * 0.85;
-                        (z, a.clamp(0.0, 1.0))
+                    broadside_engine::gfx::CinematicPhase::Approach => (
+                        lerp(approach_start_z, warp_start_z, eased),
+                        lerp(approach_start_a, warp_start_a, eased).clamp(0.0, 1.0),
+                    ),
+                    broadside_engine::gfx::CinematicPhase::Warp => (
+                        lerp(warp_start_z, snap_start_z, eased),
+                        lerp(warp_start_a, snap_start_a, eased).clamp(0.0, 1.0),
+                    ),
+                    broadside_engine::gfx::CinematicPhase::Snap => (
+                        lerp(snap_start_z, settle_start_z, eased),
+                        lerp(snap_start_a, settle_start_a, eased).clamp(0.0, 1.0),
+                    ),
+                    broadside_engine::gfx::CinematicPhase::Settle => {
+                        // HOLD at (0, 1) — t=1.0 seam frame.
+                        let _ = eased;
+                        (settle_start_z, settle_start_a)
                     }
                 }
             }
