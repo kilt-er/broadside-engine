@@ -954,7 +954,7 @@ const PLAYER_WARP_FASTNESS: f32 = 0.5;
 /// t-strip verification without flipping the const — so the capture bin can
 /// drive the cinematic path with `BROADSIDE_WARP_T` while Bruce's playtest
 /// build stays on the clean cut.
-const WARP_CINEMATIC_ENABLED: bool = false;
+const WARP_CINEMATIC_ENABLED: bool = true;
 
 /// Returns `true` if the warp cinematic is enabled, either by the compile-
 /// time const above or by `BROADSIDE_WARP_CINEMATIC` env (any value != "0").
