@@ -1147,7 +1147,17 @@ pub fn push_damage_number_2d(
 /// before ships.
 fn push_threats_2d(out: &mut Vec<DrawCommand>, board: &Board, cfg: &ProjectorConfig) {
     use crate::types::ThreatKind;
+    let dims = board.dims();
     for threat in &board.threats {
+        // (#215 Bruce live repro) Defensive dims-clamp at the render layer —
+        // skip any threat whose Pos is outside the LIVE board. The resolver
+        // populates board.threats via dims-aware paths, but a stale state
+        // (board shrunk under us / serde-loaded snapshot) MUST NEVER draw a
+        // phantom cell off the playable grid (overlays must never leak past
+        // the actual cols×rows).
+        if threat.pos.col >= dims.cols || threat.pos.row >= dims.rows {
+            continue;
+        }
         let q = grid_cell_quad(threat.pos, cfg);
         // Is this damage lethal to the cell's current occupant? (amount ≥ hull.)
         let lethal = matches!(threat.kind, ThreatKind::Damage { amount }
@@ -1210,6 +1220,16 @@ pub fn push_player_targeting_2d(
     }
     let from = grid_cell_quad(player_pos, cfg).center;
     for &tp in targets {
+        // (#215 Bruce live repro) Defensive dims-clamp via cfg.cols/cfg.rows —
+        // never paint a target cell outside the LIVE playable grid. The bin
+        // pipes targets through resolve_targeting_2d which IS dims-aware, but
+        // belt-and-braces: if any future caller passes a stale Pos (e.g. mid-
+        // dim-change frame), the overlay MUST NOT leak phantom cells off the
+        // playable board. cfg.cols/cfg.rows are set by `.with_dims(board.dims())`
+        // on every scene cfg, so this matches the grid wireframe's extent.
+        if tp.col >= cfg.cols || tp.row >= cfg.rows {
+            continue;
+        }
         let q = grid_cell_quad(tp, cfg);
         // Faint cyan interior + bright cyan outline (mirrors push_threats_2d, the
         // OUTLINE is the cue, never a slab).
@@ -1293,8 +1313,15 @@ pub fn push_fizzle_cue_2d(
 /// resolver keeps `fire_events` populated), drawn over the animated beam so
 /// the impact reads clearly on hit and not at all on miss.
 fn push_fire_2d(out: &mut Vec<DrawCommand>, board: &Board, cfg: &ProjectorConfig) {
+    let dims = board.dims();
     for fe in &board.fire_events {
         if !fe.hit {
+            continue;
+        }
+        // (#215 Bruce live repro) Defensive dims-clamp — never paint an impact
+        // spark on a cell outside the LIVE playable board (overlays must not
+        // leak past cols×rows).
+        if fe.to_pos.col >= dims.cols || fe.to_pos.row >= dims.rows {
             continue;
         }
         // (#120) Impact SPARK on the struck cell (hits only). Was a big cream
@@ -1345,7 +1372,14 @@ fn push_ordnance_2d(
     tween: &Tween2d,
 ) {
     use crate::grid::Dir8;
+    let dims = board.dims();
     for proj in &board.ordnance {
+        // (#215 Bruce live repro) Defensive dims-clamp — skip ordnance whose
+        // logical cell is outside the LIVE board (e.g. a stale projectile that
+        // exited the playable grid). Overlays must not paint past cols×rows.
+        if proj.pos.col >= dims.cols || proj.pos.row >= dims.rows {
+            continue;
+        }
         let q = grid_cell_quad(proj.pos, cfg);
         let scale = q.depth_scale;
         // (#178 step 3) Draw the torpedo at its wall-clock-interpolated SCREEN centre
@@ -1417,6 +1451,13 @@ pub fn push_destruction_at(
     cfg: &ProjectorConfig,
 ) {
     for &pos in cells {
+        // (#215 Bruce live repro) Defensive dims-clamp via cfg.cols/cfg.rows —
+        // never burst a cell outside the LIVE playable grid (the bin's kill-
+        // burst tracker holds Pos values across frames; a dim-change between
+        // capture and emit could otherwise leak a phantom burst off-board).
+        if pos.col >= cfg.cols || pos.row >= cfg.rows {
+            continue;
+        }
         let q = grid_cell_quad(pos, cfg);
         let r = (q.near_edge_width() * 0.7).clamp(8.0, 34.0);
         push_sprite(
@@ -1522,6 +1563,49 @@ fn push_grid_2d(out: &mut Vec<DrawCommand>, cfg: &ProjectorConfig) {
                 LANE_STROKE
             };
             outline_cell_2d(out, &q, color);
+        }
+    }
+}
+
+/// (#215 Bruce debug) Paint "r,c" labels on every REAL playable cell — when the
+/// `N`-key debug toggle is on ([`crate::gfx::cell_numbers_enabled`]). Iterates
+/// `cfg.cols / cfg.rows` (the LIVE board extent the bin pipes in via
+/// `.with_dims(board.dims())`), drops a small bright label at each cell's
+/// `grid_cell_quad(...).center`, scaled with depth so far cells stay legible
+/// without slabbing the near hull. Any rectangle Bruce sees on screen WITHOUT
+/// one of these labels is NOT a real grid cell — it's either an overlay
+/// (threat / aim / weapon-arc) or screen-space UI (HUD tile / menu). The
+/// definitive read for "what is that square?" during small-board playtest.
+pub fn push_cell_numbers_2d(out: &mut Vec<DrawCommand>, cfg: &ProjectorConfig) {
+    use crate::grid::Pos as GridPos;
+    let cols = cfg.cols;
+    let rows = cfg.rows;
+    // Bright cyan label + a 1-pixel black shadow under it for contrast on the
+    // starfield/hull. Matches the angle-overlay text path (push_text_left).
+    let col_fg = [0.45, 0.95, 1.0, 0.95];
+    let col_sh = [0.0, 0.0, 0.0, 0.85];
+    for row in 0..rows {
+        for col in 0..cols {
+            let q = grid_cell_quad(GridPos::new(col, row), cfg);
+            let scale = q.depth_scale.max(0.5);
+            let pixel = (1.4 * scale).max(1.0);
+            let text = format!("{row},{col}");
+            // 5px glyph + 1px space, matching push_text_left.
+            let advance = 6.0 * pixel;
+            let total_w = text.len() as f32 * advance - pixel;
+            let cx = q.center[0];
+            let cy = q.center[1];
+            let left = cx - total_w * 0.5;
+            let y = cy - 3.0 * pixel; // a touch above the cell centre
+            push_text_left(
+                out,
+                &text,
+                left + pixel * 0.5,
+                y + pixel * 0.5,
+                pixel,
+                col_sh,
+            );
+            push_text_left(out, &text, left, y, pixel, col_fg);
         }
     }
 }
@@ -4231,6 +4315,7 @@ pub fn push_controls_popup(out: &mut Vec<DrawCommand>) {
         "G            GRID PITCH",
         "T            GRID MODE",
         "O            ANGLE OVERLAY",
+        "H            CELL NUMBERS",
         "U            UNIFIED CAM",
         "LBKT RBKT    SHIP SCALE",
         "MINUS PLUS   BOARD ZOOM",

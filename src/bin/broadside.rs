@@ -2006,6 +2006,19 @@ impl ApplicationHandler for App {
                         }
                         return;
                     }
+                    // (#215 Bruce debug) `H` toggles the CELL-NUMBER overlay — paints
+                    // "r,c" on every REAL playable cell so Bruce can DEFINITIVELY
+                    // distinguish real grid cells from any phantom/overlay rectangles
+                    // ("anything without a number is not a cell"). H = HINTS.
+                    // (M = anchor mode, N = preview tint+, B = preview tint-, all taken.)
+                    if code == KeyCode::KeyH {
+                        let on = broadside_engine::gfx::toggle_cell_numbers();
+                        log::info!("cell numbers: {}", if on { "ON" } else { "OFF" });
+                        if let Some(win) = self.window.as_ref() {
+                            win.request_redraw();
+                        }
+                        return;
+                    }
                     // (UNIFY, Bruce order) `U` toggles the UNIFIED camera: grid + 3-D
                     // hulls render through ONE real-perspective camera, so ships LIVE
                     // in the grid (nose→VP + per-column outward lean). Renderer-owned
@@ -3213,6 +3226,12 @@ impl ApplicationHandler for App {
                     // per-column lane orientation + the camera unification.
                     if broadside_engine::gfx::angle_overlay_enabled() {
                         hud::push_ship_angle_overlay(&mut instances, &self.board, &scene_cfg);
+                    }
+                    // (#215 Bruce debug) `H` paints "r,c" on every REAL grid cell so
+                    // any rectangle Bruce sees WITHOUT a label is provably NOT a
+                    // playable cell (overlay or screen-space UI). Off by default.
+                    if broadside_engine::gfx::cell_numbers_enabled() {
+                        hud::push_cell_numbers_2d(&mut instances, &scene_cfg);
                     }
                     // (#63) Controls legend removed — Bruce: the move-help text crowded
                     // the screen. Keybinds are discoverable in-game; no on-screen overlay.

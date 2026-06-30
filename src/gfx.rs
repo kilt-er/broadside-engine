@@ -237,6 +237,14 @@ pub fn toggle_angle_overlay() -> bool {
 /// pattern — plain atomic flag, no signature threads through the render path.
 static CONTROLS_POPUP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+/// (#215 Bruce debug) Live toggle for the CELL-NUMBER overlay — paints "r,c"
+/// labels on every REAL grid cell so a tester can DEFINITIVELY distinguish
+/// real playable cells from any phantom/overlay rectangles. Any visible square
+/// WITHOUT a number is not a real grid cell (it's an overlay or a UI tile).
+/// OFF by default; the bin's `H` key flips it via [`toggle_cell_numbers`].
+/// Mirrors the [`ANGLE_OVERLAY`] pattern — plain atomic, no signature thread.
+static CELL_NUMBERS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// Whether the controls popup is currently shown (see [`CONTROLS_POPUP`]).
 pub fn controls_popup_enabled() -> bool {
     CONTROLS_POPUP.load(std::sync::atomic::Ordering::Relaxed)
@@ -246,6 +254,18 @@ pub fn controls_popup_enabled() -> bool {
 pub fn toggle_controls_popup() -> bool {
     let next = !controls_popup_enabled();
     CONTROLS_POPUP.store(next, std::sync::atomic::Ordering::Relaxed);
+    next
+}
+
+/// Whether the cell-number debug overlay is currently shown (see [`CELL_NUMBERS`]).
+pub fn cell_numbers_enabled() -> bool {
+    CELL_NUMBERS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Flip the cell-number debug overlay on/off (the `H` key); returns the new state.
+pub fn toggle_cell_numbers() -> bool {
+    let next = !cell_numbers_enabled();
+    CELL_NUMBERS.store(next, std::sync::atomic::Ordering::Relaxed);
     next
 }
 

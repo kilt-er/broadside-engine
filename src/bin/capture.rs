@@ -770,6 +770,12 @@ fn main() {
     if std::env::var("BROADSIDE_ANGLE_OVERLAY").is_ok_and(|v| v != "0") {
         broadside_engine::hud::push_ship_angle_overlay(&mut commands, &board, &cfg);
     }
+    // (#215 Bruce debug) BROADSIDE_CELL_NUMBERS=1 paints "r,c" on every REAL grid
+    // cell (the bin's `H` toggle) so a headless capture can prove which on-screen
+    // squares are real cells vs overlays/UI.
+    if std::env::var("BROADSIDE_CELL_NUMBERS").is_ok_and(|v| v != "0") {
+        broadside_engine::hud::push_cell_numbers_2d(&mut commands, &cfg);
+    }
     // (#196) BROADSIDE_CONTROLS_POPUP=1 forces the centered controls popup on
     // (the bin's `F1` toggle) so headless captures can verify the panel layout.
     if std::env::var("BROADSIDE_CONTROLS_POPUP").is_ok_and(|v| v != "0") {
