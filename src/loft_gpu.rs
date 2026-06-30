@@ -394,26 +394,54 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let key = max(dot(n, normalize(scene.key_dir.xyz)), 0.0) * scene.key_dir.w;
     let fill = max(dot(n, normalize(scene.fill_dir.xyz)), 0.0) * scene.fill_dir.w;
     var lit = in.color * (scene.ambient.rgb + vec3<f32>(key) + vec3<f32>(0.53, 0.67, 1.0) * fill);
-    // (#291) Dynamic explosion point light — REAL normal-based reflection.
-    // The face's contribution depends on (a) its surface NORMAL dotted with
-    // the per-fragment light direction (the part of the geometry facing the
-    // blast lights up; the back side stays dark), and (b) inverse-square
-    // distance falloff scaled by the blast radius. Branchless: radius <= 0
-    // (no live explosion) zeroes the contribution.
+    // (#291) Dynamic explosion point light -- REAL normal-based reflection.
+    // The face's contribution still depends on its world normal vs the
+    // per-fragment light direction + inverse-square falloff. Branchless:
+    // radius <= 0 (no live explosion) zeroes the contribution.
+    //
+    // (#296 strengthen) Pure max(dot(n,L),0) Lambert read TOO SUBTLE in
+    // practice: the hulls' camera-visible faces have normals pointing
+    // up/aft (camera looks down at the deck/bow), away from a back-of-
+    // board blast, so ndotl was ~0 on most of what Bruce can see (43/2851
+    // hull pixels brightened in vfx-editor's measurement). Three changes
+    // make the light rake the visible hull without losing direction-
+    // correctness:
+    //
+    // 1. HALF-LAMBERT SQUARED diffuse (Valve's classic):
+    //    `hl = clamp(dot(n,L)*0.5 + 0.5, 0.0, 1.0); diffuse = hl*hl`.
+    //    Face perpendicular to L (was 0) now gets 0.25 -- still clearly
+    //    dimmer than a face pointing AT the light (1.0). Face fully
+    //    pointing away still gets 0. So you get smooth gradient across
+    //    the whole visible side instead of a hard ~0 cliff.
+    //
+    // 2. AMBIENT-FROM-LIGHT floor: a small constant fraction of the
+    //    authored colour times falloff is added even to facing-away faces,
+    //    so Bruce sees a soft warm tint on the back side too (lets the
+    //    light read as present without erasing the lit/unlit contrast).
+    //    Capped very small (12% of the directional term) so direction still
+    //    reads.
+    //
+    // 3. RIM-LIGHT term: a pow(1 - abs(n.L), 2) bias kicks in at grazing
+    //    angles (faces nearly perpendicular to L, common on a chase-cam
+    //    hull silhouette), making edges glow warm -- the blast-caught-on-
+    //    silhouette cue Bruce was missing.
     let radius = scene.point_pos.w;
     if (radius > 0.0) {
         let to_light = scene.point_pos.xyz - in.world_p;
         let d2 = dot(to_light, to_light);
         let d = sqrt(max(d2, 1e-6));
         let l = to_light / d;
-        // Inverse-square in normalised distance (d / radius) so the same
-        // numbers work at any board zoom. The +1 keeps the centre finite.
         let falloff = 1.0 / (1.0 + (d / radius) * (d / radius));
-        let ndotl = max(dot(n, l), 0.0);
-        // Lambert × falloff × authored colour × intensity. Multiplied INTO
-        // the hull albedo so a red hull lit by a warm orange blast still
-        // looks correct (no white-out on light-coloured hulls).
-        let pl = in.color * scene.point_color.rgb * (ndotl * falloff * scene.point_color.w);
+        let raw = dot(n, l);
+        let hl = clamp(raw * 0.5 + 0.5, 0.0, 1.0);
+        let diffuse = hl * hl;                 // half-Lambert squared
+        let rim = pow(1.0 - abs(raw), 2.0);    // grazing-angle glow
+        let ambient_floor = 0.12;              // soft warm tint everywhere
+        let response = diffuse + rim * 0.6 + ambient_floor;
+        // (#291) Multiplied INTO the hull albedo so a red hull lit by a
+        // warm orange blast still looks correct (no white-out on light
+        // hulls).
+        let pl = in.color * scene.point_color.rgb * (response * falloff * scene.point_color.w);
         lit = lit + pl;
     }
     // Add emissive AFTER Lambert so glow surfaces (canopy / gun / battery /
