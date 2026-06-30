@@ -806,6 +806,23 @@ fn main() {
             );
         }
     }
+    // (team-lead 2026-06-29) READY-glow proof: when a queue is present (the
+    // QUEUE_DEMO branch above queued the player + enemy mount weapons), run
+    // one CombatVfx pass so emit_ready_glow paints its small per-mount red
+    // dots on each queued ship. Mirrors the live bin's per-redraw vfx pass.
+    // Without this the headless capture would skip the in-encounter ready
+    // cue entirely; with it the capture is faithful proof that the giant
+    // cell-center red square is gone + replaced by small hull dots.
+    if std::env::var("BROADSIDE_QUEUE_DEMO").is_ok_and(|v| v != "0") {
+        let mut ready_vfx = broadside_engine::vfx::CombatVfx::new();
+        // populate latches without spawning fire/explosion events
+        ready_vfx.observe(&board);
+        // anim_clock = 0.0 inside the freshly-constructed pool, so the pulse
+        // factor 0.55 + 0.45 * sin(0) = 0.55 — visible but not at peak. Fine
+        // for the static proof.
+        ready_vfx.emit(&mut commands, &board, &cfg);
+        log::info!("capture: ready-glow vfx pass over the queued board");
+    }
     // (#127) SALVAGE readout — the live bin draws this in its Playing overlay (not
     // inside compose_scene_2d), so append it here with a representative value so the
     // capture shows its NEW bottom-left position under the HULL/SHLD bars.

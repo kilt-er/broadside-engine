@@ -935,13 +935,20 @@ fn emit_ready_glow(
     let near_r = q.corners[2];
     let near_mid_x = (near_l[0] + near_r[0]) * 0.5;
     let near_mid_y = (near_l[1] + near_r[1]) * 0.5;
-    // Marker size: ~6% of the near edge, clamped tight so it reads as a DOT on
-    // the hull (not a slab). depth_scale already shrinks the near_w on far
-    // cells, so the marker auto-shrinks at depth. Floor at 2px so a back-row
-    // mount still draws something visible.
-    let marker_half = (near_w * 0.06).clamp(2.0, 8.0);
+    // (team-lead 2026-06-29) Marker size: tiny — ~2.5px BASE × `depth_scale` so
+    // a front-row marker reads as a small dot on the hull, far cells shrink to
+    // a single pixel by perspective. Floor at 1px so back-row mounts still
+    // draw something visible. Was `near_w * 0.06` clamped to [2..8] which
+    // ran ~5-8px on 5x4 and pegged at 8px on 2x2 (cell near_w grows on small
+    // boards) — Bruce read the 8px ceiling as "small red squares around the
+    // ship" being still too big.
+    let marker_half = (2.5 * q.depth_scale).max(1.0);
+    // (team-lead 2026-06-29) Force RED for the ready-glow regardless of the
+    // editor's TelegraphFire.color (per Bruce's literal "small red squares"
+    // ask). The editor color stays available for the discharge pop if/when
+    // that's revived; the in-flight ready cue is always red.
     let alpha = cfg.color.0[3] * pulse;
-    let color = [cfg.color.0[0], cfg.color.0[1], cfg.color.0[2], alpha];
+    let color = [0.95, 0.30, 0.30, alpha];
     // Per-mount hull offset, expressed as (dx_frac, dy_frac) of the near-edge
     // half-width, anchored at the near-edge midpoint. The hull occupies roughly
     // the cell's lower-mid area; offsets push markers toward the hull's bow /
