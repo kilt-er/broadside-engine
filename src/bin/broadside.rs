@@ -2769,7 +2769,15 @@ impl ApplicationHandler for App {
                     let cell_scale = broadside_engine::gfx::unified_grid_cell_scale();
                     // Gate: 5x4 ONLY. Bruce's explicit ruling — variable-board
                     // shapes don't apply this rule because every col is "edge".
-                    let target_offset = if cols == 5 && rows == 4 {
+                    // (#215 #4) On NON-5x4 boards we SNAP the pan to 0 instead
+                    // of easing toward it: Bruce's screenshot showed the pan
+                    // value LEAKING into a subsequent 2x2 board and distorting
+                    // the grid for several seconds while the ease decayed (the
+                    // grid stretched off the right edge during Play, was
+                    // compact at Defeat — the Defeat overlay path re-anchored
+                    // through a clean draw). Snap kills the leak instantly on
+                    // a dim transition (rotate 0.5s decay → 0 frames).
+                    if cols == 5 && rows == 4 {
                         let mut left_edge = false;
                         let mut right_edge = false;
                         for s in self.board.cells.iter().flatten() {
@@ -2784,25 +2792,30 @@ impl ApplicationHandler for App {
                         // edges are occupied (typical case: enemies on back row
                         // spanning the lane), shifts cancel to zero — neutral
                         // framing, the natural read.
-                        let mut o = 0.0_f32;
+                        let mut target_offset = 0.0_f32;
                         if left_edge {
-                            o += cell_scale;
+                            target_offset += cell_scale;
                         }
                         if right_edge {
-                            o -= cell_scale;
+                            target_offset -= cell_scale;
                         }
-                        o
+                        // Exponential ease toward the target on 5x4 only — a
+                        // rate constant `r` gives a per-frame factor
+                        // (1 - exp(-r*dt)) so the slide is framerate-independent.
+                        // r=4.0 ≈ 90% of the way in ~0.5s, snappy but visibly easing.
+                        let cur = broadside_engine::gfx::unified_lateral_x_offset();
+                        let alpha = 1.0 - (-4.0 * dt).exp();
+                        let next = cur + (target_offset - cur) * alpha;
+                        broadside_engine::gfx::set_unified_lateral_x_offset(next);
                     } else {
-                        0.0
-                    };
-                    // Exponential ease toward the target — like the parallax. A
-                    // rate constant `r` gives a per-frame factor (1 - exp(-r*dt))
-                    // so the slide is framerate-independent. r=4.0 ≈ 90% of the
-                    // way in ~0.5s, snappy but visibly easing.
-                    let cur = broadside_engine::gfx::unified_lateral_x_offset();
-                    let alpha = 1.0 - (-4.0 * dt).exp();
-                    let next = cur + (target_offset - cur) * alpha;
-                    broadside_engine::gfx::set_unified_lateral_x_offset(next);
+                        // (#215 #4) Snap-to-zero on any non-5x4 board so a value
+                        // accumulated from a prior 5x4 doesn't ease for ~0.5s
+                        // into the new small board (Bruce's screenshot caught
+                        // mid-decay: the 2x2 grid was stretched far-right by the
+                        // leftover positive lateral_x_offset). Snap = no decay
+                        // window where the wrong pan distorts the small grid.
+                        broadside_engine::gfx::set_unified_lateral_x_offset(0.0);
+                    }
                 }
                 // Combat juice (#51): diff the board for this frame (spawns
                 // hit/explosion/trail/beam effects), then advance lifetimes by the
