@@ -360,6 +360,36 @@ const fn demo_lane() -> LaneGeometry {
     DEFAULT_LANE
 }
 
+/// (warp rebuild 2026-06-30) Peek what `advance_after_win` WOULD return + which
+/// encounter the run would land on, WITHOUT mutating the real run. Clones the
+/// run, runs the advance, then resolves the post-advance current encounter on
+/// the clone — so a late-swap warp can pre-build the n+1 destination board at
+/// warp START while leaving `self.run.completed_encounters` at N until warp
+/// END. The bin's `pending_next_board` then carries the n+1 board across the
+/// Transitioning window; warp END consumes it AND applies the real advance.
+/// Returns `None` when there is no next encounter (run already over).
+#[allow(dead_code)] // wired in by the late-swap warp commit that follows
+fn peek_next_advance<'s>(
+    run: &broadside_engine::types::Run,
+    sectors: &'s [broadside_engine::types::Sector],
+) -> Option<(
+    broadside_engine::runs::AdvanceResult,
+    broadside_engine::types::Run,
+    &'s broadside_engine::types::EncounterDef,
+)> {
+    let mut probe = run.clone();
+    let result = broadside_engine::runs::advance_after_win(&mut probe, sectors);
+    match result {
+        broadside_engine::runs::AdvanceResult::NextEncounter
+        | broadside_engine::runs::AdvanceResult::NextSector => {
+            let enc = broadside_engine::runs::current_encounter(&probe, sectors)?;
+            Some((result, probe, enc))
+        }
+        broadside_engine::runs::AdvanceResult::Victorious
+        | broadside_engine::runs::AdvanceResult::AlreadyEnded => None,
+    }
+}
+
 /// (#213 / #P7) Look up the encounter that comes AFTER the current one in the
 /// run. Used by the persistent at-depth distance preview so the next grid +
 /// boss can be drawn behind the playable board through the shared unified
@@ -1596,6 +1626,34 @@ impl App {
         // assignment for free.
         board.level = Self::run_cursor(&self.run);
         Some(board)
+    }
+
+    /// (warp rebuild 2026-06-30) Build the next encounter's board WITHOUT
+    /// applying `advance_after_win` to the real run. Used by the late-swap
+    /// warp: at warp START the bin pre-builds the n+1 destination board so
+    /// the at-depth preview can render the soon-to-be-playable n+1 enemies,
+    /// while `self.board`/`self.run` stay at the post-fight N state until
+    /// warp END (when `advance_after_win` runs for real and the swap lands).
+    ///
+    /// Returns the n+1 board plus the [`AdvanceResult`] that the real
+    /// `advance_after_win` will produce at warp END (so the bin knows whether
+    /// to schedule a Round or Waypoint cinematic without re-peeking).
+    #[allow(dead_code)] // wired in by the late-swap warp commit that follows
+    fn build_pending_board(
+        &self,
+    ) -> Option<(Board, broadside_engine::runs::AdvanceResult)> {
+        let (result, probe_run, enc) = peek_next_advance(&self.run, &self.sectors)?;
+        let patrol_tier = self
+            .sectors
+            .get(probe_run.current_sector_idx)
+            .map_or(1, |s| s.patrol_tier);
+        let player = Self::fresh_player_ship();
+        let catalog = self.catalog.as_ref();
+        let mut board = build_encounter_board(enc, player, |spawn| {
+            Some(synth_enemy_for_spawn(spawn, catalog, patrol_tier))
+        });
+        board.level = Self::run_cursor(&probe_run);
+        Some((board, result))
     }
 
     /// (#210 P2) Linear "round number" across the whole campaign, used as the
