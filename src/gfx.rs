@@ -1355,8 +1355,27 @@ fn vs_main_grid(
     @location(5) i_uv_max:     vec2<f32>,
     @location(6) i_rotation:   f32,
 ) -> VsOut {
-    var o = vs_main(v_pos, i_pos, i_half, i_color, i_uv_min, i_uv_max, i_rotation);
-    o.clip.z = 0.5;
+    // Inlined copy of vs_main's transform (WGSL forbids calling an @vertex
+    // entry point from another function) with the only difference being the
+    // MID clip-Z (GRID_DEPTH_Z = 0.5) for the depth-tested grid pass.
+    let cos_r = cos(i_rotation);
+    let sin_r = sin(i_rotation);
+    let local = v_pos * i_half;
+    let rotated = vec2<f32>(
+        local.x * cos_r - local.y * sin_r,
+        local.x * sin_r + local.y * cos_r,
+    );
+    let pixel = i_pos + rotated;
+    let ndc_x = pixel.x * view.px_to_ndc.x - 1.0;
+    let ndc_y = 1.0 - pixel.y * view.px_to_ndc.y;
+    var o: VsOut;
+    o.clip = vec4<f32>(ndc_x, ndc_y, 0.5, 1.0);
+    o.color = i_color;
+    let t = (v_pos + vec2<f32>(1.0, 1.0)) * 0.5;
+    o.uv = vec2<f32>(
+        mix(i_uv_min.x, i_uv_max.x, t.x),
+        mix(i_uv_max.y, i_uv_min.y, t.y)
+    );
     return o;
 }
 ";
