@@ -1391,6 +1391,22 @@ enum DemoState {
     Transitioning(TransitionPhase),
 }
 
+impl DemoState {
+    /// (#318 2026-06-30) Whether the per-frame render path should emit the
+    /// board-space combat / destruction VFX pools (`kill_bursts`, particles,
+    /// exhaust, the #178 combat-vfx beam/explosion pool) THIS FRAME. True
+    /// during `Playing` AND `Dying` so the player's destruction explosion
+    /// plays on the board through the half-window before the death screen
+    /// fades in; false during the modal between-encounter / run-end /
+    /// transitioning frames (no new deaths there, pool already drained).
+    /// Single source of truth for the render-arm gate so the predicate
+    /// stays unit-testable. (#90/#119/#178/#201 history references stay in
+    /// the renderer comments at the call site.)
+    const fn emits_board_vfx(self) -> bool {
+        matches!(self, Self::Playing | Self::Dying(_))
+    }
+}
+
 /// (#133 Bruce) In-turn BEAT playback of the player's committed volley. On a
 /// `CommitTurn` the resolver fires the whole queue atomically (all beams + hull
 /// drops land at once); to make each ability read distinctly we DRAIN the player's
@@ -4359,9 +4375,15 @@ impl ApplicationHandler for App {
                     hud::push_player_hit_flash(&mut instances, self.hit_flash);
                     // (#90 kill-burst) Destruction bursts at the cells where ships
                     // died this/last round (~0.35s), projected onto the board via the
-                    // live-scene projector. Gated to Playing so a board reset / overlay
-                    // frame never bursts. Recorded only on a combat-turn resolve.
-                    hud::push_destruction_at(&mut instances, &kill_cells, &scene_cfg);
+                    // live-scene projector. (#318 2026-06-30) MOVED OUT of the
+                    // Playing-only block below so the PLAYER's destruction burst
+                    // RENDERS during DemoState::Dying — pre-#318 the same-frame
+                    // flip Playing→Dying skipped this push entirely + the
+                    // explosion only "popped in" at restart when the board reset
+                    // back to Playing. See the unconditional push at the bottom
+                    // of the render block; this comment stays here as the design
+                    // anchor for the kill-burst signal source (combat-turn
+                    // resolve in apply_intent, same as pre-fix).
                     // (#122) Player targeting telegraph — cyan preview of where each
                     // QUEUED weapon will strike from the current pose (mirrors the
                     // enemy threat overlay). No-op when nothing is queued/bears.
@@ -4372,27 +4394,24 @@ impl ApplicationHandler for App {
                     if queued_any && !queued_bears {
                         hud::push_fizzle_cue_2d(&mut instances, aim_pos, &scene_cfg);
                     }
-                    // (#119) Procedural explosion particles seeded at ship death —
-                    // one SOLID_WHITE sprite per live particle, fading + shrinking.
-                    // Already in screen space (spawned via the projector), so it
-                    // emits straight into the frame regardless of the live scene res.
-                    self.particles.emit(&mut instances);
-                    // (#178 step 3) Torpedo exhaust embers — same screen-space pool,
-                    // emitted over the hulls/ordnance so the trail streams out the stern.
-                    self.exhaust.emit(&mut instances);
+                    // (#119) Procedural explosion particles seeded at ship death.
+                    // (#178 step 3) Torpedo exhaust embers.
                     // (#201 bug 2) The #178 wall-clock COMBAT effects: animated
                     // beam TRAVEL → STRIKE → fade, EXPANDING explosion (shell +
                     // hot core + ignition flash), hit-flash, ordnance trail, and
-                    // telegraph pop. observe()/advance() above latch + age the
-                    // pool; emit() draws each at its current life-t through the
-                    // 2-D ProjectorConfig so endpoints land on cell quads (the
-                    // pool was previously 1-D-lane parametric and unreachable
-                    // on the unified board — emit was never invoked, so every
-                    // #178 effect aged out unseen and a static beam in
-                    // push_fire_2d covered for them). push_fire_2d still draws
-                    // the impact spark on hit (a non-beam cue this pool doesn't
-                    // carry).
-                    self.vfx.emit(&mut instances, &self.board, &scene_cfg);
+                    // telegraph pop.
+                    //
+                    // (#318 2026-06-30) MOVED OUT of the Playing-only block so
+                    // these pools continue emitting during DemoState::Dying —
+                    // the player explosion is precisely the visual the Dying
+                    // window holds the death screen back for. Pre-#318 the
+                    // Playing→Dying same-frame flip skipped these emits + the
+                    // explosion only became visible AFTER restart (when
+                    // demo_state was Playing again, but the pool had aged out
+                    // by then, leaving the residual sprites Bruce saw "register
+                    // after the death screen"). See the unconditional emits at
+                    // the bottom of the render block; this stays here as the
+                    // design anchor for what those pools draw.
                     // (#101) Damage-flash on the lane hull bar of every ship that
                     // took a hit this round (fades over ~0.45s), so even a 1-2 hull
                     // drop visibly pops — paired with the min-size bar clamp so a
@@ -4454,6 +4473,27 @@ impl ApplicationHandler for App {
                     // shield + its REVEALED queue (enemy hand hidden — only what it has
                     // actually queued, read live from the board). No-op between encounters.
                     hud::push_enemy_info_panel_2d(&mut instances, &self.board);
+                }
+                // (#318 2026-06-30) Player-death VFX pass — kill-bursts +
+                // explosion-particle pool + combat-vfx pool emit during BOTH
+                // Playing AND Dying so the player's destruction explosion is
+                // visible on the board BEFORE the death screen fades in at
+                // progress >= 0.5. Pre-#318 these were inside the Playing-only
+                // block above; the Playing→Dying same-frame flip on player
+                // death skipped them entirely and Bruce saw the residual
+                // sprites "register after the death screen" on restart. The
+                // ship hulls + grid still render normally during Dying (their
+                // pushes live in compose_scene_2d_tweened above, no state
+                // gate). EncounterComplete / RunComplete / Transitioning skip
+                // these because nothing newly died on those frames (no
+                // kill_bursts to draw, pool already drained from the
+                // round that won), so the matches guard reads as "emit
+                // combat/death VFX whenever the board is the live focus."
+                if demo_state.emits_board_vfx() {
+                    hud::push_destruction_at(&mut instances, &kill_cells, &scene_cfg);
+                    self.particles.emit(&mut instances);
+                    self.exhaust.emit(&mut instances);
+                    self.vfx.emit(&mut instances, &self.board, &scene_cfg);
                 }
                 // (#196 Bruce) Controls popup — F1 toggles a centered panel
                 // listing every player + debug key. Pushed AFTER all the in-game
