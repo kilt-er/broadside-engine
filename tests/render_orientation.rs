@@ -1012,3 +1012,84 @@ fn variable_dims_board_centered_per_dims_and_near_anchored() {
     // Restore the pan (cleanly hand back what we found).
     broadside_engine::gfx::set_unified_lateral_x_offset(saved_pan);
 }
+
+/// (#215 Bruce camera-X-tracks-player bug) Lock the invariant that on ANY
+/// non-5x4 board the camera lateral pan getter returns EXACTLY 0.0, regardless
+/// of what value was last written to the atomic. This is the point-of-use
+/// clamp that defends every reader (`projector::unified_target`,
+/// `projector::unified_eye`, the camera target/eye X, any future consumer).
+///
+/// Why this is THE invariant Bruce's "grid moves with player" report exercises:
+/// the live bin has only ONE camera-X term that depends on board state — the
+/// #207 edge-lane lateral pan, written into `UNIFIED_LATERAL_X_MILLI`. With
+/// the bin's snap (broadside.rs:2830) + my point-of-use getter clamp, the
+/// only path that can produce a non-zero camera-X on a small board is if
+/// `live_grid_cols/rows` are NOT 5x4. We test the getter directly here —
+/// write a deliberately-nonzero value, set live dims to every non-5x4 in the
+/// #199b pool, and assert the getter returns 0.0. Bypasses ANY question
+/// about who wrote the atomic; if the getter clamps, the camera CAN'T pan.
+///
+/// CAMERA-X AUDIT (every input to the unified camera's horizontal position):
+///   1. `unified_target.x` = `unified_lateral_x_offset()` (projector.rs ~955)
+///   2. `unified_eye.x`    = `t[0]` where `t = unified_target` (projector.rs ~969)
+///
+/// Both read the SAME atomic via the SAME clamped getter — locking it here
+/// is sufficient. No other `player.pos.col` input feeds the unified camera
+/// position (only the parallax BACKGROUND tracks `player_col` via
+/// `gfx::update_background`, which is a separate pre-grid backdrop, not the
+/// camera transform). If a future render-path adds a new camera-X term that
+/// bypasses `unified_lateral_x_offset`, this test won't catch it — the audit
+/// comment is the trail to update both sides.
+#[test]
+fn lateral_pan_clamped_to_zero_on_non_5x4_regardless_of_writer() {
+    let _g = CamDistGuard::pin_boot();
+    let saved_pan = broadside_engine::gfx::unified_lateral_x_offset();
+    let saved_cols = broadside_engine::gfx::live_grid_cols();
+    let saved_rows = broadside_engine::gfx::live_grid_rows();
+    // Non-5x4 dims from the #199b pool — every shape Bruce can roll into.
+    const NON_5X4_POOL: &[(usize, usize)] = &[
+        (2, 2),
+        (2, 3),
+        (3, 2),
+        (2, 4),
+        (4, 2),
+        (3, 3),
+        (3, 4),
+        (4, 3),
+        (4, 4),
+    ];
+    // Try a range of "leftover" writes — the kind of value the bin's 5x4
+    // ease branch could have parked the atomic at (positive, negative,
+    // large, fractional). Each is the worst-case input the getter must
+    // suppress.
+    const WRITES: &[f32] = &[0.5, -0.5, 1.0, -1.0, 2.5, -2.5];
+    for &(cols, rows) in NON_5X4_POOL {
+        broadside_engine::gfx::set_live_grid_dims(cols, rows);
+        for &w in WRITES {
+            broadside_engine::gfx::set_unified_lateral_x_offset(w);
+            let got = broadside_engine::gfx::unified_lateral_x_offset();
+            assert_eq!(
+                got, 0.0,
+                "On {cols}x{rows} with atomic written to {w}, getter must \
+                 clamp to 0.0 (got {got}) — the camera-X must be independent \
+                 of any writer on non-5x4 boards. Without this clamp, the \
+                 grid SLIDES with player movement on small boards (Bruce's \
+                 'grid cells appear/disappear as I move')."
+            );
+        }
+    }
+    // Sanity: on 5x4 the getter passes the atomic through (we restore the
+    // edge-lane pan behavior on the canonical board).
+    broadside_engine::gfx::set_live_grid_dims(COLS, ROWS);
+    broadside_engine::gfx::set_unified_lateral_x_offset(0.5);
+    let got_5x4 = broadside_engine::gfx::unified_lateral_x_offset();
+    assert!(
+        (got_5x4 - 0.5).abs() < 1e-3,
+        "On 5x4 the getter must pass through the atomic (got {got_5x4}, \
+         expected 0.5) — the #207 edge-lane pan stays active on the \
+         canonical board."
+    );
+    // Restore both atomics cleanly.
+    broadside_engine::gfx::set_unified_lateral_x_offset(saved_pan);
+    broadside_engine::gfx::set_live_grid_dims(saved_cols, saved_rows);
+}
