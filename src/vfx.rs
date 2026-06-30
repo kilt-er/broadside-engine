@@ -44,12 +44,25 @@ use std::sync::OnceLock;
 // The telegraph cue is not event-transient — it pulses while the intent is
 // queued — so it has no lifetime; it's emitted live from the current board.
 
-/// One transient effect with an eased 0→1 lifetime (`age / dur`).
+/// One transient effect with an eased 0→1 lifetime.
+///
+/// `age` advances every frame from [`CombatVfx::advance`]; `dur` is the total
+/// time-on-pool including any leading `start_delay`. While `age < start_delay`
+/// the effect is silent (not drawn, no visible progression); once past the
+/// delay, `t()` runs 0→1 over the remaining `dur - start_delay` window. The
+/// delay is what makes a multi-beam volley fire as a quick time-ordered
+/// sequence (per-beam staggered `start_delay` in [`CombatVfx::observe`]) and an
+/// explosion bloom AFTER its causing beam lands (delay = causing beam's
+/// stagger + travel).
 #[derive(Clone, Copy, Debug)]
 struct Effect {
     kind: EffectKind,
     age: f32,
     dur: f32,
+    /// Seconds of silence before the visible effect starts. `0.0` for the
+    /// classic "spawn fires this frame" effects (hit flash, trail, queued
+    /// glow, an unstaggered single-beam round).
+    start_delay: f32,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -92,22 +105,41 @@ enum EffectKind {
     TelegraphFire { pos: Pos },
     /// (#209 hook 4) Distance-delayed light bounce off a SURVIVING ship when a
     /// blast goes off elsewhere: `target_pos` is the surviving ship's cell;
-    /// `start_delay` is the per-instance seconds-of-silence BEFORE the glow
-    /// appears (chebyshev distance × `delay_per_cell`). The effect's total
-    /// `dur` = `start_delay + life_secs`, so the pool keeps the effect alive
-    /// long enough for the delayed glow to play. Drawn by `emit_reflection_glow`.
-    ExplosionReflection { target_pos: Pos, start_delay: f32 },
+    /// the per-instance seconds-of-silence BEFORE the glow appears (chebyshev
+    /// distance × `delay_per_cell`) lives on the common [`Effect::start_delay`]
+    /// field. The effect's total `dur` = `start_delay + life_secs`, so the
+    /// pool keeps the effect alive long enough for the delayed glow to play.
+    /// Drawn by `emit_reflection_glow`.
+    ExplosionReflection { target_pos: Pos },
 }
 
 impl Effect {
-    /// Lifetime fraction 0→1; >=1 means expired.
+    /// POST-DELAY lifetime fraction 0→1; clamped at 0 while `age < start_delay`
+    /// (the effect is silent) and at 1 once the visible window is done. Callers
+    /// should additionally check [`Self::visible`] to skip drawing during the
+    /// silent lead-in (returning t=0 alone would still emit a "born" frame).
     fn t(&self) -> f32 {
-        (self.age / self.dur).clamp(0.0, 1.0)
+        let visible_dur = (self.dur - self.start_delay).max(0.001);
+        ((self.age - self.start_delay) / visible_dur).clamp(0.0, 1.0)
+    }
+    /// True once `age >= start_delay`: the visible window has begun.
+    fn visible(&self) -> bool {
+        self.age >= self.start_delay
     }
     fn alive(&self) -> bool {
         self.age < self.dur
     }
 }
+
+/// Per-beam stagger interval for a same-frame volley (#216). The resolver
+/// commits a turn and `board.fire_events` holds the player's beams AND every
+/// enemy's beams in one list — they all show up in [`CombatVfx::observe`] in
+/// the same frame. Spawning them all at t=0 fires them in lockstep ("all at
+/// once"); the fix is a per-event `start_delay = index * ENEMY_BEAT_SECS`,
+/// preserving the resolver's insertion order (= the order the AI made the
+/// shots happen). 0.12s reads as a quick rat-a-tat rather than a long lockout
+/// — a 3-shot volley settles in under half a second.
+const ENEMY_BEAT_SECS: f32 = 0.12;
 
 /// Per-frame snapshot of the combat-relevant board state, used to diff the next
 /// frame against. Cheap: a few small maps keyed by ship / projectile id.
@@ -280,8 +312,28 @@ impl CombatVfx {
         let cur = Snapshot::of(board);
         // Capture the previous frame's fire signature BEFORE `take()` empties it.
         let prev_sig = self.prev.as_ref().map_or(0, |p| p.fire_sig);
+        // (#216) Build a per-target-cell delay map for THIS round's volley so
+        // `diff` can delay an Explosion until its causing beam visually lands.
+        // Key = causing beam's target Pos; value = (stagger_delay, travel_secs).
+        // Only populated when this is a NEW round (fire_sig changed); otherwise
+        // the list is yesterday's news and no delay is attributable to it.
+        let mut kill_delays: HashMap<Pos, (f32, f32)> = HashMap::new();
+        if !board.fire_events.is_empty() && cur.fire_sig != prev_sig {
+            for (i, fe) in board.fire_events.iter().enumerate() {
+                // EARLIEST hit on a cell wins: if two beams target the same
+                // cell this round the explosion follows the first arrival,
+                // not the last (later beams just splash into the wreckage).
+                if kill_delays.contains_key(&fe.to_pos) {
+                    continue;
+                }
+                let (_, life) = archetype_beam_style(&self.cfg.shot_beam, fe.archetype);
+                let stagger = (i as f32) * ENEMY_BEAT_SECS;
+                let travel = life * self.cfg.shot_beam.travel_frac;
+                kill_delays.insert(fe.to_pos, (stagger, travel));
+            }
+        }
         if let Some(prev) = self.prev.take() {
-            self.diff(&prev, &cur);
+            self.diff(&prev, &cur, &kill_delays);
         }
         // EXACT fired shots (#59): latch the resolver's per-round FireEvent list
         // into styled ShotBeam effects. Read-only — the resolver owns
@@ -289,10 +341,18 @@ impl CombatVfx {
         // mutate `board.fire_events`. Spawn once per round: only when this
         // frame's fire-event signature differs from the previous frame's (the
         // list persists across redraws until the next round repopulates it).
+        //
+        // (#216) STAGGER same-frame beams by INSERTION ORDER: assigning each a
+        // `start_delay = index * ENEMY_BEAT_SECS` turns a same-frame volley from
+        // a single lockstep flash into a quick time-ordered sequence — the
+        // resolver's insertion order IS the order the shots conceptually
+        // happened, so the visual reads as "shots fire in sequence, not at
+        // once."
         if !board.fire_events.is_empty() && cur.fire_sig != prev_sig {
-            for fe in &board.fire_events {
-                let (thickness, dur) = archetype_beam_style(&self.cfg.shot_beam, fe.archetype);
-                self.spawn(
+            for (i, fe) in board.fire_events.iter().enumerate() {
+                let (thickness, life) = archetype_beam_style(&self.cfg.shot_beam, fe.archetype);
+                let start_delay = (i as f32) * ENEMY_BEAT_SECS;
+                self.spawn_delayed(
                     EffectKind::ShotBeam {
                         from_pos: fe.from_pos,
                         to_pos: fe.to_pos,
@@ -300,14 +360,15 @@ impl CombatVfx {
                         thickness,
                         dim: !fe.hit,
                     },
-                    dur,
+                    life,
+                    start_delay,
                 );
             }
         }
         self.prev = Some(cur);
     }
 
-    fn diff(&mut self, prev: &Snapshot, cur: &Snapshot) {
+    fn diff(&mut self, prev: &Snapshot, cur: &Snapshot, kill_delays: &HashMap<Pos, (f32, f32)>) {
         // Ships: hull-drop → hit flash; vanished → explosion.
         for (id, &(prev_hull, prev_pos, _prev_faction)) in &prev.ships {
             // (#209 hook 4) Both arms heavyweight (Some = hit flash; None =
@@ -330,15 +391,28 @@ impl CombatVfx {
                 }
                 None => {
                     // Ship gone this frame → destroyed at its last known cell.
-                    self.spawn(
+                    // (#216) EXPLOSION-AFTER-STRIKE: if THIS round's volley
+                    // contains a beam targeting this ship's cell, the explosion
+                    // is the consequence of that beam arriving — delay the
+                    // bloom by `stagger + travel` so it kicks off the instant
+                    // the beam visually lands, never concurrent with it.
+                    // No matching beam (e.g. ordnance kill, self-destruct) →
+                    // explosion fires immediately as before.
+                    let blast_delay = kill_delays
+                        .get(&prev_pos)
+                        .map_or(0.0, |&(stagger, travel)| stagger + travel);
+                    self.spawn_delayed(
                         EffectKind::Explosion { pos: prev_pos },
                         self.cfg.explosion.life_secs,
+                        blast_delay,
                     );
                     // (#209 hook 4) Distance-delayed light bounce: for every
                     // ship STILL ALIVE this frame, spawn one ExplosionReflection
                     // with start_delay = chebyshev(blast, target) ×
-                    // delay_per_cell. The pool keeps each alive for
-                    // start_delay + life_secs so the delayed glow plays out.
+                    // delay_per_cell, ADDITIVE on top of `blast_delay` so the
+                    // reflection only starts radiating once the blast itself
+                    // has begun. The pool keeps each alive for
+                    // total_delay + life_secs so the delayed glow plays out.
                     // Chebyshev (max abs delta) matches how a player reads
                     // distance on a square grid (a diagonal-2 cell is "2 away",
                     // not √2). Skips the dying ship itself by construction
@@ -350,14 +424,14 @@ impl CombatVfx {
                         let dx = (prev_pos.col as i32 - other_pos.col as i32).unsigned_abs();
                         let dy = (prev_pos.row as i32 - other_pos.row as i32).unsigned_abs();
                         let d = dx.max(dy) as f32;
-                        let start_delay = d * self.cfg.explosion_reflection.delay_per_cell;
-                        let dur = start_delay + self.cfg.explosion_reflection.life_secs;
-                        self.spawn(
+                        let refl_delay =
+                            blast_delay + d * self.cfg.explosion_reflection.delay_per_cell;
+                        self.spawn_delayed(
                             EffectKind::ExplosionReflection {
                                 target_pos: other_pos,
-                                start_delay,
                             },
-                            dur,
+                            self.cfg.explosion_reflection.life_secs,
+                            refl_delay,
                         );
                     }
                 }
@@ -406,10 +480,21 @@ impl CombatVfx {
     }
 
     fn spawn(&mut self, kind: EffectKind, dur: f32) {
+        self.spawn_delayed(kind, dur, 0.0);
+    }
+
+    /// Spawn an effect with `start_delay` seconds of silent lead-in. Total
+    /// pool-time = `start_delay + visible_life`; pass `visible_life` as `dur`
+    /// (the caller's perspective: "how long the effect plays") + the delay,
+    /// so the visible window survives intact past the lead-in. Used to
+    /// stagger same-frame beam volleys + delay explosions until the causing
+    /// beam lands.
+    fn spawn_delayed(&mut self, kind: EffectKind, visible_life: f32, start_delay: f32) {
         self.effects.push(Effect {
             kind,
             age: 0.0,
-            dur,
+            dur: visible_life + start_delay,
+            start_delay,
         });
     }
 
@@ -445,6 +530,14 @@ impl CombatVfx {
     /// `exhaust.emit`, after `observe(board)` + `advance(dt)`.
     pub fn emit(&self, out: &mut Vec<DrawCommand>, board: &Board, cfg: &ProjectorConfig) {
         for e in &self.effects {
+            // (#216) Silent lead-in: an effect with a positive `start_delay`
+            // (staggered beam, post-strike explosion, distance-delayed
+            // reflection) is alive but NOT drawn until its delay elapses. Same
+            // gate for every variant, so spawn-order can't introduce a stray
+            // "born at t=0" flash.
+            if !e.visible() {
+                continue;
+            }
             match e.kind {
                 EffectKind::HitFlash { pos } => {
                     emit_flash(out, cfg, pos, e.t(), &self.cfg.hit_flash);
@@ -481,26 +574,12 @@ impl CombatVfx {
                     e.t(),
                     &self.cfg.shot_beam,
                 ),
-                EffectKind::ExplosionReflection {
-                    target_pos,
-                    start_delay,
-                } => {
-                    // (#209 hook 4) The effect's TOTAL duration includes
-                    // start_delay; SILENT until age >= start_delay, then a
-                    // life_secs-long glow plays. local_t maps [delay,
-                    // delay+life] → [0, 1] so emit_reflection_glow's ease
-                    // operates on the post-delay window.
-                    if e.age < start_delay {
-                        continue;
-                    }
-                    let local_t = ((e.age - start_delay)
-                        / self.cfg.explosion_reflection.life_secs.max(0.001))
-                    .clamp(0.0, 1.0);
+                EffectKind::ExplosionReflection { target_pos } => {
                     emit_reflection_glow(
                         out,
                         cfg,
                         target_pos,
-                        local_t,
+                        e.t(),
                         &self.cfg.explosion_reflection,
                     );
                 }
@@ -1258,6 +1337,120 @@ mod tests {
     }
 
     #[test]
+    fn same_frame_volley_is_staggered_by_insertion_order() {
+        // (#216) Multiple same-frame FireEvents = enemy volley → each shot
+        // must carry an INCREASING start_delay (idx * ENEMY_BEAT_SECS),
+        // preserving the resolver's insertion order, so the beams animate as a
+        // quick time-ordered sequence and never lockstep at t=0.
+        use crate::types::{FireEvent, WeaponArchetype};
+        let mut vfx = CombatVfx::new();
+        let mut board = empty_board(7);
+        board.cells[0] = Some(ship("player", Faction::Player, 0, 5));
+        board.cells[4] = Some(ship("enemy", Faction::Enemy, 4, 5));
+        vfx.observe(&board); // baseline
+        board.fire_events = vec![
+            FireEvent {
+                from_cell: 4,
+                to_cell: 0,
+                from_pos: Pos::new(0, 0),
+                to_pos: Pos::new(0, 0),
+                archetype: WeaponArchetype::Beam,
+                attacker_faction: Faction::Enemy,
+                hit: true,
+            },
+            FireEvent {
+                from_cell: 4,
+                to_cell: 0,
+                from_pos: Pos::new(0, 0),
+                to_pos: Pos::new(0, 0),
+                archetype: WeaponArchetype::Beam,
+                attacker_faction: Faction::Enemy,
+                hit: true,
+            },
+            FireEvent {
+                from_cell: 4,
+                to_cell: 0,
+                from_pos: Pos::new(0, 0),
+                to_pos: Pos::new(0, 0),
+                archetype: WeaponArchetype::Beam,
+                attacker_faction: Faction::Enemy,
+                hit: true,
+            },
+        ];
+        vfx.observe(&board);
+        let shots: Vec<&Effect> = vfx
+            .effects
+            .iter()
+            .filter(|e| matches!(e.kind, EffectKind::ShotBeam { .. }))
+            .collect();
+        assert_eq!(shots.len(), 3);
+        // start_delays = [0, ENEMY_BEAT_SECS, 2*ENEMY_BEAT_SECS] in insertion order.
+        assert!((shots[0].start_delay - 0.0).abs() < 1e-6);
+        assert!((shots[1].start_delay - ENEMY_BEAT_SECS).abs() < 1e-6);
+        assert!((shots[2].start_delay - 2.0 * ENEMY_BEAT_SECS).abs() < 1e-6);
+        // The later shots must be SILENT at age 0 (visible() == false): proves
+        // they don't render in lockstep with shot[0].
+        assert!(shots[0].visible());
+        assert!(!shots[1].visible());
+        assert!(!shots[2].visible());
+    }
+
+    #[test]
+    fn explosion_delays_until_causing_beam_lands() {
+        // (#216) An Explosion spawned the same frame as the killing beam must
+        // start AFTER the beam visibly arrives: start_delay = beam stagger +
+        // beam travel time. Otherwise the bloom plays concurrent with the
+        // beam's TRAVEL phase, reading as "instant pop."
+        use crate::types::{FireEvent, WeaponArchetype};
+        let mut vfx = CombatVfx::new();
+        let mut board = empty_board(7);
+        board.cells[0] = Some(ship("player", Faction::Player, 0, 5));
+        board.cells[4] = Some(ship("doomed", Faction::Enemy, 4, 1));
+        vfx.observe(&board); // baseline
+                             // Killing shot: the SECOND event (so stagger = 1 * ENEMY_BEAT_SECS)
+                             // tagged at the dying ship's cell (default Pos(0,0) per ship()).
+        board.fire_events = vec![
+            FireEvent {
+                from_cell: 0,
+                to_cell: 1, // unrelated
+                from_pos: Pos::new(0, 0),
+                to_pos: Pos::new(1, 1), // unrelated cell
+                archetype: WeaponArchetype::Beam,
+                attacker_faction: Faction::Player,
+                hit: true,
+            },
+            FireEvent {
+                from_cell: 0,
+                to_cell: 4,
+                from_pos: Pos::new(0, 0),
+                to_pos: Pos::new(0, 0), // matches doomed.pos (default)
+                archetype: WeaponArchetype::Beam,
+                attacker_faction: Faction::Player,
+                hit: true,
+            },
+        ];
+        board.cells[4] = None; // doomed destroyed this frame
+        vfx.observe(&board);
+        let explosion = vfx
+            .effects
+            .iter()
+            .find(|e| matches!(e.kind, EffectKind::Explosion { .. }))
+            .expect("explosion spawned for the destroyed ship");
+        // Causing beam = event[1]: stagger = ENEMY_BEAT_SECS; travel =
+        // life_secs * travel_frac (from the default ShotBeam config).
+        let beam_cfg = &VfxConfig::default().shot_beam;
+        let (_, life) = archetype_beam_style(beam_cfg, crate::types::WeaponArchetype::Beam);
+        let expected = ENEMY_BEAT_SECS + life * beam_cfg.travel_frac;
+        assert!(
+            (explosion.start_delay - expected).abs() < 1e-5,
+            "explosion start_delay {} should equal stagger+travel {}",
+            explosion.start_delay,
+            expected
+        );
+        assert!(!explosion.visible(), "explosion is SILENT at age 0");
+    }
+
+    #[test]
     fn vanished_ship_spawns_explosion() {
         let mut vfx = CombatVfx::new();
         let mut board = empty_board(7);
@@ -1312,11 +1505,12 @@ mod tests {
     }
 
     #[test]
-    fn enemy_intent_change_spawns_fire_pop() {
-        // With fire-then-decide, an enemy's queue head changes when it fires.
-        // That should spawn the TelegraphFire POP (the icon discharge). The shot
-        // LINE itself now comes from the resolver's FireEvent (#59), not here, so
-        // the intent change alone spawns exactly the one pop.
+    fn enemy_intent_change_spawns_no_pop() {
+        // (#215) The TelegraphFire on-fire POP is REMOVED — it duplicated the
+        // HUD threat outline and painted a giant red square on small boards.
+        // The shot LINE comes from the resolver's FireEvent (#59); the HUD
+        // outline is the queued-intent cue. An intent change alone now spawns
+        // nothing on the vfx pool.
         let mut vfx = CombatVfx::new();
         let mut board = empty_board(7);
         board.cells[0] = Some(ship("player", Faction::Player, 0, 5));
@@ -1327,10 +1521,9 @@ mod tests {
                              // Enemy fires → queue head rolls to its NEXT intent.
         board.cells[4].as_mut().unwrap().queue = vec!["beam_b".into()];
         vfx.observe(&board);
-        assert_eq!(
-            vfx.effects.len(),
-            1,
-            "intent change should spawn exactly the fire pop"
+        assert!(
+            !vfx.is_active(),
+            "intent change alone spawns nothing (TelegraphFire pop stripped in #215)"
         );
     }
 
@@ -1351,7 +1544,13 @@ mod tests {
     }
 
     #[test]
-    fn telegraph_emits_for_enemy_with_queue() {
+    fn ready_glow_emits_per_queued_mount() {
+        // (#215) The steady per-enemy telegraph chevron is REMOVED (HUD threat
+        // outline is now the queued-intent cue). The READY-glow (`#209 hook 1`)
+        // survives BUT is drawn per QUEUED MOUNT, so a queued ship with no
+        // mount whose `weapon` matches the queue entry emits nothing — the
+        // marker only appears where the weapon physically sits on the hull.
+        // Verify the queue-with-no-matching-mount case: zero draws.
         let cfg = crate::projector::ProjectorConfig::for_scene(480.0, 270.0);
         let mut board = empty_board(7);
         let mut e = ship("enemy", Faction::Enemy, 4, 5);
@@ -1360,14 +1559,9 @@ mod tests {
         let vfx = CombatVfx::new();
         let mut out = Vec::new();
         vfx.emit(&mut out, &board, &cfg);
-        // (#209 hook 1) Queued ship now also gets a READY-glow aura, so a
-        // queued enemy emits TWO cues: the steady glow (any-faction) + the
-        // enemy-only telegraph chevron. The original telegraph contract is
-        // preserved in the second draw.
-        assert_eq!(
-            out.len(),
-            2,
-            "ready-glow + telegraph cue for the queued enemy"
+        assert!(
+            out.is_empty(),
+            "queued enemy with no matching mount → no per-mount marker; HUD owns the threat outline"
         );
     }
 

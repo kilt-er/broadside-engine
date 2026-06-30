@@ -561,6 +561,31 @@ fn main() {
             attacker_faction: Faction::Enemy,
             hit: false, // a miss — renders dimmer
         });
+        // (#216) Two MORE enemy beams from OTHER enemy cells, so the volley is
+        // 4 shots in INSERTION ORDER (1 player + 3 enemy). With staggered
+        // start_delays the capture proves the beams DON'T fire in lockstep:
+        // at a given wall-clock the earlier-indexed beams have advanced
+        // through their travel/strike phases while the later ones are still
+        // silent or just-launched.
+        for (r, c) in [(0usize, 0usize), (0usize, COLS.saturating_sub(1))] {
+            let p = Pos::new(c, r);
+            if board
+                .cells
+                .get(p.to_index())
+                .and_then(|s| s.as_ref())
+                .is_some_and(|s| s.faction == Faction::Enemy)
+            {
+                board.fire_events.push(FireEvent {
+                    from_cell: p.to_index(),
+                    to_cell: ppos.to_index(),
+                    from_pos: p,
+                    to_pos: ppos,
+                    archetype: WeaponArchetype::Beam,
+                    attacker_faction: Faction::Enemy,
+                    hit: true,
+                });
+            }
+        }
         // REMOVE the struck enemy (mirrors the resolver's destroy() take()), then
         // remember its cell so we append a kill-burst to the commands below — the
         // faithful post-kill frame (the bin drives the burst off a prev-vs-current
@@ -693,7 +718,7 @@ fn main() {
                 }
             }
         }
-        log::info!("capture: warp t={t:.2} → phase {phase:?} sub={sub:.2}",);
+        log::info!("capture: warp t={t:.2} → phase {phase:?} sub={sub:.2}");
     }
     // (#213/#P7) Mirror the live bin's persistent at-depth preview so headless
     // capture reads the SAME view Bruce will see at boot. Stand-in spawns
@@ -903,7 +928,17 @@ fn main() {
                 let mut demo_vfx = broadside_engine::vfx::CombatVfx::new();
                 demo_vfx.observe(&before);
                 demo_vfx.observe(&board); // enemy gone -> spawns Explosion; fire_events -> ShotBeams
-                demo_vfx.advance(0.08); // early: explosion expanding + beam mid-TRAVEL (#178.1)
+                                          // (#216) Override the demo-vfx wall-clock via env var so a
+                                          // SEQUENCE of captures at different t values proves the
+                                          // staggered-volley animation. Default 0.08 keeps the old
+                                          // single-frame look unchanged. ENEMY_BEAT_SECS=0.12 → t=0.04
+                                          // shows only beam[0]; t=0.20 shows beams[0..2]; t=0.45 lands
+                                          // the explosion bloom AFTER its causing beam.
+                let advance_secs: f32 = std::env::var("BROADSIDE_VFX_DEMO_T")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(0.08);
+                demo_vfx.advance(advance_secs); // (#216) staggered, vfx-driven wall-clock
                 demo_vfx.emit(&mut commands, &board, &cfg);
                 log::info!("capture: #178 CombatVfx explosion + travelling beam at {killed:?}");
             }
