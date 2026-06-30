@@ -654,6 +654,47 @@ fn main() {
     let board_dims = board.dims();
     let cfg = cfg_no_dims.with_dims(board_dims.cols, board_dims.rows);
     let mut commands = compose_scene_2d_with(&board, &cfg, &gfx);
+    // (#213 t-sampled warp knob) BROADSIDE_WARP_T=<0.0..=1.0> renders the
+    // round-change cinematic AT a specific t inside DemoState::Transitioning,
+    // so a temporal animation can be verified WITHOUT a winit redraw loop.
+    // Bruce's #213 transition was shipped "done" but live-broken because
+    // every prior verify was a STILL boot frame — t=0, before any phase
+    // animates. This knob mirrors the live bin's per-phase render logic at
+    // the requested t:
+    //   1. phase_from_progress(t) → (CinematicPhase, sub)
+    //   2. If Fade: alpha-multiply every Sprite + Polygon in the composed
+    //      scene by (1 - sub) so the outgoing grid visibly clears.
+    //   3. The upcoming preview's z_offset + tint_alpha lerp per phase (the
+    //      block below reads warp_t to override the dial-driven values).
+    // Strip a 5-frame sequence (t=0, .25, .5, .75, 1.0) and Bruce / lead
+    // see what each phase actually produces vs spec.
+    let warp_t: Option<f32> = std::env::var("BROADSIDE_WARP_T")
+        .ok()
+        .and_then(|s| s.parse::<f32>().ok())
+        .map(|v| v.clamp(0.0, 1.0));
+    if let Some(t) = warp_t {
+        let (phase, sub) = broadside_engine::gfx::phase_from_progress(t);
+        // (#213 fade) Mirror the bin's phase-1 alpha-multiply at
+        // broadside.rs:3105-3128. Only Sprite + Polygon commands fade;
+        // LoftShip + TexturedShip (the player hero hull) are left intact
+        // per Bruce's "player never leaves screen" hard rule.
+        if matches!(phase, broadside_engine::gfx::CinematicPhase::Fade) {
+            let mul = (1.0 - sub).clamp(0.0, 1.0);
+            for cmd in &mut commands {
+                match cmd {
+                    broadside_engine::gfx::DrawCommand::Sprite(s) => {
+                        s.color[3] *= mul;
+                    }
+                    broadside_engine::gfx::DrawCommand::Polygon(p) => {
+                        p.color[3] *= mul;
+                    }
+                    broadside_engine::gfx::DrawCommand::TexturedShip(_)
+                    | broadside_engine::gfx::DrawCommand::LoftShip(_) => {}
+                }
+            }
+        }
+        log::info!("capture: warp t={t:.2} → phase {phase:?} sub={sub:.2}",);
+    }
     // (#213/#P7) Mirror the live bin's persistent at-depth preview so headless
     // capture reads the SAME view Bruce will see at boot. Stand-in spawns
     // span multiple rows so the capture shows markers across the upcoming
@@ -691,15 +732,45 @@ fn main() {
                 }
             })
             .collect();
+        // (#213 t-knob) When BROADSIDE_WARP_T is set, override z_offset +
+        // tint_alpha per phase so the upcoming grid visibly approaches across
+        // the strip (Fade = rest, Approach = ease forward + brighten, Warp+
+        // Snap+Settle = near-final). Mirrors the bin's render-time lerp at
+        // broadside.rs:3158-3197. Without the env, the dial-driven defaults
+        // are used (the existing live-bin parity capture).
+        let rest_z = broadside_engine::gfx::preview_z_offset();
+        let rest_a = broadside_engine::gfx::preview_tint_alpha();
+        let (z_offset, tint_alpha) = match warp_t {
+            Some(t) => {
+                let (phase, sub) = broadside_engine::gfx::phase_from_progress(t);
+                match phase {
+                    broadside_engine::gfx::CinematicPhase::Fade => (rest_z, rest_a),
+                    broadside_engine::gfx::CinematicPhase::Approach => {
+                        let eased = 1.0 - (1.0 - sub) * (1.0 - sub);
+                        let z = rest_z * (1.0 - eased * 0.7);
+                        let a = rest_a + (1.0 - rest_a) * eased * 0.5;
+                        (z, a.clamp(0.0, 1.0))
+                    }
+                    broadside_engine::gfx::CinematicPhase::Warp
+                    | broadside_engine::gfx::CinematicPhase::Snap
+                    | broadside_engine::gfx::CinematicPhase::Settle => {
+                        let z = rest_z * 0.2;
+                        let a = rest_a + (1.0 - rest_a) * 0.85;
+                        (z, a.clamp(0.0, 1.0))
+                    }
+                }
+            }
+            None => (rest_z, rest_a),
+        };
         broadside_engine::hud::prepend_upcoming_board_2d(
             &mut commands,
             &cfg,
-            broadside_engine::gfx::preview_z_offset(),
+            z_offset,
             preview_dims.0,
             preview_dims.1,
             &stand_in_spawns,
             false,
-            broadside_engine::gfx::preview_tint_alpha(),
+            tint_alpha,
         );
     }
     // (#127) SALVAGE readout — the live bin draws this in its Playing overlay (not
