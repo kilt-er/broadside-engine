@@ -1164,6 +1164,19 @@ fn main() {
                 // from the ENEMY rest anchor (`rest_z`, the parallax
                 // depth they hold at through phases 1-3 before
                 // descending one-at-a-time during Settle).
+                // (warp enemy-jump fix 2026-06-30) BROADSIDE_PREVIEW_LANE_OFFSET
+                // pins the same world-x shift the live bin computes during
+                // Transitioning so a headless capture can prove n+1 enemy
+                // screen-x continuity across the swap. The live bin uses
+                // `to_align - prior` (where to_align preserves the player's
+                // screen-x across the swap); pass that value via env to
+                // simulate the warp frame vs post-swap frame here.
+                let preview_lane_align_offset: f32 = std::env::var(
+                    "BROADSIDE_PREVIEW_LANE_OFFSET",
+                )
+                .ok()
+                .and_then(|s| s.parse::<f32>().ok())
+                .unwrap_or(0.0);
                 broadside_engine::hud::prepend_upcoming_board_with_loft_2d_staggered_with_rest(
                     &mut commands,
                     &cfg,
@@ -1176,6 +1189,7 @@ fn main() {
                     &gfx,
                     tint_alpha,
                     warp_t,
+                    preview_lane_align_offset,
                 );
             } else {
                 broadside_engine::hud::prepend_upcoming_board_2d(

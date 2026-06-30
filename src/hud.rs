@@ -1744,7 +1744,7 @@ pub fn prepend_upcoming_board_2d(
     tint_alpha: f32,
 ) {
     let mut preview: Vec<DrawCommand> = Vec::with_capacity(64);
-    push_upcoming_grid_2d(&mut preview, cfg, z_offset, cols, rows, tint_alpha);
+    push_upcoming_grid_2d(&mut preview, cfg, z_offset, cols, rows, tint_alpha, 0.0);
     push_upcoming_ships_2d(
         &mut preview,
         cfg,
@@ -1840,6 +1840,7 @@ pub fn push_upcoming_loft_ships_2d_staggered(
         enemy_spawns,
         sprites,
         total_progress,
+        0.0,
     );
 }
 
@@ -1859,6 +1860,7 @@ pub fn push_upcoming_loft_ships_2d_staggered_with_rest(
     enemy_spawns: &[crate::grid::Pos],
     sprites: &dyn SpriteRegistry,
     total_progress: Option<f32>,
+    lane_align_offset: f32,
 ) {
     use crate::grid::{Dir4, Facing};
     use crate::projector::{cell_world_center_frac_offset, unified_project, unified_view_proj};
@@ -1907,7 +1909,13 @@ pub fn push_upcoming_loft_ships_2d_staggered_with_rest(
         let cell_frac = [pos.col as f32, pos.row as f32];
         // Project the offset cell centre through the unified camera to
         // anchor the blit dest-rect at the at-depth screen position.
-        let world = cell_world_center_frac_offset(cell_frac[0], cell_frac[1], cfg, staggered_z);
+        // (warp enemy-jump fix 2026-06-30) Shift world-x by -lane_align_offset
+        // so the blit anchor lands where the hull will project under the new
+        // (post-swap) camera lane_align — matches the LoftShipInstance.lane_
+        // align_world_offset shift applied inside gfx::render_unified_fleet.
+        let mut world =
+            cell_world_center_frac_offset(cell_frac[0], cell_frac[1], cfg, staggered_z);
+        world[0] -= lane_align_offset;
         let Some(centre) = unified_project(&m, world, cfg) else {
             continue;
         };
@@ -1916,7 +1924,11 @@ pub fn push_upcoming_loft_ships_2d_staggered_with_rest(
         // perspective foreshortening. Aspect from the loft texture.
         let corners =
             crate::projector::cell_world_corners_offset_dims(pos, cfg, staggered_z, cols, rows);
-        let proj_corner = |w: [f32; 3]| unified_project(&m, w, cfg);
+        let proj_corner = |w: [f32; 3]| {
+            let mut w_shift = w;
+            w_shift[0] -= lane_align_offset;
+            unified_project(&m, w_shift, cfg)
+        };
         let nl = proj_corner(corners[3]);
         let nr = proj_corner(corners[2]);
         let near_w = match (nl, nr) {
@@ -1947,6 +1959,12 @@ pub fn push_upcoming_loft_ships_2d_staggered_with_rest(
             // z_offset=0.0, so the swap is byte-equivalent.
             z_offset: staggered_z,
             kickback_aft_world: 0.0,
+            // (warp enemy-jump fix 2026-06-30) Pass the per-warp lane-align
+            // offset (= the next encounter's target lane_align) so the unified
+            // ship pass in gfx::render_unified_fleet shifts this hull's world-x
+            // before projection. Non-zero ONLY during the at-depth warp preview;
+            // zero everywhere else = byte-identical to pre-fix render.
+            lane_align_world_offset: lane_align_offset,
         }));
     }
 }
@@ -2024,6 +2042,7 @@ pub fn prepend_upcoming_board_with_loft_2d_staggered(
         sprites,
         tint_alpha,
         total_progress,
+        0.0,
     );
 }
 
@@ -2048,9 +2067,18 @@ pub fn prepend_upcoming_board_with_loft_2d_staggered_with_rest(
     sprites: &dyn SpriteRegistry,
     tint_alpha: f32,
     total_progress: Option<f32>,
+    lane_align_offset: f32,
 ) {
     let mut preview: Vec<DrawCommand> = Vec::with_capacity(96);
-    push_upcoming_grid_2d(&mut preview, cfg, z_offset, cols, rows, tint_alpha);
+    push_upcoming_grid_2d(
+        &mut preview,
+        cfg,
+        z_offset,
+        cols,
+        rows,
+        tint_alpha,
+        lane_align_offset,
+    );
     push_upcoming_loft_ships_2d_staggered_with_rest(
         &mut preview,
         cfg,
@@ -2062,6 +2090,7 @@ pub fn prepend_upcoming_board_with_loft_2d_staggered_with_rest(
         enemy_spawns,
         sprites,
         total_progress,
+        lane_align_offset,
     );
     out.splice(0..0, preview);
 }
@@ -2130,6 +2159,7 @@ pub fn push_upcoming_grid_2d(
     cols: usize,
     rows: usize,
     tint_alpha: f32,
+    lane_align_offset: f32,
 ) {
     use crate::grid::Pos as GridPos;
     let m = crate::projector::unified_view_proj(cfg);
@@ -2146,8 +2176,14 @@ pub fn push_upcoming_grid_2d(
         LANE_TICK[2],
         LANE_TICK[3] * alpha,
     ];
+    // (warp enemy-jump fix 2026-06-30) Shift each corner's world-x by
+    // -lane_align_offset before projecting so the at-depth preview grid
+    // renders where it will project post-swap under the new camera
+    // lane_align. Zero offset = byte-identical to pre-fix render.
     let proj = |w: [f32; 3]| {
-        crate::projector::unified_project(&m, w, cfg).map(|p| Point2 { x: p.x, y: p.y })
+        let mut w_shift = w;
+        w_shift[0] -= lane_align_offset;
+        crate::projector::unified_project(&m, w_shift, cfg).map(|p| Point2 { x: p.x, y: p.y })
     };
     for row in 0..rows {
         for col in 0..cols {
@@ -2621,6 +2657,10 @@ fn push_ship_2d(
                 // VisualShip2d.kickback (above on `center`) only moves the
                 // 2D billboard, invisible on the 3D hull.
                 kickback_aft_world: vis.map_or(0.0, |v| v.kickback_aft_world),
+                // (warp enemy-jump fix 2026-06-30) Live-board hulls are not
+                // at-depth preview ships → no lane-align override; zero =
+                // byte-identical to pre-fix render.
+                lane_align_world_offset: 0.0,
             }));
             return;
         }
@@ -2701,6 +2741,9 @@ fn push_ship_2d(
                 z_offset: vis.map_or(0.0, |v| v.z_offset),
                 // (#209 hook 3 loft fix) Loft-aware recoil along hull aft.
                 kickback_aft_world: vis.map_or(0.0, |v| v.kickback_aft_world),
+                // (warp enemy-jump fix 2026-06-30) Live-board player → no
+                // lane-align override; zero = byte-identical pre-fix.
+                lane_align_world_offset: 0.0,
             }));
             // (#138) Shield pips removed — the per-face cyan squares read as mystery
             // clutter (Bruce); the total shield is in the bottom SHLD bar.
@@ -2798,6 +2841,9 @@ fn push_ship_2d(
                 z_offset: 0.0,
                 // (#209 hook 3 loft fix) Enemies recoil too when they fire.
                 kickback_aft_world: vis.map_or(0.0, |v| v.kickback_aft_world),
+                // (warp enemy-jump fix 2026-06-30) Live-board enemy → no
+                // lane-align override; zero = byte-identical pre-fix.
+                lane_align_world_offset: 0.0,
             }));
             // (#112) NO per-enemy overlay (no arrow/pips/bars/telegraph) — the
             // decluttered hull + the separate threat-cell outline carry the read.
@@ -3347,6 +3393,8 @@ fn push_ship(
             z_offset: 0.0,
             // Legacy 1-D path never runs the unified pass — kickback unused.
             kickback_aft_world: 0.0,
+            // Legacy 1-D path: no at-depth preview here.
+            lane_align_world_offset: 0.0,
         }));
         return;
     }

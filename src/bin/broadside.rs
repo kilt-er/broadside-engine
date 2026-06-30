@@ -1764,21 +1764,32 @@ impl App {
     /// At boot (no prior board) and on identical-dims swaps the delta is 0 →
     /// byte-identical to the pre-fix renderer.
     fn relane_align_for_swap(old_board: &Board, new_board: &Board) {
-        // Find the player on both boards. If either is missing skip the
-        // realign (degenerate — leave the previous lane_align in place).
-        let old_player = old_board
+        if let Some(next) = Self::compute_lane_align_for_swap(old_board, new_board) {
+            broadside_engine::gfx::set_unified_lane_align_x(next);
+        }
+    }
+
+    /// (warp enemy-jump fix 2026-06-30) Pure sibling of
+    /// [`relane_align_for_swap`] — returns the lane_align value that, when
+    /// applied to the camera after the OLD→NEW board swap, preserves the
+    /// player's screen-x by construction (the formula in the original
+    /// setter's docs). Used by the at-depth preview to compute `to_align`
+    /// for the per-hull `lane_align_world_offset` override during the warp
+    /// (board not yet swapped; preview enemies need to render at their
+    /// POST-swap lane-aligned positions). Returns `None` for degenerate
+    /// inputs (no player on either board) — caller falls back to no
+    /// override = 0.
+    fn compute_lane_align_for_swap(old_board: &Board, new_board: &Board) -> Option<f32> {
+        let op = old_board
             .cells
             .iter()
             .flatten()
-            .find(|s| s.faction == Faction::Player);
-        let new_player = new_board
+            .find(|s| s.faction == Faction::Player)?;
+        let np = new_board
             .cells
             .iter()
             .flatten()
-            .find(|s| s.faction == Faction::Player);
-        let (Some(op), Some(np)) = (old_player, new_player) else {
-            return;
-        };
+            .find(|s| s.faction == Faction::Player)?;
         let s = broadside_engine::gfx::unified_grid_cell_scale();
         let old_dims = old_board.dims();
         let new_dims = new_board.dims();
@@ -1803,9 +1814,8 @@ impl App {
         // projects at the same screen-x as before.
         let prior = broadside_engine::gfx::unified_lane_align_x();
         let next = prior + (new_world_x_raw - old_world_x_raw);
-        broadside_engine::gfx::set_unified_lane_align_x(next);
         log::info!(
-            "lane_align swap: {}x{} col {} -> {}x{} col {} | raw {:+.3} -> {:+.3} | lane_align {:+.3} -> {:+.3} | rel_to_target stays {:+.3}",
+            "lane_align target: {}x{} col {} -> {}x{} col {} | raw {:+.3} -> {:+.3} | lane_align {:+.3} -> {:+.3} | rel_to_target stays {:+.3}",
             old_dims.cols,
             old_dims.rows,
             op.pos.col,
@@ -1818,6 +1828,7 @@ impl App {
             next,
             new_world_x_raw - next,
         );
+        Some(next)
     }
 
     /// (#210 P2) Linear "round number" across the whole campaign, used as the
@@ -4029,6 +4040,38 @@ impl ApplicationHandler for App {
                             }
                             _ => None,
                         };
+                        // (warp enemy-jump fix 2026-06-30) During Transitioning,
+                        // shift the at-depth preview's world-x by `to_align -
+                        // prior` so the n+1 grid + enemies render at their
+                        // POST-SWAP lane-aligned positions while the global
+                        // camera lane_align is still frozen at `prior` (v3
+                        // defers the global flip to the atomic swap so the
+                        // PLAYER's screen-x stays continuous — see
+                        // `relane_align_for_swap` doc). At the swap, the
+                        // global flips to `to_align` and self.pending_board
+                        // becomes self.board; the preview is no longer drawn,
+                        // and the now-live n+1 hulls render with no override
+                        // — so enemy screen-x is continuous across t=1.0 on
+                        // parity-flip transitions. Outside Transitioning the
+                        // offset is 0 and the persistent at-depth preview is
+                        // byte-identical to pre-fix.
+                        let preview_lane_align_offset: f32 = if matches!(
+                            demo_state,
+                            DemoState::Transitioning(_)
+                        ) {
+                            self.pending_board
+                                .as_ref()
+                                .and_then(|p| {
+                                    Self::compute_lane_align_for_swap(&self.board, p)
+                                })
+                                .map(|to_align| {
+                                    let prior = broadside_engine::gfx::unified_lane_align_x();
+                                    to_align - prior
+                                })
+                                .unwrap_or(0.0)
+                        } else {
+                            0.0
+                        };
                         hud::prepend_upcoming_board_with_loft_2d_staggered_with_rest(
                             &mut instances,
                             &scene_cfg,
@@ -4041,6 +4084,7 @@ impl ApplicationHandler for App {
                             &*gfx,
                             tint_alpha,
                             warp_progress,
+                            preview_lane_align_offset,
                         );
                     }
                 }

@@ -1176,6 +1176,19 @@ pub struct LoftShipInstance {
     /// the 3D hull. This field is the loft-aware companion. Zero at rest ⇒
     /// no-op render, byte-identical to pre-fix frames.
     pub kickback_aft_world: f32,
+    /// (warp enemy-jump fix 2026-06-30) Per-hull world-x shift applied AFTER
+    /// `cell_world_center_frac_offset` in the unified ship pass, BEFORE the
+    /// camera's `unified_view_proj` transforms it. Used by the at-depth warp
+    /// preview to pre-align preview enemies to the POST-SWAP lane_align value
+    /// while the global camera `unified_lane_align_x` is still frozen at the
+    /// OLD value (v3 defers the global lane_align flip to the atomic swap so
+    /// the PLAYER's screen-x stays continuous through the warp — see
+    /// `relane_align_for_swap` doc). Subtracting this from `center[0]` before
+    /// projection produces the same screen-x the hull will get post-swap when
+    /// the global flips, so the n+1 enemy doesn't jump at the swap. Default
+    /// `0.0` keeps every non-warp-preview hull byte-identical to pre-fix
+    /// frames.
+    pub lane_align_world_offset: f32,
 }
 
 impl From<SpriteInstance> for DrawCommand {
@@ -3004,6 +3017,13 @@ impl Gfx {
                 } else {
                     crate::projector::cell_world_center_frac(lq.cell_frac[0], lq.cell_frac[1], &cfg)
                 };
+                // (warp enemy-jump fix 2026-06-30) Shift world-x by the per-hull
+                // lane-align override BEFORE projection. The at-depth warp
+                // preview sets this so n+1 enemies render at their post-swap
+                // lane-aligned positions while the global lane_align is still
+                // frozen at the OLD value — no jump for the enemies at the
+                // atomic swap. Zero for every other LoftShip = byte-identical.
+                center[0] -= lq.lane_align_world_offset;
                 // sit ON the plane, not half-buried.
                 center[1] += UNIFIED_SHIP_LIFT;
                 // (#209 hook 3 loft fix 2026-06-30) Apply per-fire recoil
