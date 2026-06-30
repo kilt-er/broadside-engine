@@ -1608,13 +1608,85 @@ impl App {
         Some(board)
     }
 
-    /// (warp rebuild 2026-06-30) Build the next encounter's board WITHOUT
-    /// applying `advance_after_win` to the real run. Used by the late-swap
-    /// warp: at warp START the bin pre-builds the n+1 destination board so
-    /// the at-depth preview can render the soon-to-be-playable n+1 enemies,
-    /// while `self.board`/`self.run` stay at the post-fight N state until
-    /// warp END (when `advance_after_win` runs for real and the swap lands).
-    ///
+    /// (warp rebuild 6/N — Job 1, 2026-06-30) Override `next`'s player cell
+    /// + facing with the prior board's player position, clamped into the
+    /// new dims. Bruce's continuity rule: the player KEEPS its exact
+    /// (col,row) + facing from the finished encounter; no respawn at
+    /// `runs::player_start_pos`. Called on every encounter advance (both
+    /// the cinematic late-swap path AND the STABILIZE eager-swap path) so
+    /// the carry-forward is independent of the warp visual. If `prior` is
+    /// `None` (first-encounter boot has no prior), leaves `next`'s
+    /// canonical spawn intact. If the new dims clamp the prior cell (e.g.
+    /// rolling from a 5x4 to a 2x2), the clamped cell drops the player
+    /// safely inside the new board.
+    fn carry_player_forward(
+        next: &mut Board,
+        prior_pos: Option<Pos>,
+        prior_facing: Option<broadside_engine::grid::Facing>,
+    ) {
+        let Some(prior) = prior_pos else { return };
+        let dims = next.dims();
+        let clamped = Pos::new(
+            prior.col.min(dims.cols.saturating_sub(1)),
+            prior.row.min(dims.rows.saturating_sub(1)),
+        );
+        // Find the player on `next`, snapshot its current canonical spawn
+        // cell + class/loadout, then mutate its pos/cell/facing to the
+        // carried values + relocate it to the clamped index.
+        let player_idx_and_class: Option<(usize, _, _)> = next
+            .cells
+            .iter()
+            .enumerate()
+            .find_map(|(idx, slot)| {
+                slot.as_ref().and_then(|s| {
+                    if s.faction == Faction::Player {
+                        Some((idx, s.id.clone(), s.klass.clone()))
+                    } else {
+                        None
+                    }
+                })
+            });
+        let Some((spawn_idx, _id, _klass)) = player_idx_and_class else {
+            return;
+        };
+        let new_idx = clamped.to_index_in(dims);
+        if new_idx >= next.cells.len() {
+            return;
+        }
+        // If a non-player ship occupies the carried cell on the new
+        // board (e.g. an enemy spawned there), DO NOT clobber it —
+        // leave the player at its canonical spawn. This keeps the n+1
+        // board valid; a true collision-handler is a follow-up.
+        if new_idx != spawn_idx {
+            if let Some(occupant) = next.cells.get(new_idx).and_then(|s| s.as_ref()) {
+                if occupant.faction != Faction::Player {
+                    return;
+                }
+            }
+        }
+        // Take the player out of the canonical spawn slot, edit, place
+        // it back at the carried cell.
+        let mut player = match next.cells.get_mut(spawn_idx).and_then(|s| s.take()) {
+            Some(p) => p,
+            None => return,
+        };
+        player.pos = clamped;
+        player.cell = new_idx;
+        if let Some(f) = prior_facing {
+            player.facing = f;
+            // Match orientation to facing (BowOn vs Broadside).
+            use broadside_engine::grid::{Dir4, Facing};
+            use broadside_engine::types::{LaneEnd, Orientation};
+            player.orientation = match f {
+                Facing::Bow(Dir4::N) => Orientation::BowOn { bow: LaneEnd::Fore },
+                Facing::Bow(Dir4::S) => Orientation::BowOn { bow: LaneEnd::Aft },
+                _ => Orientation::Broadside,
+            };
+        }
+        if let Some(slot) = next.cells.get_mut(new_idx) {
+            *slot = Some(player);
+        }
+    }
 
     /// (#210 P2) Linear "round number" across the whole campaign, used as the
     /// `Board.level` cursor that feeds [`Gfx::update_background`]'s focus-tween.
@@ -2861,21 +2933,32 @@ impl ApplicationHandler for App {
                                 AdvanceResult::Victorious | AdvanceResult::AlreadyEnded => None,
                             };
                             if let Some(kind) = kind {
-                                if let Some(next) = self.build_current_board() {
+                                if let Some(mut next) = self.build_current_board() {
+                                    // Snapshot the player's TRUE round-end
+                                    // cell + facing on the still-live n
+                                    // board. Used both for the late-swap
+                                    // visual anchor AND for the
+                                    // Job-1 carry-forward override below.
+                                    let prior_player: Option<(Pos, broadside_engine::grid::Facing)> =
+                                        self.board.cells.iter().flatten().find_map(|s| {
+                                            if s.faction == Faction::Player {
+                                                Some((s.pos, s.facing))
+                                            } else {
+                                                None
+                                            }
+                                        });
+                                    let prior_player_cell = prior_player.map(|(p, _)| p);
+                                    // (warp rebuild 6/N — Job 1) Carry the
+                                    // player's (col,row) + facing forward
+                                    // into the new board. Bruce's rule: no
+                                    // respawn at runs::player_start_pos.
+                                    Self::carry_player_forward(
+                                        &mut next,
+                                        prior_player_cell,
+                                        prior_player.map(|(_, f)| f),
+                                    );
                                     if cinematic {
-                                        // ON: defer swap + cleanups. Snapshot
-                                        // the player's TRUE round-end cell on
-                                        // the still-live n board (self.board
-                                        // hasn't moved yet) — that's the
-                                        // continuity rule's "where the player
-                                        // was when the round ended".
-                                        let prior_player_cell: Option<Pos> = self
-                                            .board
-                                            .cells
-                                            .iter()
-                                            .flatten()
-                                            .find(|s| s.faction == Faction::Player)
-                                            .map(|s| s.pos);
+                                        // ON: defer swap + cleanups.
                                         self.pending_board = Some(next);
                                         self.pending_encounter_idx =
                                             Some(self.run.completed_encounters as usize);
@@ -2888,7 +2971,8 @@ impl ApplicationHandler for App {
                                             });
                                     } else {
                                         // OFF: eager swap, byte-identical to
-                                        // pre-rebuild behavior.
+                                        // pre-rebuild behavior (apart from
+                                        // the Job-1 carry-forward above).
                                         self.board = next;
                                         self.tween_anchors.clear();
                                         self.kickbacks.clear();
