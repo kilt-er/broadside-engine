@@ -985,6 +985,59 @@ fn outgoing_grid_alpha_mul(phase: broadside_engine::gfx::CinematicPhase, sub: f3
     }
 }
 
+/// (CINEMATIC REBUILD phase a 2026-06-30) Pure render-time player tween
+/// position as a function of `(phase, sub, prior_cell, current_cell, dims)`.
+/// Returns a fractional cell `[col_f, row_f]` the unified ship pass renders
+/// the player hull at — replacing the tween-anchor-based path that depends
+/// on Instant timing + transient state.
+///
+/// **Why pure**: the pre-rebuild path used `tween_anchors[player_id]` with an
+/// override duration. The anchor was planted in `plant_warp_in_anchors` and
+/// EXPIRED at `dur_ms`. If the cinematic was reset, hot-reloaded, or the
+/// tween anchor cleared mid-warp, the player snapped to its rest cell. That's
+/// the "blink to new map position" Bruce complained about. With this pure
+/// function, the player position is uniquely determined by `(phase, sub,
+/// prior_cell, current_cell)` — no Instant comparison, no expiring anchor.
+/// The cinematic supplies the inputs each frame.
+///
+/// **Motion model** (Bruce's hard rule: "player flies, never static, never
+/// off-screen"): the player is the FASTEST channel — it must visibly arrive
+/// at its new cell by the warp MIDPOINT (t = `PLAYER_WARP_FASTNESS` = 0.5).
+/// After t=0.5 the player HOLDS at the current cell so the grid handoff
+/// (preview → playable plane) feels like the grid catching up to the
+/// already-arrived player. Ease-out quad `1 - (1-x)²` makes the departure
+/// crisp + the arrival soft.
+///
+/// **Viewport invariant** (regression-guarded by
+/// `player_projected_screen_pos_stays_in_viewport_across_warp`): the from-
+/// cell is clamped into `dims`, the to-cell is on-board by construction
+/// (current player Pos), so every interpolated `(col_f, row_f)` is inside
+/// `[0..cols-1] × [0..rows-1]` and projects safely.
+///
+/// `phase` is the cinematic phase; `sub` is its 0..1 progress; `t_total` is
+/// the 0..1 progress across the full warp (used to time the midpoint
+/// arrival). `prior` is the player's cell on the cleared board (`None` =
+/// no warp-in needed); `current` is the new spawn cell. Returns `None` if
+/// `prior` is `None` (caller falls back to current).
+fn cinematic_player_cell_frac(
+    t_total: f32,
+    prior: Option<broadside_engine::grid::Pos>,
+    current: broadside_engine::grid::Pos,
+    dims: broadside_engine::grid::Dims,
+) -> Option<[f32; 2]> {
+    let prior = prior?;
+    let from_col = prior.col.min(dims.cols.saturating_sub(1));
+    let from_row = prior.row.min(dims.rows.saturating_sub(1));
+    // Player arrives by t_total = PLAYER_WARP_FASTNESS; AFTER that, HOLD at
+    // current cell. So map t_total ∈ [0, FASTNESS] linearly to inner t ∈
+    // [0, 1] and saturate at 1 beyond.
+    let inner_t = (t_total / PLAYER_WARP_FASTNESS).clamp(0.0, 1.0);
+    let eased = 1.0 - (1.0 - inner_t) * (1.0 - inner_t);
+    let col_f = from_col as f32 + (current.col as f32 - from_col as f32) * eased;
+    let row_f = from_row as f32 + (current.row as f32 - from_row as f32) * eased;
+    Some([col_f, row_f])
+}
+
 /// (CINEMATIC REBUILD phase c 2026-06-30) Per-phase `(z_offset, tint_alpha)`
 /// for the AT-DEPTH preview during a Transitioning window. Drives the
 /// upcoming grid from its rest depth/tint toward EXACTLY `(0.0, 1.0)` by
@@ -1297,6 +1350,17 @@ struct App {
     /// without breaking `DemoState`'s `Copy` derive — App-side option keeps
     /// the enum cheap to match on.
     pending_board: Option<Board>,
+    /// (CINEMATIC REBUILD phase a 2026-06-30) The player's cell on the
+    /// CLEARED board, captured at the round-clear before the board swap.
+    /// `Some` only during a `DemoState::Transitioning` window when the
+    /// cinematic is enabled; `None` outside transitions (Bruce's STABILIZE
+    /// default). The render arm reads this + the current player's spawn
+    /// cell on the new board + the live `phase.progress(now)` to compute
+    /// the player's interpolated `cell_frac` purely as a function of those
+    /// inputs (no `tween_anchors` involvement, no Instant comparison
+    /// against an override duration). Cleared at warp end when the demo
+    /// state flips back to Playing.
+    cinematic_prior_player_cell: Option<Pos>,
     /// The campaign — list of sectors the run progresses through.
     /// Built once at startup from [`placeholder_sectors`] and not
     /// rebuilt on Restart.
@@ -1445,6 +1509,7 @@ impl App {
             tween_anchors: HashMap::new(),
             kickbacks: HashMap::new(),
             pending_board: None,
+            cinematic_prior_player_cell: None,
             sectors,
             run: Run::new(Self::fresh_player_ship()),
             demo_state: DemoState::Playing,
@@ -1594,6 +1659,7 @@ impl App {
         self.tween_anchors.clear();
         self.kickbacks.clear(); // (#209 hook 3) no stale recoil across encounters
         self.pending_board = None; // (#210 P4) abandon any in-flight warp on restart
+        self.cinematic_prior_player_cell = None; // (phase a) clear cinematic player tween anchor
         self.kill_bursts.clear(); // (#90) no stale bursts into the fresh board
         self.particles.clear(); // (#119) no stale explosion particles into the fresh board
         self.proj_anchors.clear(); // (#178) no stale torpedo slide anchors into the fresh board
@@ -1878,6 +1944,75 @@ impl App {
                     kickback,
                 },
             );
+        }
+        // (CINEMATIC REBUILD phase a 2026-06-30) PURE RENDER-TIME PLAYER
+        // TWEEN — when the cinematic is in flight, override the player's
+        // VisualShip2d.cell_frac with the value computed by
+        // cinematic_player_cell_frac as a pure function of (phase t_total,
+        // prior cell, current cell, dims). Skips the tween-anchor expiry
+        // problem entirely: the player's visual position is determined per
+        // frame from board state + phase progress, no Instant comparison.
+        //
+        // This OVERRIDES the anchor-based player tween that plant_warp_in_
+        // anchors installed (we keep planting it for compatibility with the
+        // anchor lifetime tests; the override always wins for the player
+        // during a Transitioning window).
+        //
+        // The cell_frac override also recomputes center/near_edge_y/depth_
+        // scale at the lerped position so the loft hull renders at the
+        // interpolated screen coords, not the static rest cell.
+        if let DemoState::Transitioning(phase) = self.demo_state {
+            if warp_cinematic_enabled() {
+                let t_total = phase.progress(now);
+                let dims = self.board.dims();
+                if let Some(player) = self
+                    .board
+                    .cells
+                    .iter()
+                    .flatten()
+                    .find(|s| s.faction == Faction::Player)
+                {
+                    if let Some(cell_frac) = cinematic_player_cell_frac(
+                        t_total,
+                        self.cinematic_prior_player_cell,
+                        player.pos,
+                        dims,
+                    ) {
+                        let from_q = grid_cell_quad(player.pos, cfg); // base for size at to-cell
+                        let lerped_q = {
+                            use broadside_engine::grid::Pos;
+                            let from_cell =
+                                self.cinematic_prior_player_cell.map_or(player.pos, |p| {
+                                    Pos::new(
+                                        p.col.min(dims.cols.saturating_sub(1)),
+                                        p.row.min(dims.rows.saturating_sub(1)),
+                                    )
+                                });
+                            let fq = grid_cell_quad(from_cell, cfg);
+                            let inner_t = (t_total / PLAYER_WARP_FASTNESS).clamp(0.0, 1.0);
+                            let eased = 1.0 - (1.0 - inner_t) * (1.0 - inner_t);
+                            hud::lerp_cell_quad(&fq, &from_q, eased)
+                        };
+                        let kickback = self
+                            .kickbacks
+                            .get(&player.id)
+                            .copied()
+                            .unwrap_or([0.0_f32, 0.0_f32]);
+                        tw.visual.insert(
+                            player.id.clone(),
+                            hud::VisualShip2d {
+                                center: lerped_q.center,
+                                near_edge_y: lerped_q.corners[3][1],
+                                near_edge_width: lerped_q.near_edge_width(),
+                                depth_scale: lerped_q.depth_scale,
+                                facing_yaw_deg: hud::loft_facing_ground_yaw(player.facing),
+                                cell_frac,
+                                kickback,
+                            },
+                        );
+                    }
+                }
+            }
         }
         // (#209 hook 3) For ships WITHOUT a tween anchor that have a live
         // (non-zero) kickback, synthesise a VisualShip2d at their rest cell so
@@ -2712,10 +2847,15 @@ impl ApplicationHandler for App {
                                     self.reinstall_audio();
                                     if cinematic {
                                         // CINEMATIC PATH: revive the warp.
-                                        // plant_warp_in_anchors anchors the
-                                        // player tween (a) + the warp-end
-                                        // tick at line ~2614 flips back to
-                                        // Playing when phase.progress >= 1.0.
+                                        // (phase a) Record the prior player
+                                        // cell so the render arm can compute
+                                        // a pure-render-time tween position
+                                        // each frame. plant_warp_in_anchors
+                                        // still planted so non-player ship
+                                        // tweens have anchors; the player's
+                                        // tween is now overridden by the
+                                        // cinematic helper below.
+                                        self.cinematic_prior_player_cell = prior_player_cell;
                                         self.plant_warp_in_anchors(kind, now, prior_player_cell);
                                         self.demo_state =
                                             DemoState::Transitioning(TransitionPhase {
@@ -2788,6 +2928,10 @@ impl ApplicationHandler for App {
                         // at t=1 in `tween_2d` anyway, so explicit clear keeps
                         // the map small + #188 alignment exact post-warp.
                         self.tween_anchors.clear();
+                        // (phase a) Clear the pure-render-time player anchor
+                        // so the post-warp Playing state renders the player
+                        // at its rest cell.
+                        self.cinematic_prior_player_cell = None;
                         self.demo_state = if self.run.victorious {
                             DemoState::RunComplete
                         } else {

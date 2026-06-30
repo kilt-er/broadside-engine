@@ -678,7 +678,79 @@ fn main() {
     // at the captured board's variable encounter shape (rather than 5x4).
     let board_dims = board.dims();
     let cfg = cfg_no_dims.with_dims(board_dims.cols, board_dims.rows);
-    let mut commands = compose_scene_2d_with(&board, &cfg, &gfx);
+    // (CINEMATIC REBUILD phase a 2026-06-30) Pre-read BROADSIDE_WARP_T so we
+    // can build the right Tween2d below — the player warp tween needs the
+    // (z_offset, tint_alpha) AND the player VisualShip2d override in lockstep.
+    let warp_t_pre: Option<f32> = std::env::var("BROADSIDE_WARP_T")
+        .ok()
+        .and_then(|s| s.parse::<f32>().ok())
+        .map(|v| v.clamp(0.0, 1.0));
+    // (CINEMATIC REBUILD phase a 2026-06-30) PURE RENDER-TIME PLAYER TWEEN
+    // ON CAPTURE — when BROADSIDE_WARP_T is set AND BROADSIDE_WARP_PRIOR_COL/
+    // ROW are provided, override the player's VisualShip2d.cell_frac so the
+    // t-strip SHOWS the player moving across the 5 frames. Without this the
+    // capture rendered the player at its static board cell regardless of t,
+    // masking the pure-render-time tween. Mirrors the bin's
+    // cinematic_player_cell_frac calculation exactly (same easing, same
+    // PLAYER_WARP_FASTNESS midpoint).
+    let player_tween = warp_t_pre.and_then(|t_total| {
+        let prior_col = std::env::var("BROADSIDE_WARP_PRIOR_COL")
+            .ok()?
+            .parse::<usize>()
+            .ok()?;
+        let prior_row = std::env::var("BROADSIDE_WARP_PRIOR_ROW")
+            .ok()?
+            .parse::<usize>()
+            .ok()?;
+        // PLAYER_WARP_FASTNESS = 0.5 — matches bin/broadside.rs.
+        let inner_t = (t_total / 0.5).clamp(0.0, 1.0);
+        let eased = 1.0 - (1.0 - inner_t) * (1.0 - inner_t);
+        let player_pos = board
+            .cells
+            .iter()
+            .flatten()
+            .find(|s| s.faction == Faction::Player)
+            .map(|s| s.pos)?;
+        let from_col = prior_col.min(board_dims.cols.saturating_sub(1));
+        let from_row = prior_row.min(board_dims.rows.saturating_sub(1));
+        let col_f = from_col as f32 + (player_pos.col as f32 - from_col as f32) * eased;
+        let row_f = from_row as f32 + (player_pos.row as f32 - from_row as f32) * eased;
+        Some((from_col, from_row, eased, col_f, row_f))
+    });
+    let mut commands = if let Some((from_col, from_row, eased, col_f, row_f)) = player_tween {
+        use broadside_engine::hud::{Tween2d, VisualShip2d};
+        use broadside_engine::projector::grid_cell_quad;
+        let mut tw = Tween2d::default();
+        if let Some(player) = board
+            .cells
+            .iter()
+            .flatten()
+            .find(|s| s.faction == Faction::Player)
+        {
+            let from_q = grid_cell_quad(Pos::new(from_col, from_row), &cfg);
+            let to_q = grid_cell_quad(player.pos, &cfg);
+            let lerped_q = broadside_engine::hud::lerp_cell_quad(&from_q, &to_q, eased);
+            tw.visual.insert(
+                player.id.clone(),
+                VisualShip2d {
+                    center: lerped_q.center,
+                    near_edge_y: lerped_q.corners[3][1],
+                    near_edge_width: lerped_q.near_edge_width(),
+                    depth_scale: lerped_q.depth_scale,
+                    facing_yaw_deg: broadside_engine::hud::loft_facing_ground_yaw(player.facing),
+                    cell_frac: [col_f, row_f],
+                    kickback: [0.0, 0.0],
+                },
+            );
+            log::info!(
+                "capture: warp player tween cell_frac=[{col_f:.2}, {row_f:.2}] (prior=[{from_col},{from_row}] → current={:?})",
+                player.pos
+            );
+        }
+        broadside_engine::hud::compose_scene_2d_tweened(&board, &cfg, &gfx, &tw, 0.0)
+    } else {
+        compose_scene_2d_with(&board, &cfg, &gfx)
+    };
     // (#213 t-sampled warp knob) BROADSIDE_WARP_T=<0.0..=1.0> renders the
     // round-change cinematic AT a specific t inside DemoState::Transitioning,
     // so a temporal animation can be verified WITHOUT a winit redraw loop.
@@ -693,10 +765,10 @@ fn main() {
     //      block below reads warp_t to override the dial-driven values).
     // Strip a 5-frame sequence (t=0, .25, .5, .75, 1.0) and Bruce / lead
     // see what each phase actually produces vs spec.
-    let warp_t: Option<f32> = std::env::var("BROADSIDE_WARP_T")
-        .ok()
-        .and_then(|s| s.parse::<f32>().ok())
-        .map(|v| v.clamp(0.0, 1.0));
+    // (CINEMATIC REBUILD phase a 2026-06-30) Reuse the pre-read warp_t_pre
+    // value from before the compose_scene call — both code paths (player
+    // tween override + fade/preview lerp) must read the SAME t per frame.
+    let warp_t: Option<f32> = warp_t_pre;
     if let Some(t) = warp_t {
         let (phase, sub) = broadside_engine::gfx::phase_from_progress(t);
         // (#213 fade + CINEMATIC REBUILD phase b 2026-06-30) DESTRUCTIVE
