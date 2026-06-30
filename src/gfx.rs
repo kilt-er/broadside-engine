@@ -3264,13 +3264,15 @@ impl Gfx {
                 if std::env::var("BROADSIDE_RENDER_PROBE").is_ok_and(|v| v != "0") {
                     if let Some(p) = crate::projector::unified_project(&view_proj, center, &cfg) {
                         log::info!(
-                            "render-probe ship_id={} kind={:?} cell_frac=[{:.3},{:.3}] z_offset={:+.3} lane_offset={:+.3} | center=[{:+.3},{:+.3},{:+.3}] cfg_dims={}x{} cfg_lane_align={:+.3} | screen_x={:.2} screen_y={:.2}",
+                            "render-probe ship_id={} kind={:?} cell_frac=[{:.3},{:.3}] z_offset={:+.3} lane_offset={:+.3} facing_yaw_deg={:+.2} unified_yaw_rad={:+.3} | center=[{:+.3},{:+.3},{:+.3}] cfg_dims={}x{} cfg_lane_align={:+.3} | screen_x={:.2} screen_y={:.2}",
                             lq.ship_id.as_str(),
                             lq.kind,
                             lq.cell_frac[0],
                             lq.cell_frac[1],
                             lq.z_offset,
                             lq.lane_align_world_offset,
+                            lq.facing_yaw_deg,
+                            lq.unified_yaw_rad,
                             center[0],
                             center[1],
                             center[2],

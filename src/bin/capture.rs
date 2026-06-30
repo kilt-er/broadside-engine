@@ -1119,7 +1119,42 @@ fn main() {
                     near_edge_y: lerped_q.corners[3][1],
                     near_edge_width: lerped_q.near_edge_width(),
                     depth_scale: lerped_q.depth_scale,
-                    facing_yaw_deg: broadside_engine::hud::loft_facing_ground_yaw(player.facing),
+                    // (#316 rotate-first 2026-06-30) Mirror the bin's
+                    // rotation tween over the leading [0, ROTATE_GATE_T_CAP]
+                    // window. BROADSIDE_WARP_PRIOR_FACING={N,E,S,W,bsNS,bsEW}
+                    // seeds the from-facing (default: live player.facing —
+                    // no rotation when the live ship is already Bow(N)).
+                    // rot_eased is ease-out quad of the gate progress so the
+                    // tween COMPLETES at t=GATE; at t > GATE facing stays
+                    // at Bow(N). Without this knob the capture would render
+                    // the static snapped facing and the hull would appear
+                    // already at Bow(N) for the whole sweep.
+                    facing_yaw_deg: {
+                        use broadside_engine::grid::{Axis, Dir4, Facing};
+                        let parse_facing = |s: &str| match s {
+                            "N" => Some(Facing::Bow(Dir4::N)),
+                            "E" => Some(Facing::Bow(Dir4::E)),
+                            "S" => Some(Facing::Bow(Dir4::S)),
+                            "W" => Some(Facing::Bow(Dir4::W)),
+                            "bsNS" => Some(Facing::Broadside(Axis::NorthSouth)),
+                            "bsEW" => Some(Facing::Broadside(Axis::EastWest)),
+                            _ => None,
+                        };
+                        let from_facing = std::env::var("BROADSIDE_WARP_PRIOR_FACING")
+                            .ok()
+                            .and_then(|s| parse_facing(&s))
+                            .unwrap_or(player.facing);
+                        let to_facing = Facing::Bow(Dir4::N);
+                        let t = warp_t_pre.unwrap_or(0.0);
+                        let rot_span = ROTATE_GATE_T_CAP.max(1e-3);
+                        let rot_t = (t / rot_span).clamp(0.0, 1.0);
+                        let rot_eased = 1.0 - (1.0 - rot_t) * (1.0 - rot_t);
+                        broadside_engine::hud::lerp_facing_yaw_deg(
+                            from_facing,
+                            to_facing,
+                            rot_eased,
+                        )
+                    },
                     cell_frac: [col_f, row_f],
                     kickback: [0.0, 0.0],
                     kickback_aft_world: std::env::var("BROADSIDE_KICKBACK_W")

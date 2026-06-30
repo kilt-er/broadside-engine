@@ -2376,6 +2376,19 @@ fn unified_heading_yaw(facing: Facing) -> f32 {
     (-dir[2]).atan2(dir[0])
 }
 
+/// (#316 rotate-first 2026-06-30) Convert a continuous ground-plane yaw (deg,
+/// `loft_facing_ground_yaw`'s frame) to the unified pass's hull-heading yaw
+/// (rad, `unified_heading_yaw`'s frame). The two frames differ in zero-point
+/// and rotation direction: ground{N=0, E=+90, S=180, W=-90} ↔ unified{N=-π/2,
+/// E=π, S=π/2, W=0}. The map `unified = -(ground_deg + 90) * π/180` matches
+/// all four cardinals exactly (mod 2π); see `push_ship_2d` for the wiring.
+/// Lets a TWEENED ground yaw drive the 3-D hull's actual rotation instead of
+/// being computed and discarded while the hull snaps to the discrete facing.
+#[must_use]
+pub fn unified_yaw_rad_from_ground_deg(ground_yaw_deg: f32) -> f32 {
+    -(ground_yaw_deg + 90.0) * std::f32::consts::PI / 180.0
+}
+
 /// (#79) SHORTEST-PATH interpolate the ground-plane facing yaw from `from`→`to`
 /// by `t∈[0,1]`, so a Q/E quarter-turn ROTATES the hull smoothly instead of
 /// snapping ±90. Both endpoints are [`loft_facing_ground_yaw`]; the delta is
@@ -2508,7 +2521,17 @@ fn push_ship_2d(
                 facing_yaw_deg,
                 cell: [ship.pos.col as u32, ship.pos.row as u32],
                 cell_frac,
-                unified_yaw_rad: unified_heading_yaw(ship.facing),
+                // (#316 rotate-first 2026-06-30) Drive the 3-D hull's
+                // unified yaw from the TWEENED ground yaw when a
+                // VisualShip2d override is present (cinematic + in-combat
+                // turns), so the loft hull visibly ROTATES instead of
+                // snapping to the discrete facing. Outside a tween (vis
+                // is None) fall back to the discrete `ship.facing` — at
+                // rest this is byte-identical to the snapped value.
+                unified_yaw_rad: vis.map_or_else(
+                    || unified_heading_yaw(ship.facing),
+                    |v| unified_yaw_rad_from_ground_deg(v.facing_yaw_deg),
+                ),
                 // (warp rebuild 9/N) Read the cinematic z_offset from the
                 // bin's VisualShip2d override when present; outside a
                 // Transitioning window vis is None / vis.z_offset == 0.0 →
@@ -2604,7 +2627,13 @@ fn push_ship_2d(
                 // (UNIFY) cell + world heading for the unified ship pass.
                 cell: [ship.pos.col as u32, ship.pos.row as u32],
                 cell_frac,
-                unified_yaw_rad: unified_heading_yaw(ship.facing),
+                // (#316 rotate-first 2026-06-30) Tween-driven hull yaw — see
+                // unified branch above for the rationale + the calibrated
+                // ground-deg → unified-rad map.
+                unified_yaw_rad: vis.map_or_else(
+                    || unified_heading_yaw(ship.facing),
+                    |v| unified_yaw_rad_from_ground_deg(v.facing_yaw_deg),
+                ),
                 // (warp rebuild 9/N) Read the cinematic z_offset from the bin's
                 // VisualShip2d override when present; outside a Transitioning
                 // window vis is None (or vis.z_offset == 0.0) → byte-identical
@@ -2716,7 +2745,13 @@ fn push_ship_2d(
                 // (UNIFY) cell + world heading for the unified ship pass.
                 cell: [ship.pos.col as u32, ship.pos.row as u32],
                 cell_frac,
-                unified_yaw_rad: unified_heading_yaw(ship.facing),
+                // (#316 rotate-first 2026-06-30) Tween-driven hull yaw — see
+                // primary branch above for the rationale + the calibrated
+                // ground-deg → unified-rad map.
+                unified_yaw_rad: vis.map_or_else(
+                    || unified_heading_yaw(ship.facing),
+                    |v| unified_yaw_rad_from_ground_deg(v.facing_yaw_deg),
+                ),
                 // Live enemy hull: on the playable plane at z=0.
                 z_offset: 0.0,
                 // (#209 hook 3 loft fix) Enemies recoil too when they fire.
