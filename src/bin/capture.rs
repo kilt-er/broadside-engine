@@ -949,14 +949,31 @@ fn main() {
     // cinematic_player_cell_frac calculation exactly (same easing, same
     // PLAYER_WARP_FASTNESS midpoint).
     let player_tween = warp_t_pre.and_then(|t_total| {
+        // (#316/#317 diagnostic 2026-06-30) PRIOR_COL/ROW used to be hard
+        // prerequisites for the tween branch — if either was missing, capture
+        // fell back to the no-vis path and the player rendered with the
+        // DISCRETE unified_heading_yaw(ship.facing) = bow-on, masking the
+        // rotation tween entirely. The lead hit exactly this when verifying
+        // rotation with `BROADSIDE_WARP_T=... BROADSIDE_WARP_PRIOR_FACING=bsEW`
+        // (no PRIOR_COL/ROW). Default to the LIVE player's pos when the env
+        // is missing so just BROADSIDE_WARP_T (+ optional PRIOR_FACING) is
+        // enough to drive the tween — the position lerp is then a no-op
+        // (prior == current) but the FACING tween still runs and rotates
+        // the hull, which is the whole point.
+        let live_player_pos = board
+            .cells
+            .iter()
+            .flatten()
+            .find(|s| s.faction == Faction::Player)
+            .map(|s| s.pos);
         let prior_col = std::env::var("BROADSIDE_WARP_PRIOR_COL")
-            .ok()?
-            .parse::<usize>()
-            .ok()?;
+            .ok()
+            .and_then(|s| s.parse::<usize>().ok())
+            .or_else(|| live_player_pos.map(|p| p.col))?;
         let prior_row = std::env::var("BROADSIDE_WARP_PRIOR_ROW")
-            .ok()?
-            .parse::<usize>()
-            .ok()?;
+            .ok()
+            .and_then(|s| s.parse::<usize>().ok())
+            .or_else(|| live_player_pos.map(|p| p.row))?;
         // PLAYER_WARP_FASTNESS = 0.5, gate = ROTATE_GATE_T_CAP (0.20) —
         // matches bin/broadside.rs PLAYER_WARP_FASTNESS +
         // PLAYER_ROTATE_GATE_T. The position lerp window starts at GATE
