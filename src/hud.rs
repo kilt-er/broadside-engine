@@ -1966,31 +1966,51 @@ pub fn prepend_upcoming_board_with_loft_2d_staggered_with_rest(
     out.splice(0..0, preview);
 }
 
-/// (warp rebuild 7/N) Per-enemy stagger window. Bruce: "ONE AT A TIME,
-/// never all at once" — each enemy gets its own sub-window inside the
-/// Settle phase (t = `SETTLE_T_START`..1.0), staggered left-to-right by
-/// `idx`. Returns the enemy's descent factor: 0 = held at rest depth,
-/// 1 = settled into the playable plane.
+/// (warp rebuild 7/N — lead 8/N correction 2026-06-30) Per-enemy stagger
+/// window. Bruce: enemies HOLD at their at-depth preview through phases
+/// 1-3 (Fade/Approach/Warp); the GRID descends to the playable plane
+/// WITHOUT them; THEN during the Snap+Settle phases each enemy moves
+/// from at-depth → its n+1 cell, ONE AT A TIME, left-to-right.
 ///
-/// `STAGGER_OVERLAP` (~0.4) lets adjacent enemies' windows OVERLAP
-/// slightly so the cascade reads as a flowing one-after-the-next
-/// motion rather than discrete pop-pop-pop (the latter felt too
-/// staccato at 3-4 enemies in the 150ms Settle window — overlap eases
-/// the visual). With overlap=0 the descents are fully sequential;
-/// overlap=1 puts them all in lockstep again.
+/// Reads the live cinematic phase from [`crate::gfx::phase_from_progress`]
+/// so the stagger window self-adjusts when the Settle dial is bumped —
+/// lead ruling: extend Settle to ~N × ENEMY_STAGGER_BEAT_MS so each
+/// enemy's descent is legible (the pre-correction code crammed the
+/// cascade into a 150ms window, reading as "all at once"). Snap is
+/// included in the active window so the enemy cascade visibly overlaps
+/// with the grid's final landing — Bruce: "phase 4 starts AFTER grid
+/// landing" maps onto the Snap+Settle boundary at t ≈ 0.85 once Settle
+/// is sized to fit the stagger.
+///
+/// `STAGGER_OVERLAP` (0.4) lets adjacent enemies' windows OVERLAP
+/// slightly so the cascade reads as a flowing one-after-the-next motion
+/// rather than discrete pop-pop-pop. With overlap=0 the descents are
+/// fully sequential; overlap=1 puts them all in lockstep again.
+///
+/// Returns the enemy's descent factor: 0 = held at rest depth, 1 =
+/// settled into the playable plane.
 #[must_use]
 pub fn enemy_stagger_factor(total_progress: f32, idx: usize, count: usize) -> f32 {
-    const SETTLE_T_START: f32 = 0.85;
     const STAGGER_OVERLAP: f32 = 0.4;
-    if count == 0 || total_progress <= SETTLE_T_START {
+    if count == 0 {
         return 0.0;
     }
-    let stagger_span = 1.0 - SETTLE_T_START; // 0.15 by default
-    // Per-enemy window WIDTH (with overlap stretching it past 1/count).
-    let raw_per_enemy = stagger_span / count as f32;
+    // Resolve the active phase. Hold (factor=0) through Fade/Approach/
+    // Warp/Snap; cascade only across the Settle window. (Lead correction:
+    // Bruce's spec is enemies move AFTER grid+player settle, so the
+    // descent fires inside Settle's wall-clock window — extending Settle
+    // automatically gives each enemy more legible airtime.)
+    let (phase, settle_sub) = crate::gfx::phase_from_progress(total_progress);
+    let in_settle = matches!(phase, crate::gfx::CinematicPhase::Settle);
+    if !in_settle {
+        return 0.0;
+    }
+    // settle_sub ∈ [0, 1] across the Settle wall-clock. Per-enemy
+    // window width includes the 40% overlap so the cascade flows.
+    let raw_per_enemy = 1.0 / count as f32;
     let window_w = raw_per_enemy * (1.0 + STAGGER_OVERLAP);
-    let window_start = SETTLE_T_START + raw_per_enemy * idx as f32;
-    let local = ((total_progress - window_start) / window_w).clamp(0.0, 1.0);
+    let window_start = raw_per_enemy * idx as f32;
+    let local = ((settle_sub - window_start) / window_w).clamp(0.0, 1.0);
     // Ease-out quad — soft landing for the hull.
     1.0 - (1.0 - local) * (1.0 - local)
 }

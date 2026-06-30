@@ -606,8 +606,14 @@ pub const BOOT_PHASE2_APPROACH_MS: u32 = 400;
 pub const BOOT_PHASE3_WARP_MS: u32 = 200;
 /// (#213) Boot phase 4 (snap into rest cells; brief settle) — 100 ms.
 pub const BOOT_PHASE4_SNAP_MS: u32 = 100;
-/// (#213) Boot phase 5 (post-snap idle before Playing handoff) — 150 ms.
-pub const BOOT_PHASE5_SETTLE_MS: u32 = 150;
+/// (#213) Boot phase 5 (post-snap idle before Playing handoff) — also
+/// hosts the warp-rebuild 7/N enemy stagger (lead 8/N correction):
+/// each n+1 enemy descends from at-depth → its cell during this window,
+/// one-at-a-time, ease-out. Default 360 ms sizes for ~3-4 enemies at
+/// ~120 ms per-enemy beat (matching the [`crate::vfx`] ENEMY_BEAT_SECS
+/// shot-stagger cadence so the warp+combat read at the same tempo).
+/// Bumpable via the live phase dial for boss/large encounters.
+pub const BOOT_PHASE5_SETTLE_MS: u32 = 360;
 
 static PHASE1_FADE_MS: std::sync::atomic::AtomicU32 =
     std::sync::atomic::AtomicU32::new(BOOT_PHASE1_FADE_MS);
