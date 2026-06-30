@@ -1455,7 +1455,7 @@ pub fn push_destruction_at(
 /// `Content`/catalog lookup.
 fn push_weapon_arcs_2d(out: &mut Vec<DrawCommand>, board: &Board, cfg: &ProjectorConfig) {
     use crate::geometry2d::arc_bears;
-    use crate::grid::{all_positions, from_to};
+    use crate::grid::{all_positions_in, from_to};
 
     let Some(player) = board
         .cells
@@ -1468,7 +1468,16 @@ fn push_weapon_arcs_2d(out: &mut Vec<DrawCommand>, board: &Board, cfg: &Projecto
     if player.mounts.is_empty() {
         return;
     }
-    for cell in all_positions() {
+    // (#215 Bruce live repro) Iterate the LIVE board dims, not the compile-time
+    // 5x4 `all_positions`. On a variable-board encounter (e.g. 2x2) the old call
+    // outlined cells at col=2..=4 / row=2..=3 that DON'T exist on the playable
+    // grid — they projected via cfg's column-boundary math at boundaries past
+    // the live grid's right/back edge, drawing wide-grid "phantom squares to
+    // the right of the ship" that shifted on rotation (because the bearing
+    // cardinals shift with facing). The grid wireframe itself was already
+    // dims-correct (push_grid_2d iterates cfg.cols/cfg.rows); only the arc
+    // overlay leaked.
+    for cell in all_positions_in(board.dims()) {
         if cell == player.pos {
             continue;
         }
