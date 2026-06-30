@@ -3153,20 +3153,24 @@ impl ApplicationHandler for App {
                                         prior_player_cell,
                                         carry_facing,
                                     );
-                                    // (Bruce design law 2026-06-30 lane-align)
-                                    // Update lane_align BEFORE the swap (both
-                                    // arms — cinematic defers the board swap
-                                    // to warp-end but the at-depth preview
-                                    // already projects with n+1 dims so the
-                                    // align must be in effect from warp-
-                                    // START; eager swaps the board now so
-                                    // the first Playing frame uses it). The
-                                    // cinematic phase-1 fade masks the small
-                                    // lateral snap on the OLD board's ships
-                                    // (alpha 1→0 across 150ms).
-                                    Self::relane_align_for_swap(&self.board, &next);
                                     if cinematic {
-                                        // ON: defer swap + cleanups.
+                                        // ON: defer swap + cleanups + the
+                                        // lane_align update. (Capture-verified
+                                        // 2026-06-30: applying lane_align at
+                                        // warp-START shifts the OLD board's
+                                        // player by ~72px because the player
+                                        // hull is fade-EXEMPT — phase-1's
+                                        // destructive fade only covers the
+                                        // grid + non-loft ships, not the
+                                        // hero hull. We MUST keep lane_align
+                                        // at its prior value until the swap
+                                        // moment, so the global camera
+                                        // doesn't drag the still-OLD player
+                                        // sideways at the start of the warp.
+                                        // The at-depth preview's seam stays
+                                        // clean because the swap + lane_align
+                                        // both fire in the same frame at
+                                        // warp-end.)
                                         self.pending_board = Some(next);
                                         self.pending_encounter_idx =
                                             Some(self.run.completed_encounters as usize);
@@ -3180,9 +3184,14 @@ impl ApplicationHandler for App {
                                     } else {
                                         // OFF: eager swap, byte-identical to
                                         // pre-rebuild behavior (apart from
-                                        // the Job-1 carry-forward above and
-                                        // the lane_align update hoisted
-                                        // above).
+                                        // the Job-1 carry-forward above).
+                                        // Apply lane_align IN THE SAME
+                                        // STATEMENT as the board swap so the
+                                        // SINGLE post-swap frame combines
+                                        // dim-change + lane shift with no
+                                        // intermediate frame in which the
+                                        // OLD board sees the new offset.
+                                        Self::relane_align_for_swap(&self.board, &next);
                                         self.board = next;
                                         self.tween_anchors.clear();
                                         self.kickbacks.clear();
@@ -3264,14 +3273,34 @@ impl ApplicationHandler for App {
                         // unchanged — just drop the cinematic anchor + flip
                         // to RunComplete.
                         if let Some(next) = self.pending_board.take() {
-                            // (Bruce design law 2026-06-30 lane-align) NOTE:
-                            // the lane_align was set at warp-START in the
-                            // round-clear path (paired with this Option-A
-                            // late swap). DO NOT call relane_align here —
-                            // doubling it would shift twice. The swap is
-                            // already a clean handoff: the at-depth grid +
-                            // ships rendered phases 1-5 with the new
-                            // lane_align; here we just commit the board.
+                            // (Capture-verified residual fix 2026-06-30)
+                            // Apply lane_align AT THE SAME INSTANT as the
+                            // board swap (warp-END), NOT at warp-start. The
+                            // OLD player is fade-EXEMPT through phase 1's
+                            // destructive grid fade, so applying lane_align
+                            // at warp-start visibly drags the still-OLD
+                            // player ~72px sideways for the entire warp
+                            // duration. With the update here, the OLD board
+                            // renders with prior lane_align (unshifted from
+                            // the player's POV) across phases 1-5, then in
+                            // the SAME frame as the swap, lane_align flips
+                            // to its new value AND self.board is replaced
+                            // with the n+1 board — the n+1 player's
+                            // world_x change (-0.950) and the camera's
+                            // matching shift (-0.950) cancel by construction,
+                            // so the player's screen-x is identical
+                            // pre-swap and post-swap.
+                            //
+                            // The at-depth preview drawn during phases 1-5
+                            // also renders with the OLD lane_align — its
+                            // cells project at world_x = (new_cols/2 - col -
+                            // 0.5) * s, NOT lane-aligned to the OLD player.
+                            // That's fine: the at-depth preview's job is to
+                            // PREVIEW the n+1 grid; at t=1.0 the swap fires
+                            // and the post-swap render replaces the at-depth
+                            // preview seamlessly (both use the NEW
+                            // lane_align after this point).
+                            Self::relane_align_for_swap(&self.board, &next);
                             self.board = next;
                             self.kickbacks.clear();
                             self.kickbacks_world.clear();
