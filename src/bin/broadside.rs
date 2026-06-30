@@ -2242,6 +2242,7 @@ impl App {
                     kickback,
                     kickback_aft_world,
                     z_offset: 0.0,
+                    lane_align_world_offset: 0.0,
                 },
             );
         }
@@ -2264,7 +2265,32 @@ impl App {
         if let DemoState::Transitioning(phase) = self.demo_state {
             if warp_cinematic_enabled() {
                 let t_total = phase.progress(now);
-                let dims = self.board.dims();
+                // (#305 Path B Stage 4 2026-06-30) The player's cell_frac walks
+                // toward the NEW carried cell on the NEW grid dims when a
+                // pending board is registered (warp-in carried player). Use
+                // pending dims+pos when present so the player rides into the
+                // post-swap (col,row) on the post-swap grid; outside warp the
+                // pending_board is None and we fall back to the live board.
+                let pending = self.pending_board.as_ref();
+                let dims = pending.map_or_else(|| self.board.dims(), Board::dims);
+                let new_player_pos = pending.and_then(|p| {
+                    p.cells
+                        .iter()
+                        .flatten()
+                        .find(|s| s.faction == Faction::Player)
+                        .map(|s| s.pos)
+                });
+                // Lane-align offset the player rides: shift the player's world-x
+                // by `to_align - prior` during the warp so its screen-x stays
+                // continuous across the atomic swap (the global lane_align flips
+                // from prior→to_align at the swap; the offset cancels the flip
+                // pre-swap so projected screen-x is identical the frame after).
+                let player_lane_align_offset: f32 = pending
+                    .and_then(|p| Self::compute_lane_align_for_swap(&self.board, p))
+                    .map_or(0.0, |to_align| {
+                        let prior = broadside_engine::gfx::unified_lane_align_x();
+                        to_align - prior
+                    });
                 if let Some(player) = self
                     .board
                     .cells
@@ -2272,13 +2298,21 @@ impl App {
                     .flatten()
                     .find(|s| s.faction == Faction::Player)
                 {
+                    // Carried target cell on the NEW grid (post-swap pos);
+                    // falls back to the live cell when no pending board.
+                    let target_cell = new_player_pos.unwrap_or(player.pos);
                     if let Some(cell_frac) = cinematic_player_cell_frac(
                         t_total,
                         self.cinematic_prior_player_cell,
-                        player.pos,
+                        target_cell,
                         dims,
                     ) {
-                        let from_q = grid_cell_quad(player.pos, cfg); // base for size at to-cell
+                        // (#305 Path B Stage 4) `from_q` is the size-of-cell
+                        // baseline for the lerped quad; use the CARRIED target
+                        // cell (post-swap pos on the NEW grid) so the visual
+                        // arrival cell matches what the player will occupy after
+                        // the atomic swap, not the live (pre-swap) pos.
+                        let from_q = grid_cell_quad(target_cell, cfg);
                         let lerped_q = {
                             use broadside_engine::grid::Pos;
                             let from_cell =
@@ -2354,6 +2388,15 @@ impl App {
                                 kickback,
                                 kickback_aft_world,
                                 z_offset: player_z,
+                                // (#305 Path B Stage 4 2026-06-30) Lane-align
+                                // ride: shift the player's world-x by
+                                // `to_align - prior` during the warp so its
+                                // screen-x stays continuous across the atomic
+                                // swap. At t=1.0 the global lane_align flips
+                                // to to_align and the offset is no longer
+                                // applied — the carried player is already at
+                                // its post-swap screen-x by construction.
+                                lane_align_world_offset: player_lane_align_offset,
                             },
                         );
                     }
@@ -2393,6 +2436,7 @@ impl App {
                     kickback,
                     kickback_aft_world,
                     z_offset: 0.0,
+                    lane_align_world_offset: 0.0,
                 },
             );
         }

@@ -467,6 +467,16 @@ pub struct VisualShip2d {
     /// the descending grid mid-Warp then rides it down to z=0). Zero at
     /// rest ⇒ hull renders on the playable plane, byte-identical to pre-9/N.
     pub z_offset: f32,
+    /// (#305 Path B Stage 4 2026-06-30) World-x shift applied to the loft hull
+    /// before the unified ship pass projects it through the camera. Forwards
+    /// onto [`crate::gfx::LoftShipInstance::lane_align_world_offset`] via
+    /// `push_ship_2d`. The cinematic player tween sets this during the warp:
+    /// the global `unified_lane_align_x` is held at the OLD value while the
+    /// board renders through NEW dims (Path A); a per-player offset of
+    /// `to_align - prior` then keeps the player's projected screen-x continuous
+    /// across the atomic swap. Zero at rest = no-op render, byte-identical to
+    /// pre-fix frames.
+    pub lane_align_world_offset: f32,
 }
 
 /// (#79) Per-ship visual tween overrides for the 2-D live path, keyed by
@@ -2515,10 +2525,15 @@ fn push_ship_2d(
                 // VisualShip2d.kickback (above on `center`) only moves the
                 // 2D billboard, invisible on the 3D hull.
                 kickback_aft_world: vis.map_or(0.0, |v| v.kickback_aft_world),
-                // (warp enemy-jump fix 2026-06-30) Live-board hulls are not
-                // at-depth preview ships → no lane-align override; zero =
-                // byte-identical to pre-fix render.
-                lane_align_world_offset: 0.0,
+                // (#305 Path B Stage 4 2026-06-30) Read the lane-align
+                // world-x shift from VisualShip2d. The bin's cinematic player
+                // tween sets this during the warp to keep the player's
+                // screen-x continuous across the swap (under Path A the cfg
+                // dims flip to NEW at start of phase 2; the offset =
+                // to_align - prior makes proj((world - offset) - prior) ==
+                // proj(world - to_align) by construction). Live-board enemies
+                // pass through with 0 → byte-identical pre-fix render.
+                lane_align_world_offset: vis.map_or(0.0, |v| v.lane_align_world_offset),
                 hull_scale_mul,
             }));
             return;
@@ -2600,9 +2615,12 @@ fn push_ship_2d(
                 z_offset: vis.map_or(0.0, |v| v.z_offset),
                 // (#209 hook 3 loft fix) Loft-aware recoil along hull aft.
                 kickback_aft_world: vis.map_or(0.0, |v| v.kickback_aft_world),
-                // (warp enemy-jump fix 2026-06-30) Live-board player → no
-                // lane-align override; zero = byte-identical pre-fix.
-                lane_align_world_offset: 0.0,
+                // (#305 Path B Stage 4 2026-06-30) Read lane-align world-x
+                // shift from the cinematic player VisualShip2d override (set
+                // during warp phases 2-5 to keep player screen-x continuous
+                // across the swap). Zero outside the warp → byte-identical
+                // pre-fix render.
+                lane_align_world_offset: vis.map_or(0.0, |v| v.lane_align_world_offset),
                 // (#214) Player is never a Pair boss (the boss is an Enemy
                 // capital); always 1× scale here.
                 hull_scale_mul: 1.0,

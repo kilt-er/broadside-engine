@@ -956,14 +956,34 @@ fn main() {
         // PLAYER_WARP_FASTNESS = 0.5 — matches bin/broadside.rs.
         let inner_t = (t_total / 0.5).clamp(0.0, 1.0);
         let eased = 1.0 - (1.0 - inner_t) * (1.0 - inner_t);
-        let player_pos = board
-            .cells
-            .iter()
-            .flatten()
-            .find(|s| s.faction == Faction::Player)
-            .map(|s| s.pos)?;
-        let from_col = prior_col.min(board_dims.cols.saturating_sub(1));
-        let from_row = prior_row.min(board_dims.rows.saturating_sub(1));
+        // (#305 Path B Stage 4 2026-06-30) Source the TARGET cell from the
+        // pending (n+1) board's player when a pending board exists, so the
+        // capture mirrors the bin's render-dims switch (Path A: project
+        // through NEW cfg from phase 2 onward). Without this the capture's
+        // target stays on the LIVE 5x4 player.pos (col=2, row=3) but the
+        // projection cfg is NEW 2x2 → off-screen render. Falls back to live
+        // board pos when no pending board (= live dims warp_t test).
+        let player_pos = pending_board
+            .as_ref()
+            .and_then(|pb| {
+                pb.cells
+                    .iter()
+                    .flatten()
+                    .find(|s| s.faction == Faction::Player)
+                    .map(|s| s.pos)
+            })
+            .or_else(|| {
+                board
+                    .cells
+                    .iter()
+                    .flatten()
+                    .find(|s| s.faction == Faction::Player)
+                    .map(|s| s.pos)
+            })?;
+        // Clamp prior to the RENDER dims (the cfg the projection runs on);
+        // when pending_board is set, render_dims == pending_dims.
+        let from_col = prior_col.min(render_dims.cols.saturating_sub(1));
+        let from_row = prior_row.min(render_dims.rows.saturating_sub(1));
         let col_f = from_col as f32 + (player_pos.col as f32 - from_col as f32) * eased;
         let row_f = from_row as f32 + (player_pos.row as f32 - from_row as f32) * eased;
         Some((from_col, from_row, eased, col_f, row_f))
@@ -1094,6 +1114,39 @@ fn main() {
                         .and_then(|v| v.parse::<f32>().ok())
                         .unwrap_or(0.0),
                     z_offset: player_z,
+                    // (#305 Path B Stage 4 2026-06-30) Capture-side mirror of
+                    // the live bin's player lane-align ride. Compute the same
+                    // `to_align - prior` offset the bin computes via
+                    // compute_lane_align_for_swap(live, pending). On a non-
+                    // parity-flip warp (pending dims == live dims) the offset
+                    // is 0 and the render path is identical to pre-fix.
+                    lane_align_world_offset: pending_board
+                        .as_ref()
+                        .and_then(|pb| {
+                            let op = board
+                                .cells
+                                .iter()
+                                .flatten()
+                                .find(|s| s.faction == Faction::Player)?;
+                            let np = pb
+                                .cells
+                                .iter()
+                                .flatten()
+                                .find(|s| s.faction == Faction::Player)?;
+                            let s = broadside_engine::gfx::unified_grid_cell_scale();
+                            let old_world_x_raw = (board_dims.cols as f32 * 0.5
+                                - op.pos.col as f32
+                                - 0.5)
+                                * s;
+                            let new_world_x_raw = (pending_dims.cols as f32 * 0.5
+                                - np.pos.col as f32
+                                - 0.5)
+                                * s;
+                            let prior = broadside_engine::gfx::unified_lane_align_x();
+                            let to_align = prior + (new_world_x_raw - old_world_x_raw);
+                            Some(to_align - prior)
+                        })
+                        .unwrap_or(0.0),
                 },
             );
             log::info!(
