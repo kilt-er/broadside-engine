@@ -1213,10 +1213,12 @@ fn push_threats_2d(out: &mut Vec<DrawCommand>, board: &Board, cfg: &ProjectorCon
         let outline = [fill[0], fill[1], fill[2], 1.0];
         let th = if lethal { 2.0 } else { 1.0 };
         let c = q.corners;
-        push_line(out, pt(c[0]), pt(c[1]), th, outline);
-        push_line(out, pt(c[1]), pt(c[2]), th, outline);
-        push_line(out, pt(c[2]), pt(c[3]), th, outline);
-        push_line(out, pt(c[3]), pt(c[0]), th, outline);
+        // Depth-tested so the hull occludes the threat outline (a depthless
+        // outline draws OVER the ships — same fix as push_grid_2d).
+        push_grid_line(out, pt(c[0]), pt(c[1]), th, outline);
+        push_grid_line(out, pt(c[1]), pt(c[2]), th, outline);
+        push_grid_line(out, pt(c[2]), pt(c[3]), th, outline);
+        push_grid_line(out, pt(c[3]), pt(c[0]), th, outline);
         // (#99 Bruce) The persistent RED enemy→cell INTENT BEAM is REMOVED — it drew
         // every frame an enemy held a threat ("a red line always projecting from the
         // enemy" = clutter). The threatened-cell OUTLINE above is the dodge cue
@@ -1277,7 +1279,8 @@ pub fn push_player_targeting_2d(
         ];
         let c = q.corners;
         for k in 0..4 {
-            push_line(out, pt(c[k]), pt(c[(k + 1) % 4]), 1.0, outline);
+            // Depth-tested so the hull occludes the player aim outline.
+            push_grid_line(out, pt(c[k]), pt(c[(k + 1) % 4]), 1.0, outline);
         }
         // Dim cyan aim line player → target so the shot PATH reads (not just the
         // end cell). Thin + semi-transparent so it doesn't compete with the actual
@@ -1578,7 +1581,9 @@ fn push_weapon_arcs_2d(out: &mut Vec<DrawCommand>, board: &Board, cfg: &Projecto
                 .any(|m| arc_bears(ship.facing, m.arc, dir));
             if bears {
                 let q = grid_cell_quad(cell, cfg);
-                outline_cell_2d(out, &q, color);
+                // Depth-tested outline so the hull occludes it (same path as
+                // push_grid_2d) — a depthless outline draws OVER the ships.
+                outline_cell_2d_grid(out, &q, color);
             }
         }
     }
@@ -2273,19 +2278,11 @@ pub fn push_upcoming_ships_2d(
     }
 }
 
-/// Outline a projected cell quad's four edges (used for weapon-arc / overlay
-/// outlines that sit on the floor plane but are NOT depth-occluded by hulls).
-fn outline_cell_2d(out: &mut Vec<DrawCommand>, q: &CellQuad, color: [f32; 4]) {
-    let c = q.corners;
-    push_line(out, pt(c[0]), pt(c[1]), 1.0, color); // far (top) edge
-    push_line(out, pt(c[1]), pt(c[2]), 1.0, color); // right edge
-    push_line(out, pt(c[2]), pt(c[3]), 1.0, color); // near (bottom) edge
-    push_line(out, pt(c[3]), pt(c[0]), 1.0, color); // left edge
-}
-
-/// (grid-occlusion a-lite 2026-06-30) Like [`outline_cell_2d`] but emits the
-/// four edges as DEPTH-TESTED [`DrawCommand::GridLine`] sprites so the loft hull
-/// silhouette occludes them. Used by [`push_grid_2d`] for the playable grid.
+/// Outline a projected cell quad's four edges as DEPTH-TESTED
+/// [`DrawCommand::GridLine`] sprites so the loft hull silhouette occludes them.
+/// Used by [`push_grid_2d`] for the playable grid and by the cell-highlight
+/// overlays (weapon arcs / threats / player targeting) so a cell outline never
+/// draws OVER a ship that sits on it.
 fn outline_cell_2d_grid(out: &mut Vec<DrawCommand>, q: &CellQuad, color: [f32; 4]) {
     let c = q.corners;
     push_grid_line(out, pt(c[0]), pt(c[1]), 1.0, color); // far (top) edge
