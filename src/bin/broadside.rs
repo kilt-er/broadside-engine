@@ -3458,13 +3458,32 @@ impl ApplicationHandler for App {
                 // tween. Only ships with an installed mesh actually loft; the rest
                 // are a cheap no-op pose. The chase-cam camera yaw is applied in
                 // the loft render itself — this just keeps the pose alive.
-                let loft_ships: Vec<(String, Orientation)> = self
+                let mut loft_ships: Vec<(String, Orientation)> = self
                     .board
                     .cells
                     .iter()
                     .flatten()
                     .map(|s| (s.id.clone(), s.orientation))
                     .collect();
+                // (warp rebuild 3/N 2026-06-30) During Transitioning under
+                // the late-swap model, ALSO sync poses for the pending
+                // (n+1) board's ships so the at-depth preview's LoftShips
+                // find a pose and actually render. Without this they
+                // silently skip at gfx::render_unified_fleet:2905 (None
+                // pose → continue), which is the empty-at-depth-grid bug
+                // Bruce saw. Use the pending board's enemies' canonical
+                // `class_id@cell` IDs — same IDs prepend_upcoming_board_
+                // with_loft_2d emits for the at-depth LoftShipInstance,
+                // so the lookup matches by construction.
+                if matches!(self.demo_state, DemoState::Transitioning(_)) {
+                    if let Some(pending) = self.pending_board.as_ref() {
+                        for s in pending.cells.iter().flatten() {
+                            if s.faction == Faction::Enemy {
+                                loft_ships.push((s.id.clone(), s.orientation));
+                            }
+                        }
+                    }
+                }
                 for (id, orient) in &loft_ships {
                     gfx.sync_loft_pose(id, *orient);
                 }
@@ -3547,31 +3566,67 @@ impl ApplicationHandler for App {
                 let show_at_depth_preview =
                     warp_cinematic_enabled() && !matches!(demo_state, DemoState::Dying(_));
                 if show_at_depth_preview {
-                    if let Some(next_enc) = next_encounter_after_current(&self.run, &self.sectors) {
-                        let spawns: Vec<Pos> = next_enc.enemy_ships.iter().map(|s| s.pos).collect();
-                        // (CINEMATIC REBUILD phase d 2026-06-30) Collect the
-                        // ID list parallel to `spawns` so the at-depth loft
-                        // emit can key its LoftShipInstances on the SAME ship
-                        // IDs the next encounter will use on the live board.
-                        // The renderer's per-ship pose state (loft_poses,
-                        // keyed on ship_id) warms up during the warp and
-                        // carries straight into the live unified pass when
-                        // the demo-state flips to Playing — the t=1.0 → swap
-                        // frame is ship-shape equivalent to the first
-                        // Playing frame. Ship.id format is canonical
-                        // `"{class_id}@{cell}"` — same as
-                        // [`runs::boss_ship_for_spawn`] /
-                        // [`runs::fallback_ship_for_spawn`] /
-                        // [`catalog::*_for_spawn`] all use, so the at-depth
-                        // ID is byte-equivalent to what the live unified
-                        // pass will emit post-swap.
-                        let ship_ids: Vec<String> = next_enc
-                            .enemy_ships
-                            .iter()
-                            .map(|s| format!("{}@{}", s.class_id, s.cell))
-                            .collect();
-                        let cols = next_enc.dims.cols;
-                        let rows = next_enc.dims.rows;
+                    // (warp rebuild 3/N 2026-06-30) During Transitioning the
+                    // at-depth preview must render the PENDING n+1 board
+                    // (the encounter the player is warping INTO) so its
+                    // enemies are visible at depth + can tween into their
+                    // cells during P4. `next_encounter_after_current` reads
+                    // `completed_encounters + 1` and was correct under the
+                    // EAGER-swap model (`completed_encounters` was bumped at
+                    // warp start) but wrong under the LATE-swap model
+                    // (cursor stays at n until warp end → it'd return n+2
+                    // = the encounter AFTER the one warping in, with no
+                    // registered poses → the empty-grid bug Bruce saw).
+                    // Source from pending_board's enemy ships directly when
+                    // a warp is in flight; fall back to the
+                    // next_encounter_after_current lookup for the
+                    // persistent Playing-state parallax preview (n+1 = the
+                    // next encounter, the live cursor's natural target).
+                    enum PreviewSource<'a> {
+                        Encounter(&'a broadside_engine::types::EncounterDef),
+                        Pending(&'a Board),
+                    }
+                    let pending_ref = self.pending_board.as_ref();
+                    let preview_source: Option<PreviewSource<'_>> = if let Some(pending) = pending_ref {
+                        if matches!(demo_state, DemoState::Transitioning(_)) {
+                            Some(PreviewSource::Pending(pending))
+                        } else {
+                            None
+                        }
+                    } else {
+                        next_encounter_after_current(&self.run, &self.sectors)
+                            .map(PreviewSource::Encounter)
+                    };
+                    if let Some(src) = preview_source {
+                        let (spawns, ship_ids, cols, rows): (
+                            Vec<Pos>,
+                            Vec<String>,
+                            usize,
+                            usize,
+                        ) = match src {
+                            PreviewSource::Encounter(next_enc) => {
+                                let spawns: Vec<Pos> =
+                                    next_enc.enemy_ships.iter().map(|s| s.pos).collect();
+                                let ship_ids: Vec<String> = next_enc
+                                    .enemy_ships
+                                    .iter()
+                                    .map(|s| format!("{}@{}", s.class_id, s.cell))
+                                    .collect();
+                                (spawns, ship_ids, next_enc.dims.cols, next_enc.dims.rows)
+                            }
+                            PreviewSource::Pending(pending) => {
+                                let dims = pending.dims();
+                                let mut spawns: Vec<Pos> = Vec::new();
+                                let mut ship_ids: Vec<String> = Vec::new();
+                                for ship in pending.cells.iter().flatten() {
+                                    if ship.faction == Faction::Enemy {
+                                        spawns.push(ship.pos);
+                                        ship_ids.push(ship.id.clone());
+                                    }
+                                }
+                                (spawns, ship_ids, dims.cols, dims.rows)
+                            }
+                        };
                         // (#213) Live dials — `Z`/`X` adjust preview depth,
                         // `B`/`N` adjust preview tint alpha. Default 8.0 / 0.55
                         // matches the boot consts; Bruce dials by eye during
@@ -3626,7 +3681,10 @@ impl ApplicationHandler for App {
                         // for the loft hull — that's a follow-up; the
                         // existing flat-marker is_boss bias still lives in
                         // push_upcoming_ships_2d for the non-loft callers.
-                        let _ = next_enc.is_boss;
+                        // (warp rebuild 3/N) is_boss bias note dropped here
+                        // since the source can now be Pending(Board) (which
+                        // doesn't carry the encounter-level is_boss flag);
+                        // boss visual distinction is a follow-up regardless.
                         hud::prepend_upcoming_board_with_loft_2d(
                             &mut instances,
                             &scene_cfg,
