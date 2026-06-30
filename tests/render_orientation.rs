@@ -899,3 +899,116 @@ fn variable_dims_actually_shifts_projection_vs_5x4() {
         "3x3 / 4x2 / 2x4 shapes should not all map to the same screen point",
     );
 }
+
+/// (#215 Bruce invariant) ANY board renders CENTERED on the world centerline
+/// (X = 0) AND with its NEAR row anchored at the camera-near Z plane,
+/// SIZED TO ITS OWN dims — NEVER positioned relative to a 5x4 origin/edge.
+///
+/// Bruce: "why does it think a 2x2 grid is at the edge of a 5x4 grid? if
+/// anything it should represent the center 2x2 subset, closest to the
+/// camera/screen, in the middle, not at the edge."
+///
+/// (a) X-symmetry: for every dim in the #199b pool, the leftmost and
+/// rightmost cell-world-centre Xs in each row sum to ~0 (symmetric about
+/// the world centerline). A regression that anchored col 0 at a fixed X
+/// (e.g. 5x4's leftmost) would shift smaller boards LEFT-of-center and
+/// this fires.
+///
+/// (b) Near-row Z anchor: for every dim, the NEAR row's near edge sits at
+/// the same world Z (`UNIFIED_Z_FRONT = 1.3`) regardless of row count.
+/// A regression that anchored the FAR row at a fixed Z (e.g. 5x4's far)
+/// would push smaller boards AWAY from the camera and this fires.
+///
+/// We snap the #207 edge-lane pan to 0 inside the test (the live bin does
+/// the same on non-5x4 per 1bb9518); the layout funcs don't read the
+/// offset so this is belt-and-braces.
+#[test]
+fn variable_dims_board_centered_per_dims_and_near_anchored() {
+    use broadside_engine::projector::cell_world_corners;
+    let _g = CamDistGuard::pin_boot();
+    // Belt-and-braces: kill any lingering pan so the test reads the pure
+    // layout function. (The layout funcs themselves don't read this — only
+    // the camera target does — but a future regression that wired the
+    // offset into cell math would otherwise silently break the symmetry.)
+    let saved_pan = broadside_engine::gfx::unified_lateral_x_offset();
+    broadside_engine::gfx::set_unified_lateral_x_offset(0.0);
+    // Pre-condition: any cell layout assertion below presumes the live
+    // GRID_CELL_SCALE multiplier is finite + positive (the live atomic
+    // default at boot). If a parallel test stomped this to 0 we'd false-
+    // positive every symmetry check, so guard that here.
+    let s = broadside_engine::gfx::unified_grid_cell_scale();
+    assert!(
+        s > 0.0,
+        "unified_grid_cell_scale must be > 0 at boot (got {s})",
+    );
+    // (#199b pool — same as variable_dims_grid_lays_out_in_viewport above.)
+    const POOL: &[(usize, usize)] = &[
+        (2, 2),
+        (2, 3),
+        (3, 2),
+        (2, 4),
+        (4, 2),
+        (3, 3),
+        (3, 4),
+        (4, 3),
+        (4, 4),
+        (5, 4),
+    ];
+    // Camera-near plane Z (private const in projector.rs:847). Hardcoded
+    // here intentionally — if that const ever changes, this anchor test
+    // SHOULD fail loudly so the look-call lands consciously.
+    const UNIFIED_Z_FRONT: f32 = 1.3;
+    for &(cols, rows) in POOL {
+        let cfg = unified_cfg(0.0).with_dims(cols, rows);
+        // (a) X-symmetry of cell-world-centres about X = 0, per row.
+        for row in 0..rows {
+            let left = broadside_engine::projector::cell_world_center(Pos::new(0, row), &cfg);
+            let right =
+                broadside_engine::projector::cell_world_center(Pos::new(cols - 1, row), &cfg);
+            let sum = left[0] + right[0];
+            assert!(
+                sum.abs() < 1e-4,
+                "X-symmetry broken at dims {cols}x{rows} row {row}: \
+                 leftmost x={} + rightmost x={} = {} (expected ~0 — \
+                 board is NOT centered about world X=0 per LIVE cols)",
+                left[0],
+                right[0],
+                sum,
+            );
+        }
+        // (b) Near-row near-edge Z anchor — for EVERY column on the
+        // near row (pos.row = rows-1), `cell_world_corners[2..4]` (the
+        // near-right + near-left corners) sit at the SAME world Z, and
+        // that Z equals UNIFIED_Z_FRONT regardless of rows. This is the
+        // "near row closest to camera, sized to its own dims" invariant
+        // — a regression that anchored the FAR row at a fixed Z would
+        // push smaller-row boards BACK behind the 5x4's near plane.
+        for col in 0..cols {
+            let cn = cell_world_corners(Pos::new(col, rows - 1), &cfg);
+            let near_z_l = cn[3][2]; // near-left.z
+            let near_z_r = cn[2][2]; // near-right.z
+            assert!(
+                (near_z_l - UNIFIED_Z_FRONT).abs() < 1e-4
+                    && (near_z_r - UNIFIED_Z_FRONT).abs() < 1e-4,
+                "Near-row Z anchor broken at dims {cols}x{rows} col {col}: \
+                 near-left.z={near_z_l}, near-right.z={near_z_r}, expected \
+                 {UNIFIED_Z_FRONT} (board is NOT anchored at camera-near \
+                 plane regardless of row count)",
+            );
+        }
+        // (c) Belt-and-braces: middle column's centre sits at world X=0
+        // when cols is ODD (no col straddles X=0 when even, so skip).
+        if cols % 2 == 1 {
+            let mid =
+                broadside_engine::projector::cell_world_center(Pos::new(cols / 2, rows - 1), &cfg);
+            assert!(
+                mid[0].abs() < 1e-4,
+                "Odd-cols middle column should sit at X=0 at dims \
+                 {cols}x{rows} — got x={}",
+                mid[0],
+            );
+        }
+    }
+    // Restore the pan (cleanly hand back what we found).
+    broadside_engine::gfx::set_unified_lateral_x_offset(saved_pan);
+}
