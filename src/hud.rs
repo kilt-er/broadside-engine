@@ -1491,13 +1491,17 @@ pub fn push_destruction_at(
         }
         let q = grid_cell_quad(pos, cfg);
         let r = (q.near_edge_width() * 0.7).clamp(8.0, 34.0);
+        // (#301 destruction-round 2026-06-30) Use PARTICLE_CIRCLE not SOLID_WHITE
+        // so the kill-cell flash is a round disc rather than a square — matches
+        // vfx::emit_explosion's bloom (same tile) so the in-game destruction
+        // reads as a single round burst instead of a square + disc combo.
         push_sprite(
             out,
             SpriteInstance::axis_aligned(
                 q.center,
                 [r, r],
                 DESTROY_FLASH,
-                atlas::cell_uvs(atlas::SOLID_WHITE),
+                atlas::cell_uvs(atlas::PARTICLE_CIRCLE),
             ),
         );
         push_sprite(
@@ -1506,7 +1510,7 @@ pub fn push_destruction_at(
                 q.center,
                 [r * 0.5, r * 0.5],
                 IMPACT_FLASH,
-                atlas::cell_uvs(atlas::SOLID_WHITE),
+                atlas::cell_uvs(atlas::PARTICLE_CIRCLE),
             ),
         );
     }
