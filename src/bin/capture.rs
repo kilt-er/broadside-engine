@@ -1034,91 +1034,122 @@ fn main() {
             }
             pool.emit(&mut commands);
             log::info!("capture: #119 explosion particle burst at killed cell {killed:?}");
-            // (#217) BROADSIDE_VFX_DEMO_SEQ=1 fires a composed Sequence (player
-            // beam at t=0, spark at t=0.05, boom at t=0.20) via the new
-            // CombatVfx::play_sequence + seeds a TRIANGLE-shaped burst via
-            // ParticlePool's new shape pipeline, both proving the editor-driven
-            // composition path end-to-end. Disabled by default so the
+            // (#282) BROADSIDE_VFX_DEMO_SEQ=1 round-trips a JSON catalog that
+            // mirrors what the broadside_vfx_editor a4c28f9 export produces:
+            // a "Sequence" EffectDef listing steps with delay_secs PLUS a
+            // ParticleBurst with non-default shape + rotation_min/max +
+            // spin_rate. We load via EffectCatalog::from_json_str (the same
+            // path the game reads at boot), then play the sequence via
+            // CombatVfx::play_sequence and seed the burst via
+            // ParticlePool::spawn_burst_with reading the loaded config.
+            // This proves the WHOLE editor → engine → in-game render chain,
+            // not just an inline Rust struct. Disabled by default so the
             // pre-existing demo capture stays identical.
+            //
+            // The JSON below is shaped exactly like the editor's export
+            // (schema landed in 4f39978): internally-tagged "kind"
+            // discriminator, snake_case ShapeKind values, every optional
+            // field present so we round-trip the full surface.
             if std::env::var("BROADSIDE_VFX_DEMO_SEQ").is_ok_and(|v| v != "0") {
-                use broadside_engine::effects::{
-                    EffectCatalog, EffectDef, EffectKind, Explosion as ExCfg, HitFlash as HfCfg,
-                    ParticleBurst, Rgba, SequenceDef, SequenceStep, ShapeKind, ShotBeam as SbCfg,
-                };
+                use broadside_engine::effects::{EffectCatalog, EffectKind, ShapeKind};
                 let player_pos = board
                     .cells
                     .iter()
                     .flatten()
                     .find(|s| s.faction == Faction::Player)
                     .map_or_else(|| Pos::new(2, 3), |s| s.pos);
-                let cat = EffectCatalog {
-                    effects: vec![
-                        EffectDef {
-                            id: "player_beam".into(),
-                            kind: EffectKind::ShotBeam(SbCfg::default()),
-                        },
-                        EffectDef {
-                            id: "spark".into(),
-                            kind: EffectKind::HitFlash(HfCfg::default()),
-                        },
-                        EffectDef {
-                            id: "boom".into(),
-                            kind: EffectKind::Explosion(ExCfg::default()),
-                        },
-                        EffectDef {
-                            id: "kill_combo".into(),
-                            kind: EffectKind::Sequence(SequenceDef {
-                                steps: vec![
-                                    SequenceStep {
-                                        id: "player_beam".into(),
-                                        delay_secs: 0.0,
-                                    },
-                                    SequenceStep {
-                                        id: "spark".into(),
-                                        delay_secs: 0.05,
-                                    },
-                                    SequenceStep {
-                                        id: "boom".into(),
-                                        delay_secs: 0.20,
-                                    },
-                                ],
-                            }),
-                        },
-                    ],
+                let editor_json = r#"{
+                    "effects": [
+                        { "id": "player_beam",
+                          "kind": "ShotBeam" },
+                        { "id": "spark",
+                          "kind": "HitFlash" },
+                        { "id": "boom",
+                          "kind": "Explosion" },
+                        { "id": "shaped_debris",
+                          "kind": "ParticleBurst",
+                          "count": 24,
+                          "color": [0.35, 0.95, 1.0, 1.0],
+                          "life_secs": 0.65,
+                          "speed_min": 30.0,
+                          "speed_max": 110.0,
+                          "size_min": 5.0,
+                          "size_max": 9.0,
+                          "shape": "triangle",
+                          "rotation_min": 0.0,
+                          "rotation_max": 6.2831855,
+                          "spin_rate": 3.0 },
+                        { "id": "kill_combo",
+                          "kind": "Sequence",
+                          "steps": [
+                            { "id": "player_beam",   "delay_secs": 0.0 },
+                            { "id": "spark",         "delay_secs": 0.05 },
+                            { "id": "boom",          "delay_secs": 0.20 }
+                          ] }
+                    ]
+                }"#;
+                let cat = EffectCatalog::from_json_str(editor_json)
+                    .expect("editor-shaped JSON round-trips into EffectCatalog");
+                // ROUND-TRIP ASSERTIONS — fail loud if the engine's serde
+                // silently dropped any of the new shape/rotation/spin fields.
+                let burst_def = cat
+                    .get("shaped_debris")
+                    .expect("ParticleBurst id 'shaped_debris' present after load");
+                let burst_cfg = match &burst_def.kind {
+                    EffectKind::ParticleBurst(p) => p.clone(),
+                    other => panic!("expected ParticleBurst, got {other:?}"),
                 };
+                assert_eq!(
+                    burst_cfg.shape,
+                    ShapeKind::Triangle,
+                    "shape=triangle round-trips (not silently dropped to Square)"
+                );
+                assert!(
+                    (burst_cfg.spin_rate - 3.0).abs() < 1e-5,
+                    "spin_rate round-trips, got {}",
+                    burst_cfg.spin_rate
+                );
+                assert!(
+                    (burst_cfg.rotation_max - std::f32::consts::TAU).abs() < 1e-3,
+                    "rotation_max round-trips, got {}",
+                    burst_cfg.rotation_max
+                );
+                log::info!(
+                    "capture: #282 catalog loaded; shaped_debris.shape={:?} spin_rate={} rotation_max={}",
+                    burst_cfg.shape, burst_cfg.spin_rate, burst_cfg.rotation_max
+                );
+                // Sequence playback through the loaded catalog.
                 let mut seq_vfx = broadside_engine::vfx::CombatVfx::new();
                 let scheduled =
                     seq_vfx.play_sequence(&cat, "kill_combo", killed, Some(player_pos), None);
-                log::info!("capture: #217 Sequence scheduled {scheduled} steps");
+                assert_eq!(scheduled, 3, "all 3 sequence steps resolved + scheduled");
+                log::info!("capture: #282 Sequence scheduled {scheduled} steps");
                 let seq_t: f32 = std::env::var("BROADSIDE_VFX_DEMO_SEQ_T")
                     .ok()
                     .and_then(|v| v.parse().ok())
                     .unwrap_or(0.30);
                 seq_vfx.advance(seq_t);
                 seq_vfx.emit(&mut commands, &board, &cfg);
-                // Triangle-shaped burst with spin: proves per-particle ShapeKind +
-                // rotation + spin_rate route through the new ParticlePool path.
-                let tri_cfg = ParticleBurst {
-                    count: 18,
-                    color: Rgba([1.0, 0.45, 0.85, 1.0]),
-                    life_secs: 0.60,
-                    shape: ShapeKind::Triangle,
-                    rotation_min: 0.0,
-                    rotation_max: std::f32::consts::TAU,
-                    spin_rate: 2.0,
-                    size_min: 4.0,
-                    size_max: 8.0,
-                    ..Default::default()
-                };
+                // Shaped-particle burst FROM the loaded catalog's ParticleBurst
+                // def — this is the round-trip that proves the editor's shape
+                // export actually reaches the in-game render. Centre it on the
+                // player so the t-strip shows triangle silhouettes at varying
+                // rotation as `seq_t` advances past spawn.
                 let mut tri_pool = broadside_engine::vfx::ParticlePool::new();
                 let tri_center =
                     broadside_engine::projector::grid_cell_quad(player_pos, &cfg).center;
-                tri_pool.spawn_burst_with(&tri_cfg, tri_center, 0.0);
-                for _ in 0..10 {
+                tri_pool.spawn_burst_with(&burst_cfg, tri_center, 0.0);
+                // Advance the particle pool by the same `seq_t` knob so the
+                // t-strip shows the rotation+spin progression alongside the
+                // sequence steps. (spin_rate=3 rad/s × t shows visible turn.)
+                let steps = ((seq_t * 60.0) as u32).max(1);
+                for _ in 0..steps {
                     tri_pool.advance(1.0 / 60.0);
                 }
                 tri_pool.emit(&mut commands);
-                log::info!("capture: #217 Triangle-shape burst at player cell {player_pos:?}");
+                log::info!(
+                    "capture: #282 round-tripped shaped burst (Triangle, spin 3 rad/s) at {player_pos:?}"
+                );
             }
             // (#178) Drive the REAL wall-clock CombatVfx explosion at mid-life so the
             // capture shows emit_explosion's expanding multi-layer blast (the live
