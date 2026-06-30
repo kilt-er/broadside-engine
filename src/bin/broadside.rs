@@ -1808,7 +1808,7 @@ impl App {
     }
 
     /// (warp enemy-jump fix 2026-06-30) Pure sibling of
-    /// [`relane_align_for_swap`] — returns the lane_align value that, when
+    /// [`relane_align_for_swap`] — returns the `lane_align` value that, when
     /// applied to the camera after the OLD→NEW board swap, preserves the
     /// player's screen-x by construction (the formula in the original
     /// setter's docs). Used by the at-depth preview to compute `to_align`
@@ -4134,11 +4134,10 @@ impl ApplicationHandler for App {
                                 self.pending_board
                                     .as_ref()
                                     .and_then(|p| Self::compute_lane_align_for_swap(&self.board, p))
-                                    .map(|to_align| {
+                                    .map_or(0.0, |to_align| {
                                         let prior = broadside_engine::gfx::unified_lane_align_x();
                                         to_align - prior
                                     })
-                                    .unwrap_or(0.0)
                             } else {
                                 0.0
                             };

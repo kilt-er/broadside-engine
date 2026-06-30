@@ -28,7 +28,9 @@ use broadside_engine::gfx::Gfx;
 use broadside_engine::grid::{Dir4, Facing, Pos, COLS};
 use broadside_engine::hud::compose_scene_2d_with;
 use broadside_engine::projector::ProjectorConfig;
-use broadside_engine::runs::{enemy_spawn_facing, player_spawn_facing, player_start_pos};
+use broadside_engine::runs::{
+    enemy_spawn_facing, place_capital_pair, player_spawn_facing, player_start_pos,
+};
 use broadside_engine::types::{Board, EventBus, Faction, LaneEnd, Mount, Orientation, Ship};
 
 /// Build a `types::Ship` at `pos`/`facing` (mirrors the bin's `make_ship`: 2-D
@@ -193,6 +195,42 @@ fn capture_board_with_dims(
         destroys_this_window: 0,
         fire_events: Vec::new(),
     }
+}
+
+/// (#214 capture proof) Boss board: player at front-centre, a 1×2 Pair boss
+/// occupying the two mid-back cells. Used when `BROADSIDE_BOSS=1` is set so
+/// the capture can visually confirm the 2× hull spans both cells.
+fn capture_board_boss() -> Board {
+    use broadside_engine::grid::{Dims, COLS, ROWS};
+    use broadside_engine::types::ShipSpawn;
+    let dims = Dims::new(COLS, ROWS);
+    let cell_count = dims.cols * dims.rows;
+    // Start from the standard board then replace the mid enemy with a boss.
+    let ppos = player_start_pos();
+    let mut board = capture_board_with_dims(dims, ppos.col, ppos.row, player_spawn_facing());
+    // Remove the centre enemy (slot at mid-back row 0) — the boss replaces it.
+    let mid = dims.cols / 2;
+    let mid_idx = mid;
+    board.cells[mid_idx] = None;
+    // Also clear the slot one step forward (row 1) where the tail will land.
+    let tail_idx = dims.cols + mid;
+    board.cells[tail_idx] = None;
+    // Build a minimal boss ship (mirrors boss_ship_for_spawn).
+    let primary_pos = broadside_engine::grid::Pos::new(mid, 0);
+    let boss_facing = enemy_spawn_facing(); // Bow(S) = faces player
+    let spawn = ShipSpawn {
+        class_id: "boss".to_string(),
+        cell: mid_idx,
+        pos: primary_pos,
+        orientation: Orientation::BowOn { bow: LaneEnd::Aft },
+        facing: boss_facing,
+        hp_override: None,
+    };
+    let boss = broadside_engine::runs::boss_ship_for_spawn(&spawn);
+    let placed = place_capital_pair(&mut board, boss, primary_pos);
+    log::info!("capture: boss placed={placed} primary=({mid},0) facing={boss_facing:?}");
+    board.hazards = (0..cell_count).map(|_| Vec::new()).collect();
+    board
 }
 
 fn main() {
@@ -432,7 +470,12 @@ fn main() {
             Some(broadside_engine::grid::Dims::new(c, r))
         })
         .unwrap_or_else(|| broadside_engine::grid::Dims::new(COLS, broadside_engine::grid::ROWS));
-    let mut board = capture_board_with_dims(dims, player_col, player_row, player_facing);
+    let mut board = if std::env::var("BROADSIDE_BOSS").is_ok_and(|v| v == "1") {
+        log::info!("capture: BROADSIDE_BOSS=1 — building boss encounter board");
+        capture_board_boss()
+    } else {
+        capture_board_with_dims(dims, player_col, player_row, player_facing)
+    };
     // (#215) Publish the live dims to gfx's atomics so the GPU loft pass
     // (render_unified_fleet) projects ships at the same dims the HUD grid
     // uses. Mirrors the playable bin's scene_projector_for_board call.

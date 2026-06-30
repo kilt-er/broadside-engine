@@ -506,7 +506,7 @@ fn push_pull_swap_on_pair_boss_is_a_noop() {
             boss_after.pos, primary,
             "{mode:?}: boss.pos unchanged after displace attempt",
         );
-        assert_eq!(boss_after.tail, Some(tail), "{mode:?}: boss.tail unchanged",);
+        assert_eq!(boss_after.tail, Some(tail), "{mode:?}: boss.tail unchanged");
         // Swap-specific: the attacker (player at (2,3)) must NOT have
         // teleported into the boss's slot.
         if mode == DisplaceMode::Swap {

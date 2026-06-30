@@ -574,7 +574,28 @@ pub fn compose_scene_2d_tweened(
     push_threats_2d(&mut out, board, cfg);
 
     // Far row (row 0) first → front row last, so nearer ships overlap farther.
-    let mut ships: Vec<&Ship> = board.cells.iter().flatten().collect();
+    // (#214 2026-06-30) Skip tail-mirror slots: a 1×2 Pair boss writes the
+    // same `Ship` clone into BOTH its primary and tail cells (see
+    // `runs::place_pair_boss_2d`), so a naive `cells.iter().flatten()`
+    // would emit the same hull twice and the renderer would paint it on
+    // top of itself. The PRIMARY slot is the cell whose linear index
+    // equals `ship.pos.to_index_in(dims)`; the mirror clone sits at the
+    // tail index but still carries the primary's `pos`, so the index
+    // comparison drops it. Single-cell ships always have `tail == None`
+    // and pass through unchanged → byte-identical to pre-#214 render.
+    let dims = board.dims();
+    let mut ships: Vec<&Ship> = board
+        .cells
+        .iter()
+        .enumerate()
+        .filter_map(|(i, slot)| {
+            let s = slot.as_ref()?;
+            if s.tail.is_some() && i != s.pos.to_index_in(dims) {
+                return None;
+            }
+            Some(s)
+        })
+        .collect();
     ships.sort_by_key(|s| s.pos.row);
     for ship in &ships {
         // (#213 A2 Reading B) Skip ships whose id is in the hide set — the bin
@@ -1906,6 +1927,7 @@ pub fn push_upcoming_loft_ships_2d_staggered_with_rest(
             // before projection. Non-zero ONLY during the at-depth warp preview;
             // zero everywhere else = byte-identical to pre-fix render.
             lane_align_world_offset: lane_align_offset,
+            hull_scale_mul: 1.0,
         }));
     }
 }
@@ -2449,7 +2471,22 @@ fn push_ship_2d(
             // when a slide is in flight; absent ⇒ snap to the integer cell so
             // the rest-state frame is byte-identical (and the #188 alignment
             // guard's invariants hold by construction).
-            let cell_frac = vis.map_or([ship.pos.col as f32, ship.pos.row as f32], |v| v.cell_frac);
+            let base_frac = vis.map_or([ship.pos.col as f32, ship.pos.row as f32], |v| v.cell_frac);
+            // (#214 2026-06-30) 1×2 Pair boss seating: center the hull at the
+            // midpoint between primary and tail cells and scale 2× so it
+            // visually spans both. Single-cell ships pass through unchanged
+            // (`tail == None` → byte-identical to pre-#214 render). The
+            // tail-mirror skip in `compose_scene_2d_tweened` ensures we only
+            // hit this branch once per Pair boss (from its primary slot), so
+            // there's no double-draw — the boss appears as ONE hull centered
+            // on the seam, twice the linear scale.
+            let (cell_frac, hull_scale_mul) = if let Some(tail) = ship.tail {
+                let mid_col = (base_frac[0] + tail.col as f32) * 0.5;
+                let mid_row = (base_frac[1] + tail.row as f32) * 0.5;
+                ([mid_col, mid_row], 2.0_f32)
+            } else {
+                (base_frac, 1.0_f32)
+            };
             out.push(DrawCommand::LoftShip(LoftShipInstance {
                 p0: [l, t],
                 p1: [r, t],
@@ -2482,6 +2519,7 @@ fn push_ship_2d(
                 // at-depth preview ships → no lane-align override; zero =
                 // byte-identical to pre-fix render.
                 lane_align_world_offset: 0.0,
+                hull_scale_mul,
             }));
             return;
         }
@@ -2565,6 +2603,9 @@ fn push_ship_2d(
                 // (warp enemy-jump fix 2026-06-30) Live-board player → no
                 // lane-align override; zero = byte-identical pre-fix.
                 lane_align_world_offset: 0.0,
+                // (#214) Player is never a Pair boss (the boss is an Enemy
+                // capital); always 1× scale here.
+                hull_scale_mul: 1.0,
             }));
             // (#138) Shield pips removed — the per-face cyan squares read as mystery
             // clutter (Bruce); the total shield is in the bottom SHLD bar.
@@ -2665,6 +2706,10 @@ fn push_ship_2d(
                 // (warp enemy-jump fix 2026-06-30) Live-board enemy → no
                 // lane-align override; zero = byte-identical pre-fix.
                 lane_align_world_offset: 0.0,
+                // (#214) This legacy enemy-loft fallback runs only when the
+                // unified pass is disabled — Pair-boss seating is handled in
+                // the unified branch above. Single-scale here.
+                hull_scale_mul: 1.0,
             }));
             // (#112) NO per-enemy overlay (no arrow/pips/bars/telegraph) — the
             // decluttered hull + the separate threat-cell outline carry the read.
@@ -3216,6 +3261,7 @@ fn push_ship(
             kickback_aft_world: 0.0,
             // Legacy 1-D path: no at-depth preview here.
             lane_align_world_offset: 0.0,
+            hull_scale_mul: 1.0,
         }));
         return;
     }

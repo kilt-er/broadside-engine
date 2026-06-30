@@ -1205,9 +1205,9 @@ pub struct LoftShipInstance {
     /// (warp enemy-jump fix 2026-06-30) Per-hull world-x shift applied AFTER
     /// `cell_world_center_frac_offset` in the unified ship pass, BEFORE the
     /// camera's `unified_view_proj` transforms it. Used by the at-depth warp
-    /// preview to pre-align preview enemies to the POST-SWAP lane_align value
+    /// preview to pre-align preview enemies to the POST-SWAP `lane_align` value
     /// while the global camera `unified_lane_align_x` is still frozen at the
-    /// OLD value (v3 defers the global lane_align flip to the atomic swap so
+    /// OLD value (v3 defers the global `lane_align` flip to the atomic swap so
     /// the PLAYER's screen-x stays continuous through the warp — see
     /// `relane_align_for_swap` doc). Subtracting this from `center[0]` before
     /// projection produces the same screen-x the hull will get post-swap when
@@ -1215,6 +1215,18 @@ pub struct LoftShipInstance {
     /// `0.0` keeps every non-warp-preview hull byte-identical to pre-fix
     /// frames.
     pub lane_align_world_offset: f32,
+    /// (#214 2026-06-30) Per-hull scale multiplier applied on top of the
+    /// global [`unified_ship_scale`]. `1.0` for every single-cell ship (the
+    /// rest-state default — byte-identical to pre-fix render); `2.0` for a
+    /// 1×2 [`crate::types::Footprint::Pair`] boss so its hull visually
+    /// spans both grid cells. The render loop multiplies this directly into
+    /// the `scale` arg of `unified_model_with_idle`, so the boss hull is
+    /// twice as wide / long without disturbing any other unified-pass
+    /// parameter. Pairs with hud's `compose_scene_2d_tweened` tail-mirror
+    /// skip + the `push_ship_2d` midpoint `cell_frac` override (Bruce held
+    /// the lane-axis seating call; current defensible default = midpoint
+    /// between primary + tail, scale 2×).
+    pub hull_scale_mul: f32,
 }
 
 impl From<SpriteInstance> for DrawCommand {
@@ -3247,10 +3259,14 @@ impl Gfx {
                 // pre-#201 tween snap). Roll is applied as a hull-local rotation
                 // about +X (deck rocks side-to-side, no bow wiggle = #188 guard
                 // holds at non-zero idle phase); bob nudges world Y.
+                // (#214 2026-06-30) Multiply by per-hull scale so a 1×2 Pair
+                // boss renders 2× wide / long. Single-cell ships pass 1.0 here
+                // (rest-state default in `LoftShipInstance`) — byte-identical
+                // to the pre-#214 frame.
                 let model = crate::loft_gpu::unified_model_with_idle(
                     center,
                     lq.unified_yaw_rad,
-                    unified_ship_scale(),
+                    unified_ship_scale() * lq.hull_scale_mul,
                     pose.idle_roll_rad(),
                     pose.idle_bob_world(),
                 );
