@@ -2872,19 +2872,44 @@ impl ApplicationHandler for App {
                             // Bruce's playtest stays on the clean cut. The
                             // `BROADSIDE_WARP_CINEMATIC=1` env override
                             // force-enables it for t-strip verification.
-                            let advance = advance_after_win(&mut self.run, &self.sectors);
-                            let kind = match advance {
-                                AdvanceResult::NextEncounter => Some(TransitionKind::Round),
-                                AdvanceResult::NextSector => Some(TransitionKind::Waypoint),
-                                AdvanceResult::Victorious | AdvanceResult::AlreadyEnded => None,
-                            };
+                            // (warp rebuild 2/N 2026-06-30) Split the
+                            // round-clear handoff between OFF (STABILIZE
+                            // instant cut, today's live default) and ON
+                            // (LATE-SWAP cinematic) paths. OFF stays
+                            // BYTE-IDENTICAL — `advance_after_win` runs
+                            // here, the board swaps here, cleanups run
+                            // here, demo_state flips to Playing. ON peeks
+                            // the next encounter (without mutating
+                            // `self.run`), stashes the n+1 board into
+                            // `self.pending_board`, and enters
+                            // Transitioning while `self.run` /
+                            // `self.board` STAY at n. The warp-end tick
+                            // (RedrawRequested arm below) is the single
+                            // place where `advance_after_win` runs for
+                            // real, `self.board = pending` lands, and the
+                            // per-encounter cleanups fire. This is the
+                            // structural change that lets the n+1
+                            // enemies BE the at-depth preview (so they
+                            // can tween in) instead of being already
+                            // placed on the playable plane at warp start.
                             let cinematic = warp_cinematic_enabled();
-                            if let Some(kind) = kind {
-                                if let Some(next) = self.build_current_board() {
-                                    // (#213 player-tween) Snapshot the CLEARED
-                                    // board's player cell BEFORE the swap so
-                                    // plant_warp_in_anchors can tween the
-                                    // player FROM that cell to the new spawn.
+                            if cinematic {
+                                if let Some((pending, advance)) = self.build_pending_board() {
+                                    let kind = match advance {
+                                        AdvanceResult::NextEncounter => TransitionKind::Round,
+                                        AdvanceResult::NextSector => TransitionKind::Waypoint,
+                                        // peek_next_advance filters Victorious/
+                                        // AlreadyEnded to None, so build_pending_
+                                        // board's Some branch can only return
+                                        // NextEncounter | NextSector.
+                                        AdvanceResult::Victorious
+                                        | AdvanceResult::AlreadyEnded => TransitionKind::Round,
+                                    };
+                                    // Snapshot the player's TRUE round-end cell
+                                    // on the still-live n board. This is the
+                                    // continuity model's "where the player was
+                                    // when the round ended" — `self.board` is
+                                    // still n here, so this is the real cell.
                                     let prior_player_cell: Option<Pos> = self
                                         .board
                                         .cells
@@ -2892,58 +2917,68 @@ impl ApplicationHandler for App {
                                         .flatten()
                                         .find(|s| s.faction == Faction::Player)
                                         .map(|s| s.pos);
-                                    self.board = next;
-                                    self.tween_anchors.clear();
-                                    self.kickbacks.clear();
-                                    self.kill_bursts.clear();
-                                    self.particles.clear();
-                                    self.proj_anchors.clear();
-                                    self.exhaust.clear();
-                                    self.hull_flash.clear();
-                                    self.beat_playback = None;
-                                    self.queue_blocked_flash = None;
-                                    self.reinstall_audio();
-                                    if cinematic {
-                                        // CINEMATIC PATH: revive the warp.
-                                        // (phase a) Record the prior player
-                                        // cell so the render arm can compute
-                                        // a pure-render-time tween position
-                                        // each frame. plant_warp_in_anchors
-                                        // still planted so non-player ship
-                                        // tweens have anchors; the player's
-                                        // tween is now overridden by the
-                                        // cinematic helper below.
-                                        self.cinematic_prior_player_cell = prior_player_cell;
-                                        self.plant_warp_in_anchors(kind, now, prior_player_cell);
+                                    self.pending_board = Some(pending);
+                                    self.cinematic_prior_player_cell = prior_player_cell;
+                                    self.plant_warp_in_anchors(kind, now, prior_player_cell);
+                                    self.demo_state =
+                                        DemoState::Transitioning(TransitionPhase {
+                                            kind,
+                                            started_at: now,
+                                        });
+                                } else {
+                                    // No next encounter — peek returned None
+                                    // (Victorious / AlreadyEnded). Either run a
+                                    // no-swap Waypoint fanfare or fall through
+                                    // to RunComplete. We still need to apply
+                                    // the REAL advance to flip
+                                    // `run.victorious` for the end-card path.
+                                    let real_advance =
+                                        advance_after_win(&mut self.run, &self.sectors);
+                                    if matches!(real_advance, AdvanceResult::Victorious) {
+                                        // (#210 P9) Final-victory warp — Waypoint
+                                        // beat before YOU WIN; no board swap.
                                         self.demo_state =
                                             DemoState::Transitioning(TransitionPhase {
-                                                kind,
+                                                kind: TransitionKind::Waypoint,
                                                 started_at: now,
                                             });
                                     } else {
-                                        // STABILIZE PATH (live default):
-                                        // clean instant cut. No Transitioning
-                                        // state, no plant_warp_in_anchors.
-                                        let _ = prior_player_cell;
-                                        self.demo_state = DemoState::Playing;
+                                        self.demo_state = DemoState::RunComplete;
                                     }
-                                } else {
+                                }
+                            } else {
+                                // STABILIZE PATH (live default) — UNCHANGED
+                                // from pre-rebuild behavior: advance the run,
+                                // build + swap to the next board, run
+                                // per-encounter cleanups, flip to Playing.
+                                let advance = advance_after_win(&mut self.run, &self.sectors);
+                                let kind = match advance {
+                                    AdvanceResult::NextEncounter => Some(TransitionKind::Round),
+                                    AdvanceResult::NextSector => Some(TransitionKind::Waypoint),
+                                    AdvanceResult::Victorious | AdvanceResult::AlreadyEnded => None,
+                                };
+                                if kind.is_some() {
+                                    if let Some(next) = self.build_current_board() {
+                                        self.board = next;
+                                        self.tween_anchors.clear();
+                                        self.kickbacks.clear();
+                                        self.kill_bursts.clear();
+                                        self.particles.clear();
+                                        self.proj_anchors.clear();
+                                        self.exhaust.clear();
+                                        self.hull_flash.clear();
+                                        self.beat_playback = None;
+                                        self.queue_blocked_flash = None;
+                                        self.reinstall_audio();
+                                        self.demo_state = DemoState::Playing;
+                                    } else {
+                                        self.demo_state = DemoState::RunComplete;
+                                    }
+                                } else if matches!(advance, AdvanceResult::Victorious) {
                                     self.demo_state = DemoState::RunComplete;
                                 }
-                            } else if matches!(advance, AdvanceResult::Victorious) {
-                                if cinematic {
-                                    // (#210 P9) Final-victory warp — Waypoint
-                                    // beat before YOU WIN; no board swap.
-                                    self.demo_state = DemoState::Transitioning(TransitionPhase {
-                                        kind: TransitionKind::Waypoint,
-                                        started_at: now,
-                                    });
-                                } else {
-                                    self.demo_state = DemoState::RunComplete;
-                                }
+                                // AdvanceResult::AlreadyEnded: defensive no-op.
                             }
-                            // AdvanceResult::AlreadyEnded: defensive no-op
-                            // (shouldn't reach this arm from Won).
                         }
                         EncounterOutcome::Lost => {
                             mark_defeated(&mut self.run);
@@ -2982,6 +3017,31 @@ impl ApplicationHandler for App {
                 //   - else            -> Playing (normal round/waypoint)
                 if let DemoState::Transitioning(phase) = self.demo_state {
                     if phase.progress(now) >= 1.0 {
+                        // (warp rebuild 2/N 2026-06-30) LATE SWAP: if a
+                        // pending_board is held (cinematic late-swap path
+                        // from the round-clear handoff above), apply the
+                        // REAL advance_after_win NOW (so the cursor
+                        // bumps), swap self.board = pending, and run the
+                        // per-encounter cleanups that the old eager-swap
+                        // path ran at warp START. The persistent at-depth
+                        // preview (during Playing) now correctly points to
+                        // n+2 because the cursor finally moved here.
+                        // Victorious-fanfare path (no pending_board) is
+                        // unchanged — just drop the cinematic anchor +
+                        // flip to RunComplete.
+                        if let Some(next) = self.pending_board.take() {
+                            let _ = advance_after_win(&mut self.run, &self.sectors);
+                            self.board = next;
+                            self.kickbacks.clear();
+                            self.kill_bursts.clear();
+                            self.particles.clear();
+                            self.proj_anchors.clear();
+                            self.exhaust.clear();
+                            self.hull_flash.clear();
+                            self.beat_playback = None;
+                            self.queue_blocked_flash = None;
+                            self.reinstall_audio();
+                        }
                         // Tween anchors with `dur_ms_override` Some saturate
                         // at t=1 in `tween_2d` anyway, so explicit clear keeps
                         // the map small + #188 alignment exact post-warp.
