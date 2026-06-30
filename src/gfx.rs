@@ -2414,6 +2414,24 @@ impl Gfx {
         self.loft.output_size()
     }
 
+    /// (#291) Push the live dynamic explosion light to the loft shader so the
+    /// hulls re-light per-surface-normal as the blast unfolds (replaces the
+    /// flat `ExplosionReflection` square — see [`crate::loft_gpu::ExplosionLight`]).
+    /// Pass `None` to clear (the byte-identical-default state, no point-light
+    /// contribution). Game/capture code drives this once per frame from
+    /// [`crate::vfx::CombatVfx::brightest_explosion_light`].
+    ///
+    /// Proxies straight through to [`crate::loft_gpu::LoftGpu::set_explosion_light`];
+    /// no other Gfx state changes. The light is read inside the existing
+    /// `render_*` methods on the next frame, so the hulls relight without any
+    /// signature changes to the existing render API.
+    pub const fn set_loft_explosion_light(
+        &mut self,
+        light: Option<crate::loft_gpu::ExplosionLight>,
+    ) {
+        self.loft.set_explosion_light(light);
+    }
+
     /// DYNAMIC-LIGHTING TEST (headless): upload an [`crate::mesh_import::ImportedShip`]
     /// (e.g. the v2-lofted Aegis from [`crate::ship_loft_v2`]), render ONE loft
     /// frame at `yaw_deg` with the KEY light at (`key_az_deg`, `key_el_deg`,

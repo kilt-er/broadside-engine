@@ -652,6 +652,78 @@ impl CombatVfx {
         !self.effects.is_empty()
     }
 
+    /// (#291) Sample the LIVE `Explosion` effects and return the brightest one
+    /// as a [`crate::loft_gpu::ExplosionLight`] for the loft shader's
+    /// dynamic-point-light contribution. Returns `None` when no Explosion is
+    /// alive (and visible — silent lead-in counts as no light), so the loft
+    /// pipeline falls back to its byte-identical-default key+fill+ambient look.
+    ///
+    /// The "brightest" is `max(intensity = (1.0 - t) * peak_alpha * shell_alpha)`
+    /// of the still-visible Explosions: a blast at t=0 lights the strongest,
+    /// one near expiry barely lights at all. If multiple explode same-frame
+    /// (rare — same kill never produces two) the closest-to-peak wins. The
+    /// world-position is the cell centre via [`crate::projector::cell_world_center`]
+    /// so it lines up with the hull `model` matrices the unified pass uses.
+    ///
+    /// The light's radius is sized to the configured `Explosion.peak_px`
+    /// scaled by a fixed world-pixel ratio so a blast lights neighbouring
+    /// cells (default 1.5 cell-widths of reach, tunable by Bruce later).
+    /// Colour is `shell_color` (the warm orange front), so the bounce reads
+    /// as a real reflection of the blast hue, not a generic white.
+    #[must_use]
+    pub fn brightest_explosion_light(
+        &self,
+        cfg: &ProjectorConfig,
+    ) -> Option<crate::loft_gpu::ExplosionLight> {
+        use crate::loft_gpu::ExplosionLight;
+        let exp_cfg = &self.cfg.explosion;
+        // World-units-per-cell for the radius mapping. The unified projector
+        // packs cells into world space with one cell ≈ one world-unit edge
+        // (see crate::projector::GRID_CELL_SCALE); the radius is the falloff
+        // SCALE (1/(1+(d/r)²)). Sized large enough to reach a 4×3 board at
+        // the cinematic camera (~6 world-units corner-to-corner) with a
+        // visible contribution past the 8-band posterize threshold (each
+        // band ≈ 0.125 in linear-RGB, so the cumulative
+        // albedo×ndotl×intensity×falloff must exceed that to move a pixel).
+        let cells_of_reach: f32 = 6.0;
+        // Intensity multiplier into the shader. The Explosion shell_alpha is
+        // ~0.8 default; multiplied through (1.0 - t) the visible window peaks
+        // at ~0.8 and tapers to 0. The loft posterize discards anything below
+        // a band step, so amplify the authored intensity into the per-pixel
+        // shader contribution. 4.5× is the headroom Bruce can dial down by
+        // eye later — for now the bias is "show the light is there".
+        let intensity_scale: f32 = 4.5;
+        let mut best: Option<(f32, &Effect, Pos)> = None;
+        for e in &self.effects {
+            let EffectKind::Explosion { pos } = e.kind else {
+                continue;
+            };
+            if !e.visible() {
+                continue;
+            }
+            let t = e.t();
+            // Same fade curve emit_explosion uses for the shell layer: linear
+            // (1 - t) × peak_alpha. Read from the live VfxConfig so the
+            // editor's intensity dial drives both the visible bloom and the
+            // hull bounce in lock-step.
+            let intensity = (1.0 - t) * exp_cfg.shell_alpha;
+            if intensity <= 0.0 {
+                continue;
+            }
+            if best.is_none_or(|(b, _, _)| intensity > b) {
+                best = Some((intensity, e, pos));
+            }
+        }
+        let (intensity, _e, pos) = best?;
+        let wc = crate::projector::cell_world_center(pos, cfg);
+        Some(ExplosionLight {
+            pos_world: [wc[0], wc[1], wc[2]],
+            radius_world: cells_of_reach,
+            color: exp_cfg.shell_color.0,
+            intensity: intensity * intensity_scale,
+        })
+    }
+
     /// Emit draw commands for every active transient effect + the live
     /// telegraph cues (read from `board`). Append to `out`; ordered so juice
     /// sits above the ships but below modal overlays (the caller controls

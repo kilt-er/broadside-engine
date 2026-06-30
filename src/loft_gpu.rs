@@ -293,6 +293,19 @@ struct SceneUniform {
     key_dir: [f32; 4],  // xyz toward key light, w = intensity
     fill_dir: [f32; 4], // xyz toward fill light, w = intensity
     ambient: [f32; 4],  // rgb ambient term; albedo travels per-vertex
+    /// (#291) Dynamic explosion point-light POSITION. xyz = world-space
+    /// position of the blast (the cell's projected world point); w = radius
+    /// in world units (used as the 1/(1+(d/r)^2) inverse-square falloff
+    /// scale). w = 0.0 means "no explosion light this frame" — the shader
+    /// branches to skip the contribution, so the byte-identical-default path
+    /// is preserved when no explosion is alive.
+    point_pos: [f32; 4],
+    /// (#291) Dynamic explosion point-light COLOR + intensity. rgb = linear
+    /// RGB (warm orange-white default); w = intensity multiplier the shader
+    /// scales the Lambert + dimmer specular hint by. Sourced from
+    /// `CombatVfx`'s live Explosion effect via [`ExplosionLight`], faded by
+    /// the effect's age curve so the bounce ramps in + out with the blast.
+    point_color: [f32; 4],
 }
 
 /// Posterize band count as a uniform. Pads with THREE SCALAR f32s — never a
@@ -315,17 +328,26 @@ struct PostUniform {
 // this pipeline — see the gfx.rs BlendUniform / loft_poc PostUniform history.)
 // pos+pad, normal+pad, color+pad, emissive(vec4) = 4 × 16 = 64.
 const _: () = assert!(std::mem::size_of::<Vertex>() == 64);
-// 2 mat4 (128) + 3 vec4 (48) = 176.
-const _: () = assert!(std::mem::size_of::<SceneUniform>() == 176);
+// 2 mat4 (128) + 5 vec4 (80) = 208. The two new vec4s are the #291
+// explosion point-light (xyz+radius) + color (rgb+intensity).
+const _: () = assert!(std::mem::size_of::<SceneUniform>() == 208);
 const _: () = assert!(std::mem::size_of::<PostUniform>() == 16);
 
 const HULL_SHADER: &str = r"
 struct Scene {
-    view_proj: mat4x4<f32>,
-    model:     mat4x4<f32>,
-    key_dir:   vec4<f32>,
-    fill_dir:  vec4<f32>,
-    ambient:   vec4<f32>,
+    view_proj:   mat4x4<f32>,
+    model:       mat4x4<f32>,
+    key_dir:     vec4<f32>,
+    fill_dir:    vec4<f32>,
+    ambient:     vec4<f32>,
+    // (#291) Dynamic explosion point light. xyz = world-space position,
+    // w = radius (used as the falloff scale). If radius (w) <= 0 the shader
+    // treats it as 'no point light this frame' and skips the contribution,
+    // so byte-identical to the pre-#291 path when no explosion is alive.
+    point_pos:   vec4<f32>,
+    // rgb = light colour, w = intensity multiplier on the per-fragment
+    // Lambert + dim specular hint. Sourced from CombatVfx's live Explosion.
+    point_color: vec4<f32>,
 };
 @group(0) @binding(0) var<uniform> scene: Scene;
 
@@ -334,6 +356,11 @@ struct VsOut {
     @location(0) world_n: vec3<f32>,
     @location(1) color: vec3<f32>,
     @location(2) emissive: vec4<f32>,
+    // (#291) World-space fragment position — needed for the point-light
+    // distance + per-fragment light direction. The two existing
+    // directional lights (key/fill) don't need this, so passing world_p
+    // is a strict additive cost (one vec3 interpolant).
+    @location(3) world_p: vec3<f32>,
 };
 
 @vertex
@@ -350,6 +377,7 @@ fn vs_main(
     o.world_n = wn;
     o.color = col;
     o.emissive = emis;
+    o.world_p = world.xyz;
     return o;
 }
 
@@ -365,7 +393,29 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let n = normalize(in.world_n);
     let key = max(dot(n, normalize(scene.key_dir.xyz)), 0.0) * scene.key_dir.w;
     let fill = max(dot(n, normalize(scene.fill_dir.xyz)), 0.0) * scene.fill_dir.w;
-    let lit = in.color * (scene.ambient.rgb + vec3<f32>(key) + vec3<f32>(0.53, 0.67, 1.0) * fill);
+    var lit = in.color * (scene.ambient.rgb + vec3<f32>(key) + vec3<f32>(0.53, 0.67, 1.0) * fill);
+    // (#291) Dynamic explosion point light — REAL normal-based reflection.
+    // The face's contribution depends on (a) its surface NORMAL dotted with
+    // the per-fragment light direction (the part of the geometry facing the
+    // blast lights up; the back side stays dark), and (b) inverse-square
+    // distance falloff scaled by the blast radius. Branchless: radius <= 0
+    // (no live explosion) zeroes the contribution.
+    let radius = scene.point_pos.w;
+    if (radius > 0.0) {
+        let to_light = scene.point_pos.xyz - in.world_p;
+        let d2 = dot(to_light, to_light);
+        let d = sqrt(max(d2, 1e-6));
+        let l = to_light / d;
+        // Inverse-square in normalised distance (d / radius) so the same
+        // numbers work at any board zoom. The +1 keeps the centre finite.
+        let falloff = 1.0 / (1.0 + (d / radius) * (d / radius));
+        let ndotl = max(dot(n, l), 0.0);
+        // Lambert × falloff × authored colour × intensity. Multiplied INTO
+        // the hull albedo so a red hull lit by a warm orange blast still
+        // looks correct (no white-out on light-coloured hulls).
+        let pl = in.color * scene.point_color.rgb * (ndotl * falloff * scene.point_color.w);
+        lit = lit + pl;
+    }
     // Add emissive AFTER Lambert so glow surfaces (canopy / gun / battery /
     // engine) stay bright regardless of facing, then clamp into [0,1] so the
     // posterize stays inside its budget (banded glow, not a white blowout).
@@ -409,6 +459,39 @@ fn fs_post(in: VsOut) -> @location(0) vec4<f32> {
 }
 ";
 
+/// (#291) Dynamic point light for the loft pipeline — what an active
+/// explosion looks like from any hull's point of view. The shader uses this
+/// to compute a REAL per-surface-normal Lambert reflection, not a flat
+/// square overlay: faces angled toward the blast brighten in the authored
+/// `color`, faces angled away stay dark, and brightness falls off with
+/// distance scaled by `radius_world`.
+///
+/// Fed in by [`LoftGpu::set_explosion_light`] (game code reads
+/// `CombatVfx`'s live Explosion effects, projects the cell to world space,
+/// and pushes the light here once per frame). When no explosion is alive,
+/// pass `None` — the pipeline omits the contribution and re-renders
+/// byte-identically to the pre-#291 path.
+#[derive(Clone, Copy, Debug)]
+pub struct ExplosionLight {
+    /// World-space position of the blast (same coordinate frame the unified
+    /// camera's `view_proj` operates in — i.e. what the hull `model`
+    /// matrices place ships at).
+    pub pos_world: [f32; 3],
+    /// Radius in world units. Used as the inverse-square falloff scale
+    /// (`1 / (1 + (d/radius)^2)`), so larger values reach farther hulls.
+    /// `0.0` means "no light" — the setter treats `None` the same way.
+    pub radius_world: f32,
+    /// Linear-RGB light colour (warm orange-white for explosions; the
+    /// editor can author other tints, but a reflection is colour-of-
+    /// emitter × colour-of-surface).
+    pub color: [f32; 3],
+    /// Intensity multiplier on the per-fragment Lambert contribution. The
+    /// authored value ramps with the effect's age curve so the bounce
+    /// fades in + out with the blast (see
+    /// [`crate::vfx::CombatVfx::brightest_explosion_light`]).
+    pub intensity: f32,
+}
+
 /// A hull uploaded to the GPU: its vertex buffer + count, plus the vertical
 /// centre of its bounding box (`center_y`, world units). `center_y` is the Y the
 /// loft camera should look at so the hull renders CENTRED in its texture (see
@@ -449,6 +532,13 @@ pub struct LoftGpu {
     /// re-deriving the sampler / bind-group layout (size-independent).
     post_bgl: wgpu::BindGroupLayout,
     post_sampler: wgpu::Sampler,
+    /// (#291) Live dynamic explosion point light — fed once per frame by
+    /// [`Self::set_explosion_light`] from `CombatVfx`'s live Explosion
+    /// state. `None` (the default + post-blast-finishes state) makes the
+    /// hull shader skip the contribution, so an idle frame matches the
+    /// pre-#291 look byte-for-byte. Interior mutable through `&mut self`
+    /// on the setter; the render fns read it once per uniform write.
+    explosion_light: Option<ExplosionLight>,
 }
 
 impl LoftGpu {
@@ -686,7 +776,40 @@ impl LoftGpu {
             low_h,
             post_bgl,
             post_sampler: sampler,
+            explosion_light: None,
         }
+    }
+
+    /// (#291) Push the live dynamic explosion light to the loft shader. Pass
+    /// `None` to clear (the byte-identical-default state, no point-light
+    /// contribution). `Some(light)` makes every subsequent unified / framed
+    /// hull render reflect the light off each hull's surface normals — the
+    /// per-face Lambert + inverse-square falloff is computed in the WGSL
+    /// fragment shader from this single uniform.
+    ///
+    /// Call once per frame from the game loop (the live bin) or the verify
+    /// path (capture). The light persists across the next frame's renders
+    /// until updated/cleared, so callers should drive it from the live
+    /// `CombatVfx` state (see [`crate::vfx::CombatVfx::brightest_explosion_light`]).
+    pub const fn set_explosion_light(&mut self, light: Option<ExplosionLight>) {
+        self.explosion_light = light;
+    }
+
+    /// (#291) Helper: turn the stored explosion-light state into the two
+    /// `vec4<f32>` uniform slots the shader reads. `None` → both zero (the
+    /// shader's `radius <= 0` branch skips the contribution).
+    fn explosion_light_uniform(&self) -> ([f32; 4], [f32; 4]) {
+        self.explosion_light.map_or(([0.0; 4], [0.0; 4]), |l| {
+            (
+                [
+                    l.pos_world[0],
+                    l.pos_world[1],
+                    l.pos_world[2],
+                    l.radius_world,
+                ],
+                [l.color[0], l.color[1], l.color[2], l.intensity],
+            )
+        })
     }
 
     /// (#76) Resize the SHIP offscreen targets to `(w, h)` LIVE — recreate the
@@ -1063,12 +1186,15 @@ impl LoftGpu {
         let fill_dir = normalize3([4.0, 2.0, -3.0]);
         let amb = Self::ambient();
 
+        let (point_pos, point_color) = self.explosion_light_uniform();
         let scene = SceneUniform {
             view_proj,
             model,
             key_dir: [key_dir[0], key_dir[1], key_dir[2], key_intensity],
             fill_dir: [fill_dir[0], fill_dir[1], fill_dir[2], 0.45],
             ambient: [amb[0], amb[1], amb[2], 1.0],
+            point_pos,
+            point_color,
         };
         queue.write_buffer(&self.scene_ubo, 0, bytemuck::bytes_of(&scene));
         queue.write_buffer(
@@ -1185,6 +1311,11 @@ impl LoftGpu {
             }),
         );
 
+        // (#291) The explosion light is the SAME across every hull in the
+        // unified pass — same world-space blast position, every hull computes
+        // its own per-fragment direction from `point_pos - world_p`. So read
+        // once and reuse for every per-hull SceneUniform.
+        let (point_pos, point_color) = self.explosion_light_uniform();
         // Pass 1: each hull into the SHARED scene target. First clears; the rest
         // load + depth-test against it. One submit per hull so the per-hull model
         // uniform isn't coalesced away.
@@ -1195,6 +1326,8 @@ impl LoftGpu {
                 key_dir: [key_dir[0], key_dir[1], key_dir[2], 1.6],
                 fill_dir: [fill_dir[0], fill_dir[1], fill_dir[2], 0.45],
                 ambient: [amb[0], amb[1], amb[2], 1.0],
+                point_pos,
+                point_color,
             };
             queue.write_buffer(&self.scene_ubo, 0, bytemuck::bytes_of(&scene));
             let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {

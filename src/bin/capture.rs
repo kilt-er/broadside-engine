@@ -717,6 +717,60 @@ fn main() {
         let row_f = from_row as f32 + (player_pos.row as f32 - from_row as f32) * eased;
         Some((from_col, from_row, eased, col_f, row_f))
     });
+    // (#291) BROADSIDE_EXPLOSION_LIGHT_T=<secs> seeds a synthetic Explosion
+    // effect at the centre back-row cell + advances the vfx pool to the given
+    // wall-clock, then reads CombatVfx::brightest_explosion_light(cfg) and
+    // pushes it to gfx — so the loft pass that runs next renders the hulls
+    // with the real per-surface-normal dynamic reflection. Off by default;
+    // the live game wires this from the per-frame vfx state in the bin (out
+    // of scope for #291 — the proof is in this capture path).
+    if let Some(t_secs) = std::env::var("BROADSIDE_EXPLOSION_LIGHT_T")
+        .ok()
+        .and_then(|v| v.parse::<f32>().ok())
+    {
+        use broadside_engine::types::{FireEvent, WeaponArchetype};
+        // Place the synthetic blast at the centre back-row cell so it lights
+        // the player (front-centre) from above-and-behind for a clear
+        // per-normal response.
+        let blast_pos = Pos::new(board_dims.cols / 2, 0);
+        // Snapshot a board with the blast cell EMPTY (post-destroy) and one
+        // with it occupied; observe both to make the diff spawn the
+        // Explosion the same way the live resolver path does.
+        let before = capture_board_with_dims(board_dims, player_col, player_row, player_facing);
+        // The capture_board_with_dims layout already places enemies at
+        // (mid,0)/(lhs,0)/(rhs,0); `after` drops the centre enemy so the
+        // observe-diff spawns the Explosion at that cell.
+        let mut after = capture_board_with_dims(board_dims, player_col, player_row, player_facing);
+        after.fire_events.push(FireEvent {
+            from_cell: 0,
+            to_cell: blast_pos.to_index(),
+            from_pos: Pos::new(player_col, player_row),
+            to_pos: blast_pos,
+            archetype: WeaponArchetype::Beam,
+            attacker_faction: Faction::Player,
+            hit: true,
+        });
+        if let Some(slot) = after.cells.get_mut(blast_pos.to_index()) {
+            *slot = None;
+        }
+        let mut light_vfx = broadside_engine::vfx::CombatVfx::new();
+        light_vfx.observe(&before);
+        light_vfx.observe(&after); // enemy gone → spawns Explosion at blast_pos
+        light_vfx.advance(t_secs.max(0.0));
+        if let Some(l) = light_vfx.brightest_explosion_light(&cfg) {
+            log::info!(
+                "capture: #291 explosion light pos={:?} radius={} color={:?} intensity={:.3}",
+                l.pos_world,
+                l.radius_world,
+                l.color,
+                l.intensity
+            );
+            gfx.set_loft_explosion_light(Some(l));
+        } else {
+            log::info!("capture: #291 no live explosion at t={t_secs}s (expired or silent)");
+            gfx.set_loft_explosion_light(None);
+        }
+    }
     let mut commands = if let Some((from_col, from_row, eased, col_f, row_f)) = player_tween {
         use broadside_engine::hud::{Tween2d, VisualShip2d};
         use broadside_engine::projector::grid_cell_quad;
