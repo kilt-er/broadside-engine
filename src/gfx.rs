@@ -521,8 +521,25 @@ pub fn adjust_grid_cell_scale(delta: f32) -> f32 {
 static UNIFIED_LATERAL_X_MILLI: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
 
 /// (#207) Read the live lateral pan offset (world units, signed).
+///
+/// (#215 Bruce point-of-use clamp) The lateral pan is a 5x4-only feature
+/// (the bin's #207 ease keeps an outside-lane ship in frame on the canonical
+/// 5x4 board). On any non-5x4 board it must be ZERO — a leftover pan from a
+/// prior 5x4 encounter, or any future write site that forgets the bin's
+/// snap, would shift the small board's whole grid laterally as the player
+/// moves between columns. We clamp HERE, at the single read site every
+/// reader (`projector::unified_target` / `unified_eye`) shares, so the
+/// invariant is true by construction regardless of who SET the atomic
+/// (bin's snap, capture's env knob, a future race).
 pub fn unified_lateral_x_offset() -> f32 {
-    UNIFIED_LATERAL_X_MILLI.load(std::sync::atomic::Ordering::Relaxed) as f32 / 1000.0
+    let raw = UNIFIED_LATERAL_X_MILLI.load(std::sync::atomic::Ordering::Relaxed) as f32 / 1000.0;
+    let cols = live_grid_cols();
+    let rows = live_grid_rows();
+    if cols == crate::grid::COLS && rows == crate::grid::ROWS {
+        raw
+    } else {
+        0.0
+    }
 }
 
 /// (#207) Set the lateral pan offset directly (world units, signed). The bin

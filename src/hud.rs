@@ -1173,17 +1173,13 @@ fn push_threats_2d(out: &mut Vec<DrawCommand>, board: &Board, cfg: &ProjectorCon
             ThreatKind::Status => THREAT_FILL_STATUS,
             ThreatKind::Other => THREAT_FILL_OTHER,
         };
-        // VERY FAINT interior tint — just enough to read as a coloured cell, never
-        // an opaque slab over the hull (the OUTLINE carries the cue). A lethal
-        // threat gets a touch more so it still stands out.
-        let faint_a = if lethal { 0.10 } else { 0.06 };
-        let faint = [fill[0], fill[1], fill[2], faint_a];
-        push_polygon(
-            out,
-            PolygonInstance::flat(q.corners, faint, atlas::cell_uvs(atlas::SOLID_WHITE)),
-        );
-        // Bright cell OUTLINE in the threat colour (full alpha) — the crisp "this
-        // cell is threatened" cue that survives without slabbing the field.
+        // (#215 Bruce) OUTLINE-ONLY threat highlight — Bruce: "those massive red
+        // squares take up way too much FOV." On small boards (2x2/3x3) the
+        // near-row cell trapezoid is HUGE; even a faint α=0.06–0.10 fill becomes
+        // a "red wall" dominating the view. Drop the interior fill entirely;
+        // the cell OUTLINE carries the cue ("this cell is targeted"). Lethal
+        // gets thicker + slightly hotter strokes so it still pops without
+        // covering the hull.
         let outline = [fill[0], fill[1], fill[2], 1.0];
         let th = if lethal { 2.0 } else { 1.0 };
         let c = q.corners;
