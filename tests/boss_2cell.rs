@@ -583,3 +583,78 @@ fn find_pos_by_id_returns_primary_not_tail() {
         "single-cell ship lookup unchanged",
     );
 }
+
+/* =========================================================================
+ * (g) PRIMARY-cell shot — the no-redirect branch of `apply_damage_2d`.
+ *     Companion to (a) which proves the TAIL-cell redirect path. Lead's
+ *     criterion is "shot onto EITHER cell damages the same boss"; (a)
+ *     covers tail, this covers primary, so a refactor that breaks one
+ *     direction surfaces a failing test.
+ * ====================================================================== */
+
+#[test]
+fn primary_cell_shot_damages_shared_hp_and_keeps_both_slots() {
+    let primary = Pos::new(0, 0);
+    let tail = Pos::new(1, 0);
+    let mut board = seat_boss(primary, tail, 10);
+    let attacker_pos = Pos::new(2, 3);
+    let action = direct_damage_action(3);
+
+    apply_damage_2d(primary, 3, attacker_pos, &action, &mut board, &NoContent);
+
+    // Same shared HP delta as the tail-cell case; both slots still occupied.
+    assert_eq!(
+        board.ship_id_at(primary),
+        Some("boss"),
+        "primary still occupied after primary hit",
+    );
+    assert_eq!(
+        board.ship_id_at(tail),
+        Some("boss"),
+        "tail mirror still occupied after primary hit",
+    );
+    assert_eq!(
+        board.ship_at(primary).unwrap().hull,
+        10 - 3,
+        "primary-cell hit damages the shared HP pool",
+    );
+    assert_eq!(
+        board.ship_at(tail).unwrap().hull,
+        10 - 3,
+        "tail mirror refreshed with post-hit hull (primary path)",
+    );
+}
+
+/* =========================================================================
+ * (h) Destroy via PRIMARY-cell lethal hit clears BOTH slots.
+ *     Companion to (e) which proves destroy via the TAIL-cell route. Both
+ *     paths call the same `destroy(target_idx, board, content)` after the
+ *     `primary_pos` resolution, but locking it via a separate test keeps a
+ *     refactor that accidentally early-returns on the primary branch from
+ *     silently leaving a tail orphan.
+ * ====================================================================== */
+
+#[test]
+fn primary_cell_lethal_hit_clears_both_slots() {
+    let primary = Pos::new(0, 0);
+    let tail = Pos::new(1, 0);
+    let mut board = seat_boss(primary, tail, 3);
+    let attacker_pos = Pos::new(2, 3);
+    let lethal = direct_damage_action(5);
+
+    apply_damage_2d(primary, 5, attacker_pos, &lethal, &mut board, &NoContent);
+
+    assert!(
+        board.ship_at(primary).is_none(),
+        "primary slot cleared after lethal primary hit",
+    );
+    assert!(
+        board.ship_at(tail).is_none(),
+        "tail mirror cleared after lethal primary hit (no orphan slot)",
+    );
+    assert_eq!(
+        board.find_pos_by_id("boss"),
+        None,
+        "destroyed boss yields no primary after primary-route kill",
+    );
+}
