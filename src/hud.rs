@@ -1659,6 +1659,141 @@ pub fn prepend_upcoming_board_2d(
     out.splice(0..0, preview);
 }
 
+/// (CINEMATIC REBUILD phase d 2026-06-30) Push REAL loft hulls at the at-
+/// depth preview Z for each enemy spawn. Replaces the flat-triangle markers
+/// from [`push_upcoming_ships_2d`] with `LoftShipInstance` commands carrying
+/// the same `ship_id`s the next encounter's enemies will use on the live
+/// board, so the renderer's per-ship pose state warms up during the warp +
+/// the t=1.0 → Playing swap is byte-equivalent (same `cell_frac`, same
+/// `unified_yaw_rad`, only `z_offset` drops from the at-depth value to 0).
+///
+/// Position projection: each ship's world centre = `cell_world_center_frac
+/// _offset(col, row, cfg, z_offset)` — the unified ship pass at `gfx.rs:
+/// 2903-ish` branches on `LoftShipInstance.z_offset` to call the offset
+/// variant. The screen `p0..p3` rect is computed from the offset-projected
+/// centre + near-edge width at depth, so the hull's blit dest-rect tracks
+/// the at-depth cell exactly.
+///
+/// Facing: spawns inherit the canonical enemy facing (Bow(S), toward the
+/// player). For the boss spawn we still mark it via the optional
+/// `is_boss_idx` (the spawn at that index renders as a boss — present
+/// for callers that want to bias the boss marker; the loft path itself
+/// doesn't yet visually distinguish the boss, that's a follow-up).
+///
+/// `ship_ids` must match the next encounter's `EncounterDef::enemy_ships
+/// [*].id` 1:1 with `enemy_spawns` — that's the load-bearing contract
+/// for the pose-state handoff at t=1.0. The caller is the live bin
+/// (`next_encounter_after_current` then `.enemy_ships`).
+#[allow(clippy::too_many_arguments)]
+pub fn push_upcoming_loft_ships_2d(
+    out: &mut Vec<DrawCommand>,
+    cfg: &ProjectorConfig,
+    z_offset: f32,
+    cols: usize,
+    rows: usize,
+    ship_ids: &[String],
+    enemy_spawns: &[crate::grid::Pos],
+    sprites: &dyn SpriteRegistry,
+) {
+    use crate::grid::{Dir4, Facing};
+    use crate::projector::{cell_world_center_frac_offset, unified_project, unified_view_proj};
+    let m = unified_view_proj(cfg);
+    // Default enemy facing on a freshly-spawned next-encounter board: bow
+    // toward the player (Bow(S)). Matches what runs::enemy_spawn_facing()
+    // returns; replicating the value here keeps the at-depth path free of
+    // a runs-crate dep (hud is the render layer).
+    let enemy_facing: Facing = Facing::Bow(Dir4::S);
+    for (idx, pos) in enemy_spawns.iter().enumerate() {
+        if pos.col >= cols || pos.row >= rows {
+            continue;
+        }
+        let Some(id) = ship_ids.get(idx) else {
+            continue;
+        };
+        let Some(loft_kind) = sprites.loft_kind(id, false) else {
+            // No enemy mesh installed (test/no-GPU registry) — skip; the
+            // flat-triangle marker path is still emitted by the caller.
+            continue;
+        };
+        let cell_frac = [pos.col as f32, pos.row as f32];
+        // Project the offset cell centre through the unified camera to
+        // anchor the blit dest-rect at the at-depth screen position.
+        let world = cell_world_center_frac_offset(cell_frac[0], cell_frac[1], cfg, z_offset);
+        let Some(centre) = unified_project(&m, world, cfg) else {
+            continue;
+        };
+        // Width = the at-depth cell's near edge width (same projection the
+        // grid wireframe uses), so the hull scales with the preview's
+        // perspective foreshortening. Aspect from the loft texture.
+        let corners =
+            crate::projector::cell_world_corners_offset_dims(*pos, cfg, z_offset, cols, rows);
+        let proj_corner = |w: [f32; 3]| unified_project(&m, w, cfg);
+        let nl = proj_corner(corners[3]);
+        let nr = proj_corner(corners[2]);
+        let near_w = match (nl, nr) {
+            (Some(a), Some(b)) => (b.x - a.x).abs().max(16.0),
+            _ => 32.0,
+        };
+        let h = near_w / LOFT_TEXTURE_ASPECT;
+        let (l, r) = (centre.x - near_w * 0.5, centre.x + near_w * 0.5);
+        let (top, bottom) = (centre.y - h * 0.5, centre.y + h * 0.5);
+        out.push(DrawCommand::LoftShip(LoftShipInstance {
+            p0: [l, top],
+            p1: [r, top],
+            p2: [r, bottom],
+            p3: [l, bottom],
+            ship_id: SpriteSlug::new(id),
+            kind: loft_kind,
+            aim_at: [centre.x, centre.y],
+            facing_yaw_deg: loft_facing_ground_yaw(enemy_facing),
+            cell: [pos.col as u32, pos.row as u32],
+            cell_frac,
+            unified_yaw_rad: unified_heading_yaw(enemy_facing),
+            // (CINEMATIC REBUILD phase d) AT-DEPTH preview hull. The unified
+            // ship pass in gfx.rs branches on this non-zero z_offset to
+            // project via cell_world_center_frac_offset, putting the hull at
+            // the same world Z as the at-depth grid wireframe. At t=1.0 the
+            // caller drives this to 0.0 (via preview_seam_lerp); the same
+            // ship_id then continues into the live unified pass with
+            // z_offset=0.0, so the swap is byte-equivalent.
+            z_offset,
+        }));
+    }
+}
+
+/// (CINEMATIC REBUILD phase d 2026-06-30) Composite at-depth preview that
+/// emits the wireframe grid AND real loft hulls (instead of flat triangle
+/// markers). Mirrors [`prepend_upcoming_board_2d`] but takes ship IDs +
+/// sprite registry so the loft path can pick the per-ship mesh kind. Used
+/// by the live bin during the warp cinematic; the capture path keeps using
+/// the flat-triangle [`prepend_upcoming_board_2d`] for visual baselining.
+#[allow(clippy::too_many_arguments)]
+pub fn prepend_upcoming_board_with_loft_2d(
+    out: &mut Vec<DrawCommand>,
+    cfg: &ProjectorConfig,
+    z_offset: f32,
+    cols: usize,
+    rows: usize,
+    ship_ids: &[String],
+    enemy_spawns: &[crate::grid::Pos],
+    sprites: &dyn SpriteRegistry,
+    tint_alpha: f32,
+) {
+    let mut preview: Vec<DrawCommand> = Vec::with_capacity(96);
+    push_upcoming_grid_2d(&mut preview, cfg, z_offset, cols, rows, tint_alpha);
+    push_upcoming_loft_ships_2d(
+        &mut preview,
+        cfg,
+        z_offset,
+        cols,
+        rows,
+        ship_ids,
+        enemy_spawns,
+        sprites,
+    );
+    out.splice(0..0, preview);
+}
+
 /// (#P7/#213) Render an UPCOMING board's grid wireframe at a world-space
 /// `z_offset` deeper than the current board, through the SAME unified camera.
 /// `dims` is the upcoming encounter's grid shape (#199b variable boards) —
@@ -2008,6 +2143,8 @@ fn push_ship_2d(
                 cell: [ship.pos.col as u32, ship.pos.row as u32],
                 cell_frac,
                 unified_yaw_rad: unified_heading_yaw(ship.facing),
+                // Live unified ship: rendered on the playable plane at z=0.
+                z_offset: 0.0,
             }));
             return;
         }
@@ -2078,6 +2215,8 @@ fn push_ship_2d(
                 cell: [ship.pos.col as u32, ship.pos.row as u32],
                 cell_frac,
                 unified_yaw_rad: unified_heading_yaw(ship.facing),
+                // Live player hero hull: on the playable plane at z=0.
+                z_offset: 0.0,
             }));
             // (#138) Shield pips removed — the per-face cyan squares read as mystery
             // clutter (Bruce); the total shield is in the bottom SHLD bar.
@@ -2171,6 +2310,8 @@ fn push_ship_2d(
                 cell: [ship.pos.col as u32, ship.pos.row as u32],
                 cell_frac,
                 unified_yaw_rad: unified_heading_yaw(ship.facing),
+                // Live enemy hull: on the playable plane at z=0.
+                z_offset: 0.0,
             }));
             // (#112) NO per-enemy overlay (no arrow/pips/bars/telegraph) — the
             // decluttered hull + the separate threat-cell outline carry the read.
@@ -2716,6 +2857,8 @@ fn push_ship(
             // unified ship pass that consumes cell_frac never runs on this branch.
             cell_frac: [0.0, 0.0],
             unified_yaw_rad: 0.0,
+            // Legacy 1-D path: on the playable plane at z=0.
+            z_offset: 0.0,
         }));
         return;
     }

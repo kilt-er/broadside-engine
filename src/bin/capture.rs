@@ -897,16 +897,42 @@ fn main() {
         // cinematic rebuild (BROADSIDE_WARP_T capture still works for
         // t-sampling the preview's approach).
         if std::env::var("BROADSIDE_PREVIEW").is_ok_and(|v| v != "0") || warp_t.is_some() {
-            broadside_engine::hud::prepend_upcoming_board_2d(
-                &mut commands,
-                &cfg,
-                z_offset,
-                preview_dims.0,
-                preview_dims.1,
-                &stand_in_spawns,
-                false,
-                tint_alpha,
-            );
+            // (CINEMATIC REBUILD phase d 2026-06-30) When warp_t is set, emit
+            // the at-depth REAL LOFT HULLS path matching the live bin's
+            // cinematic — same `prepend_upcoming_board_with_loft_2d` call,
+            // synthetic stand-in IDs in the form `{class_id}@{cell}` (the
+            // canonical Ship.id format from runs::*_for_spawn) so the
+            // unified pass can find the enemy loft mesh. Without warp_t
+            // (the legacy BROADSIDE_PREVIEW=1 sentinel) keep the flat-
+            // triangle markers so existing capture flows are unchanged.
+            if warp_t.is_some() {
+                let stand_in_ids: Vec<String> = stand_in_spawns
+                    .iter()
+                    .map(|p| format!("preview-enemy@{}", p.to_index()))
+                    .collect();
+                broadside_engine::hud::prepend_upcoming_board_with_loft_2d(
+                    &mut commands,
+                    &cfg,
+                    z_offset,
+                    preview_dims.0,
+                    preview_dims.1,
+                    &stand_in_ids,
+                    &stand_in_spawns,
+                    &gfx,
+                    tint_alpha,
+                );
+            } else {
+                broadside_engine::hud::prepend_upcoming_board_2d(
+                    &mut commands,
+                    &cfg,
+                    z_offset,
+                    preview_dims.0,
+                    preview_dims.1,
+                    &stand_in_spawns,
+                    false,
+                    tint_alpha,
+                );
+            }
         }
     }
     // (team-lead 2026-06-29) READY-glow proof: when a queue is present (the

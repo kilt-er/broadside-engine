@@ -1106,6 +1106,16 @@ pub struct LoftShipInstance {
     /// `+Z`, etc.). Set by `hud` from `ship.facing`. Distinct from `facing_yaw_deg`
     /// (the legacy ortho-loft ground yaw), which the unified path does not use.
     pub unified_yaw_rad: f32,
+    /// (CINEMATIC REBUILD phase d 2026-06-30) World-space `+Z` offset for the
+    /// at-depth warp preview. When non-zero, the unified ship pass projects
+    /// `cell_frac` through
+    /// [`crate::projector::cell_world_center_frac_offset`] instead of the base
+    /// [`crate::projector::cell_world_center_frac`], so the hull renders at
+    /// the deeper offset Z — matching the at-depth grid wire from
+    /// [`crate::hud::push_upcoming_grid_2d`]. Default `0.0` keeps the existing
+    /// live render byte-identical; only the warp cinematic emits non-zero
+    /// `z_offset`.
+    pub z_offset: f32,
 }
 
 impl From<SpriteInstance> for DrawCommand {
@@ -2900,11 +2910,22 @@ impl Gfx {
                 // the ship is at rest cell_frac == cell (cast to f32), so this
                 // matches the prior cell_world_center path exactly + the #188
                 // alignment guard holds.
-                let mut center = crate::projector::cell_world_center_frac(
-                    lq.cell_frac[0],
-                    lq.cell_frac[1],
-                    &cfg,
-                );
+                // (CINEMATIC REBUILD phase d 2026-06-30) When `z_offset` is
+                // non-zero, project through cell_world_center_frac_offset so
+                // the at-depth preview hull renders at the same world Z as the
+                // at-depth grid wireframe. At z_offset = 0 (default for every
+                // non-cinematic LoftShip), this branches into the original
+                // base-plane projection — byte-identical to the pre-(d) render.
+                let mut center = if lq.z_offset.abs() > f32::EPSILON {
+                    crate::projector::cell_world_center_frac_offset(
+                        lq.cell_frac[0],
+                        lq.cell_frac[1],
+                        &cfg,
+                        lq.z_offset,
+                    )
+                } else {
+                    crate::projector::cell_world_center_frac(lq.cell_frac[0], lq.cell_frac[1], &cfg)
+                };
                 // sit ON the plane, not half-buried.
                 center[1] += UNIFIED_SHIP_LIFT;
                 // (#208) Wire ShipPose's idle bob+roll into the unified pass —

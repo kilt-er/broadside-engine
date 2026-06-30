@@ -3431,6 +3431,27 @@ impl ApplicationHandler for App {
                 if show_at_depth_preview {
                     if let Some(next_enc) = next_encounter_after_current(&self.run, &self.sectors) {
                         let spawns: Vec<Pos> = next_enc.enemy_ships.iter().map(|s| s.pos).collect();
+                        // (CINEMATIC REBUILD phase d 2026-06-30) Collect the
+                        // ID list parallel to `spawns` so the at-depth loft
+                        // emit can key its LoftShipInstances on the SAME ship
+                        // IDs the next encounter will use on the live board.
+                        // The renderer's per-ship pose state (loft_poses,
+                        // keyed on ship_id) warms up during the warp and
+                        // carries straight into the live unified pass when
+                        // the demo-state flips to Playing — the t=1.0 → swap
+                        // frame is ship-shape equivalent to the first
+                        // Playing frame. Ship.id format is canonical
+                        // `"{class_id}@{cell}"` — same as
+                        // [`runs::boss_ship_for_spawn`] /
+                        // [`runs::fallback_ship_for_spawn`] /
+                        // [`catalog::*_for_spawn`] all use, so the at-depth
+                        // ID is byte-equivalent to what the live unified
+                        // pass will emit post-swap.
+                        let ship_ids: Vec<String> = next_enc
+                            .enemy_ships
+                            .iter()
+                            .map(|s| format!("{}@{}", s.class_id, s.cell))
+                            .collect();
                         let cols = next_enc.dims.cols;
                         let rows = next_enc.dims.rows;
                         // (#213) Live dials — `Z`/`X` adjust preview depth,
@@ -3470,14 +3491,33 @@ impl ApplicationHandler for App {
                             }
                             _ => (rest_z_offset, rest_tint_alpha),
                         };
-                        hud::prepend_upcoming_board_2d(
+                        // (CINEMATIC REBUILD phase d 2026-06-30) Real loft
+                        // hulls at depth — the at-depth preview emits real
+                        // `LoftShipInstance` commands keyed on the next
+                        // encounter's `ship_ids`, with `z_offset` carrying
+                        // the at-depth Z. The unified ship pass in gfx
+                        // branches on non-zero z_offset to project via
+                        // `cell_world_center_frac_offset`, so the hull
+                        // renders at the at-depth grid's world Z. As `(c)`
+                        // drives `z_offset` toward 0 across the Settle
+                        // phase, the hulls converge onto the playable plane
+                        // simultaneously with the grid wireframe — at
+                        // t=1.0 the at-depth frame is byte-equivalent to a
+                        // Playing frame, so the demo-state swap is
+                        // invisible. Boss flag isn't visually distinct yet
+                        // for the loft hull — that's a follow-up; the
+                        // existing flat-marker is_boss bias still lives in
+                        // push_upcoming_ships_2d for the non-loft callers.
+                        let _ = next_enc.is_boss;
+                        hud::prepend_upcoming_board_with_loft_2d(
                             &mut instances,
                             &scene_cfg,
                             z_offset,
                             cols,
                             rows,
+                            &ship_ids,
                             &spawns,
-                            next_enc.is_boss,
+                            &*gfx,
                             tint_alpha,
                         );
                     }
