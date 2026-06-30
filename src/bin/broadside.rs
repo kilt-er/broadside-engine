@@ -3118,9 +3118,7 @@ impl ApplicationHandler for App {
                                         use broadside_engine::grid::{Dir4, Facing};
                                         match f {
                                             Facing::Bow(Dir4::E | Dir4::W)
-                                            | Facing::Broadside(_) => {
-                                                Facing::Bow(Dir4::N)
-                                            }
+                                            | Facing::Broadside(_) => Facing::Bow(Dir4::N),
                                             other @ Facing::Bow(_) => other,
                                         }
                                     });

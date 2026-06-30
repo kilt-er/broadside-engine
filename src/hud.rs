@@ -550,7 +550,19 @@ pub fn compose_scene_2d_tweened(
     time_s: f32,
 ) -> Vec<DrawCommand> {
     let mut out = Vec::with_capacity(256);
-    push_grid_2d(&mut out, cfg);
+    // (Bruce 2026-06-30 grid-occlusion Option A) Build conservative AABB screen
+    // rects for every rendered ship hull so the grid wireframe can be clipped
+    // against them — Bruce: "ships should occlude the grid beneath them."
+    // The hull renders bigger than its cell quad (hero size + perspective), so
+    // we take the cell's quad screen extents and expand upward (toward the
+    // horizon — hull height roughly matches the cell's near-edge width) +
+    // outward by half a cell-width on each side. Empty when the board has no
+    // ships or `unified_enabled()` is off (legacy bake path doesn't paint a
+    // big-screen hull → no occlusion needed). The clipped variant skips the
+    // line splits entirely when `occluders` is empty (byte-identical to the
+    // pre-fix grid push), so the no-ship case is a no-op.
+    let occluders = build_hull_occluder_rects(board, cfg, tween);
+    push_grid_2d_clipped(&mut out, cfg, &occluders);
 
     // Player weapon-arc legibility: outline the cells the PLAYER's weapons bear
     // on (given the player's current facing) so the player reads WHICH cells they
@@ -1576,7 +1588,66 @@ fn push_weapon_arcs_2d(out: &mut Vec<DrawCommand>, board: &Board, cfg: &Projecto
 /// Draw the empty 5×4 grid: each cell's wireframe trapezoid via the projector.
 /// The front (player) row is drawn brighter so "near = where you are" reads at a
 /// glance.
-fn push_grid_2d(out: &mut Vec<DrawCommand>, cfg: &ProjectorConfig) {
+/// (Bruce 2026-06-30 grid-occlusion Option A) Compute a conservative screen-
+/// space AABB per ship that approximates where the rendered loft hull covers
+/// the offscreen — so [`push_grid_2d_clipped`] can skip drawing grid lines
+/// inside those rects. Hulls render LARGER than their cell quad (hero size,
+/// perspective, and the unified ship pass uses `unified_ship_scale`), so we
+/// take each ship's cell quad's near-edge width as the hull width and extend
+/// it vertically upward toward the horizon by ~1.4× that width — empirically
+/// covers the rendered hull silhouette across all camera pitch dial steps
+/// without over-clipping into empty space the player should still see.
+///
+/// Returns an empty vec when `crate::gfx::unified_enabled()` is false (the
+/// legacy bake / textured-ship paths don't paint big-screen hulls → no
+/// occlusion needed; the clipped grid push will fall through to the byte-
+/// identical unclipped path).
+fn build_hull_occluder_rects(
+    board: &Board,
+    cfg: &ProjectorConfig,
+    tween: &Tween2d,
+) -> Vec<[f32; 4]> {
+    if !crate::gfx::unified_enabled() {
+        return Vec::new();
+    }
+    let mut rects: Vec<[f32; 4]> = Vec::with_capacity(8);
+    for ship in board.cells.iter().flatten() {
+        // Hidden during a Transitioning hide-set window — skip; the at-depth
+        // preview's enemy hulls are handled separately below.
+        if tween.hidden_ship_ids.contains(&ship.id) {
+            continue;
+        }
+        // Read the per-ship cell quad (tween center if a slide is in flight,
+        // else the integer cell). The quad's near-edge width sets the hull
+        // width; height extends upward by a perspective-aware factor.
+        let q = grid_cell_quad(ship.pos, cfg);
+        let vis = tween.visual.get(&ship.id);
+        let center_x = vis.map_or(q.center[0], |v| v.center[0]);
+        let near_y = vis.map_or(q.corners[3][1], |v| v.near_edge_y);
+        let near_w = vis.map_or_else(|| q.near_edge_width(), |v| v.near_edge_width);
+        // Hull silhouette empirically covers ~1.1× the cell width and ~1.4×
+        // tall (extends above the cell's top edge). Player hull is the
+        // biggest, so use a wider factor on player ships.
+        let is_player = ship.faction == crate::types::Faction::Player;
+        let w_mul = if is_player { 1.2 } else { 1.05 };
+        let h_mul = if is_player { 1.6 } else { 1.3 };
+        let hw = near_w * w_mul * 0.5;
+        let hh = near_w * h_mul;
+        let l = center_x - hw;
+        let r = center_x + hw;
+        let b = near_y;
+        let t = near_y - hh;
+        rects.push([l, t, r, b]);
+    }
+    rects
+}
+
+/// (Bruce 2026-06-30 grid-occlusion Option A) Like [`push_grid_2d`] but clip
+/// each grid-line segment against the screen-space `occluders` rects (one per
+/// rendered hull). Lines that pass THROUGH a hull are split so the inside
+/// portion is dropped — Bruce: "ships should occlude the grid beneath them."
+/// Empty `occluders` ⇒ behaves identically to [`push_grid_2d`] (no clipping).
+fn push_grid_2d_clipped(out: &mut Vec<DrawCommand>, cfg: &ProjectorConfig, occluders: &[[f32; 4]]) {
     use crate::grid::Pos as GridPos;
     // (#213 item 4) Iterate cfg.cols/cfg.rows so a variable-board encounter
     // (e.g. 3x3 / 2x2 / 4x3 from the #199b dims pool) draws its playable grid
@@ -1597,7 +1668,11 @@ fn push_grid_2d(out: &mut Vec<DrawCommand>, cfg: &ProjectorConfig) {
             } else {
                 LANE_STROKE
             };
-            outline_cell_2d(out, &q, color);
+            if occluders.is_empty() {
+                outline_cell_2d(out, &q, color);
+            } else {
+                outline_cell_2d_clipped(out, &q, color, occluders);
+            }
         }
     }
 }
@@ -2212,6 +2287,147 @@ fn outline_cell_2d(out: &mut Vec<DrawCommand>, q: &CellQuad, color: [f32; 4]) {
     push_line(out, pt(c[1]), pt(c[2]), 1.0, color); // right edge
     push_line(out, pt(c[2]), pt(c[3]), 1.0, color); // near (bottom) edge
     push_line(out, pt(c[3]), pt(c[0]), 1.0, color); // left edge
+}
+
+/// (Bruce 2026-06-30 grid-occlusion Option A) Like [`outline_cell_2d`] but clip
+/// each of the four edges against the `occluders` screen-space AABB rects.
+/// Used by [`push_grid_2d_clipped`] so a loft hull paints OVER the grid (the
+/// hull is rendered atop the offscreen via the loft RTT, but the loft texture
+/// has transparency around the hull silhouette; the grid drawn behind it
+/// would otherwise peek through. Clipping the grid where a hull rect covers
+/// it prevents that read).
+///
+/// Each `occluder` is `[l, t, r, b]`. Segments that enter+exit a rect are
+/// SPLIT (the inside portion is dropped, the two outside portions kept).
+/// Robust across all 4 cases (endpoint inside, line crossing through, line
+/// passing entirely outside, line entirely inside).
+fn outline_cell_2d_clipped(
+    out: &mut Vec<DrawCommand>,
+    q: &CellQuad,
+    color: [f32; 4],
+    occluders: &[[f32; 4]],
+) {
+    let c = q.corners;
+    let edges = [
+        (c[0], c[1]), // far (top) edge
+        (c[1], c[2]), // right edge
+        (c[2], c[3]), // near (bottom) edge
+        (c[3], c[0]), // left edge
+    ];
+    for (a, b) in edges {
+        push_clipped_line(out, a, b, 1.0, color, occluders);
+    }
+}
+
+/// (Bruce 2026-06-30 grid-occlusion Option A) Push the [a, b] line segment
+/// clipped against every AABB in `occluders` — sub-segments OUTSIDE every
+/// rect are emitted via [`push_line`], sub-segments INSIDE any rect are
+/// dropped. Repeatedly applies the single-rect clip across all occluders so
+/// the surviving sub-segments are outside ALL rects.
+fn push_clipped_line(
+    out: &mut Vec<DrawCommand>,
+    a: [f32; 2],
+    b: [f32; 2],
+    thickness: f32,
+    color: [f32; 4],
+    occluders: &[[f32; 4]],
+) {
+    // Each surviving segment is encoded as `(p0, p1)`. Start with the input,
+    // then for each occluder split each segment into 0..2 outside fragments.
+    let mut segments: Vec<([f32; 2], [f32; 2])> = vec![(a, b)];
+    for rect in occluders {
+        let mut next: Vec<([f32; 2], [f32; 2])> = Vec::with_capacity(segments.len() * 2);
+        for (p0, p1) in segments {
+            clip_segment_outside_rect(p0, p1, *rect, &mut next);
+        }
+        segments = next;
+        if segments.is_empty() {
+            return;
+        }
+    }
+    for (p0, p1) in segments {
+        push_line(out, pt(p0), pt(p1), thickness, color);
+    }
+}
+
+/// (Bruce 2026-06-30 grid-occlusion Option A) Clip a segment `(p0, p1)`
+/// against the AABB `rect = [l, t, r, b]` and push up to 2 OUTSIDE sub-segments
+/// into `out`. If the segment doesn't intersect the rect, it is pushed
+/// unchanged. If it's entirely inside, nothing is pushed.
+///
+/// Uses Liang-Barsky parametric clipping to find the `[t_enter, t_exit]`
+/// interval where the segment is INSIDE the rect, then emits the portions
+/// outside that interval (up to 2: `[0, t_enter]` and `[t_exit, 1]`).
+#[allow(clippy::similar_names)]
+fn clip_segment_outside_rect(
+    p0: [f32; 2],
+    p1: [f32; 2],
+    rect: [f32; 4],
+    out: &mut Vec<([f32; 2], [f32; 2])>,
+) {
+    let (l, t, r, b) = (rect[0], rect[1], rect[2], rect[3]);
+    let dx = p1[0] - p0[0];
+    let dy = p1[1] - p0[1];
+
+    // Liang-Barsky: find [t_enter, t_exit] where the segment is inside the rect.
+    let mut t_enter: f32 = 0.0;
+    let mut t_exit: f32 = 1.0;
+    let edges = [
+        (-dx, p0[0] - l), // left edge   (x >= l)
+        (dx, r - p0[0]),  // right edge  (x <= r)
+        (-dy, p0[1] - t), // top edge    (y >= t)
+        (dy, b - p0[1]),  // bottom edge (y <= b)
+    ];
+    for (p, q) in edges {
+        if p.abs() < f32::EPSILON {
+            // Segment parallel to this edge: trivially-reject if outside.
+            if q < 0.0 {
+                // Segment is entirely outside the rect on this edge — emit
+                // the original unmodified.
+                out.push((p0, p1));
+                return;
+            }
+            continue;
+        }
+        let r_param = q / p;
+        if p < 0.0 {
+            // Entering — raises t_enter.
+            if r_param > t_exit {
+                // Entered after exiting → no intersection; emit original.
+                out.push((p0, p1));
+                return;
+            }
+            if r_param > t_enter {
+                t_enter = r_param;
+            }
+        } else {
+            // Exiting — lowers t_exit.
+            if r_param < t_enter {
+                out.push((p0, p1));
+                return;
+            }
+            if r_param < t_exit {
+                t_exit = r_param;
+            }
+        }
+    }
+    // [t_enter, t_exit] is the inside interval (clamped to [0, 1]).
+    let t_enter = t_enter.clamp(0.0, 1.0);
+    let t_exit = t_exit.clamp(0.0, 1.0);
+    if t_exit <= t_enter {
+        // Segment doesn't enter the rect — emit original.
+        out.push((p0, p1));
+        return;
+    }
+    // Emit the OUTSIDE portions [0, t_enter] and [t_exit, 1] (skip degenerate).
+    if t_enter > f32::EPSILON {
+        let q_enter = [p0[0] + dx * t_enter, p0[1] + dy * t_enter];
+        out.push((p0, q_enter));
+    }
+    if t_exit < 1.0 - f32::EPSILON {
+        let q_exit = [p0[0] + dx * t_exit, p0[1] + dy * t_exit];
+        out.push((q_exit, p1));
+    }
 }
 
 /// `[f32; 2]` → the `perspective::Point2` the existing `push_line` takes.
