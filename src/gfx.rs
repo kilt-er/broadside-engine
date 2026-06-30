@@ -921,6 +921,22 @@ const MAX_TEXTURED_SHIPS: usize = 16;
 
 const OFFSCREEN_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 
+/// (grid-occlusion a-lite 2026-06-30) Depth format for the offscreen scene
+/// depth buffer ([`Gfx::make_offscreen_depth`]). `Depth32Float` matches the loft
+/// pipeline's depth attachment so the one depth-using look stays consistent.
+const OFFSCREEN_DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
+
+/// (grid-occlusion a-lite 2026-06-30) Constant clip-space Z the GRID lines are
+/// drawn at when depth-tested against the hull stamp. The hull stamp writes
+/// 0.0 (nearest); the grid sits at mid-depth so it PASSES the `Less` test over
+/// empty space (0.5 < 1.0 cleared depth) but FAILS behind an opaque hull texel
+/// (0.5 < 0.0 is false) — i.e. the hull occludes the grid by its silhouette.
+/// The value is also hardcoded as `o.clip.z = 0.5` in `vs_main_grid` (WGSL
+/// can't read a Rust const); this constant keeps the contract documented + the
+/// invariant `0.0 (stamp) < GRID_DEPTH_Z < 1.0 (far clear)` checked at compile.
+const GRID_DEPTH_Z: f32 = 0.5;
+const _: () = assert!(GRID_DEPTH_Z > 0.0 && GRID_DEPTH_Z < 1.0);
+
 /// Deep-space ink — matches the analysis HTML `--ink` token (`#080c14`).
 /// Values are pre-converted to linear space because `OFFSCREEN_FORMAT` is
 /// sRGB and `wgpu::Color` is interpreted linearly when the target is sRGB.
@@ -1099,6 +1115,16 @@ pub struct TexturedShipInstance {
 pub enum DrawCommand {
     Sprite(SpriteInstance),
     Polygon(PolygonInstance),
+    /// (grid-occlusion a-lite 2026-06-30) A GRID wireframe line. Identical GPU
+    /// data to [`DrawCommand::Sprite`] (a rotated-rect line — the same
+    /// `SpriteInstance` grid lines have always been), but routed through the
+    /// DEPTH-TESTED grid sprite pipeline so the loft hull silhouette occludes it
+    /// ("grid under the ships"). Tagged as its own variant so only the grid is
+    /// depth-tested; every other sprite (HUD, effects, damage numbers, badges)
+    /// stays on the depthless sprite pipeline and is never culled. Treated
+    /// EXACTLY like `Sprite` for alpha-fades / inspection — only the
+    /// compositor's pipeline choice differs.
+    GridLine(SpriteInstance),
     TexturedShip(TexturedShipInstance),
     /// Blit the live loft-rendered ship texture onto a lane quad (four
     /// virtual-pixel corners: top-left, top-right, bot-right, bot-left).
@@ -1313,6 +1339,26 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let s = textureSample(atlas, atlas_samp, in.uv);
     return s * in.color;
 }
+
+// (grid-occlusion a-lite 2026-06-30) GRID-line sprite vertex variant: same
+// screen XY / color / uv as vs_main (pixel-identical lines) but emits a MID
+// clip-space Z (GRID_DEPTH_Z = 0.5) so the depth-tested grid pass occludes
+// behind the hull stamp (which writes 0.0/near). Used ONLY by GridLine
+// commands; every other sprite stays on vs_main at z=0.0.
+@vertex
+fn vs_main_grid(
+    @location(0) v_pos:        vec2<f32>,
+    @location(1) i_pos:        vec2<f32>,
+    @location(2) i_half:       vec2<f32>,
+    @location(3) i_color:      vec4<f32>,
+    @location(4) i_uv_min:     vec2<f32>,
+    @location(5) i_uv_max:     vec2<f32>,
+    @location(6) i_rotation:   f32,
+) -> VsOut {
+    var o = vs_main(v_pos, i_pos, i_half, i_color, i_uv_min, i_uv_max, i_rotation);
+    o.clip.z = 0.5;
+    return o;
+}
 ";
 
 // Polygon shader. Each instance has four explicit corner positions; we expand
@@ -1522,8 +1568,26 @@ pub struct Gfx {
     /// headless [`Gfx::capture_png`] can `copy_texture_to_buffer` it for readback.
     offscreen_tex: wgpu::Texture,
     offscreen_view: wgpu::TextureView,
+    /// (grid-occlusion a-lite 2026-06-30) Depth buffer for hull-occludes-grid.
+    /// Used ONLY by the loft depth-stamp + the depth-tested grid pass; every
+    /// other compositor pass stays depthless. See [`Gfx::make_offscreen_depth`].
+    offscreen_depth_view: wgpu::TextureView,
     sprites: SpritePipeline,
     polygons: PolygonPipeline,
+    /// (grid-occlusion a-lite 2026-06-30) Sprite pipeline variant that DEPTH-
+    /// TESTS (Less, no write) at `GRID_DEPTH_Z`. Grid lines are rotated-rect
+    /// sprites, so this mirrors the sprite pipeline (shares `sprites.bind_group`
+    /// and `sprites.quad_vbuf` at draw time) with the `vs_main_grid` entry. Only
+    /// `GridLine` commands route through it so the hull stamp can occlude them;
+    /// every other sprite uses the depthless `sprites` pipeline.
+    grid_depth_pipeline: wgpu::RenderPipeline,
+    /// (grid-occlusion a-lite 2026-06-30) Dedicated instance buffer for the grid
+    /// lines (kept separate from `sprites.instance_vbuf` so the two are batched
+    /// independently in the compositor).
+    grid_instance_vbuf: wgpu::Buffer,
+    /// (grid-occlusion a-lite 2026-06-30) Depth-only stamp pass: samples the
+    /// posterized loft silhouette and writes near depth (0.0) where opaque.
+    loft_depth_stamp: LoftDepthStamp,
     textured_ships: TexturedShipPipeline,
     blit: BlitPipeline,
     /// Loaded ship sprite textures keyed by `<class>_<stance>_<view>` slug.
@@ -1650,6 +1714,20 @@ struct LoftShipBlit {
     sampler: wgpu::Sampler,
 }
 
+/// (grid-occlusion a-lite 2026-06-30) Depth-only stamp of the posterized loft
+/// silhouette into the offscreen depth buffer. A full-screen triangle samples
+/// the loft output (the SAME texture the color blit uses); the fragment shader
+/// `discard`s where alpha < 0.5 (transparent cut-out + background) and writes
+/// `@builtin(frag_depth) = 0.0` (nearest) where the hull is opaque. Color write
+/// is masked off (empty `targets`), so it ONLY paints depth. The depth-tested
+/// grid pass that runs after this then fails `Less` behind every opaque hull
+/// texel, giving true per-pixel silhouette occlusion at any scale/pitch/board.
+struct LoftDepthStamp {
+    pipeline: wgpu::RenderPipeline,
+    bgl: wgpu::BindGroupLayout,
+    sampler: wgpu::Sampler,
+}
+
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 struct LoftQuadUniform {
@@ -1712,6 +1790,46 @@ fn vs_loft(@builtin(vertex_index) v_idx: u32) -> VsOut {
 @fragment
 fn fs_loft(in: VsOut) -> @location(0) vec4<f32> {
     return textureSample(ship_tex, ship_samp, in.uv);
+}
+";
+
+/// (grid-occlusion a-lite 2026-06-30) Depth-stamp shader. A full-screen
+/// triangle (no vertex buffer) samples the loft output's alpha; opaque hull
+/// texels write near depth (0.0), transparent texels `discard` (no depth, no
+/// color). Color target is empty (`write_mask` n/a — no fragment color output),
+/// so this paints depth ONLY.
+const LOFT_DEPTH_STAMP_SHADER: &str = r"
+@group(0) @binding(0) var ship_tex: texture_2d<f32>;
+@group(0) @binding(1) var ship_samp: sampler;
+
+struct VsOut {
+    @builtin(position) clip: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+};
+
+@vertex
+fn vs_stamp(@builtin(vertex_index) v_idx: u32) -> VsOut {
+    // Oversized full-screen triangle covering NDC [-1,1].
+    var p = array<vec2<f32>, 3>(
+        vec2<f32>(-1.0, -3.0),
+        vec2<f32>(-1.0,  1.0),
+        vec2<f32>( 3.0,  1.0),
+    );
+    let xy = p[v_idx];
+    var o: VsOut;
+    o.clip = vec4<f32>(xy, 0.0, 1.0);
+    // Map clip XY → UV (y-flip so it matches the color blit's sampling).
+    o.uv = vec2<f32>(xy.x * 0.5 + 0.5, 0.5 - xy.y * 0.5);
+    return o;
+}
+
+@fragment
+fn fs_stamp(in: VsOut) -> @builtin(frag_depth) f32 {
+    let a = textureSample(ship_tex, ship_samp, in.uv).a;
+    if (a < 0.5) {
+        discard;
+    }
+    return 0.0; // nearest depth where the hull is opaque
 }
 ";
 
@@ -1847,6 +1965,10 @@ impl Gfx {
         // so the constructor and the live `cycle_scene_res` build an identical
         // texture.
         let (offscreen, offscreen_view) = Self::make_offscreen(&device, scene_w(), scene_h());
+        // (grid-occlusion a-lite 2026-06-30) Offscreen depth buffer for the
+        // hull-occludes-grid pass. Sized to match the offscreen color target;
+        // recreated alongside it on a scene-res cycle.
+        let offscreen_depth_view = Self::make_offscreen_depth(&device, scene_w(), scene_h());
 
         let atlas_data = atlas::generate_atlas();
         let atlas_size = wgpu::Extent3d {
@@ -1894,10 +2016,16 @@ impl Gfx {
         let sprites = SpritePipeline::new(&device, &atlas_view, &atlas_sampler);
         let polygons =
             PolygonPipeline::new(&device, &sprites.view_ubo, &atlas_view, &atlas_sampler);
+        // (grid-occlusion a-lite 2026-06-30) Depth-tested grid-sprite pipeline +
+        // its dedicated instance buffer. Reuses the sprite bind group + quad vbuf
+        // at draw time.
+        let (grid_depth_pipeline, grid_instance_vbuf) =
+            SpritePipeline::new_grid_depth(&device, &atlas_view, &atlas_sampler);
         let textured_ships = TexturedShipPipeline::new(&device, &sprites.view_ubo);
         let blit = BlitPipeline::new(&device, format, &offscreen_view);
         let loft = crate::loft_gpu::LoftGpu::new(&device);
         let loft_blit = LoftShipBlit::new(&device);
+        let loft_depth_stamp = LoftDepthStamp::new(&device);
 
         // Parallax background: build the 20-slot queue (solid-ink fallbacks) then
         // swap in Bruce's painted PNGs from assets/backgrounds. A missing/failed
@@ -1916,14 +2044,18 @@ impl Gfx {
             config,
             offscreen_tex: offscreen,
             offscreen_view,
+            offscreen_depth_view,
             sprites,
             polygons,
+            grid_depth_pipeline,
+            grid_instance_vbuf,
             textured_ships,
             blit,
             ship_sprites: std::collections::HashMap::new(),
             ship_bg_cache: std::collections::HashMap::new(),
             loft,
             loft_blit,
+            loft_depth_stamp,
             loft_meshes: std::collections::HashMap::new(),
             loft_poses: std::collections::HashMap::new(),
             background: Some(background),
@@ -1962,6 +2094,36 @@ impl Gfx {
         });
         let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
         (tex, view)
+    }
+
+    /// (grid-occlusion a-lite 2026-06-30) The offscreen scene's DEPTH buffer.
+    /// The 2-D compositor itself is still depthless — every sprite/polygon/ship
+    /// blit pass attaches `depth_stencil_attachment: None` and draws purely in
+    /// submission order (Load), exactly as before. This buffer is used by ONLY
+    /// two passes: (1) a hull DEPTH-STAMP from the posterized loft silhouette
+    /// (`stamp_loft_depth`) writes near depth (0.0) wherever a hull texel is
+    /// opaque, run BEFORE the grid; (2) the GRID lines are drawn depth-TESTED
+    /// (Less, no write) at a constant mid clip-z (0.5), so a grid pixel behind
+    /// an opaque hull texel depth-fails and is occluded by the hull's true
+    /// per-pixel silhouette — at any ship scale / camera pitch / board size,
+    /// and through the silhouette's cut-out gaps the old occluder-rect missed.
+    /// No other pass reads or writes it, so nothing else can be depth-culled.
+    fn make_offscreen_depth(device: &wgpu::Device, w: u32, h: u32) -> wgpu::TextureView {
+        let tex = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("offscreen scene depth"),
+            size: wgpu::Extent3d {
+                width: w.max(1),
+                height: h.max(1),
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: OFFSCREEN_DEPTH_FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        });
+        tex.create_view(&wgpu::TextureViewDescriptor::default())
     }
 
     /// (#76 scene-res) Write the sprite/polygon view uniform's px→NDC from the
@@ -2006,6 +2168,10 @@ impl Gfx {
         let (tex, view) = Self::make_offscreen(&self.device, nw, nh);
         self.offscreen_tex = tex;
         self.offscreen_view = view;
+        // (grid-occlusion a-lite 2026-06-30) Recreate the depth buffer at the
+        // new scene size so the hull stamp + grid depth-test stay 1:1 with the
+        // color target.
+        self.offscreen_depth_view = Self::make_offscreen_depth(&self.device, nw, nh);
         // The blit pipeline samples the offscreen view; rebuild its bind group to
         // point at the NEW view (the old one is dropped with the old texture).
         self.blit.rebind(&self.device, &self.offscreen_view);
@@ -2967,7 +3133,16 @@ impl Gfx {
     /// heading ([`LoftShipInstance::unified_yaw_rad`]). Replaces the per-cell loft
     /// blit when [`unified_enabled`]. `cleared` tracks whether the offscreen has been
     /// cleared yet (the full-screen blit clears on the first draw of the frame).
-    fn render_unified_fleet(&self, loft_quads: &[LoftShipInstance], cleared: &mut bool) {
+    /// (grid-occlusion a-lite 2026-06-30) Render the loft fleet's hulls into the
+    /// loft's posterized `output_view` ONLY (no blit). Returns `true` if at least
+    /// one hull rendered (so the caller knows the depth stamp / color blit have
+    /// content to act on). Split out of the old monolithic `render_unified_fleet`
+    /// so the compositor can: (1) render hulls here EARLY, (2) stamp their
+    /// silhouette depth into the offscreen depth buffer, (3) draw the grid depth-
+    /// tested in its NORMAL z-order slot (still under the threat fills), then
+    /// (4) blit the hull COLOR on top at its normal late slot. Keeping the grid
+    /// in its original color order preserves the look; only its depth-test is new.
+    fn render_unified_fleet_to_output(&self, loft_quads: &[LoftShipInstance]) -> bool {
         // (#188) Build view_proj from the SCENE config so SHIPS and GRID share ONE
         // projection — same aspect, same FOV, same camera. The grid is drawn via
         // `scene_projector_cfg(scene_w, scene_h)`, so the ships MUST go through the
@@ -3063,14 +3238,64 @@ impl Gfx {
                 draws.push((&mesh.vbuf, mesh.vcount, model));
             }
             if draws.is_empty() {
-                return;
+                return false;
             }
             self.loft
                 .render_unified_ships(&self.device, &self.queue, view_proj, &draws);
         }
+        true
+    }
 
-        // Blit the posterized fleet FULL-SCREEN onto the offscreen scene (over the
-        // grid, under the HUD). Full-frame quad in virtual-pixel space.
+    /// (grid-occlusion a-lite 2026-06-30) Stamp the posterized loft silhouette's
+    /// depth into the offscreen depth buffer: a full-screen pass that writes near
+    /// depth (0.0) where the hull is opaque and `discard`s elsewhere. Depth-only
+    /// (no color target), so it touches NOTHING in the color image. Must run
+    /// AFTER `render_unified_fleet_to_output` (which populates `output_view`) and
+    /// BEFORE the grid pass. `clear` selects whether to clear the depth buffer to
+    /// far (1.0) first — the first depth user each frame clears.
+    fn stamp_loft_depth(&self, clear: bool) {
+        let depth_load = if clear {
+            wgpu::LoadOp::Clear(1.0)
+        } else {
+            wgpu::LoadOp::Load
+        };
+        let bg = self
+            .loft_depth_stamp
+            .bind_group(&self.device, self.loft.output_view());
+        let mut enc = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("loft depth stamp"),
+            });
+        {
+            let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("loft depth stamp"),
+                // No color attachments — depth-only.
+                color_attachments: &[],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &self.offscreen_depth_view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: depth_load,
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            pass.set_pipeline(&self.loft_depth_stamp.pipeline);
+            pass.set_bind_group(0, &bg, &[]);
+            pass.draw(0..3, 0..1);
+        }
+        self.queue.submit(std::iter::once(enc.finish()));
+    }
+
+    /// (grid-occlusion a-lite 2026-06-30) Blit the posterized loft fleet COLOR
+    /// FULL-SCREEN onto the offscreen scene (over the grid, under the HUD) — the
+    /// back half of the old `render_unified_fleet`. Depthless (color image only);
+    /// the hull's per-pixel occlusion of the grid was already handled by the
+    /// depth stamp + depth-tested grid pass earlier in the frame.
+    fn blit_unified_fleet(&self, cleared: &mut bool) {
         let (w, h) = (scene_w() as f32, scene_h() as f32);
         let qu = LoftQuadUniform {
             p0: [0.0, 0.0],
@@ -3139,9 +3364,15 @@ impl Gfx {
         // milestone there is one (the demo player); the design generalizes to
         // ≤ lane-count.
         let mut loft_quads: Vec<LoftShipInstance> = Vec::new();
+        // (grid-occlusion a-lite 2026-06-30) Grid-line sprite instances, batched
+        // separately into `grid_instance_vbuf` + routed through the depth-tested
+        // grid-sprite pipeline.
+        let mut grid_buf: Vec<SpriteInstance> = Vec::with_capacity(64);
         enum BatchKind {
             Sprite,
             Polygon,
+            // index into grid_buf — depth-tested grid sprites
+            GridLine,
             // index into ship_corner_buf / ship_meta
             TexturedShip(u32),
             // index into loft_quads
@@ -3180,6 +3411,21 @@ impl Gfx {
                         Some(b) if matches!(b.kind, BatchKind::Polygon) => b.count += 1,
                         _ => batches.push(Batch {
                             kind: BatchKind::Polygon,
+                            start,
+                            count: 1,
+                        }),
+                    }
+                }
+                DrawCommand::GridLine(s) => {
+                    if (grid_buf.len() as u64) >= MAX_SPRITES {
+                        continue;
+                    }
+                    let start = grid_buf.len() as u32;
+                    grid_buf.push(*s);
+                    match batches.last_mut() {
+                        Some(b) if matches!(b.kind, BatchKind::GridLine) => b.count += 1,
+                        _ => batches.push(Batch {
+                            kind: BatchKind::GridLine,
                             start,
                             count: 1,
                         }),
@@ -3227,6 +3473,11 @@ impl Gfx {
                 0,
                 bytemuck::cast_slice(&sprite_buf),
             );
+        }
+        // (grid-occlusion a-lite 2026-06-30) Upload grid-line sprite instances.
+        if !grid_buf.is_empty() {
+            self.queue
+                .write_buffer(&self.grid_instance_vbuf, 0, bytemuck::cast_slice(&grid_buf));
         }
         if !polygon_buf.is_empty() {
             self.queue.write_buffer(
@@ -3315,9 +3566,17 @@ impl Gfx {
         // Returns the index past the run. `cleared` selects clear-vs-load.
         let flush_scene_run =
             |gfx: &Self, batches: &[Batch], start: usize, cleared: bool| -> usize {
-                // Collect the run [start, end) of non-loft batches.
+                // Collect the run [start, end) of plain depthless batches. The
+                // LoftShip blit and the depth-tested GridLine batch each need a
+                // different attachment set, so they break the run (handled by the
+                // main loop). (grid-occlusion a-lite: GridLine added.)
                 let mut end = start;
-                while end < batches.len() && !matches!(batches[end].kind, BatchKind::LoftShip(_)) {
+                while end < batches.len()
+                    && !matches!(
+                        batches[end].kind,
+                        BatchKind::LoftShip(_) | BatchKind::GridLine
+                    )
+                {
                     end += 1;
                 }
                 if end == start {
@@ -3385,6 +3644,7 @@ impl Gfx {
                                 pass.draw(0..6, 0..1);
                             }
                             BatchKind::LoftShip(_) => unreachable!("run excludes loft batches"),
+                            BatchKind::GridLine => unreachable!("run excludes grid batches"),
                         }
                     }
                 }
@@ -3392,26 +3652,115 @@ impl Gfx {
                 end
             };
 
+        // (grid-occlusion a-lite 2026-06-30) Draw one GridLine batch DEPTH-TESTED
+        // against the offscreen depth buffer (the loft hull stamp). Less, no
+        // write — a grid pixel behind an opaque hull texel depth-fails and is
+        // occluded; everywhere else it draws over the background exactly as
+        // before. Its own pass because it needs the depth attachment the plain
+        // scene run omits. `depth_ready` selects whether the depth buffer holds
+        // a hull stamp (test against it) or must be cleared-to-far first (no
+        // hulls this frame ⇒ grid draws everywhere, byte-identical to old look).
+        let draw_grid_batch = |gfx: &Self, b: &Batch, cleared: bool, depth_ready: bool| {
+            let load = if cleared {
+                wgpu::LoadOp::Load
+            } else {
+                wgpu::LoadOp::Clear(CLEAR)
+            };
+            let depth_load = if depth_ready {
+                wgpu::LoadOp::Load
+            } else {
+                wgpu::LoadOp::Clear(1.0)
+            };
+            let mut encoder = gfx
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("grid depth-tested"),
+                });
+            {
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("grid depth-tested"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &gfx.offscreen_view,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load,
+                            store: wgpu::StoreOp::Store,
+                        },
+                        depth_slice: None,
+                    })],
+                    depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                        view: &gfx.offscreen_depth_view,
+                        depth_ops: Some(wgpu::Operations {
+                            load: depth_load,
+                            store: wgpu::StoreOp::Store,
+                        }),
+                        stencil_ops: None,
+                    }),
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                });
+                pass.set_pipeline(&gfx.grid_depth_pipeline);
+                pass.set_bind_group(0, &gfx.sprites.bind_group, &[]);
+                pass.set_vertex_buffer(0, gfx.sprites.quad_vbuf.slice(..));
+                pass.set_vertex_buffer(1, gfx.grid_instance_vbuf.slice(..));
+                pass.draw(0..6, b.start..(b.start + b.count));
+            }
+            gfx.queue.submit(std::iter::once(encoder.finish()));
+        };
+
+        // (grid-occlusion a-lite 2026-06-30) Render the loft fleet hulls to the
+        // posterized output_view + STAMP their silhouette depth into the
+        // offscreen depth buffer BEFORE the grid pass — so the grid (drawn later
+        // in its normal z-order slot) depth-tests against the real per-pixel hull
+        // footprint. The hull COLOR is blit later, at the LoftShip batch's normal
+        // late slot (over the grid, under the HUD), so the look is unchanged save
+        // for the grid being occluded under the hull. Skipped when unified is off
+        // or no hulls render this frame ⇒ depth_ready stays false ⇒ grid draws
+        // everywhere (byte-identical to the pre-fix render).
+        let depth_ready = unified_enabled()
+            && !loft_quads.is_empty()
+            && self.render_unified_fleet_to_output(&loft_quads);
+        if depth_ready {
+            self.stamp_loft_depth(true);
+        }
+
         let mut i = 0usize;
-        // (UNIFY) The unified ship pass renders the WHOLE fleet through one camera
-        // in a single shot the first time a loft batch is hit; later loft batches
-        // are no-ops. This flag gates that.
+        // (UNIFY) The unified ship pass blits the WHOLE fleet (already rendered to
+        // output_view above) in one shot the first time a loft batch is hit;
+        // later loft batches are no-ops. This flag gates that.
         let mut unified_ships_done = false;
         while i < batches.len() {
-            // Drain the non-loft run preceding the next loft ship.
+            // Drain the plain depthless run preceding the next special batch.
             let next = flush_scene_run(self, &batches, i, cleared);
             if next > i {
                 cleared = true;
                 i = next;
                 continue;
             }
-            // (UNIFY) Unified path: render every loft ship as real 3-D geometry
-            // through the SAME camera the grid uses (so the fleet lives in the
-            // grid), then blit the whole posterized output full-screen. Done once,
-            // on the first loft batch (composites over the grid, under the HUD).
+            // (grid-occlusion a-lite) Depth-tested grid batch — occluded by the
+            // hull stamp drawn above. Drawn in its NORMAL color z-order slot
+            // (under threat fills / ships), only depth-tested.
+            if matches!(batches[i].kind, BatchKind::GridLine) {
+                draw_grid_batch(self, &batches[i], cleared, depth_ready);
+                cleared = true;
+                i += 1;
+                continue;
+            }
+            // (UNIFY) Unified path: blit the whole posterized fleet output (built
+            // above) full-screen. Done once, on the first loft batch (composites
+            // over the grid, under the HUD).
             if unified_enabled() && matches!(batches[i].kind, BatchKind::LoftShip(_)) {
                 if !unified_ships_done {
-                    self.render_unified_fleet(&loft_quads, &mut cleared);
+                    if depth_ready {
+                        // Fleet already rendered to output_view above; just blit.
+                        self.blit_unified_fleet(&mut cleared);
+                    } else {
+                        // No depth stamp this frame (e.g. empty fleet guard
+                        // tripped) — render + blit together, as before.
+                        if self.render_unified_fleet_to_output(&loft_quads) {
+                            self.blit_unified_fleet(&mut cleared);
+                        }
+                    }
                     unified_ships_done = true;
                 }
                 i += 1;
@@ -3815,6 +4164,159 @@ impl SpritePipeline {
             view_ubo,
             bind_group,
         }
+    }
+
+    /// (grid-occlusion a-lite 2026-06-30) Build the DEPTH-TESTED grid-sprite
+    /// pipeline: identical bind-group-layout, quad + instance vertex layout, and
+    /// blend as the main sprite pipeline, but uses the `vs_main_grid` entry
+    /// (emits clip-z `GRID_DEPTH_Z`) and a `depth_stencil` that TESTS `Less`
+    /// without writing. Reuses the [`SpritePipeline`]'s own `bind_group` /
+    /// `quad_vbuf` at draw time (same bgl), so this returns just the pipeline;
+    /// grid lines are uploaded to a dedicated instance buffer
+    /// (`Gfx::grid_instance_vbuf`). Only `GridLine` commands route here — every
+    /// other sprite stays depthless on `vs_main`, so nothing else is culled.
+    fn new_grid_depth(
+        device: &wgpu::Device,
+        atlas_view: &wgpu::TextureView,
+        atlas_sampler: &wgpu::Sampler,
+    ) -> (wgpu::RenderPipeline, wgpu::Buffer) {
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("grid-sprite-depth shader"),
+            source: wgpu::ShaderSource::Wgsl(SPRITE_SHADER.into()),
+        });
+        let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("grid-sprite-depth bgl"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        });
+        // The draw reuses `sprites.bind_group` (same bgl), so the atlas handles
+        // here only prove layout compatibility.
+        let _ = (atlas_view, atlas_sampler);
+        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("grid-sprite-depth layout"),
+            bind_group_layouts: &[&bgl],
+            push_constant_ranges: &[],
+        });
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("grid-sprite-depth pipeline"),
+            layout: Some(&layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_main_grid"),
+                compilation_options: Default::default(),
+                buffers: &[
+                    wgpu::VertexBufferLayout {
+                        array_stride: std::mem::size_of::<QuadVertex>() as u64,
+                        step_mode: wgpu::VertexStepMode::Vertex,
+                        attributes: &[wgpu::VertexAttribute {
+                            shader_location: 0,
+                            offset: 0,
+                            format: wgpu::VertexFormat::Float32x2,
+                        }],
+                    },
+                    wgpu::VertexBufferLayout {
+                        array_stride: std::mem::size_of::<SpriteInstance>() as u64,
+                        step_mode: wgpu::VertexStepMode::Instance,
+                        attributes: &[
+                            wgpu::VertexAttribute {
+                                shader_location: 1,
+                                offset: 0,
+                                format: wgpu::VertexFormat::Float32x2,
+                            },
+                            wgpu::VertexAttribute {
+                                shader_location: 2,
+                                offset: 8,
+                                format: wgpu::VertexFormat::Float32x2,
+                            },
+                            wgpu::VertexAttribute {
+                                shader_location: 3,
+                                offset: 16,
+                                format: wgpu::VertexFormat::Float32x4,
+                            },
+                            wgpu::VertexAttribute {
+                                shader_location: 4,
+                                offset: 32,
+                                format: wgpu::VertexFormat::Float32x2,
+                            },
+                            wgpu::VertexAttribute {
+                                shader_location: 5,
+                                offset: 40,
+                                format: wgpu::VertexFormat::Float32x2,
+                            },
+                            wgpu::VertexAttribute {
+                                shader_location: 6,
+                                offset: 48,
+                                format: wgpu::VertexFormat::Float32,
+                            },
+                        ],
+                    },
+                ],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_main"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: OFFSCREEN_FORMAT,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: None,
+                unclipped_depth: false,
+                polygon_mode: wgpu::PolygonMode::Fill,
+                conservative: false,
+            },
+            // TEST Less, do NOT write — the grid only reads the hull stamp; it
+            // never occludes anything itself (no later pass depth-tests).
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: OFFSCREEN_DEPTH_FORMAT,
+                depth_write_enabled: false,
+                depth_compare: wgpu::CompareFunction::Less,
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+            cache: None,
+        });
+        let grid_instance_vbuf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("grid-sprite instance vbuf"),
+            size: (std::mem::size_of::<SpriteInstance>() as u64) * MAX_SPRITES,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        (pipeline, grid_instance_vbuf)
     }
 }
 
@@ -4455,6 +4957,117 @@ impl LoftShipBlit {
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
+                    resource: wgpu::BindingResource::Sampler(&self.sampler),
+                },
+            ],
+        })
+    }
+}
+
+impl LoftDepthStamp {
+    /// (grid-occlusion a-lite 2026-06-30) Build the depth-only stamp pipeline.
+    /// Two bindings (texture + sampler); a full-screen triangle (no vbuf), no
+    /// color target, depth TEST Always + WRITE enabled so the opaque hull texel
+    /// writes near depth into the offscreen depth buffer. The grid pass after
+    /// this tests `Less` against it.
+    fn new(device: &wgpu::Device) -> Self {
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("loft depth-stamp shader"),
+            source: wgpu::ShaderSource::Wgsl(LOFT_DEPTH_STAMP_SHADER.into()),
+        });
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("loft depth-stamp sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Nearest,
+            min_filter: wgpu::FilterMode::Nearest,
+            mipmap_filter: wgpu::FilterMode::Nearest,
+            ..Default::default()
+        });
+        let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("loft depth-stamp bgl"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering),
+                    count: None,
+                },
+            ],
+        });
+        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("loft depth-stamp layout"),
+            bind_group_layouts: &[&bgl],
+            push_constant_ranges: &[],
+        });
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("loft depth-stamp pipeline"),
+            layout: Some(&layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_stamp"),
+                compilation_options: Default::default(),
+                buffers: &[],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_stamp"),
+                compilation_options: Default::default(),
+                // No color targets — depth-only pass.
+                targets: &[],
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: None,
+                unclipped_depth: false,
+                polygon_mode: wgpu::PolygonMode::Fill,
+                conservative: false,
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: OFFSCREEN_DEPTH_FORMAT,
+                depth_write_enabled: true,
+                // Always write the opaque-hull depth; the shader's `discard`
+                // gates which fragments reach here.
+                depth_compare: wgpu::CompareFunction::Always,
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+            cache: None,
+        });
+        Self {
+            pipeline,
+            bgl,
+            sampler,
+        }
+    }
+
+    /// Build a per-frame bind group binding the loft output view + sampler.
+    fn bind_group(&self, device: &wgpu::Device, loft_out: &wgpu::TextureView) -> wgpu::BindGroup {
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("loft depth-stamp bg"),
+            layout: &self.bgl,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(loft_out),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
                     resource: wgpu::BindingResource::Sampler(&self.sampler),
                 },
             ],

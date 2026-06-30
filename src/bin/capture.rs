@@ -753,21 +753,19 @@ fn main() {
     // INSUFFICIENT for the enemy-jump fix (Option A's lane_align_world_offset
     // only triggers on cross-dim swaps). Format mirrors BROADSIDE_DIMS.
     // Falls back to live `board_dims` when unset / malformed.
-    let pending_dims: broadside_engine::grid::Dims = std::env::var(
-        "BROADSIDE_PENDING_DIMS",
-    )
-    .ok()
-    .and_then(|s| {
-        let lower = s.to_ascii_lowercase();
-        let mut it = lower.split('x');
-        let c = it.next()?.parse::<usize>().ok()?;
-        let r = it.next()?.parse::<usize>().ok()?;
-        if c == 0 || r == 0 {
-            return None;
-        }
-        Some(broadside_engine::grid::Dims::new(c, r))
-    })
-    .unwrap_or(board_dims);
+    let pending_dims: broadside_engine::grid::Dims = std::env::var("BROADSIDE_PENDING_DIMS")
+        .ok()
+        .and_then(|s| {
+            let lower = s.to_ascii_lowercase();
+            let mut it = lower.split('x');
+            let c = it.next()?.parse::<usize>().ok()?;
+            let r = it.next()?.parse::<usize>().ok()?;
+            if c == 0 || r == 0 {
+                return None;
+            }
+            Some(broadside_engine::grid::Dims::new(c, r))
+        })
+        .unwrap_or(board_dims);
     let pending_board: Option<Board> = if warp_t_pre.is_some() {
         // The pending board uses the canonical (player front-center,
         // enemies back row) spawn at `pending_dims` (live dims by
@@ -1033,7 +1031,8 @@ fn main() {
         if mul < 1.0 {
             for cmd in &mut commands {
                 match cmd {
-                    broadside_engine::gfx::DrawCommand::Sprite(s) => {
+                    broadside_engine::gfx::DrawCommand::Sprite(s)
+                    | broadside_engine::gfx::DrawCommand::GridLine(s) => {
                         s.color[3] *= mul;
                     }
                     broadside_engine::gfx::DrawCommand::Polygon(p) => {
@@ -1201,12 +1200,10 @@ fn main() {
                 // `to_align - prior` (where to_align preserves the player's
                 // screen-x across the swap); pass that value via env to
                 // simulate the warp frame vs post-swap frame here.
-                let preview_lane_align_offset: f32 = std::env::var(
-                    "BROADSIDE_PREVIEW_LANE_OFFSET",
-                )
-                .ok()
-                .and_then(|s| s.parse::<f32>().ok())
-                .unwrap_or(0.0);
+                let preview_lane_align_offset: f32 = std::env::var("BROADSIDE_PREVIEW_LANE_OFFSET")
+                    .ok()
+                    .and_then(|s| s.parse::<f32>().ok())
+                    .unwrap_or(0.0);
                 broadside_engine::hud::prepend_upcoming_board_with_loft_2d_staggered_with_rest(
                     &mut commands,
                     &cfg,
@@ -1235,13 +1232,12 @@ fn main() {
                 // env-gated info filter picks it up without a dedicated flag.
                 if let Some(first) = preview_spawns.first() {
                     let preview_cfg = cfg.with_dims(p_cols, p_rows);
-                    let mut world =
-                        broadside_engine::projector::cell_world_center_frac_offset(
-                            first.col as f32,
-                            first.row as f32,
-                            &preview_cfg,
-                            z_offset,
-                        );
+                    let mut world = broadside_engine::projector::cell_world_center_frac_offset(
+                        first.col as f32,
+                        first.row as f32,
+                        &preview_cfg,
+                        z_offset,
+                    );
                     world[0] -= preview_lane_align_offset;
                     let m = broadside_engine::projector::unified_view_proj(&preview_cfg);
                     if let Some(p) =

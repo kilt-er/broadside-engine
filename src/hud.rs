@@ -550,19 +550,14 @@ pub fn compose_scene_2d_tweened(
     time_s: f32,
 ) -> Vec<DrawCommand> {
     let mut out = Vec::with_capacity(256);
-    // (Bruce 2026-06-30 grid-occlusion Option A) Build conservative AABB screen
-    // rects for every rendered ship hull so the grid wireframe can be clipped
-    // against them — Bruce: "ships should occlude the grid beneath them."
-    // The hull renders bigger than its cell quad (hero size + perspective), so
-    // we take the cell's quad screen extents and expand upward (toward the
-    // horizon — hull height roughly matches the cell's near-edge width) +
-    // outward by half a cell-width on each side. Empty when the board has no
-    // ships or `unified_enabled()` is off (legacy bake path doesn't paint a
-    // big-screen hull → no occlusion needed). The clipped variant skips the
-    // line splits entirely when `occluders` is empty (byte-identical to the
-    // pre-fix grid push), so the no-ship case is a no-op.
-    let occluders = build_hull_occluder_rects(board, cfg, tween);
-    push_grid_2d_clipped(&mut out, cfg, &occluders);
+    // (grid-occlusion a-lite 2026-06-30) Emit the grid as DEPTH-TESTED GridLine
+    // commands. gfx renders the loft hull silhouette into the offscreen depth
+    // buffer first, then the grid depth-tests against it — so each hull occludes
+    // the grid by its TRUE per-pixel footprint at any ship scale / camera pitch /
+    // board size (and through the silhouette's cut-out gaps). This replaces the
+    // old `build_hull_occluder_rects` + Liang-Barsky screen-rect clipping, which
+    // was decoupled from the scale-dialed 3-D hull and under-covered it.
+    push_grid_2d(&mut out, cfg);
 
     // Player weapon-arc legibility: outline the cells the PLAYER's weapons bear
     // on (given the player's current facing) so the player reads WHICH cells they
@@ -1589,69 +1584,15 @@ fn push_weapon_arcs_2d(out: &mut Vec<DrawCommand>, board: &Board, cfg: &Projecto
     }
 }
 
-/// Draw the empty 5×4 grid: each cell's wireframe trapezoid via the projector.
+/// Draw the playable grid: each cell's wireframe trapezoid via the projector.
 /// The front (player) row is drawn brighter so "near = where you are" reads at a
 /// glance.
-/// (Bruce 2026-06-30 grid-occlusion Option A) Compute a conservative screen-
-/// space AABB per ship that approximates where the rendered loft hull covers
-/// the offscreen — so [`push_grid_2d_clipped`] can skip drawing grid lines
-/// inside those rects. Hulls render LARGER than their cell quad (hero size,
-/// perspective, and the unified ship pass uses `unified_ship_scale`), so we
-/// take each ship's cell quad's near-edge width as the hull width and extend
-/// it vertically upward toward the horizon by ~1.4× that width — empirically
-/// covers the rendered hull silhouette across all camera pitch dial steps
-/// without over-clipping into empty space the player should still see.
 ///
-/// Returns an empty vec when `crate::gfx::unified_enabled()` is false (the
-/// legacy bake / textured-ship paths don't paint big-screen hulls → no
-/// occlusion needed; the clipped grid push will fall through to the byte-
-/// identical unclipped path).
-fn build_hull_occluder_rects(
-    board: &Board,
-    cfg: &ProjectorConfig,
-    tween: &Tween2d,
-) -> Vec<[f32; 4]> {
-    if !crate::gfx::unified_enabled() {
-        return Vec::new();
-    }
-    let mut rects: Vec<[f32; 4]> = Vec::with_capacity(8);
-    for ship in board.cells.iter().flatten() {
-        // Hidden during a Transitioning hide-set window — skip; the at-depth
-        // preview's enemy hulls are handled separately below.
-        if tween.hidden_ship_ids.contains(&ship.id) {
-            continue;
-        }
-        // Read the per-ship cell quad (tween center if a slide is in flight,
-        // else the integer cell). The quad's near-edge width sets the hull
-        // width; height extends upward by a perspective-aware factor.
-        let q = grid_cell_quad(ship.pos, cfg);
-        let vis = tween.visual.get(&ship.id);
-        let center_x = vis.map_or(q.center[0], |v| v.center[0]);
-        let near_y = vis.map_or(q.corners[3][1], |v| v.near_edge_y);
-        let near_w = vis.map_or_else(|| q.near_edge_width(), |v| v.near_edge_width);
-        // Hull silhouette empirically covers ~1.1× the cell width and ~1.4×
-        // tall (extends above the cell's top edge). Player hull is the
-        // biggest, so use a wider factor on player ships.
-        let is_player = ship.faction == crate::types::Faction::Player;
-        let w_mul = if is_player { 1.2 } else { 1.05 };
-        let h_mul = if is_player { 1.6 } else { 1.3 };
-        let hw = near_w * w_mul * 0.5;
-        let hh = near_w * h_mul;
-        let l = center_x - hw;
-        let r = center_x + hw;
-        let b = near_y;
-        let t = near_y - hh;
-        rects.push([l, t, r, b]);
-    }
-    rects
-}
-
-/// (Bruce 2026-06-30 grid-occlusion Option A) Like [`push_grid_2d`] but clip
-/// each grid-line segment against the screen-space `occluders` rects (one per
-/// rendered hull). Lines that pass THROUGH a hull are split so the inside
-/// portion is dropped — Bruce: "ships should occlude the grid beneath them."
-/// Empty `occluders` ⇒ behaves identically to [`push_grid_2d`] (no clipping).
-fn push_grid_2d_clipped(out: &mut Vec<DrawCommand>, cfg: &ProjectorConfig, occluders: &[[f32; 4]]) {
+/// (grid-occlusion a-lite 2026-06-30) Emits DEPTH-TESTED
+/// [`DrawCommand::GridLine`] commands. gfx stamps the loft hull silhouette into
+/// the offscreen depth buffer first, then this grid depth-tests against it — so
+/// each hull occludes the grid by its true per-pixel footprint.
+fn push_grid_2d(out: &mut Vec<DrawCommand>, cfg: &ProjectorConfig) {
     use crate::grid::Pos as GridPos;
     // (#213 item 4) Iterate cfg.cols/cfg.rows so a variable-board encounter
     // (e.g. 3x3 / 2x2 / 4x3 from the #199b dims pool) draws its playable grid
@@ -1672,11 +1613,7 @@ fn push_grid_2d_clipped(out: &mut Vec<DrawCommand>, cfg: &ProjectorConfig, occlu
             } else {
                 LANE_STROKE
             };
-            if occluders.is_empty() {
-                outline_cell_2d(out, &q, color);
-            } else {
-                outline_cell_2d_clipped(out, &q, color, occluders);
-            }
+            outline_cell_2d_grid(out, &q, color);
         }
     }
 }
@@ -1913,8 +1850,7 @@ pub fn push_upcoming_loft_ships_2d_staggered_with_rest(
         // so the blit anchor lands where the hull will project under the new
         // (post-swap) camera lane_align — matches the LoftShipInstance.lane_
         // align_world_offset shift applied inside gfx::render_unified_fleet.
-        let mut world =
-            cell_world_center_frac_offset(cell_frac[0], cell_frac[1], cfg, staggered_z);
+        let mut world = cell_world_center_frac_offset(cell_frac[0], cell_frac[1], cfg, staggered_z);
         world[0] -= lane_align_offset;
         let Some(centre) = unified_project(&m, world, cfg) else {
             continue;
@@ -2134,11 +2070,28 @@ pub fn enemy_stagger_factor(total_progress: f32, idx: usize, count: usize) -> f3
     if !in_settle {
         return 0.0;
     }
-    // settle_sub ∈ [0, 1] across the Settle wall-clock. Per-enemy
-    // window width includes the 40% overlap so the cascade flows.
+    // settle_sub ∈ [0, 1] across the Settle wall-clock. Per-enemy window width
+    // includes the 40% overlap so the cascade flows.
+    //
+    // (warp blink fix 2026-06-30) The LAST enemy's window MUST close at
+    // settle_sub == 1.0 so EVERY enemy reaches factor 1.0 (staggered_z == 0)
+    // by the swap instant — otherwise the deferred swap pops the still-
+    // descending hull(s) from their residual at-depth Z to the live z=0, the
+    // end-of-transition blink Bruce sees (worst on parity flips where the
+    // lane-align delta amplifies the residual-Z screen shift). The earlier
+    // form spaced starts at `idx/count` with width `(1/count)*(1+overlap)`, so
+    // the last window closed at `(count-1)/count + (1/count)*1.4 > 1.0` and the
+    // last enemy only reached ~0.918 at the seam. Fix: distribute the starts
+    // across `[0, 1 - window_w]` so `last_start + window_w == 1.0` exactly. For
+    // count == 1 the single window is `[0, 1]` (start 0, width 1) — unchanged.
     let raw_per_enemy = 1.0 / count as f32;
-    let window_w = raw_per_enemy * (1.0 + STAGGER_OVERLAP);
-    let window_start = raw_per_enemy * idx as f32;
+    let window_w = (raw_per_enemy * (1.0 + STAGGER_OVERLAP)).min(1.0);
+    let last_start = 1.0 - window_w;
+    let window_start = if count <= 1 {
+        0.0
+    } else {
+        last_start * (idx as f32 / (count as f32 - 1.0))
+    };
     let local = ((settle_sub - window_start) / window_w).clamp(0.0, 1.0);
     // Ease-out quad — soft landing for the hull.
     1.0 - (1.0 - local) * (1.0 - local)
@@ -2320,7 +2273,8 @@ pub fn push_upcoming_ships_2d(
     }
 }
 
-/// Outline a projected cell quad's four edges (the grid wireframe).
+/// Outline a projected cell quad's four edges (used for weapon-arc / overlay
+/// outlines that sit on the floor plane but are NOT depth-occluded by hulls).
 fn outline_cell_2d(out: &mut Vec<DrawCommand>, q: &CellQuad, color: [f32; 4]) {
     let c = q.corners;
     push_line(out, pt(c[0]), pt(c[1]), 1.0, color); // far (top) edge
@@ -2329,145 +2283,15 @@ fn outline_cell_2d(out: &mut Vec<DrawCommand>, q: &CellQuad, color: [f32; 4]) {
     push_line(out, pt(c[3]), pt(c[0]), 1.0, color); // left edge
 }
 
-/// (Bruce 2026-06-30 grid-occlusion Option A) Like [`outline_cell_2d`] but clip
-/// each of the four edges against the `occluders` screen-space AABB rects.
-/// Used by [`push_grid_2d_clipped`] so a loft hull paints OVER the grid (the
-/// hull is rendered atop the offscreen via the loft RTT, but the loft texture
-/// has transparency around the hull silhouette; the grid drawn behind it
-/// would otherwise peek through. Clipping the grid where a hull rect covers
-/// it prevents that read).
-///
-/// Each `occluder` is `[l, t, r, b]`. Segments that enter+exit a rect are
-/// SPLIT (the inside portion is dropped, the two outside portions kept).
-/// Robust across all 4 cases (endpoint inside, line crossing through, line
-/// passing entirely outside, line entirely inside).
-fn outline_cell_2d_clipped(
-    out: &mut Vec<DrawCommand>,
-    q: &CellQuad,
-    color: [f32; 4],
-    occluders: &[[f32; 4]],
-) {
+/// (grid-occlusion a-lite 2026-06-30) Like [`outline_cell_2d`] but emits the
+/// four edges as DEPTH-TESTED [`DrawCommand::GridLine`] sprites so the loft hull
+/// silhouette occludes them. Used by [`push_grid_2d`] for the playable grid.
+fn outline_cell_2d_grid(out: &mut Vec<DrawCommand>, q: &CellQuad, color: [f32; 4]) {
     let c = q.corners;
-    let edges = [
-        (c[0], c[1]), // far (top) edge
-        (c[1], c[2]), // right edge
-        (c[2], c[3]), // near (bottom) edge
-        (c[3], c[0]), // left edge
-    ];
-    for (a, b) in edges {
-        push_clipped_line(out, a, b, 1.0, color, occluders);
-    }
-}
-
-/// (Bruce 2026-06-30 grid-occlusion Option A) Push the [a, b] line segment
-/// clipped against every AABB in `occluders` — sub-segments OUTSIDE every
-/// rect are emitted via [`push_line`], sub-segments INSIDE any rect are
-/// dropped. Repeatedly applies the single-rect clip across all occluders so
-/// the surviving sub-segments are outside ALL rects.
-fn push_clipped_line(
-    out: &mut Vec<DrawCommand>,
-    a: [f32; 2],
-    b: [f32; 2],
-    thickness: f32,
-    color: [f32; 4],
-    occluders: &[[f32; 4]],
-) {
-    // Each surviving segment is encoded as `(p0, p1)`. Start with the input,
-    // then for each occluder split each segment into 0..2 outside fragments.
-    let mut segments: Vec<([f32; 2], [f32; 2])> = vec![(a, b)];
-    for rect in occluders {
-        let mut next: Vec<([f32; 2], [f32; 2])> = Vec::with_capacity(segments.len() * 2);
-        for (p0, p1) in segments {
-            clip_segment_outside_rect(p0, p1, *rect, &mut next);
-        }
-        segments = next;
-        if segments.is_empty() {
-            return;
-        }
-    }
-    for (p0, p1) in segments {
-        push_line(out, pt(p0), pt(p1), thickness, color);
-    }
-}
-
-/// (Bruce 2026-06-30 grid-occlusion Option A) Clip a segment `(p0, p1)`
-/// against the AABB `rect = [l, t, r, b]` and push up to 2 OUTSIDE sub-segments
-/// into `out`. If the segment doesn't intersect the rect, it is pushed
-/// unchanged. If it's entirely inside, nothing is pushed.
-///
-/// Uses Liang-Barsky parametric clipping to find the `[t_enter, t_exit]`
-/// interval where the segment is INSIDE the rect, then emits the portions
-/// outside that interval (up to 2: `[0, t_enter]` and `[t_exit, 1]`).
-#[allow(clippy::similar_names)]
-fn clip_segment_outside_rect(
-    p0: [f32; 2],
-    p1: [f32; 2],
-    rect: [f32; 4],
-    out: &mut Vec<([f32; 2], [f32; 2])>,
-) {
-    let (l, t, r, b) = (rect[0], rect[1], rect[2], rect[3]);
-    let dx = p1[0] - p0[0];
-    let dy = p1[1] - p0[1];
-
-    // Liang-Barsky: find [t_enter, t_exit] where the segment is inside the rect.
-    let mut t_enter: f32 = 0.0;
-    let mut t_exit: f32 = 1.0;
-    let edges = [
-        (-dx, p0[0] - l), // left edge   (x >= l)
-        (dx, r - p0[0]),  // right edge  (x <= r)
-        (-dy, p0[1] - t), // top edge    (y >= t)
-        (dy, b - p0[1]),  // bottom edge (y <= b)
-    ];
-    for (p, q) in edges {
-        if p.abs() < f32::EPSILON {
-            // Segment parallel to this edge: trivially-reject if outside.
-            if q < 0.0 {
-                // Segment is entirely outside the rect on this edge — emit
-                // the original unmodified.
-                out.push((p0, p1));
-                return;
-            }
-            continue;
-        }
-        let r_param = q / p;
-        if p < 0.0 {
-            // Entering — raises t_enter.
-            if r_param > t_exit {
-                // Entered after exiting → no intersection; emit original.
-                out.push((p0, p1));
-                return;
-            }
-            if r_param > t_enter {
-                t_enter = r_param;
-            }
-        } else {
-            // Exiting — lowers t_exit.
-            if r_param < t_enter {
-                out.push((p0, p1));
-                return;
-            }
-            if r_param < t_exit {
-                t_exit = r_param;
-            }
-        }
-    }
-    // [t_enter, t_exit] is the inside interval (clamped to [0, 1]).
-    let t_enter = t_enter.clamp(0.0, 1.0);
-    let t_exit = t_exit.clamp(0.0, 1.0);
-    if t_exit <= t_enter {
-        // Segment doesn't enter the rect — emit original.
-        out.push((p0, p1));
-        return;
-    }
-    // Emit the OUTSIDE portions [0, t_enter] and [t_exit, 1] (skip degenerate).
-    if t_enter > f32::EPSILON {
-        let q_enter = [p0[0] + dx * t_enter, p0[1] + dy * t_enter];
-        out.push((p0, q_enter));
-    }
-    if t_exit < 1.0 - f32::EPSILON {
-        let q_exit = [p0[0] + dx * t_exit, p0[1] + dy * t_exit];
-        out.push((q_exit, p1));
-    }
+    push_grid_line(out, pt(c[0]), pt(c[1]), 1.0, color); // far (top) edge
+    push_grid_line(out, pt(c[1]), pt(c[2]), 1.0, color); // right edge
+    push_grid_line(out, pt(c[2]), pt(c[3]), 1.0, color); // near (bottom) edge
+    push_grid_line(out, pt(c[3]), pt(c[0]), 1.0, color); // left edge
 }
 
 /// `[f32; 2]` → the `perspective::Point2` the existing `push_line` takes.
@@ -3772,23 +3596,40 @@ fn push_view_angle_overlay(out: &mut Vec<DrawCommand>, view_angle_rad: f32) {
 
 /// Thin line segment from `a` to `b` as a rotated rectangle of width `thickness`.
 fn push_line(out: &mut Vec<DrawCommand>, a: Point2, b: Point2, thickness: f32, color: [f32; 4]) {
+    out.push(DrawCommand::Sprite(line_sprite(a, b, thickness, color)));
+}
+
+/// (grid-occlusion a-lite 2026-06-30) Like [`push_line`] but tagged
+/// [`DrawCommand::GridLine`] so the compositor routes it through the DEPTH-
+/// TESTED grid-sprite pipeline (occluded by the loft hull silhouette). Same
+/// pixels as `push_line` — only the pipeline / depth-test differs.
+fn push_grid_line(
+    out: &mut Vec<DrawCommand>,
+    a: Point2,
+    b: Point2,
+    thickness: f32,
+    color: [f32; 4],
+) {
+    out.push(DrawCommand::GridLine(line_sprite(a, b, thickness, color)));
+}
+
+/// Build the rotated-rectangle [`SpriteInstance`] for a line `a`→`b`. Shared by
+/// [`push_line`] (depthless) and [`push_grid_line`] (depth-tested grid).
+fn line_sprite(a: Point2, b: Point2, thickness: f32, color: [f32; 4]) -> SpriteInstance {
     let dx = b.x - a.x;
     let dy = b.y - a.y;
     let len = dx.hypot(dy);
     let cx = f32::midpoint(a.x, b.x);
     let cy = f32::midpoint(a.y, b.y);
-    push_sprite(
-        out,
-        SpriteInstance {
-            pos: [cx, cy],
-            half_size: [len / 2.0, thickness / 2.0],
-            color,
-            uv_min: atlas::cell_uvs(atlas::SOLID_WHITE).0,
-            uv_max: atlas::cell_uvs(atlas::SOLID_WHITE).1,
-            rotation_rad: dy.atan2(dx),
-            _pad: [0.0; 3],
-        },
-    );
+    SpriteInstance {
+        pos: [cx, cy],
+        half_size: [len / 2.0, thickness / 2.0],
+        color,
+        uv_min: atlas::cell_uvs(atlas::SOLID_WHITE).0,
+        uv_max: atlas::cell_uvs(atlas::SOLID_WHITE).1,
+        rotation_rad: dy.atan2(dx),
+        _pad: [0.0; 3],
+    }
 }
 
 /* =============================================================================
@@ -7088,7 +6929,7 @@ mod tests {
             let scene = compose_scene(&board, &DEFAULT_LANE, d.to_radians());
             for (i, cmd) in scene.iter().enumerate() {
                 match cmd {
-                    DrawCommand::Sprite(s) => {
+                    DrawCommand::Sprite(s) | DrawCommand::GridLine(s) => {
                         for v in [s.pos, s.half_size, s.uv_min, s.uv_max] {
                             for c in v {
                                 assert!(

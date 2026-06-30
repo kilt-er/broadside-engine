@@ -1431,6 +1431,14 @@ struct App {
     /// against an override duration). Cleared at warp end when the demo
     /// state flips back to Playing.
     cinematic_prior_player_cell: Option<Pos>,
+    /// (warp player-rotation tween P1 2026-06-30) The player's FACING at the
+    /// moment the warp began (its round-end facing, which may be Broadside/E-W).
+    /// The render arm lerps the player's ground yaw from this → Bow(N) across the
+    /// warp so the hull visibly turns forward AS it flies and arrives already-
+    /// forward (no rotation snap at the atomic swap). `None` outside a transition
+    /// ⇒ no yaw tween. Set alongside `cinematic_prior_player_cell` at warp start,
+    /// cleared at warp end.
+    cinematic_prior_player_facing: Option<broadside_engine::grid::Facing>,
     /// The campaign — list of sectors the run progresses through.
     /// Built once at startup from [`placeholder_sectors`] and not
     /// rebuilt on Restart.
@@ -1582,6 +1590,7 @@ impl App {
             pending_board: None,
             pending_encounter_idx: None,
             cinematic_prior_player_cell: None,
+            cinematic_prior_player_facing: None,
             sectors,
             run: Run::new(Self::fresh_player_ship()),
             demo_state: DemoState::Playing,
@@ -1895,6 +1904,7 @@ impl App {
         self.pending_board = None; // (#210 P4) abandon any in-flight warp on restart
         self.pending_encounter_idx = None; // (warp rebuild 2/N) abandon the display hint too
         self.cinematic_prior_player_cell = None; // (phase a) clear cinematic player tween anchor
+        self.cinematic_prior_player_facing = None; // (P1) clear the warp yaw-tween anchor
         self.kill_bursts.clear(); // (#90) no stale bursts into the fresh board
         self.particles.clear(); // (#119) no stale explosion particles into the fresh board
         self.proj_anchors.clear(); // (#178) no stale torpedo slide anchors into the fresh board
@@ -2265,6 +2275,28 @@ impl App {
                         );
                         let kickback_aft_world =
                             self.kickbacks_world.get(&player.id).copied().unwrap_or(0.0);
+                        // (warp player-rotation tween P1 2026-06-30) The player
+                        // must TURN to face forward (Bow(N), up-lane) AS it flies
+                        // — Bruce: "rotate to turn forward by tweening, not
+                        // snapping, and be parallel to the lane." Pre-fix the
+                        // override pinned `facing_yaw_deg` to the OLD board
+                        // player's round-end facing (often Broadside/E-W) for the
+                        // WHOLE warp, then the atomic swap popped it to the
+                        // carried Bow(N) — a rotation SNAP at the seam Bruce sees.
+                        // Fix: lerp the ground yaw from the round-end facing →
+                        // Bow(N) across the SAME ease the position arrival uses
+                        // (`inner_t`, complete by t = PLAYER_WARP_FASTNESS), so
+                        // the hull arrives already-forward and the swap is yaw-
+                        // continuous (post-swap player is Bow(N), the lerp's
+                        // endpoint). `lerp_facing_yaw_deg` takes the shortest arc.
+                        let from_facing =
+                            self.cinematic_prior_player_facing.unwrap_or(player.facing);
+                        let to_facing =
+                            broadside_engine::grid::Facing::Bow(broadside_engine::grid::Dir4::N);
+                        let rot_inner_t = (t_total / PLAYER_WARP_FASTNESS).clamp(0.0, 1.0);
+                        let rot_eased = 1.0 - (1.0 - rot_inner_t) * (1.0 - rot_inner_t);
+                        let facing_yaw_deg =
+                            hud::lerp_facing_yaw_deg(from_facing, to_facing, rot_eased);
                         tw.visual.insert(
                             player.id.clone(),
                             hud::VisualShip2d {
@@ -2272,7 +2304,7 @@ impl App {
                                 near_edge_y: lerped_q.corners[3][1],
                                 near_edge_width: lerped_q.near_edge_width(),
                                 depth_scale: lerped_q.depth_scale,
-                                facing_yaw_deg: hud::loft_facing_ground_yaw(player.facing),
+                                facing_yaw_deg,
                                 cell_frac,
                                 kickback,
                                 kickback_aft_world,
@@ -3186,6 +3218,12 @@ impl ApplicationHandler for App {
                                         self.pending_encounter_idx =
                                             Some(self.run.completed_encounters as usize);
                                         self.cinematic_prior_player_cell = prior_player_cell;
+                                        // (warp player-rotation tween P1) Capture
+                                        // the round-end facing so the render arm
+                                        // can lerp ground yaw → Bow(N) across the
+                                        // warp (turn-forward, no rotation snap).
+                                        self.cinematic_prior_player_facing =
+                                            prior_player.map(|(_, f)| f);
                                         self.plant_warp_in_anchors(kind, now, prior_player_cell);
                                         self.demo_state =
                                             DemoState::Transitioning(TransitionPhase {
@@ -3333,6 +3371,9 @@ impl ApplicationHandler for App {
                         // so the post-warp Playing state renders the player
                         // at its rest cell.
                         self.cinematic_prior_player_cell = None;
+                        // (P1) Clear the warp yaw-tween anchor — post-warp the
+                        // player renders at its rest Bow(N) facing directly.
+                        self.cinematic_prior_player_facing = None;
                         self.demo_state = if self.run.victorious {
                             DemoState::RunComplete
                         } else {
@@ -3870,7 +3911,11 @@ impl ApplicationHandler for App {
                     if mul < 1.0 {
                         for cmd in &mut instances {
                             match cmd {
-                                broadside_engine::gfx::DrawCommand::Sprite(s) => {
+                                // (grid-occlusion a-lite 2026-06-30) GridLine is a
+                                // depth-tested grid sprite — fade it with the rest
+                                // of the outgoing playable plane (same as Sprite).
+                                broadside_engine::gfx::DrawCommand::Sprite(s)
+                                | broadside_engine::gfx::DrawCommand::GridLine(s) => {
                                     s.color[3] *= mul;
                                 }
                                 broadside_engine::gfx::DrawCommand::Polygon(p) => {
@@ -4055,23 +4100,19 @@ impl ApplicationHandler for App {
                         // parity-flip transitions. Outside Transitioning the
                         // offset is 0 and the persistent at-depth preview is
                         // byte-identical to pre-fix.
-                        let preview_lane_align_offset: f32 = if matches!(
-                            demo_state,
-                            DemoState::Transitioning(_)
-                        ) {
-                            self.pending_board
-                                .as_ref()
-                                .and_then(|p| {
-                                    Self::compute_lane_align_for_swap(&self.board, p)
-                                })
-                                .map(|to_align| {
-                                    let prior = broadside_engine::gfx::unified_lane_align_x();
-                                    to_align - prior
-                                })
-                                .unwrap_or(0.0)
-                        } else {
-                            0.0
-                        };
+                        let preview_lane_align_offset: f32 =
+                            if matches!(demo_state, DemoState::Transitioning(_)) {
+                                self.pending_board
+                                    .as_ref()
+                                    .and_then(|p| Self::compute_lane_align_for_swap(&self.board, p))
+                                    .map(|to_align| {
+                                        let prior = broadside_engine::gfx::unified_lane_align_x();
+                                        to_align - prior
+                                    })
+                                    .unwrap_or(0.0)
+                            } else {
+                                0.0
+                            };
                         hud::prepend_upcoming_board_with_loft_2d_staggered_with_rest(
                             &mut instances,
                             &scene_cfg,
