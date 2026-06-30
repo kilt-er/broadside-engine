@@ -1787,22 +1787,25 @@ impl App {
         // centered position before any per-encounter shift.
         let old_world_x_raw = (old_dims.cols as f32 * 0.5 - op.pos.col as f32 - 0.5) * s;
         let new_world_x_raw = (new_dims.cols as f32 * 0.5 - np.pos.col as f32 - 0.5) * s;
-        // Stack onto the prior so the player's ACTUAL rendered world-x
-        // (= raw + lane_align) is preserved across the swap (lead drift-
-        // safety note 2026-06-30):
-        //   actual_old = old_raw + prior
-        //   we want: actual_new == actual_old
-        //   actual_new = new_raw + lane_align_new
-        //   ⇒ lane_align_new = old_raw + prior - new_raw
-        //   ⇒ lane_align_new = prior + (old_raw - new_raw)
-        // So stacking is the drift-safe form. Verified over 5x4→2x2→3x3
-        // →4x4→5x4 (alternating parity): player's rendered x is +0.000 at
-        // every hop — no cumulative walk.
+        // SCREEN-X-PRESERVING form (corrected via capture-verify 2026-06-30):
+        // The camera looks at world `target_x = lane_align_atomic`, so a cell
+        // at world_x_cell projects to a screen-x derived from (cell - target).
+        // To preserve screen-x across the swap, we need:
+        //   new_raw - next == old_raw - prior        (relative offset stable)
+        //   ⇒ next = prior + (new_raw - old_raw)
+        //   ⇒ next = prior - (old_raw - new_raw)    (sign matters!)
+        //
+        // The earlier `prior + (old - new)` form INVERTED the sign — it set
+        // the camera lateral OPPOSITE to the cell shift, doubling the snap
+        // instead of canceling it. Capture-verified the correct form: a 5x4
+        // col=2 (world_x=0, screen_x=320) → 2x2 col=1 (world_x=-0.950)
+        // needs lane_align = -0.950 so target_x = -0.950 and the player
+        // projects at the same screen-x as before.
         let prior = broadside_engine::gfx::unified_lane_align_x();
-        let next = prior + (old_world_x_raw - new_world_x_raw);
+        let next = prior + (new_world_x_raw - old_world_x_raw);
         broadside_engine::gfx::set_unified_lane_align_x(next);
         log::info!(
-            "lane_align swap: {}x{} col {} -> {}x{} col {} | raw {:+.3} -> {:+.3} | lane_align {:+.3} -> {:+.3} | rendered x stays {:+.3}",
+            "lane_align swap: {}x{} col {} -> {}x{} col {} | raw {:+.3} -> {:+.3} | lane_align {:+.3} -> {:+.3} | rel_to_target stays {:+.3}",
             old_dims.cols,
             old_dims.rows,
             op.pos.col,
@@ -1813,7 +1816,7 @@ impl App {
             new_world_x_raw,
             prior,
             next,
-            new_world_x_raw + next,
+            new_world_x_raw - next,
         );
     }
 

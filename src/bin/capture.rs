@@ -345,6 +345,16 @@ fn main() {
             log::info!("capture: lateral pan offset -> {x:.2} world units");
         }
     }
+    // (Bruce design law 2026-06-30 lane-align verification) Set the persistent
+    // lane-align offset directly so multi-hop captures can replay the live
+    // bin's accumulated offset at a given encounter. NOT clamped by dims —
+    // works on any board.
+    if let Ok(v) = std::env::var("BROADSIDE_LANE_ALIGN_X") {
+        if let Ok(x) = v.parse::<f32>() {
+            broadside_engine::gfx::set_unified_lane_align_x(x);
+            log::info!("capture: lane-align offset -> {x:+.3} world units");
+        }
+    }
     // (#215 Bruce hittable-cells toggle) BROADSIDE_HITTABLE=0 forces the
     // hittable-cells overlay OFF for a clean-board capture (default is ON to
     // match the live bin). Useful for proving the toggle gates the overlay.
@@ -678,6 +688,37 @@ fn main() {
     // at the captured board's variable encounter shape (rather than 5x4).
     let board_dims = board.dims();
     let cfg = cfg_no_dims.with_dims(board_dims.cols, board_dims.rows);
+    // (Bruce design law 2026-06-30 lane-align verification) Log the player's
+    // projected screen-x using the LIVE projector (dims + lane_align_x +
+    // camera) so multi-hop captures can diff screen-x across an encounter
+    // swap. Reads the same `unified_view_proj` the renderer uses → byte-
+    // equivalent to the on-screen result.
+    if let Some(player) = board
+        .cells
+        .iter()
+        .flatten()
+        .find(|s| s.faction == Faction::Player)
+    {
+        let world = broadside_engine::projector::cell_world_center_frac(
+            player.pos.col as f32,
+            player.pos.row as f32,
+            &cfg,
+        );
+        let m = broadside_engine::projector::unified_view_proj(&cfg);
+        if let Some(p) = broadside_engine::projector::unified_project(&m, world, &cfg) {
+            log::info!(
+                "capture: blink-check player col {} row {} on {}x{} | world_x={:+.3} lane_align={:+.3} | screen_x={:.2} screen_y={:.2}",
+                player.pos.col,
+                player.pos.row,
+                board_dims.cols,
+                board_dims.rows,
+                world[0],
+                broadside_engine::gfx::unified_lane_align_x(),
+                p.x,
+                p.y,
+            );
+        }
+    }
     // (CINEMATIC REBUILD phase a 2026-06-30) Pre-read BROADSIDE_WARP_T so we
     // can build the right Tween2d below — the player warp tween needs the
     // (z_offset, tint_alpha) AND the player VisualShip2d override in lockstep.
