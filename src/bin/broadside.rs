@@ -3101,10 +3101,33 @@ impl ApplicationHandler for App {
                                     // player's (col,row) + facing forward
                                     // into the new board. Bruce's rule: no
                                     // respawn at runs::player_start_pos.
+                                    // (Bruce 2026-06-30 pre-warp rotation)
+                                    // If the player's prior facing is broad-
+                                    // side to the lane (E/W), normalize it
+                                    // to Bow(N) (up-lane = into-screen) so
+                                    // the warp's forward fly reads correctly
+                                    // — you can't fly along the lane while
+                                    // facing perpendicular. The tween anchor
+                                    // planted below holds `from_facing` =
+                                    // pre-warp facing, so the
+                                    // `lerp_facing_yaw_deg` in `tween_2d`
+                                    // animates the rotation across the
+                                    // PLAYER_WARP_FASTNESS window — pivot
+                                    // first, fly second.
+                                    let carry_facing = prior_player.map(|(_, f)| {
+                                        use broadside_engine::grid::{Dir4, Facing};
+                                        match f {
+                                            Facing::Bow(Dir4::E | Dir4::W)
+                                            | Facing::Broadside(_) => {
+                                                Facing::Bow(Dir4::N)
+                                            }
+                                            other @ Facing::Bow(_) => other,
+                                        }
+                                    });
                                     Self::carry_player_forward(
                                         &mut next,
                                         prior_player_cell,
-                                        prior_player.map(|(_, f)| f),
+                                        carry_facing,
                                     );
                                     // (Bruce design law 2026-06-30 lane-align)
                                     // Update lane_align BEFORE the swap (both
