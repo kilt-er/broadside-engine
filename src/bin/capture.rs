@@ -962,6 +962,92 @@ fn main() {
             }
             pool.emit(&mut commands);
             log::info!("capture: #119 explosion particle burst at killed cell {killed:?}");
+            // (#217) BROADSIDE_VFX_DEMO_SEQ=1 fires a composed Sequence (player
+            // beam at t=0, spark at t=0.05, boom at t=0.20) via the new
+            // CombatVfx::play_sequence + seeds a TRIANGLE-shaped burst via
+            // ParticlePool's new shape pipeline, both proving the editor-driven
+            // composition path end-to-end. Disabled by default so the
+            // pre-existing demo capture stays identical.
+            if std::env::var("BROADSIDE_VFX_DEMO_SEQ").is_ok_and(|v| v != "0") {
+                use broadside_engine::effects::{
+                    EffectCatalog, EffectDef, EffectKind, Explosion as ExCfg, HitFlash as HfCfg,
+                    ParticleBurst, Rgba, SequenceDef, SequenceStep, ShapeKind, ShotBeam as SbCfg,
+                };
+                let player_pos = board
+                    .cells
+                    .iter()
+                    .flatten()
+                    .find(|s| s.faction == Faction::Player)
+                    .map_or_else(|| Pos::new(2, 3), |s| s.pos);
+                let cat = EffectCatalog {
+                    effects: vec![
+                        EffectDef {
+                            id: "player_beam".into(),
+                            kind: EffectKind::ShotBeam(SbCfg::default()),
+                        },
+                        EffectDef {
+                            id: "spark".into(),
+                            kind: EffectKind::HitFlash(HfCfg::default()),
+                        },
+                        EffectDef {
+                            id: "boom".into(),
+                            kind: EffectKind::Explosion(ExCfg::default()),
+                        },
+                        EffectDef {
+                            id: "kill_combo".into(),
+                            kind: EffectKind::Sequence(SequenceDef {
+                                steps: vec![
+                                    SequenceStep {
+                                        id: "player_beam".into(),
+                                        delay_secs: 0.0,
+                                    },
+                                    SequenceStep {
+                                        id: "spark".into(),
+                                        delay_secs: 0.05,
+                                    },
+                                    SequenceStep {
+                                        id: "boom".into(),
+                                        delay_secs: 0.20,
+                                    },
+                                ],
+                            }),
+                        },
+                    ],
+                };
+                let mut seq_vfx = broadside_engine::vfx::CombatVfx::new();
+                let scheduled =
+                    seq_vfx.play_sequence(&cat, "kill_combo", killed, Some(player_pos), None);
+                log::info!("capture: #217 Sequence scheduled {scheduled} steps");
+                let seq_t: f32 = std::env::var("BROADSIDE_VFX_DEMO_SEQ_T")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(0.30);
+                seq_vfx.advance(seq_t);
+                seq_vfx.emit(&mut commands, &board, &cfg);
+                // Triangle-shaped burst with spin: proves per-particle ShapeKind +
+                // rotation + spin_rate route through the new ParticlePool path.
+                let tri_cfg = ParticleBurst {
+                    count: 18,
+                    color: Rgba([1.0, 0.45, 0.85, 1.0]),
+                    life_secs: 0.60,
+                    shape: ShapeKind::Triangle,
+                    rotation_min: 0.0,
+                    rotation_max: std::f32::consts::TAU,
+                    spin_rate: 2.0,
+                    size_min: 4.0,
+                    size_max: 8.0,
+                    ..Default::default()
+                };
+                let mut tri_pool = broadside_engine::vfx::ParticlePool::new();
+                let tri_center =
+                    broadside_engine::projector::grid_cell_quad(player_pos, &cfg).center;
+                tri_pool.spawn_burst_with(&tri_cfg, tri_center, 0.0);
+                for _ in 0..10 {
+                    tri_pool.advance(1.0 / 60.0);
+                }
+                tri_pool.emit(&mut commands);
+                log::info!("capture: #217 Triangle-shape burst at player cell {player_pos:?}");
+            }
             // (#178) Drive the REAL wall-clock CombatVfx explosion at mid-life so the
             // capture shows emit_explosion's expanding multi-layer blast (the live
             // death path). observe(before) latches the enemy present; observe(after =

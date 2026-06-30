@@ -113,6 +113,13 @@ pub const ID_PARTICLE_BURST: &str = "particle_burst";
 /// (#209 hook 4) Distance-delayed light bounce off a surviving ship when a blast
 /// goes off. One id per [`EffectKind::ExplosionReflection`].
 pub const ID_EXPLOSION_REFLECTION: &str = "explosion_reflection";
+/// (#217) Composed effect — a Sequence "combines" other authored effects into
+/// one named timeline. Unlike the per-family ids above this is a DISCRIMINATOR
+/// only: every Sequence effect has a USER-chosen [`EffectDef::id`] (the name
+/// the game looks up via [`crate::vfx::CombatVfx::play_sequence`]); the
+/// constant here just names the variant for schema-aware tooling that wants
+/// to query "is this a Sequence?".
+pub const ID_SEQUENCE: &str = "sequence";
 
 /// One authored effect: a stable lookup `id` plus its per-family parameters.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -151,6 +158,17 @@ pub enum EffectKind {
     /// engine spawns one effect per surviving ship in the diff explosion
     /// branch.
     ExplosionReflection(ExplosionReflection),
+    /// (#217) Sequence — a "combined" effect that PLAYS a fixed timeline of
+    /// other authored effects, each at its own `delay_secs` offset. The editor
+    /// writes one of these when the user ticks "include" on N base families
+    /// and dials per-step delays; the game plays it via
+    /// [`crate::vfx::CombatVfx::play_sequence`] (looks up each step's id in the
+    /// same catalog and schedules it onto the pool with the staggered
+    /// `start_delay`). A Sequence's [`EffectDef::id`] is USER-chosen (e.g.
+    /// `"player_torpedo_kill"`); the `"kind": "Sequence"` discriminator marks
+    /// it. Step ids that don't resolve (typo / catalog mismatch) are silently
+    /// skipped — the rest of the timeline still plays.
+    Sequence(SequenceDef),
 }
 
 /// Per-archetype beam style row — mirrors one arm of `vfx::archetype_beam_style`
@@ -336,6 +354,27 @@ pub struct ParticleBurst {
     /// Per-second velocity drag coefficient (`advance` `2.0` in `1 - 2*dt`).
     #[serde(default = "default_burst_drag")]
     pub drag: f32,
+    /// (#217) Per-particle silhouette. Defaults to [`ShapeKind::Square`] so an
+    /// unedited catalog reproduces today's look byte-for-byte.
+    #[serde(default)]
+    pub shape: ShapeKind,
+    /// (#217) Minimum birth rotation in RADIANS — each particle's starting
+    /// orientation is drawn deterministically from `[rotation_min,
+    /// rotation_max]` (no RNG, same FNV fold as the radial spread). Defaults
+    /// to `0.0` so unedited bursts look identical (the `SOLID_WHITE` square
+    /// is rotation-invariant; non-square shapes start axis-aligned).
+    #[serde(default = "default_burst_rotation_min")]
+    pub rotation_min: f32,
+    /// (#217) Maximum birth rotation in RADIANS. Set to ~`TAU` for "any
+    /// orientation"; set equal to `rotation_min` for "every particle the same
+    /// angle." Defaults to `0.0` (no spread).
+    #[serde(default = "default_burst_rotation_max")]
+    pub rotation_max: f32,
+    /// (#217) Angular velocity in RADIANS PER SECOND — applied per particle
+    /// per `advance(dt)`. Positive = CCW. Defaults to `0.0` (no spin) so
+    /// unedited bursts are spin-free.
+    #[serde(default = "default_burst_spin_rate")]
+    pub spin_rate: f32,
 }
 
 /// (#209 hook 4) Distance-delayed light bounce. When a ship explodes, every
@@ -362,6 +401,78 @@ pub struct ExplosionReflection {
     /// a 5x4 board, fast enough not to bore. Tunable.
     #[serde(default = "default_reflection_delay_per_cell")]
     pub delay_per_cell: f32,
+}
+
+/// (#217) The body of a [`EffectKind::Sequence`]: a list of steps that
+/// reference OTHER effects in the same [`EffectCatalog`] by id, each scheduled
+/// at its own offset.
+///
+/// Wire shape (JSON):
+/// ```json
+/// { "id": "player_torpedo_kill",
+///   "kind": "Sequence",
+///   "steps": [
+///     { "id": "player_beam",   "delay_secs": 0.00 },
+///     { "id": "torpedo_trail", "delay_secs": 0.05 },
+///     { "id": "boom",          "delay_secs": 0.40 }
+///   ] }
+/// ```
+///
+/// Empty `steps` is a no-op (legal — useful as an editor scaffold). Order is
+/// preserved (the editor's UI strip mirrors `steps`'s order). The
+/// per-effect-family `start_delay` machinery in `vfx.rs` does the scheduling —
+/// the Sequence is pure data, no runtime state of its own.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct SequenceDef {
+    /// Ordered list of base-effect steps. Each step references another
+    /// [`EffectDef::id`] in the SAME [`EffectCatalog`]; the editor renders
+    /// these as a vertical timeline of included families with a per-row delay
+    /// slider.
+    #[serde(default)]
+    pub steps: Vec<SequenceStep>,
+}
+
+/// (#217) One row in a [`SequenceDef`]: which authored effect to play + how
+/// long to wait before playing it.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct SequenceStep {
+    /// The [`EffectDef::id`] of the base effect to play at this step. The
+    /// engine looks this id up in the same [`EffectCatalog`] passed to
+    /// [`crate::vfx::CombatVfx::play_sequence`]; an unresolved id is logged
+    /// and skipped (the rest of the timeline still plays — degrades
+    /// gracefully past editor typos).
+    #[serde(default)]
+    pub id: String,
+    /// Seconds of silence before this step's effect spawns, measured from the
+    /// Sequence's t=0 (i.e. the call to `play_sequence`). The engine folds
+    /// this into the spawned effect's `start_delay`; per-particle or per-beam
+    /// existing delays are additive on top inside the spawned base effect.
+    #[serde(default)]
+    pub delay_secs: f32,
+}
+
+/// (#217) Per-particle silhouette for [`ParticleBurst`]. Was implicitly
+/// `Square` (the `SOLID_WHITE` atlas cell); the editor now lets the user
+/// author the silhouette per-burst. `Square` is the default so an
+/// unedited catalog reproduces today's look byte-for-byte.
+///
+/// Wire shape: `#[serde(rename_all = "snake_case")]` → JSON values are
+/// `"square"` / `"circle"` / `"triangle"` / `"line"`. The atlas cell each
+/// shape resolves to is the engine's lookup (`SOLID_WHITE` for square; the
+/// editor doesn't need to know which atlas cell).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ShapeKind {
+    /// `SOLID_WHITE` filled square — today's look.
+    #[default]
+    Square,
+    /// Filled circle silhouette (round soft-edge dot).
+    Circle,
+    /// Equilateral triangle silhouette (pointing along `+rotation_rad`).
+    Triangle,
+    /// Thin line segment (uses the burst's `size` for thickness and a
+    /// fixed-ratio length; `rotation_rad` orients the line).
+    Line,
 }
 
 /* ---- defaults: the EXACT constants currently in vfx.rs ---------------------
@@ -558,6 +669,17 @@ const fn default_burst_dur_jitter() -> [f32; 2] {
 const fn default_burst_drag() -> f32 {
     2.0
 }
+// (#217) Particle rotation defaults — `0.0` for all three so unedited bursts
+// stay byte-identical (the SOLID_WHITE square is rotation-invariant anyway).
+const fn default_burst_rotation_min() -> f32 {
+    0.0
+}
+const fn default_burst_rotation_max() -> f32 {
+    0.0
+}
+const fn default_burst_spin_rate() -> f32 {
+    0.0
+}
 
 // -- ExplosionReflection (#209 hook 4) --
 const fn default_reflection_color() -> Rgb {
@@ -654,6 +776,10 @@ impl Default for ParticleBurst {
             size_max: default_burst_size_max(),
             dur_jitter: default_burst_dur_jitter(),
             drag: default_burst_drag(),
+            shape: ShapeKind::Square,
+            rotation_min: default_burst_rotation_min(),
+            rotation_max: default_burst_rotation_max(),
+            spin_rate: default_burst_spin_rate(),
         }
     }
 }
@@ -745,6 +871,88 @@ mod tests {
                 assert!((h.peak_px - 16.0).abs() < f32::EPSILON);
             }
             other => panic!("expected HitFlash, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn sequence_round_trips_through_json() {
+        // (#217) The composed-effect schema: a Sequence with named steps round-
+        // trips end-to-end. The editor writes one of these when the user ticks
+        // "include" on base families + dials per-step delays.
+        let cat = EffectCatalog {
+            effects: vec![
+                EffectDef {
+                    id: "spark".into(),
+                    kind: EffectKind::HitFlash(HitFlash::default()),
+                },
+                EffectDef {
+                    id: "boom".into(),
+                    kind: EffectKind::Explosion(Explosion::default()),
+                },
+                EffectDef {
+                    id: "player_kill".into(),
+                    kind: EffectKind::Sequence(SequenceDef {
+                        steps: vec![
+                            SequenceStep {
+                                id: "spark".into(),
+                                delay_secs: 0.0,
+                            },
+                            SequenceStep {
+                                id: "boom".into(),
+                                delay_secs: 0.20,
+                            },
+                        ],
+                    }),
+                },
+            ],
+        };
+        let json = cat.to_json_string().unwrap();
+        assert!(
+            json.contains("\"Sequence\""),
+            "Sequence variant tag missing from JSON: {json}"
+        );
+        let back = EffectCatalog::from_json_str(&json).unwrap();
+        assert_eq!(cat, back);
+        match &back.get("player_kill").unwrap().kind {
+            EffectKind::Sequence(s) => {
+                assert_eq!(s.steps.len(), 2);
+                assert_eq!(s.steps[0].id, "spark");
+                assert!((s.steps[1].delay_secs - 0.20).abs() < f32::EPSILON);
+            }
+            other => panic!("expected Sequence, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn shape_kind_default_is_square_for_back_compat() {
+        // (#217) Unedited ParticleBurst → ShapeKind::Square so today's look
+        // is byte-identical. Partial JSON missing `shape` also yields Square.
+        assert_eq!(ParticleBurst::default().shape, ShapeKind::Square);
+        let json = r#"{ "effects": [ { "id": "p", "kind": "ParticleBurst" } ] }"#;
+        let cat = EffectCatalog::from_json_str(json).unwrap();
+        if let EffectKind::ParticleBurst(p) = &cat.get("p").unwrap().kind {
+            assert_eq!(p.shape, ShapeKind::Square);
+            assert!((p.rotation_min - 0.0).abs() < f32::EPSILON);
+            assert!((p.rotation_max - 0.0).abs() < f32::EPSILON);
+            assert!((p.spin_rate - 0.0).abs() < f32::EPSILON);
+        } else {
+            panic!("expected ParticleBurst");
+        }
+    }
+
+    #[test]
+    fn shape_kind_wire_format_is_snake_case() {
+        // (#217) Editor will read/write JSON values "square" / "circle" /
+        // "triangle" / "line" — keep the wire format stable for round-trip.
+        for (variant, expected) in [
+            (ShapeKind::Square, "\"square\""),
+            (ShapeKind::Circle, "\"circle\""),
+            (ShapeKind::Triangle, "\"triangle\""),
+            (ShapeKind::Line, "\"line\""),
+        ] {
+            assert_eq!(serde_json::to_string(&variant).unwrap(), expected);
+            let back: ShapeKind = serde_json::from_str(expected).unwrap();
+            assert_eq!(back, variant);
         }
     }
 

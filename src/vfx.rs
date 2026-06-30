@@ -26,7 +26,8 @@
 //! lifetimes each frame and asks for the draw commands.
 
 use crate::effects::{
-    Explosion, ExplosionReflection, HitFlash, ParticleBurst, ShotBeam, TelegraphFire, Trail,
+    EffectCatalog, EffectKind as CatEffectKind, Explosion, ExplosionReflection, HitFlash,
+    ParticleBurst, ShotBeam, TelegraphFire, Trail,
 };
 use crate::gfx::{DrawCommand, SpriteInstance};
 use crate::grid::Pos;
@@ -366,6 +367,139 @@ impl CombatVfx {
             }
         }
         self.prev = Some(cur);
+    }
+
+    /// (#217) Play a composed Sequence effect by id. Looks up the
+    /// [`crate::effects::EffectKind::Sequence`] in `catalog`, then for each
+    /// [`crate::effects::SequenceStep`] resolves the step's `id` to its base
+    /// effect in the SAME catalog and spawns it onto the pool with
+    /// `start_delay = step.delay_secs` (folded into the same machinery the
+    /// `observe` volley stagger uses).
+    ///
+    /// `anchor` is the cell point-effects use (`HitFlash` / `Explosion` /
+    /// `ExplosionReflection` / `ParticleBurst` centre). `target` is the second
+    /// endpoint for line-effects (`ShotBeam` / `Trail`); if `None`, those
+    /// steps fall back to `anchor` (a zero-length beam — handy for editor
+    /// previews that don't have an attacker→target context).
+    ///
+    /// `particles`, if `Some`, also seeds any [`ParticleBurst`] steps onto
+    /// the screen-space [`ParticlePool`] (so a Sequence that mixes pool and
+    /// burst effects plays end-to-end). Pass `None` if you only want the
+    /// `CombatVfx`-pool side (the editor preview case may not have a particle
+    /// pool wired yet). The burst's `start_delay` is honored via the new
+    /// `Particle.start_delay` field, mirroring the `Effect.start_delay`
+    /// machinery that drives the combat-vfx pool.
+    ///
+    /// Returns the number of steps that resolved and spawned. Unresolved step
+    /// ids (typo / catalog mismatch) and nested Sequence steps are logged
+    /// and skipped without aborting the rest of the timeline. Calling with a
+    /// non-Sequence `sequence_id` (or unknown id) returns `0` and spawns
+    /// nothing.
+    pub fn play_sequence(
+        &mut self,
+        catalog: &EffectCatalog,
+        sequence_id: &str,
+        anchor: Pos,
+        target: Option<Pos>,
+        mut particles: Option<&mut ParticlePool>,
+    ) -> usize {
+        let Some(def) = catalog.get(sequence_id) else {
+            log::warn!("vfx::play_sequence: unknown id {sequence_id}");
+            return 0;
+        };
+        let CatEffectKind::Sequence(seq) = &def.kind else {
+            log::warn!(
+                "vfx::play_sequence: id {sequence_id} is not a Sequence ({:?})",
+                std::mem::discriminant(&def.kind)
+            );
+            return 0;
+        };
+        let to = target.unwrap_or(anchor);
+        let mut scheduled = 0usize;
+        for step in &seq.steps {
+            let Some(step_def) = catalog.get(&step.id) else {
+                log::warn!(
+                    "vfx::play_sequence: step id '{}' unresolved in catalog (skipped)",
+                    step.id
+                );
+                continue;
+            };
+            let delay = step.delay_secs.max(0.0);
+            match &step_def.kind {
+                CatEffectKind::ShotBeam(sb) => {
+                    // Resolve to a default Beam archetype, player tint — the
+                    // editor-driven preview doesn't carry attacker context;
+                    // for runtime use, the caller can wrap play_sequence in
+                    // their own helper that picks a tint.
+                    let (thickness, life) =
+                        archetype_beam_style(sb, crate::types::WeaponArchetype::Beam);
+                    self.spawn_delayed(
+                        EffectKind::ShotBeam {
+                            from_pos: anchor,
+                            to_pos: to,
+                            color: sb.player_tint.0,
+                            thickness,
+                            dim: false,
+                        },
+                        life,
+                        delay,
+                    );
+                    scheduled += 1;
+                }
+                CatEffectKind::HitFlash(hf) => {
+                    self.spawn_delayed(EffectKind::HitFlash { pos: anchor }, hf.life_secs, delay);
+                    scheduled += 1;
+                }
+                CatEffectKind::Explosion(ex) => {
+                    self.spawn_delayed(EffectKind::Explosion { pos: anchor }, ex.life_secs, delay);
+                    scheduled += 1;
+                }
+                CatEffectKind::Trail(t) => {
+                    self.spawn_delayed(
+                        EffectKind::Trail {
+                            from_pos: anchor,
+                            to_pos: to,
+                            color: t.color.0,
+                        },
+                        t.life_secs,
+                        delay,
+                    );
+                    scheduled += 1;
+                }
+                CatEffectKind::TelegraphFire(_) => {
+                    // (#215) The TelegraphFire dispatch is a no-op in emit;
+                    // spawning one is harmless but useless. Skip to keep the
+                    // pool tight.
+                }
+                CatEffectKind::ExplosionReflection(er) => {
+                    self.spawn_delayed(
+                        EffectKind::ExplosionReflection { target_pos: anchor },
+                        er.life_secs,
+                        delay,
+                    );
+                    scheduled += 1;
+                }
+                CatEffectKind::ParticleBurst(pb) => {
+                    if let Some(pool) = particles.as_deref_mut() {
+                        // Project the anchor cell into screen space so the
+                        // pool's screen-space integrator has a sensible
+                        // centre. The caller is responsible for the
+                        // ProjectorConfig — for now we use a default; a
+                        // future overload can take it as an arg.
+                        pool.spawn_burst_with(pb, [0.0, 0.0], delay);
+                        scheduled += 1;
+                    }
+                }
+                CatEffectKind::Sequence(_) => {
+                    // No recursion (loop risk + unclear timing semantics).
+                    log::warn!(
+                        "vfx::play_sequence: nested Sequence step '{}' skipped (no recursion)",
+                        step.id
+                    );
+                }
+            }
+        }
+        scheduled
     }
 
     fn diff(&mut self, prev: &Snapshot, cur: &Snapshot, kill_delays: &HashMap<Pos, (f32, f32)>) {
@@ -1050,6 +1184,14 @@ fn emit_reflection_glow(
 /// One live particle in [`ParticlePool`]. `pos`/`vel` are SCREEN-SPACE (virtual
 /// pixels and px/sec); `age`/`dur` drive the 0→1 lifetime; `size` is the birth
 /// half-extent (shrinks with age); `color` is RGBA at birth (alpha fades).
+///
+/// (#217) `shape`, `rotation`, `spin_rate`, and `start_delay` are authored
+/// per-burst from [`crate::effects::ParticleBurst`] and copied onto every
+/// particle the burst spawns. `shape` picks the atlas silhouette in `emit`;
+/// `rotation` is the current orientation in radians (advanced by `spin_rate *
+/// dt` in `advance`); `start_delay` keeps the particle silent until age
+/// elapses past it (mirrors [`Effect::start_delay`] on the combat-vfx side, so
+/// a Sequence step can place a burst on the same timeline as a hit flash).
 #[derive(Clone, Copy, Debug)]
 pub struct Particle {
     pub pos: [f32; 2],
@@ -1058,6 +1200,17 @@ pub struct Particle {
     pub dur: f32,
     pub size: f32,
     pub color: [f32; 4],
+    /// (#217) Silhouette atlas cell choice (Square/Circle/Triangle/Line).
+    /// Defaults to `Square` for back-compat with the old `spawn_burst` path.
+    pub shape: crate::effects::ShapeKind,
+    /// (#217) Current orientation in radians. Drawn as `SpriteInstance.rotation_rad`.
+    pub rotation: f32,
+    /// (#217) Angular velocity radians/sec; `advance()` folds `rotation += spin_rate * dt`.
+    pub spin_rate: f32,
+    /// (#217) Silent lead-in in seconds — particle is alive in the pool but
+    /// not drawn until `age >= start_delay`. Set from a Sequence step's
+    /// `delay_secs`; classic bursts spawn with `0.0`.
+    pub start_delay: f32,
 }
 
 impl Particle {
@@ -1066,6 +1219,9 @@ impl Particle {
     }
     fn alive(&self) -> bool {
         self.age < self.dur
+    }
+    fn visible(&self) -> bool {
+        self.age >= self.start_delay
     }
 }
 
@@ -1114,11 +1270,41 @@ impl ParticlePool {
     /// (data); the defaults reproduce the prior `24 + 0..70` speed, `2 + 0..3`
     /// size, `0.7 + 0..0.6` jitter.
     pub fn spawn_burst(&mut self, center: [f32; 2], n: u32, color: [f32; 4], dur: f32) {
-        let (spd_min, spd_span) = (self.cfg.speed_min, self.cfg.speed_max - self.cfg.speed_min);
-        let (sz_min, sz_span) = (self.cfg.size_min, self.cfg.size_max - self.cfg.size_min);
-        let (jit_base, jit_span) = (self.cfg.dur_jitter[0], self.cfg.dur_jitter[1]);
+        self.spawn_burst_inner(center, n, color, dur, &self.cfg.clone(), 0.0);
+    }
+
+    /// (#217) Spawn a burst seeded from `cfg` (shape / rotation range / spin
+    /// rate / count / lifetime / colour), with an optional `start_delay` of
+    /// silent lead-in. Used by [`CombatVfx::play_sequence`] to drive a
+    /// Sequence-timed particle step on the same timeline as the rest of the
+    /// composed effect. The classic [`Self::spawn_burst`] path stays
+    /// byte-identical (it routes through this with `start_delay = 0.0` and the
+    /// pool's existing `cfg`).
+    pub fn spawn_burst_with(&mut self, cfg: &ParticleBurst, center: [f32; 2], start_delay: f32) {
+        let dur = cfg.life_secs;
+        let color = cfg.color.0;
+        let n = cfg.count;
+        self.spawn_burst_inner(center, n, color, dur, cfg, start_delay.max(0.0));
+    }
+
+    fn spawn_burst_inner(
+        &mut self,
+        center: [f32; 2],
+        n: u32,
+        color: [f32; 4],
+        dur: f32,
+        cfg: &ParticleBurst,
+        start_delay: f32,
+    ) {
+        let (spd_min, spd_span) = (cfg.speed_min, cfg.speed_max - cfg.speed_min);
+        let (sz_min, sz_span) = (cfg.size_min, cfg.size_max - cfg.size_min);
+        let (jit_base, jit_span) = (cfg.dur_jitter[0], cfg.dur_jitter[1]);
+        let rot_min = cfg.rotation_min;
+        let rot_span = cfg.rotation_max - cfg.rotation_min;
+        let shape = cfg.shape;
+        let spin = cfg.spin_rate;
         for i in 0..n {
-            // FNV-1a fold of (seed, i) → three independent-ish [0,1) values.
+            // FNV-1a fold of (seed, i) → independent-ish [0,1) values.
             let mut h: u64 = 1_469_598_103_934_665_603;
             let mut fold = |v: u64| {
                 h ^= v;
@@ -1128,15 +1314,28 @@ impl ParticlePool {
             let a01 = fold(self.seed ^ u64::from(i));
             let spd01 = fold(0xA1 ^ u64::from(i));
             let sz01 = fold(0xB2 ^ u64::from(i));
+            // (#217) Separate FNV fold for the per-particle rotation pick so
+            // a non-zero rotation range doesn't perturb the existing
+            // size/speed picks → unedited bursts (rotation_min == rotation_max
+            // == 0.0) stay byte-identical to today's deterministic spread.
+            let rot01 = fold(0xC3 ^ u64::from(i));
             let angle = a01 * std::f32::consts::TAU;
             let speed = spd_min + spd01 * spd_span; // px/sec, radial
+                                                    // Particle lives for (dur * jitter) AFTER the silent lead-in,
+                                                    // so total pool-time = start_delay + dur*jitter (mirrors
+                                                    // Effect.dur on the combat-vfx side).
+            let visible_life = dur * (jit_base + sz01 * jit_span);
             self.particles.push(Particle {
                 pos: center,
                 vel: [angle.cos() * speed, angle.sin() * speed],
                 age: 0.0,
-                dur: dur * (jit_base + sz01 * jit_span), // staggered lifetimes
+                dur: visible_life + start_delay,
                 size: sz_min + sz01 * sz_span,
                 color,
+                shape,
+                rotation: rot_min + rot01 * rot_span,
+                spin_rate: spin,
+                start_delay,
             });
         }
         // Advance the seed so successive bursts differ.
@@ -1158,28 +1357,55 @@ impl ParticlePool {
             p.vel[0] *= drag;
             p.vel[1] *= drag;
             p.age += dt;
+            // (#217) Fold the per-particle spin into the current rotation.
+            // Zero spin_rate (the default) is a no-op so unedited bursts stay
+            // byte-identical.
+            p.rotation += p.spin_rate * dt;
         }
         self.particles.retain(Particle::alive);
         !self.particles.is_empty()
     }
 
-    /// Push one SOLID_WHITE-tinted [`SpriteInstance`] per live particle: alpha =
-    /// (1 − t) of the birth alpha, half-size shrinking with t (mirrors
-    /// `emit_flash`). No-op when the pool is empty.
+    /// Push one [`SpriteInstance`] per live particle. Alpha = (1 − t) of the
+    /// birth alpha; half-size shrinks with t (mirrors `emit_flash`).
+    /// (#217) Atlas cell is picked by [`Particle::shape`] — `Square` keeps
+    /// `SOLID_WHITE` for byte-identity with the pre-Shape pool;
+    /// `Circle`/`Triangle`/`Line` resolve to their dedicated silhouettes.
+    /// The per-particle `rotation` drives `SpriteInstance.rotation_rad`, so a
+    /// non-zero `spin_rate` or `rotation_min..max` range visibly turns the
+    /// sprite. Particles still in their `start_delay` lead-in are skipped.
+    /// No-op when the pool is empty.
     pub fn emit(&self, out: &mut Vec<DrawCommand>) {
         for p in &self.particles {
+            if !p.visible() {
+                continue;
+            }
             let t = p.t();
             let alpha = (1.0 - t) * p.color[3];
             if alpha <= 0.0 {
                 continue;
             }
             let hs = (p.size * (1.0 - 0.6 * t)).max(0.5);
-            out.push(DrawCommand::Sprite(SpriteInstance::axis_aligned(
-                p.pos,
-                [hs, hs],
-                [p.color[0], p.color[1], p.color[2], alpha],
-                atlas::cell_uvs(atlas::SOLID_WHITE),
-            )));
+            // (#217) Line shape draws as a long thin bar (uses the cell's
+            // built-in 6/32 aspect ratio) so a horizontal-rotation Line reads
+            // distinct from a Square; everything else is square-aspect on the
+            // half_size. Scale Y to match the 6/32 = ~0.1875 cell ratio.
+            let (cell, half_size) = match p.shape {
+                crate::effects::ShapeKind::Square => (atlas::SOLID_WHITE, [hs, hs]),
+                crate::effects::ShapeKind::Circle => (atlas::PARTICLE_CIRCLE, [hs, hs]),
+                crate::effects::ShapeKind::Triangle => (atlas::PARTICLE_TRIANGLE, [hs, hs]),
+                crate::effects::ShapeKind::Line => (atlas::PARTICLE_LINE, [hs, hs * 0.20]),
+            };
+            let (uv_min, uv_max) = atlas::cell_uvs(cell);
+            out.push(DrawCommand::Sprite(SpriteInstance {
+                pos: p.pos,
+                half_size,
+                color: [p.color[0], p.color[1], p.color[2], alpha],
+                uv_min,
+                uv_max,
+                rotation_rad: p.rotation,
+                _pad: [0.0; 3],
+            }));
         }
     }
 
@@ -1570,6 +1796,178 @@ mod tests {
             out.is_empty(),
             "queued enemy with no matching mount → no per-mount marker; HUD owns the threat outline"
         );
+    }
+
+    // ---- (#217) Sequence playback + per-particle shapes ----
+
+    #[test]
+    fn play_sequence_schedules_steps_with_staggered_delays() {
+        // The composed-effect contract: each step spawns a base effect on the
+        // pool with start_delay = step.delay_secs (folded into the existing
+        // visible() gate). Steps with unresolved ids are skipped without
+        // aborting the rest of the timeline.
+        use crate::effects::{
+            EffectCatalog, EffectDef, EffectKind as CK, Explosion, HitFlash, SequenceDef,
+            SequenceStep,
+        };
+        let cat = EffectCatalog {
+            effects: vec![
+                EffectDef {
+                    id: "spark".into(),
+                    kind: CK::HitFlash(HitFlash::default()),
+                },
+                EffectDef {
+                    id: "boom".into(),
+                    kind: CK::Explosion(Explosion::default()),
+                },
+                EffectDef {
+                    id: "kill".into(),
+                    kind: CK::Sequence(SequenceDef {
+                        steps: vec![
+                            SequenceStep {
+                                id: "spark".into(),
+                                delay_secs: 0.0,
+                            },
+                            SequenceStep {
+                                id: "boom".into(),
+                                delay_secs: 0.25,
+                            },
+                            SequenceStep {
+                                id: "missing".into(), // unresolved, must be skipped
+                                delay_secs: 0.10,
+                            },
+                        ],
+                    }),
+                },
+            ],
+        };
+        let mut vfx = CombatVfx::new();
+        let scheduled = vfx.play_sequence(&cat, "kill", Pos::new(0, 0), None, None);
+        assert_eq!(scheduled, 2, "spark + boom resolved; missing skipped");
+        let kinds: Vec<_> = vfx.effects.iter().map(|e| e.start_delay).collect();
+        assert!(kinds.contains(&0.0), "spark immediate");
+        assert!(
+            kinds.iter().any(|d| (d - 0.25).abs() < 1e-6),
+            "boom delayed by step.delay_secs"
+        );
+        // Spark is visible at age 0; boom must not be.
+        let spark = vfx
+            .effects
+            .iter()
+            .find(|e| matches!(e.kind, EffectKind::HitFlash { .. }))
+            .unwrap();
+        let boom = vfx
+            .effects
+            .iter()
+            .find(|e| matches!(e.kind, EffectKind::Explosion { .. }))
+            .unwrap();
+        assert!(spark.visible());
+        assert!(!boom.visible());
+    }
+
+    #[test]
+    fn play_sequence_rejects_unknown_id_or_wrong_kind() {
+        // Calling on a missing id returns 0 + spawns nothing; calling on a
+        // non-Sequence id returns 0 too (the editor only writes Sequence into
+        // the play_sequence path; misuse must NOT spawn ghost effects).
+        use crate::effects::{EffectCatalog, EffectDef, EffectKind as CK, HitFlash};
+        let cat = EffectCatalog {
+            effects: vec![EffectDef {
+                id: "spark".into(),
+                kind: CK::HitFlash(HitFlash::default()),
+            }],
+        };
+        let mut vfx = CombatVfx::new();
+        assert_eq!(
+            vfx.play_sequence(&cat, "missing", Pos::new(0, 0), None, None),
+            0
+        );
+        assert!(vfx.effects.is_empty());
+        assert_eq!(
+            vfx.play_sequence(&cat, "spark", Pos::new(0, 0), None, None),
+            0,
+            "non-Sequence id must not schedule anything"
+        );
+        assert!(vfx.effects.is_empty());
+    }
+
+    #[test]
+    fn play_sequence_drives_particle_pool() {
+        // ParticleBurst steps route through ParticlePool::spawn_burst_with.
+        use crate::effects::{
+            EffectCatalog, EffectDef, EffectKind as CK, ParticleBurst, SequenceDef, SequenceStep,
+        };
+        let cat = EffectCatalog {
+            effects: vec![
+                EffectDef {
+                    id: "spray".into(),
+                    kind: CK::ParticleBurst(ParticleBurst {
+                        count: 4,
+                        ..Default::default()
+                    }),
+                },
+                EffectDef {
+                    id: "spritz".into(),
+                    kind: CK::Sequence(SequenceDef {
+                        steps: vec![SequenceStep {
+                            id: "spray".into(),
+                            delay_secs: 0.0,
+                        }],
+                    }),
+                },
+            ],
+        };
+        let mut vfx = CombatVfx::new();
+        let mut pool = ParticlePool::new();
+        let scheduled = vfx.play_sequence(&cat, "spritz", Pos::new(0, 0), None, Some(&mut pool));
+        assert_eq!(scheduled, 1);
+        assert_eq!(pool.len(), 4, "particle burst seeded N particles");
+    }
+
+    #[test]
+    fn particle_shape_drives_atlas_cell() {
+        // (#217) A burst configured with ShapeKind::Triangle emits sprites
+        // pointing at the PARTICLE_TRIANGLE atlas cell, distinct from
+        // SOLID_WHITE — proves the shape selection routes through emit.
+        let mut pool = ParticlePool::with_config(crate::effects::ParticleBurst {
+            count: 6,
+            shape: crate::effects::ShapeKind::Triangle,
+            ..Default::default()
+        });
+        pool.spawn_burst([0.0, 0.0], 6, [1.0; 4], 0.5);
+        let mut out = Vec::new();
+        pool.emit(&mut out);
+        let tri_uv = atlas::cell_uvs(atlas::PARTICLE_TRIANGLE);
+        let white_uv = atlas::cell_uvs(atlas::SOLID_WHITE);
+        assert!(out.iter().all(|c| match c {
+            DrawCommand::Sprite(s) => s.uv_min == tri_uv.0 && s.uv_max == tri_uv.1,
+            _ => false,
+        }));
+        assert_ne!(tri_uv, white_uv, "triangle silhouette has its own cell");
+    }
+
+    #[test]
+    fn particle_spin_rotates_over_time() {
+        // (#217) A non-zero spin_rate advances per-particle rotation each
+        // frame; integrated rotation ~= spin_rate * dt.
+        let mut pool = ParticlePool::with_config(crate::effects::ParticleBurst {
+            count: 1,
+            spin_rate: std::f32::consts::PI, // 180°/sec
+            ..Default::default()
+        });
+        pool.spawn_burst([0.0, 0.0], 1, [1.0; 4], 1.0);
+        pool.advance(0.5);
+        let mut out = Vec::new();
+        pool.emit(&mut out);
+        if let DrawCommand::Sprite(s) = &out[0] {
+            assert!(
+                (s.rotation_rad - std::f32::consts::FRAC_PI_2).abs() < 1e-4,
+                "0.5s * PI rad/s = PI/2, got {}",
+                s.rotation_rad
+            );
+        } else {
+            panic!("expected Sprite");
+        }
     }
 
     // ---- (#119) particle pool ----

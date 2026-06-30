@@ -67,6 +67,25 @@ pub const PARALLAX_FOREGROUND_DUST: (u32, u32) = (4, 4);
 /// the lane plate, and end-state overlays.
 pub const SOLID_WHITE: (u32, u32) = (7, 7);
 
+/* ---- particle silhouettes (#217) -----------------------------------------
+ *
+ * Filled white silhouettes for the ParticleBurst.shape variants. The pool's
+ * per-particle `color` instance tint multiplies these to any hue, mirroring
+ * SOLID_WHITE's pattern. The `Square` case re-uses SOLID_WHITE so there's no
+ * regression and no extra atlas cost when the shape is the default.
+ * ------------------------------------------------------------------------ */
+
+/// Filled white circle silhouette (radius ~= cell half, soft 1px feather edge
+/// from rasterisation). For `ShapeKind::Circle` particles.
+pub const PARTICLE_CIRCLE: (u32, u32) = (0, 5);
+/// Filled white equilateral triangle, point in +x. For `ShapeKind::Triangle`
+/// particles; the per-instance `rotation_rad` orients it.
+pub const PARTICLE_TRIANGLE: (u32, u32) = (1, 5);
+/// Thin white horizontal bar (the "line" silhouette). For `ShapeKind::Line`
+/// particles; `rotation_rad` orients it, the sprite half-size sets thickness +
+/// length (line is ~6 px tall, full cell wide so its aspect reads as a line).
+pub const PARTICLE_LINE: (u32, u32) = (2, 5);
+
 /// Convert (col, row) cell coordinates to a `(uv_min, uv_max)` tuple, each
 /// in normalized [0, 1] texture space.
 pub fn cell_uvs(cell: (u32, u32)) -> ([f32; 2], [f32; 2]) {
@@ -116,6 +135,12 @@ pub fn generate_atlas() -> Vec<u8> {
     draw_parallax_distant_planet(&mut buf, PARALLAX_DISTANT_PLANET);
     draw_parallax_mid_stars(&mut buf, PARALLAX_MID_STARS);
     draw_parallax_foreground_dust(&mut buf, PARALLAX_FOREGROUND_DUST);
+
+    // (#217) Particle silhouettes for ParticleBurst.shape variants. Square
+    // re-uses SOLID_WHITE — no extra cell needed.
+    draw_particle_circle(&mut buf, PARTICLE_CIRCLE);
+    draw_particle_triangle(&mut buf, PARTICLE_TRIANGLE);
+    draw_particle_line(&mut buf, PARTICLE_LINE);
 
     buf
 }
@@ -754,6 +779,63 @@ fn filled_circle(buf: &mut [u8], cx: u32, cy: u32, radius: i32, rgba: [u8; 4]) {
             }
         }
     }
+}
+
+/* ---- particle silhouettes (#217) ----------------------------------------- */
+
+/// Filled white circle silhouette filling the cell (radius = half - 1).
+fn draw_particle_circle(buf: &mut [u8], cell: (u32, u32)) {
+    let (cx_origin, cy_origin) = cell_origin(cell);
+    let half = CELL_SIZE / 2;
+    let cx = cx_origin + half;
+    let cy = cy_origin + half;
+    // Radius `half - 1` leaves a 1px feather margin against the cell edge so
+    // adjacent atlas cells don't bleed in under nearest-neighbour sampling.
+    let radius = (half - 1) as i32;
+    filled_circle(buf, cx, cy, radius, [255, 255, 255, 255]);
+}
+
+/// Equilateral triangle pointing right (+x), filling the cell. The instance's
+/// `rotation_rad` orients it on the GPU side; the silhouette is in the +x
+/// canonical pose so an identity rotation reads as a → arrow.
+fn draw_particle_triangle(buf: &mut [u8], cell: (u32, u32)) {
+    let (cx_origin, cy_origin) = cell_origin(cell);
+    // Triangle bounds: base x = 2..30 mapped to y from full-height down to 0
+    // at the tip x = 30 (cell-relative; cell is 32x32).
+    let x0: i32 = 2;
+    let x1: i32 = 30;
+    let yc: i32 = (CELL_SIZE / 2) as i32; // vertical centre row
+    let half_base: i32 = 14; // base half-height at x0
+    let ink = [255, 255, 255, 255];
+    for x in x0..=x1 {
+        // Linear interpolation: at x = x0 half-height is half_base; at x = x1 it's 0.
+        let span = (x1 - x0).max(1);
+        let half = half_base * (x1 - x) / span;
+        for dy in -half..=half {
+            let y = yc + dy;
+            if y < 0 {
+                continue;
+            }
+            put_pixel(buf, cx_origin + x as u32, cy_origin + y as u32, ink);
+        }
+    }
+}
+
+/// Thin horizontal line silhouette: a centred white bar that's full cell wide
+/// and ~6px tall, so the per-instance `half_size` ratio scales it to any
+/// line-shape and `rotation_rad` orients it.
+fn draw_particle_line(buf: &mut [u8], cell: (u32, u32)) {
+    let (cx_origin, cy_origin) = cell_origin(cell);
+    let bar_h: u32 = 6;
+    let yc = cy_origin + CELL_SIZE / 2 - bar_h / 2;
+    fill_rect(
+        buf,
+        cx_origin + 1,
+        yc,
+        CELL_SIZE - 2,
+        bar_h,
+        [255, 255, 255, 255],
+    );
 }
 
 /* ---- tests --------------------------------------------------------------- */
