@@ -699,12 +699,23 @@ fn main() {
         .map(|v| v.clamp(0.0, 1.0));
     if let Some(t) = warp_t {
         let (phase, sub) = broadside_engine::gfx::phase_from_progress(t);
-        // (#213 fade) Mirror the bin's phase-1 alpha-multiply at
-        // broadside.rs:3105-3128. Only Sprite + Polygon commands fade;
-        // LoftShip + TexturedShip (the player hero hull) are left intact
-        // per Bruce's "player never leaves screen" hard rule.
-        if matches!(phase, broadside_engine::gfx::CinematicPhase::Fade) {
-            let mul = (1.0 - sub).clamp(0.0, 1.0);
+        // (#213 fade + CINEMATIC REBUILD phase b 2026-06-30) DESTRUCTIVE
+        // outgoing-grid fade — mirrors the bin's per-phase multiplier:
+        // Fade eases 1→0, phases 2-5 stay at 0. The pre-rebuild capture
+        // only ran the multiply during Fade (matching the bin's bug), so
+        // a t=0.5 strip frame showed the outgoing grid back at alpha=1 —
+        // masking the "overlapping grids" Bruce was seeing live. Now both
+        // bin + capture share the same destructive behavior. Only Sprite +
+        // Polygon commands fade; LoftShip + TexturedShip (the player hero
+        // hull) are intact per Bruce's "player never leaves screen" rule.
+        let mul = match phase {
+            broadside_engine::gfx::CinematicPhase::Fade => (1.0 - sub).clamp(0.0, 1.0),
+            broadside_engine::gfx::CinematicPhase::Approach
+            | broadside_engine::gfx::CinematicPhase::Warp
+            | broadside_engine::gfx::CinematicPhase::Snap
+            | broadside_engine::gfx::CinematicPhase::Settle => 0.0,
+        };
+        if mul < 1.0 {
             for cmd in &mut commands {
                 match cmd {
                     broadside_engine::gfx::DrawCommand::Sprite(s) => {
@@ -718,7 +729,7 @@ fn main() {
                 }
             }
         }
-        log::info!("capture: warp t={t:.2} → phase {phase:?} sub={sub:.2}");
+        log::info!("capture: warp t={t:.2} → phase {phase:?} sub={sub:.2} mul={mul:.2}");
     }
     // (#213/#P7) Mirror the live bin's persistent at-depth preview so headless
     // capture reads the SAME view Bruce will see at boot. Stand-in spawns

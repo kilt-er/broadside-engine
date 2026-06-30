@@ -936,11 +936,54 @@ const WAYPOINT_WARP_MULT: f32 = 2.0;
 /// camera/parallax (slowest), all in flight at once. 0.5 lands the player at
 /// its rest cell around the warp MIDPOINT — visibly arriving before the
 /// grid settles, which is what "fastest" reads as on-screen. Bruce-tunable.
-///
-/// (STABILIZE 2026-06-29) Currently unused — the cinematic was stripped to
-/// a clean cut. Retained for the separately-developed warp rebuild.
-#[allow(dead_code)]
 const PLAYER_WARP_FASTNESS: f32 = 0.5;
+
+/// (CINEMATIC REBUILD 2026-06-30) Default-OFF flag that re-enables the
+/// round-clear warp cinematic on top of the STABILIZE baseline (7398962).
+/// When `false`, `EncounterOutcome::Won` does the clean instant cut Bruce is
+/// currently playtesting — board swap → `Playing`, no `Transitioning` state
+/// ever constructed. When `true`, the entry plants `plant_warp_in_anchors`
+/// + enters `DemoState::Transitioning`, reviving the multi-phase warp.
+///
+/// The lead's discipline: this stays `false` on the live path until the FULL
+/// b→c→a→d→e t-strip is verified clean end-to-end, then ONE commit flips
+/// this `true` and the ff-pull lands the working cinematic on Bruce's tree
+/// in one step (no half-broken intermediates).
+///
+/// `BROADSIDE_WARP_CINEMATIC=1` env var force-enables it for development /
+/// t-strip verification without flipping the const — so the capture bin can
+/// drive the cinematic path with `BROADSIDE_WARP_T` while Bruce's playtest
+/// build stays on the clean cut.
+const WARP_CINEMATIC_ENABLED: bool = false;
+
+/// Returns `true` if the warp cinematic is enabled, either by the compile-
+/// time const above or by `BROADSIDE_WARP_CINEMATIC` env (any value != "0").
+fn warp_cinematic_enabled() -> bool {
+    WARP_CINEMATIC_ENABLED || std::env::var("BROADSIDE_WARP_CINEMATIC").is_ok_and(|v| v != "0")
+}
+
+/// (CINEMATIC REBUILD phase b 2026-06-30) Per-phase alpha multiplier for the
+/// OUTGOING playable plane during a Transitioning window. Eases 1→0 across
+/// `Fade` (phase 1) and STAYS at 0 for phases 2-5 (`Approach`/`Warp`/`Snap`/
+/// `Settle`). The pre-rebuild bug was a single-phase gate that only ran the
+/// fade during Fade, leaving the outgoing grid at alpha=1 for all subsequent
+/// phases — so the upcoming preview animated IN OVER the still-visible
+/// outgoing grid (Bruce: "overlapping grids"). This makes the fade
+/// destructive: once the outgoing grid clears, it's gone for the rest of
+/// the cinematic.
+///
+/// Returns `1.0` for any non-Transitioning phase (caller branches on a
+/// dummy `Fade` with `sub=0` would also return 1.0).
+fn outgoing_grid_alpha_mul(phase: broadside_engine::gfx::CinematicPhase, sub: f32) -> f32 {
+    use broadside_engine::gfx::CinematicPhase;
+    match phase {
+        CinematicPhase::Fade => (1.0 - sub).clamp(0.0, 1.0),
+        CinematicPhase::Approach
+        | CinematicPhase::Warp
+        | CinematicPhase::Snap
+        | CinematicPhase::Settle => 0.0,
+    }
+}
 
 /// (#210 P8) Total duration of the continuous-death animation in seconds —
 /// slow-mo player explosion plays over the FIRST half, stats overlay appears
@@ -2541,40 +2584,81 @@ impl ApplicationHandler for App {
                             //     Won, but defensive no-op.
                             // STABILIZE (team-lead 2026-06-29): the warp
                             // cinematic blinked + snapped on Bruce's live
-                            // build (fly-in pop, preview-grid slide,
-                            // phase-fade, at-depth markers all stacking).
-                            // Stripped back to a clean INSTANT CUT: swap
-                            // the new board in + go straight to Playing.
-                            // No Transitioning phase, no plant_warp_in,
-                            // no banner. The full continuous-flow
-                            // cinematic gets rebuilt separately later +
-                            // t-capture-verified BEFORE it's re-enabled.
-                            let _ = now;
+                            // build. Stripped to a clean instant cut at
+                            // 7398962. CINEMATIC REBUILD (2026-06-30): the
+                            // multi-phase warp is being re-enabled phase by
+                            // phase (b→c→a→d→e) behind the
+                            // `WARP_CINEMATIC_ENABLED` flag. Default OFF —
+                            // Bruce's playtest stays on the clean cut. The
+                            // `BROADSIDE_WARP_CINEMATIC=1` env override
+                            // force-enables it for t-strip verification.
                             let advance = advance_after_win(&mut self.run, &self.sectors);
-                            match advance {
-                                AdvanceResult::NextEncounter | AdvanceResult::NextSector => {
-                                    if let Some(next) = self.build_current_board() {
-                                        self.board = next;
-                                        self.tween_anchors.clear();
-                                        self.kickbacks.clear();
-                                        self.kill_bursts.clear();
-                                        self.particles.clear();
-                                        self.proj_anchors.clear();
-                                        self.exhaust.clear();
-                                        self.hull_flash.clear();
-                                        self.beat_playback = None;
-                                        self.queue_blocked_flash = None;
-                                        self.reinstall_audio();
-                                        self.demo_state = DemoState::Playing;
+                            let kind = match advance {
+                                AdvanceResult::NextEncounter => Some(TransitionKind::Round),
+                                AdvanceResult::NextSector => Some(TransitionKind::Waypoint),
+                                AdvanceResult::Victorious | AdvanceResult::AlreadyEnded => None,
+                            };
+                            let cinematic = warp_cinematic_enabled();
+                            if let Some(kind) = kind {
+                                if let Some(next) = self.build_current_board() {
+                                    // (#213 player-tween) Snapshot the CLEARED
+                                    // board's player cell BEFORE the swap so
+                                    // plant_warp_in_anchors can tween the
+                                    // player FROM that cell to the new spawn.
+                                    let prior_player_cell: Option<Pos> = self
+                                        .board
+                                        .cells
+                                        .iter()
+                                        .flatten()
+                                        .find(|s| s.faction == Faction::Player)
+                                        .map(|s| s.pos);
+                                    self.board = next;
+                                    self.tween_anchors.clear();
+                                    self.kickbacks.clear();
+                                    self.kill_bursts.clear();
+                                    self.particles.clear();
+                                    self.proj_anchors.clear();
+                                    self.exhaust.clear();
+                                    self.hull_flash.clear();
+                                    self.beat_playback = None;
+                                    self.queue_blocked_flash = None;
+                                    self.reinstall_audio();
+                                    if cinematic {
+                                        // CINEMATIC PATH: revive the warp.
+                                        // plant_warp_in_anchors anchors the
+                                        // player tween (a) + the warp-end
+                                        // tick at line ~2614 flips back to
+                                        // Playing when phase.progress >= 1.0.
+                                        self.plant_warp_in_anchors(kind, now, prior_player_cell);
+                                        self.demo_state =
+                                            DemoState::Transitioning(TransitionPhase {
+                                                kind,
+                                                started_at: now,
+                                            });
                                     } else {
-                                        self.demo_state = DemoState::RunComplete;
+                                        // STABILIZE PATH (live default):
+                                        // clean instant cut. No Transitioning
+                                        // state, no plant_warp_in_anchors.
+                                        let _ = prior_player_cell;
+                                        self.demo_state = DemoState::Playing;
                                     }
-                                }
-                                AdvanceResult::Victorious => {
+                                } else {
                                     self.demo_state = DemoState::RunComplete;
                                 }
-                                AdvanceResult::AlreadyEnded => {}
+                            } else if matches!(advance, AdvanceResult::Victorious) {
+                                if cinematic {
+                                    // (#210 P9) Final-victory warp — Waypoint
+                                    // beat before YOU WIN; no board swap.
+                                    self.demo_state = DemoState::Transitioning(TransitionPhase {
+                                        kind: TransitionKind::Waypoint,
+                                        started_at: now,
+                                    });
+                                } else {
+                                    self.demo_state = DemoState::RunComplete;
+                                }
                             }
+                            // AdvanceResult::AlreadyEnded: defensive no-op
+                            // (shouldn't reach this arm from Won).
                         }
                         EncounterOutcome::Lost => {
                             mark_defeated(&mut self.run);
@@ -3067,22 +3151,23 @@ impl ApplicationHandler for App {
                     &scene_tween,
                     self.frame_clock,
                 );
-                // (#213 item 3) PHASE-1 PLAYABLE-PLANE FADE — during the
-                // Transitioning Fade phase only, alpha-multiply every Sprite +
-                // Polygon DrawCommand in the just-composed scene so the
-                // playable grid wireframe + cell tiles + hud bars + flat ship
-                // sprites visibly clear as the upcoming preview begins its
-                // approach. LoftShip + TexturedShip variants are NOT multiplied
-                // — those are the player's 3-D hero hull, which Bruce's hard
-                // rule says NEVER leaves the screen (the player tween from
-                // d807c57 keeps it moving across the warp).
+                // (#213 item 3 + CINEMATIC REBUILD phase b 2026-06-30)
+                // DESTRUCTIVE PLAYABLE-PLANE FADE — during a Transitioning
+                // window, alpha-multiply every Sprite + Polygon in the
+                // composed scene so the outgoing playable grid fades to
+                // invisible across phase 1 (Fade) AND STAYS at alpha 0 for
+                // phases 2-5 (Approach/Warp/Snap/Settle). The pre-rebuild
+                // bug: the gate `if matches!(cur_phase, Fade)` only ran the
+                // fade DURING phase 1; phases 2-5 left the outgoing grid at
+                // alpha=1, so the upcoming grid slid in OVER the still-
+                // visible outgoing grid (Bruce's "overlapping grids").
+                // LoftShip + TexturedShip variants are NOT multiplied — the
+                // player 3-D hero hull never leaves the screen (hard rule).
                 if let DemoState::Transitioning(phase) = self.demo_state {
                     let t = phase.progress(std::time::Instant::now());
                     let (cur_phase, sub) = broadside_engine::gfx::phase_from_progress(t);
-                    if matches!(cur_phase, broadside_engine::gfx::CinematicPhase::Fade) {
-                        // sub eases 0 → 1 across phase 1; multiplier 1 → 0 so
-                        // the playable plane fades to invisible by phase-1 end.
-                        let mul = (1.0 - sub).clamp(0.0, 1.0);
+                    let mul = outgoing_grid_alpha_mul(cur_phase, sub);
+                    if mul < 1.0 {
                         for cmd in &mut instances {
                             match cmd {
                                 broadside_engine::gfx::DrawCommand::Sprite(s) => {
@@ -3100,16 +3185,19 @@ impl ApplicationHandler for App {
                         }
                     }
                 }
-                // (#213 / #P7) PERSISTENT NEXT-GRID PREVIEW — DISABLED by
-                // team-lead directive (2026-06-29): the at-depth preview
-                // grid + enemy markers were part of the visual mess Bruce
-                // is done with ("overlapping grids", "ship blink-redraws").
-                // The cinematic gets rebuilt separately + verified via
-                // BROADSIDE_WARP_T capture before any preview is re-enabled.
-                // Code path retained behind `SHOW_AT_DEPTH_PREVIEW` so the
-                // rebuild has something to revive.
-                const SHOW_AT_DEPTH_PREVIEW: bool = false;
-                if SHOW_AT_DEPTH_PREVIEW && !matches!(demo_state, DemoState::Dying(_)) {
+                // (#213 / #P7 + CINEMATIC REBUILD phase b 2026-06-30) AT-DEPTH
+                // NEXT-GRID PREVIEW — only rendered when the warp cinematic
+                // is enabled (`WARP_CINEMATIC_ENABLED` or BROADSIDE_WARP_
+                // CINEMATIC env). When cinematic is OFF (Bruce's STABILIZE
+                // default), no preview — round-clear is a clean instant cut
+                // with no at-depth markers (Bruce: "no overlapping grids").
+                // When cinematic is ON, the preview animates IN as the
+                // outgoing grid (destructively) fades, then handoff at the
+                // demo-state swap. Hidden during the death overlay so the
+                // freeze reads clean.
+                let show_at_depth_preview =
+                    warp_cinematic_enabled() && !matches!(demo_state, DemoState::Dying(_));
+                if show_at_depth_preview {
                     if let Some(next_enc) = next_encounter_after_current(&self.run, &self.sectors) {
                         let spawns: Vec<Pos> = next_enc.enemy_ships.iter().map(|s| s.pos).collect();
                         let cols = next_enc.dims.cols;
