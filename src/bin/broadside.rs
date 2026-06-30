@@ -130,14 +130,30 @@ fn scene_projector() -> ProjectorConfig {
 /// hot-loop and player-targeting overlays both call this so the player's aim
 /// math and the visible grid agree on the same dims.
 fn scene_projector_for_board(board: &broadside_engine::types::Board) -> ProjectorConfig {
-    let dims = board.dims();
+    scene_projector_for_dims(board.dims())
+}
+
+/// (#305 Path A 2026-06-30) Dims-explicit variant of
+/// [`scene_projector_for_board`] — same effect, but the caller picks the dims
+/// rather than reading from a Board. Used by the warp cinematic to project
+/// the entire frame through the PENDING (n+1) board's dims during phases 2-5
+/// so the at-depth preview hulls + grid + player all share ONE cfg whose
+/// camera matches what the post-swap render will use. Without this, the
+/// preview hulls project at the NEW dims' cell math through the LIVE (OLD)
+/// camera; at the atomic swap, the live render flips to NEW camera, and
+/// every hull pops by `~delta * sensitivity` pixels (the snap Bruce sees).
+/// Phase 1 still calls this with the OLD board's dims so the destructive
+/// fade of the OLD playable plane stays geometrically correct.
+fn scene_projector_for_dims(dims: broadside_engine::grid::Dims) -> ProjectorConfig {
     // (#215) ALSO publish the live dims to gfx's atomics so the GPU loft pass
     // (render_unified_fleet, which builds its own cfg via
     // gfx::scene_projector_cfg without Board access) projects ships at the
     // SAME dims the HUD cfg uses. Without this, ships render at compile-time
     // 5x4 cells while the HUD draws the live grid at its actual dims —
     // visibly floats the ships off the grid on any non-5x4 board (Bruce's
-    // 2x4 / 2x2 / 3x3 reports).
+    // 2x4 / 2x2 / 3x3 reports). During the warp's phases 2-5 the caller
+    // passes the PENDING board's dims so the loft pass uses NEW dims
+    // consistently with the cfg returned here.
     broadside_engine::gfx::set_live_grid_dims(dims.cols, dims.rows);
     scene_projector().with_dims(dims.cols, dims.rows)
 }
@@ -3817,7 +3833,40 @@ impl ApplicationHandler for App {
                 // projector-derived overlay lay out at the LIVE board's variable
                 // encounter shape. Without this the playable plane locks at 5x4
                 // regardless of board.dims (Bruce: "next grid pops to 5x4").
-                let scene_cfg = scene_projector_for_board(&self.board);
+                //
+                // (#305 Path A 2026-06-30) During `Transitioning` phases 2-5,
+                // override to the PENDING (n+1) board's dims. By phase 2 the
+                // OLD playable plane has destructively faded to alpha 0
+                // (phase 1 is `Fade` and writes `mul` = 1→0 across that
+                // window; phases 2-5 hold at 0), so its geometry is invisible
+                // and using NEW dims for it is moot. Meanwhile the at-depth
+                // preview + the player + render_unified_fleet's loft pass all
+                // share ONE cfg whose camera matches the post-swap render —
+                // killing the lateral snap (preview hulls' world_x was OLD-
+                // dims projected through OLD camera; now NEW + NEW) AND the
+                // vertical pop (z_center = front + cfg.rows * 0.5 stays at
+                // NEW from phase 2 forward, no change at the atomic swap).
+                // Phase 1 stays on OLD dims so the destructive fade-out
+                // geometry of the OLD plane is correct while it fades.
+                let render_dims = if let DemoState::Transitioning(phase) = self.demo_state {
+                    let t = phase.progress(now);
+                    let (cinematic_phase, _sub) = broadside_engine::gfx::phase_from_progress(t);
+                    if matches!(cinematic_phase, broadside_engine::gfx::CinematicPhase::Fade) {
+                        // Phase 1: OLD dims for the OLD-plane destructive fade.
+                        self.board.dims()
+                    } else {
+                        // Phases 2-5: project everything through NEW dims so the
+                        // preview hulls + grid + player land at their post-swap
+                        // positions. Falls back to live board dims if pending is
+                        // absent (Victorious-fanfare path has no pending_board).
+                        self.pending_board
+                            .as_ref()
+                            .map_or_else(|| self.board.dims(), Board::dims)
+                    }
+                } else {
+                    self.board.dims()
+                };
+                let scene_cfg = scene_projector_for_dims(render_dims);
                 // (#79) Per-ship slide/turn tween for THIS frame — computed BEFORE
                 // the gfx mutable borrow (it reads &self). Empty when nothing is
                 // mid-move, so the render is identical to the static path at rest.

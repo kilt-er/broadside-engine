@@ -731,7 +731,45 @@ fn main() {
     // so the playable grid wireframe + every projector-derived overlay lay out
     // at the captured board's variable encounter shape (rather than 5x4).
     let board_dims = board.dims();
-    let cfg = cfg_no_dims.with_dims(board_dims.cols, board_dims.rows);
+    // (#305 Path A 2026-06-30) Mirror the live bin's phase-gated render-dims
+    // override. During the warp's phases 2-5 the live bin projects the entire
+    // scene through the PENDING board's dims so the at-depth preview + grid +
+    // player share ONE cfg whose camera matches what the post-swap render
+    // will build. Capture replicates that here by pre-reading BROADSIDE_WARP_T
+    // + BROADSIDE_PENDING_DIMS and switching to pending dims past phase 1.
+    // Phase 1 (Fade) stays on OLD board_dims so the OLD-plane destructive
+    // fade is geometrically correct while it fades. Off when warp_t is unset
+    // → byte-identical to the pre-fix capture cfg.
+    let warp_t_for_cfg: Option<f32> = std::env::var("BROADSIDE_WARP_T")
+        .ok()
+        .and_then(|s| s.parse::<f32>().ok())
+        .map(|v| v.clamp(0.0, 1.0));
+    let pending_dims_for_cfg: broadside_engine::grid::Dims =
+        std::env::var("BROADSIDE_PENDING_DIMS")
+            .ok()
+            .and_then(|s| {
+                let lower = s.to_ascii_lowercase();
+                let mut it = lower.split('x');
+                let c = it.next()?.parse::<usize>().ok()?;
+                let r = it.next()?.parse::<usize>().ok()?;
+                if c == 0 || r == 0 {
+                    return None;
+                }
+                Some(broadside_engine::grid::Dims::new(c, r))
+            })
+            .unwrap_or(board_dims);
+    let render_dims = if let Some(t) = warp_t_for_cfg {
+        let (cinematic_phase, _sub) = broadside_engine::gfx::phase_from_progress(t);
+        if matches!(cinematic_phase, broadside_engine::gfx::CinematicPhase::Fade) {
+            board_dims
+        } else {
+            pending_dims_for_cfg
+        }
+    } else {
+        board_dims
+    };
+    broadside_engine::gfx::set_live_grid_dims(render_dims.cols, render_dims.rows);
+    let cfg = cfg_no_dims.with_dims(render_dims.cols, render_dims.rows);
     // (Bruce design law 2026-06-30 lane-align verification) Log the player's
     // projected screen-x using the LIVE projector (dims + lane_align_x +
     // camera) so multi-hop captures can diff screen-x across an encounter
