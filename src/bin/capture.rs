@@ -685,6 +685,75 @@ fn main() {
         .ok()
         .and_then(|s| s.parse::<f32>().ok())
         .map(|v| v.clamp(0.0, 1.0));
+    // (warp rebuild 5/N — faithful capture 2026-06-30) When BROADSIDE_WARP_T
+    // is set, simulate the live LATE-SWAP Transitioning state faithfully:
+    //   - The "playable" board (= `board`) is the POST-FIGHT n state:
+    //     the player only; all n enemies were destroyed in run_action by
+    //     the time the round-clear gate fires. Drop the static back-row
+    //     enemies that capture_board seeded so the playable plane during
+    //     the warp matches what the live bin shows (player only, no
+    //     ghost LoftShips bypassing the destructive fade).
+    //   - Build a `pending_board` that mirrors the live bin's n+1 board:
+    //     same dims, the canonical spawn (player front-center +
+    //     enemies on back row), so the at-depth preview can source its
+    //     enemy positions + IDs from here. Use `capture_board_with_dims`
+    //     for the canonical layout (matches what
+    //     `App::build_current_board` produces post-advance).
+    //   - Pose-sync the pending board's enemies down below alongside the
+    //     live player so the at-depth LoftShips find a pose + render
+    //     (without this they'd silently skip in render_unified_fleet).
+    let pending_board: Option<Board> = if warp_t_pre.is_some() {
+        // The pending board uses the canonical (player front-center,
+        // enemies back row) spawn at the same dims as the live capture
+        // board — matches what App::build_current_board() outputs.
+        // Player facing Bow(N) at front-center is the runs::
+        // player_start_pos() / player_spawn_facing() canonical state.
+        use broadside_engine::runs::player_start_pos_in;
+        let p_pos = player_start_pos_in(board_dims);
+        let pending = capture_board_with_dims(
+            board_dims,
+            p_pos.col,
+            p_pos.row,
+            broadside_engine::grid::Facing::Bow(Dir4::N),
+        );
+        // Strip the live (n) board's enemies — post-fight n has only the
+        // player. The destructive fade applied below now correctly
+        // covers the playable plane: only the player LoftShip survives
+        // (LoftShip is fade-exempt by design, hero-hull rule). No
+        // ghost enemy hulls.
+        for cell in board.cells.iter_mut() {
+            if let Some(s) = cell {
+                if s.faction == Faction::Enemy {
+                    *cell = None;
+                }
+            }
+        }
+        log::info!(
+            "capture: faithful warp — stripped n enemies from live board; pending n+1 board built ({} enemies)",
+            pending
+                .cells
+                .iter()
+                .flatten()
+                .filter(|s| s.faction == Faction::Enemy)
+                .count()
+        );
+        Some(pending)
+    } else {
+        None
+    };
+    // (warp rebuild 5/N — faithful capture 2026-06-30) Pose-sync the
+    // pending (n+1) board's enemies so the at-depth LoftShips emitted
+    // below have a registered pose + actually render. Mirrors the live
+    // bin's Transitioning sync (broadside.rs near sync_loft_pose loop).
+    // Without this the at-depth hulls silently skip in
+    // render_unified_fleet on the None-pose branch.
+    if let Some(pending) = pending_board.as_ref() {
+        for s in pending.cells.iter().flatten() {
+            if s.faction == Faction::Enemy {
+                gfx.sync_loft_pose(&s.id, s.orientation);
+            }
+        }
+    }
     // (CINEMATIC REBUILD phase a 2026-06-30) PURE RENDER-TIME PLAYER TWEEN
     // ON CAPTURE — when BROADSIDE_WARP_T is set AND BROADSIDE_WARP_PRIOR_COL/
     // ROW are provided, override the player's VisualShip2d.cell_frac so the
@@ -960,18 +1029,50 @@ fn main() {
             // (the legacy BROADSIDE_PREVIEW=1 sentinel) keep the flat-
             // triangle markers so existing capture flows are unchanged.
             if warp_t.is_some() {
-                let stand_in_ids: Vec<String> = stand_in_spawns
-                    .iter()
-                    .map(|p| format!("preview-enemy@{}", p.to_index()))
-                    .collect();
+                // (warp rebuild 5/N — faithful capture 2026-06-30) Source
+                // the at-depth preview from the PENDING n+1 board's real
+                // enemies — same Ship.id format `class_id@cell` that
+                // build_encounter_board produces, so the loft pose
+                // registered above by ID lookup hits. The pre-rebuild
+                // capture used synthetic `preview-enemy@N` IDs that never
+                // matched any pose-registered ship — the at-depth hulls
+                // either skipped (when no enemy mesh was installed for
+                // those synthetic IDs) or fell back to the wrong pose;
+                // either way it didn't reflect what the live bin renders.
+                // Now the capture's at-depth preview is byte-equivalent
+                // to what the live bin emits during Transitioning.
+                let (preview_spawns, preview_ids, p_cols, p_rows) =
+                    if let Some(pending) = pending_board.as_ref() {
+                        let pd = pending.dims();
+                        let mut spawns: Vec<Pos> = Vec::new();
+                        let mut ids: Vec<String> = Vec::new();
+                        for s in pending.cells.iter().flatten() {
+                            if s.faction == Faction::Enemy {
+                                spawns.push(s.pos);
+                                ids.push(s.id.clone());
+                            }
+                        }
+                        (spawns, ids, pd.cols, pd.rows)
+                    } else {
+                        let synth: Vec<String> = stand_in_spawns
+                            .iter()
+                            .map(|p| format!("preview-enemy@{}", p.to_index()))
+                            .collect();
+                        (
+                            stand_in_spawns.clone(),
+                            synth,
+                            preview_dims.0,
+                            preview_dims.1,
+                        )
+                    };
                 broadside_engine::hud::prepend_upcoming_board_with_loft_2d(
                     &mut commands,
                     &cfg,
                     z_offset,
-                    preview_dims.0,
-                    preview_dims.1,
-                    &stand_in_ids,
-                    &stand_in_spawns,
+                    p_cols,
+                    p_rows,
+                    &preview_ids,
+                    &preview_spawns,
                     &gfx,
                     tint_alpha,
                 );
