@@ -80,9 +80,15 @@ enum EffectKind {
         to_pos: Pos,
         color: [f32; 3],
     },
-    /// A telegraph icon "spending" as its enemy fires (#70): a quick expanding
-    /// red pop at the telegraph slot above the cell, so the player sees the
-    /// readied action discharge rather than silently becoming the next intent.
+    /// A telegraph icon "spending" as its enemy fires (#70). (#215 Bruce)
+    /// REMOVED — the on-fire pop produced Bruce's "giant red blinking square"
+    /// on small boards. The variant is preserved for editor-config schema
+    /// compatibility (`TelegraphFire` struct lives in `effects.rs`), but
+    /// nothing spawns this variant and the dispatch arm in `update` is a
+    /// no-op. If a future redesign wants a discharge pop back, restore the
+    /// spawn at `observe()` + the dispatch arm and tune the emitter small +
+    /// on-grid.
+    #[allow(dead_code)]
     TelegraphFire { pos: Pos },
     /// (#209 hook 4) Distance-delayed light bounce off a SURVIVING ship when a
     /// blast goes off elsewhere: `target_pos` is the surviving ship's cell;
@@ -366,19 +372,21 @@ impl CombatVfx {
         for (id, prev_head) in &prev.enemy_intent {
             // Enemy must still be alive this frame (a destroyed enemy is an
             // explosion, not a fire).
-            let Some(&(_, cur_pos, _)) = cur.ships.get(id) else {
+            let Some(&(_, _cur_pos, _)) = cur.ships.get(id) else {
                 continue;
             };
-            let fired = match cur.enemy_intent.get(id) {
-                Some(cur_head) => cur_head != prev_head, // swapped to next intent
-                None => true,                            // queue emptied → spent
+            // (#215 Bruce) The on-fire TelegraphFire POP (an expanding red
+            // square at the enemy cell when their queued head changes) was
+            // creating the "giant red blinking square" Bruce kept seeing
+            // — duplicated the HUD threat-outline cue (push_threats_2d on
+            // c0caf7a, single source, dims-clamped) and visibly overpowered
+            // the actual fire beam + impact spark on commit. Stop spawning.
+            // The fire beam (emit_shot_beam) + impact spark
+            // (hud::push_fire_2d) are the surviving "shot fired" cues.
+            let _fired = match cur.enemy_intent.get(id) {
+                Some(cur_head) => cur_head != prev_head,
+                None => true,
             };
-            if fired {
-                self.spawn(
-                    EffectKind::TelegraphFire { pos: cur_pos },
-                    self.cfg.telegraph_fire.life_secs,
-                );
-            }
         }
         // Ordnance: a projectile that moved leaves a trail along its step.
         for (id, &cur_pos) in &cur.ordnance {
@@ -449,9 +457,13 @@ impl CombatVfx {
                     to_pos,
                     color,
                 } => emit_beam(out, cfg, from_pos, to_pos, color, e.t(), &self.cfg.trail),
-                EffectKind::TelegraphFire { pos } => {
-                    emit_telegraph_fire(out, cfg, pos, e.t(), &self.cfg.telegraph_fire);
-                }
+                // (#215 Bruce) The TelegraphFire pop is REMOVED — duplicated
+                // the HUD threat outline cue + projected huge on small boards
+                // (Bruce's "giant red blinking square"). The variant still
+                // exists for editor-config schema compat; the dispatch is a
+                // no-op so any leftover spawn (none today; observe() above no
+                // longer spawns it) renders nothing.
+                EffectKind::TelegraphFire { .. } => {}
                 EffectKind::ShotBeam {
                     from_pos,
                     to_pos,
@@ -494,17 +506,21 @@ impl CombatVfx {
                 }
             }
         }
-        // Telegraph: live cue above any enemy holding a queued action.
-        // (#209 hook 1) READY-glow: pulsing aura around ANY ship (player +
-        // enemy) with a non-empty queue — Bruce's "weapons charge while queued"
-        // cue. Player-symmetric, where the existing telegraph cue above is
-        // intentionally enemy-only (player has their own queue HUD strip).
+        // (#209 hook 1) READY-glow per-mount markers: small per-queued-mount
+        // markers seated at hull-relative offsets on any ship with a non-empty
+        // queue (was a cell-center red square — Bruce's "floating square above
+        // the ship," reshaped at 7748894). Player-symmetric so the player's
+        // queued weapons read the same as enemies'.
+        //
+        // (#215 Bruce) The per-enemy steady `emit_telegraph` underglow (a
+        // 12×12 red marker above each queued enemy) is REMOVED — duplicated
+        // the HUD threat outline cue (push_threats_2d, dims-clamped + outline-
+        // only since 4e214d6) and projected as a giant blinking square on
+        // small boards (Bruce's "giant red BLINKING square"). The HUD threat
+        // outline is now the SOLE enemy-intent cue.
         for s in board.cells.iter().flatten() {
             if !s.queue.is_empty() {
                 emit_ready_glow(out, cfg, s, self.anim_clock, &self.cfg.telegraph_fire);
-            }
-            if s.faction == Faction::Enemy && !s.queue.is_empty() {
-                emit_telegraph(out, cfg, s, &self.cfg.telegraph_fire);
             }
         }
     }
@@ -783,61 +799,20 @@ fn emit_explosion(
     }
 }
 
-/// Telegraph FIRE pop (#70): a quick expanding red flash at the telegraph slot
-/// above the enemy (`lane.center_y + slot_offset_px`, matching the hud telegraph
-/// stack), so the readied action visibly DISCHARGES as the enemy fires rather
-/// than silently rolling to the next intent. Grows + fades over its short life.
-/// Slot offset / grow curve / alpha come from [`TelegraphFire`] (data). NOTE: the
-/// pop's own tint `[1.0, 0.42, 0.38]` stays a literal — it is a DISTINCT colour
-/// from the steady-cue tint (`TelegraphFire.color`, == the old `TELEGRAPH_COLOR`)
-/// and the schema has one colour field, so keeping the pop literal preserves the
-/// exact prior look. A future schema rev can add a `pop_color` field if desired.
-fn emit_telegraph_fire(
-    out: &mut Vec<DrawCommand>,
-    cfg_proj: &ProjectorConfig,
-    pos: Pos,
-    t: f32,
-    cfg: &TelegraphFire,
-) {
-    // (#201 bug 2) 2-D-correct anchor: use the cell's screen-space centre +
-    // the configured slot offset, instead of the legacy lane.center_y constant.
-    // The offset is now applied relative to the cell's projected y, so the pop
-    // floats above the firing enemy's actual cell on the perspective grid.
-    let p = grid_cell_quad(pos, cfg_proj).center;
-    let y = p[1] + cfg.slot_offset_px;
-    // Bright expanding ring-ish pop: a fast-growing, fast-fading square.
-    let size = 18.0 * (cfg.grow_base + cfg.grow_span * t);
-    let alpha = (1.0 - t) * cfg.alpha;
-    out.push(DrawCommand::Sprite(SpriteInstance::axis_aligned(
-        [p[0], y],
-        [size / 2.0, size / 2.0],
-        [1.0, 0.42, 0.38, alpha],
-        atlas::cell_uvs(atlas::SOLID_WHITE),
-    )));
-}
-
-/// Telegraph cue: a small red marker above an enemy holding a queued action,
-/// signalling "this ship intends to act". First-pass = a chevron-ish bar; the
-/// per-intent icon set is a later art pass. Tint + slot offset from
-/// [`TelegraphFire`] (data; `color` == the old `TELEGRAPH_COLOR`).
-fn emit_telegraph(
-    out: &mut Vec<DrawCommand>,
-    cfg_proj: &ProjectorConfig,
-    ship: &Ship,
-    cfg: &TelegraphFire,
-) {
-    // (#201 bug 2) Use the ship's 2-D cell centre + slot offset relative to
-    // its projected y, so the cue floats above the actual ship on the grid
-    // (not at the legacy lane-centerline constant).
-    let p = grid_cell_quad(ship.pos, cfg_proj).center;
-    let y = p[1] + cfg.slot_offset_px;
-    out.push(DrawCommand::Sprite(SpriteInstance::axis_aligned(
-        [p[0], y],
-        [6.0, 6.0],
-        cfg.color.0,
-        atlas::cell_uvs(atlas::SOLID_WHITE),
-    )));
-}
+// (#215 Bruce) `emit_telegraph` (the steady per-queued-enemy red marker that
+// floated above the hull) and `emit_telegraph_fire` (the expanding red pop
+// on enemy fire) are REMOVED. Together they produced Bruce's "giant red
+// blinking square" — the steady marker pulsed each new turn (= blink) and
+// projected huge on small boards; the on-fire pop expanded over the ship.
+// Both duplicated the HUD threat outline (push_threats_2d at hud.rs:1148,
+// outline-only since 4e214d6, dims-clamped since 01cb79e), which is now the
+// SOLE enemy-intent cue. The actual shot still renders via the shot beam
+// (emit_shot_beam) + the impact spark (hud::push_fire_2d).
+//
+// The `TelegraphFire` schema struct is retained (editor config compat); the
+// EffectKind::TelegraphFire dispatch arm in `update` is a no-op. If a
+// future redesign wants a discharge pop back, restore one tiny on-grid
+// sprite here.
 
 /// (#209 hook 1) READY-glow: a low, pulsing aura around any ship currently
 /// holding a queued action — Bruce's "weapons charge while queued" cue. Drawn
