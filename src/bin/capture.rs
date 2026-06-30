@@ -762,16 +762,24 @@ fn main() {
             }
             None => (rest_z, rest_a),
         };
-        broadside_engine::hud::prepend_upcoming_board_2d(
-            &mut commands,
-            &cfg,
-            z_offset,
-            preview_dims.0,
-            preview_dims.1,
-            &stand_in_spawns,
-            false,
-            tint_alpha,
-        );
+        // (STABILIZE 2026-06-29) The live bin no longer draws this at-
+        // depth preview (team-lead directive: strip the warp cinematic to
+        // a clean cut). Capture omits it by default to match the live
+        // look. Re-enable with BROADSIDE_PREVIEW=1 when working on the
+        // cinematic rebuild (BROADSIDE_WARP_T capture still works for
+        // t-sampling the preview's approach).
+        if std::env::var("BROADSIDE_PREVIEW").is_ok_and(|v| v != "0") || warp_t.is_some() {
+            broadside_engine::hud::prepend_upcoming_board_2d(
+                &mut commands,
+                &cfg,
+                z_offset,
+                preview_dims.0,
+                preview_dims.1,
+                &stand_in_spawns,
+                false,
+                tint_alpha,
+            );
+        }
     }
     // (#127) SALVAGE readout — the live bin draws this in its Playing overlay (not
     // inside compose_scene_2d), so append it here with a representative value so the

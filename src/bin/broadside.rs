@@ -936,6 +936,10 @@ const WAYPOINT_WARP_MULT: f32 = 2.0;
 /// camera/parallax (slowest), all in flight at once. 0.5 lands the player at
 /// its rest cell around the warp MIDPOINT — visibly arriving before the
 /// grid settles, which is what "fastest" reads as on-screen. Bruce-tunable.
+///
+/// (STABILIZE 2026-06-29) Currently unused — the cinematic was stripped to
+/// a clean cut. Retained for the separately-developed warp rebuild.
+#[allow(dead_code)]
 const PLAYER_WARP_FASTNESS: f32 = 0.5;
 
 /// (#210 P8) Total duration of the continuous-death animation in seconds —
@@ -954,6 +958,10 @@ const DEATH_DT_MULTIPLIER: f32 = 0.30;
 /// warp duration via [`TransitionKind::warp_secs`]. Phase 1: only these two;
 /// later phases may add e.g. Death (slow-mo) but per the plan that lives on a
 /// separate `DemoState::Dying` variant.
+///
+/// (STABILIZE 2026-06-29) Currently unconstructed — the warp cinematic was
+/// stripped to a clean cut. Variants retained for the rebuild.
+#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum TransitionKind {
     /// Encounter→encounter within a sector. Short warp.
@@ -1098,10 +1106,13 @@ enum DemoState {
     Dying(DeathPhase),
     /// (#210 P3) Continuous-flow warp in flight (Round or Waypoint) — replaces
     /// the prior modal `EncounterComplete` / `RunComplete` between-encounter
-    /// gates with an animated transition. P3 only ADDS this variant; P4 wires
-    /// the actual entry/exit + input-gating. Until P4, this variant is
-    /// constructed nowhere and the no-op match arms below preserve current
-    /// behaviour byte-for-byte.
+    /// gates with an animated transition.
+    ///
+    /// (STABILIZE 2026-06-29) Currently unconstructed — the warp cinematic
+    /// was stripped to a clean cut at the round-clear entry point. Variant
+    /// retained so the t-capture-verified rebuild can flip it back on
+    /// without re-introducing the enum.
+    #[allow(dead_code)]
     Transitioning(TransitionPhase),
 }
 
@@ -1583,6 +1594,12 @@ impl App {
     /// depth upcoming-board preview pipeline (`prepend_upcoming_board_2d`)
     /// while `tween_2d` adds them to `Tween2d::hidden_ship_ids` for the
     /// duration of the Transitioning window — they "arrive with the grid".
+    ///
+    /// (STABILIZE 2026-06-29) Currently unused — the warp cinematic was
+    /// stripped to a clean cut. Retained for the rebuild; the test
+    /// `player_projected_screen_pos_stays_in_viewport_across_warp` keeps
+    /// the regression guard live.
+    #[allow(dead_code)]
     fn plant_warp_in_anchors(
         &mut self,
         kind: TransitionKind,
@@ -2522,85 +2539,42 @@ impl ApplicationHandler for App {
                             //     this through a Waypoint warp + end card).
                             //   AlreadyEnded  -> shouldn't reach here from
                             //     Won, but defensive no-op.
+                            // STABILIZE (team-lead 2026-06-29): the warp
+                            // cinematic blinked + snapped on Bruce's live
+                            // build (fly-in pop, preview-grid slide,
+                            // phase-fade, at-depth markers all stacking).
+                            // Stripped back to a clean INSTANT CUT: swap
+                            // the new board in + go straight to Playing.
+                            // No Transitioning phase, no plant_warp_in,
+                            // no banner. The full continuous-flow
+                            // cinematic gets rebuilt separately later +
+                            // t-capture-verified BEFORE it's re-enabled.
+                            let _ = now;
                             let advance = advance_after_win(&mut self.run, &self.sectors);
-                            let kind = match advance {
-                                AdvanceResult::NextEncounter => Some(TransitionKind::Round),
-                                AdvanceResult::NextSector => Some(TransitionKind::Waypoint),
-                                AdvanceResult::Victorious | AdvanceResult::AlreadyEnded => None,
-                            };
-                            if let Some(kind) = kind {
-                                if let Some(next) = self.build_current_board() {
-                                    // (#210 P5) Swap the new board in NOW (at
-                                    // transition START, not END) + plant
-                                    // warp-in tween anchors for every ship on
-                                    // it so the existing `tween_2d` pipeline
-                                    // eases each ship FROM an off-board row
-                                    // (anchor `from_cell_frac` row = -2.0) TO
-                                    // its real Pos over `WARP_*_SECS`. The
-                                    // unified ship pass already reads
-                                    // `cell_frac` (#201 fix A) — no new render
-                                    // path needed. Reset per-encounter
-                                    // transients on the swap the same way the
-                                    // legacy modal-clear path did at warp END;
-                                    // `pending_board` is left None since the
-                                    // swap is immediate, and the warp-end tick
-                                    // just flips the demo state.
-                                    // (#213 player-tween) Snapshot the CLEARED
-                                    // board's player cell BEFORE the swap so
-                                    // plant_warp_in_anchors can tween the
-                                    // player FROM that cell (clamped to the
-                                    // new dims) TO the new spawn cell. None if
-                                    // the cleared board has no player ship.
-                                    let prior_player_cell: Option<Pos> = self
-                                        .board
-                                        .cells
-                                        .iter()
-                                        .flatten()
-                                        .find(|s| s.faction == Faction::Player)
-                                        .map(|s| s.pos);
-                                    self.board = next;
-                                    self.tween_anchors.clear();
-                                    self.kickbacks.clear();
-                                    self.kill_bursts.clear();
-                                    self.particles.clear();
-                                    self.proj_anchors.clear();
-                                    self.exhaust.clear();
-                                    self.hull_flash.clear();
-                                    self.beat_playback = None;
-                                    self.queue_blocked_flash = None;
-                                    self.reinstall_audio();
-                                    self.plant_warp_in_anchors(kind, now, prior_player_cell);
-                                    self.demo_state = DemoState::Transitioning(TransitionPhase {
-                                        kind,
-                                        started_at: now,
-                                    });
-                                } else {
-                                    // Defensive: AdvanceResult promised
-                                    // another encounter but the builder
-                                    // returned None. Fall back to the
-                                    // legacy RunComplete card so the run
-                                    // doesn't softlock mid-warp.
+                            match advance {
+                                AdvanceResult::NextEncounter | AdvanceResult::NextSector => {
+                                    if let Some(next) = self.build_current_board() {
+                                        self.board = next;
+                                        self.tween_anchors.clear();
+                                        self.kickbacks.clear();
+                                        self.kill_bursts.clear();
+                                        self.particles.clear();
+                                        self.proj_anchors.clear();
+                                        self.exhaust.clear();
+                                        self.hull_flash.clear();
+                                        self.beat_playback = None;
+                                        self.queue_blocked_flash = None;
+                                        self.reinstall_audio();
+                                        self.demo_state = DemoState::Playing;
+                                    } else {
+                                        self.demo_state = DemoState::RunComplete;
+                                    }
+                                }
+                                AdvanceResult::Victorious => {
                                     self.demo_state = DemoState::RunComplete;
                                 }
-                            } else if matches!(advance, AdvanceResult::Victorious) {
-                                // (#210 P9) Final-victory warp — route the
-                                // run-end through a Waypoint transition so it
-                                // reads as a continuous beat (same banner +
-                                // ~2s window as a sector boundary), not an
-                                // abrupt modal pop. No board swap — the run
-                                // is over, the current board (final boss
-                                // cleared) stays on screen as backdrop. The
-                                // warp-end tick checks `run.victorious` and
-                                // flips to RunComplete (existing end-card via
-                                // push_between_encounter_overlay).
-                                self.demo_state = DemoState::Transitioning(TransitionPhase {
-                                    kind: TransitionKind::Waypoint,
-                                    started_at: now,
-                                });
+                                AdvanceResult::AlreadyEnded => {}
                             }
-                            // `AlreadyEnded` here is a no-op (defensive) — it
-                            // shouldn't reach this arm because we only enter
-                            // on `Won`, but if it does, leave the state alone.
                         }
                         EncounterOutcome::Lost => {
                             mark_defeated(&mut self.run);
@@ -3126,16 +3100,16 @@ impl ApplicationHandler for App {
                         }
                     }
                 }
-                // (#213 / #P7) PERSISTENT NEXT-GRID PREVIEW — Bruce can't see the
-                // next encounter approaching, so always draw the upcoming board
-                // at deeper Z through the shared unified camera. Picks the next
-                // encounter via the campaign cursor (current sector at
-                // completed_encounters+1, or rolling to the next sector). The
-                // upcoming grid + enemy markers project through the same
-                // unified_view_proj as the current board on the same receding
-                // ground plane (the locked design — not flat billboards). Hidden
-                // during the death overlay so the freeze reads clean.
-                if !matches!(demo_state, DemoState::Dying(_)) {
+                // (#213 / #P7) PERSISTENT NEXT-GRID PREVIEW — DISABLED by
+                // team-lead directive (2026-06-29): the at-depth preview
+                // grid + enemy markers were part of the visual mess Bruce
+                // is done with ("overlapping grids", "ship blink-redraws").
+                // The cinematic gets rebuilt separately + verified via
+                // BROADSIDE_WARP_T capture before any preview is re-enabled.
+                // Code path retained behind `SHOW_AT_DEPTH_PREVIEW` so the
+                // rebuild has something to revive.
+                const SHOW_AT_DEPTH_PREVIEW: bool = false;
+                if SHOW_AT_DEPTH_PREVIEW && !matches!(demo_state, DemoState::Dying(_)) {
                     if let Some(next_enc) = next_encounter_after_current(&self.run, &self.sectors) {
                         let spawns: Vec<Pos> = next_enc.enemy_ships.iter().map(|s| s.pos).collect();
                         let cols = next_enc.dims.cols;
