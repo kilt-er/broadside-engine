@@ -1065,16 +1065,27 @@ fn main() {
                             preview_dims.1,
                         )
                     };
-                broadside_engine::hud::prepend_upcoming_board_with_loft_2d(
+                // (warp rebuild 7/N) Pass warp_t through as
+                // total_progress so the per-enemy stagger lerp at
+                // hud::enemy_stagger_factor fires the same way it
+                // does in the live bin's Transitioning frames. The
+                // `_with_rest` form takes the GRID's current depth
+                // (`z_offset`, lerping toward 0 by Settle) separately
+                // from the ENEMY rest anchor (`rest_z`, the parallax
+                // depth they hold at through phases 1-3 before
+                // descending one-at-a-time during Settle).
+                broadside_engine::hud::prepend_upcoming_board_with_loft_2d_staggered_with_rest(
                     &mut commands,
                     &cfg,
                     z_offset,
+                    rest_z,
                     p_cols,
                     p_rows,
                     &preview_ids,
                     &preview_spawns,
                     &gfx,
                     tint_alpha,
+                    warp_t,
                 );
             } else {
                 broadside_engine::hud::prepend_upcoming_board_2d(

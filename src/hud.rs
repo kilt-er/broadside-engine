@@ -1695,6 +1695,69 @@ pub fn push_upcoming_loft_ships_2d(
     enemy_spawns: &[crate::grid::Pos],
     sprites: &dyn SpriteRegistry,
 ) {
+    push_upcoming_loft_ships_2d_staggered(
+        out,
+        cfg,
+        z_offset,
+        cols,
+        rows,
+        ship_ids,
+        enemy_spawns,
+        sprites,
+        None,
+    );
+}
+
+/// (warp rebuild 7/N) Variant of [`push_upcoming_loft_ships_2d`] with
+/// per-enemy stagger. Backwards-compatible: uses `z_offset` as both
+/// the grid's descending depth AND the enemy rest anchor (legacy
+/// lockstep). The 4-phase warp should call
+/// [`push_upcoming_loft_ships_2d_staggered_with_rest`] instead so the
+/// enemy rest anchor can be the full parallax depth while the grid's
+/// z_offset already descends to 0.
+#[allow(clippy::too_many_arguments)]
+pub fn push_upcoming_loft_ships_2d_staggered(
+    out: &mut Vec<DrawCommand>,
+    cfg: &ProjectorConfig,
+    z_offset: f32,
+    cols: usize,
+    rows: usize,
+    ship_ids: &[String],
+    enemy_spawns: &[crate::grid::Pos],
+    sprites: &dyn SpriteRegistry,
+    total_progress: Option<f32>,
+) {
+    push_upcoming_loft_ships_2d_staggered_with_rest(
+        out,
+        cfg,
+        z_offset,
+        z_offset,
+        cols,
+        rows,
+        ship_ids,
+        enemy_spawns,
+        sprites,
+        total_progress,
+    );
+}
+
+/// (warp rebuild 7/N) Full-arg per-ship emitter with separate
+/// `enemy_rest_z` anchor. See
+/// [`prepend_upcoming_board_with_loft_2d_staggered_with_rest`] for the
+/// 4-phase contract.
+#[allow(clippy::too_many_arguments)]
+pub fn push_upcoming_loft_ships_2d_staggered_with_rest(
+    out: &mut Vec<DrawCommand>,
+    cfg: &ProjectorConfig,
+    _grid_z_offset: f32,
+    enemy_rest_z: f32,
+    cols: usize,
+    rows: usize,
+    ship_ids: &[String],
+    enemy_spawns: &[crate::grid::Pos],
+    sprites: &dyn SpriteRegistry,
+    total_progress: Option<f32>,
+) {
     use crate::grid::{Dir4, Facing};
     use crate::projector::{cell_world_center_frac_offset, unified_project, unified_view_proj};
     let m = unified_view_proj(cfg);
@@ -1703,22 +1766,49 @@ pub fn push_upcoming_loft_ships_2d(
     // returns; replicating the value here keeps the at-depth path free of
     // a runs-crate dep (hud is the render layer).
     let enemy_facing: Facing = Facing::Bow(Dir4::S);
-    for (idx, pos) in enemy_spawns.iter().enumerate() {
-        if pos.col >= cols || pos.row >= rows {
-            continue;
-        }
-        let Some(id) = ship_ids.get(idx) else {
-            continue;
+    // (warp rebuild 7/N) For the stagger window we need the in-bounds
+    // enemy count UP FRONT — the per-index window math at
+    // [`enemy_stagger_factor`] depends on the total. Pre-filter the
+    // spawns to in-bounds positions; left-to-right ordering by COL is
+    // deterministic + reads naturally as a cascade across the back row.
+    let mut staggered: Vec<(usize, &crate::grid::Pos)> = enemy_spawns
+        .iter()
+        .enumerate()
+        .filter(|(idx, pos)| {
+            pos.col < cols && pos.row < rows && ship_ids.get(*idx).is_some()
+        })
+        .collect();
+    staggered.sort_by_key(|(_, p)| (p.col, p.row));
+    let stagger_count = staggered.len();
+    for (stagger_idx, (orig_idx, pos)) in staggered.iter().enumerate() {
+        let pos = **pos;
+        let id = match ship_ids.get(*orig_idx) {
+            Some(s) => s,
+            None => continue,
         };
         let Some(loft_kind) = sprites.loft_kind(id, false) else {
             // No enemy mesh installed (test/no-GPU registry) — skip; the
             // flat-triangle marker path is still emitted by the caller.
             continue;
         };
+        // (warp rebuild 7/N) Per-enemy z: HOLD at enemy_rest_z (the
+        // parallax depth anchor) through phases 1-3, lerp rest → 0
+        // inside the enemy's per-index Settle sub-window. None ⇒
+        // legacy behaviour: enemy uses enemy_rest_z directly (which,
+        // via the 2-arg wrapper, equals the grid's `_grid_z_offset` —
+        // so the enemy descends in lockstep with the grid, matching
+        // the persistent Playing-state parallax preview).
+        let staggered_z = match total_progress {
+            Some(t) => {
+                let f = enemy_stagger_factor(t, stagger_idx, stagger_count);
+                enemy_rest_z * (1.0 - f)
+            }
+            None => enemy_rest_z,
+        };
         let cell_frac = [pos.col as f32, pos.row as f32];
         // Project the offset cell centre through the unified camera to
         // anchor the blit dest-rect at the at-depth screen position.
-        let world = cell_world_center_frac_offset(cell_frac[0], cell_frac[1], cfg, z_offset);
+        let world = cell_world_center_frac_offset(cell_frac[0], cell_frac[1], cfg, staggered_z);
         let Some(centre) = unified_project(&m, world, cfg) else {
             continue;
         };
@@ -1726,7 +1816,7 @@ pub fn push_upcoming_loft_ships_2d(
         // grid wireframe uses), so the hull scales with the preview's
         // perspective foreshortening. Aspect from the loft texture.
         let corners =
-            crate::projector::cell_world_corners_offset_dims(*pos, cfg, z_offset, cols, rows);
+            crate::projector::cell_world_corners_offset_dims(pos, cfg, staggered_z, cols, rows);
         let proj_corner = |w: [f32; 3]| unified_project(&m, w, cfg);
         let nl = proj_corner(corners[3]);
         let nr = proj_corner(corners[2]);
@@ -1756,7 +1846,7 @@ pub fn push_upcoming_loft_ships_2d(
             // caller drives this to 0.0 (via preview_seam_lerp); the same
             // ship_id then continues into the live unified pass with
             // z_offset=0.0, so the swap is byte-equivalent.
-            z_offset,
+            z_offset: staggered_z,
         }));
     }
 }
@@ -1779,10 +1869,8 @@ pub fn prepend_upcoming_board_with_loft_2d(
     sprites: &dyn SpriteRegistry,
     tint_alpha: f32,
 ) {
-    let mut preview: Vec<DrawCommand> = Vec::with_capacity(96);
-    push_upcoming_grid_2d(&mut preview, cfg, z_offset, cols, rows, tint_alpha);
-    push_upcoming_loft_ships_2d(
-        &mut preview,
+    prepend_upcoming_board_with_loft_2d_staggered(
+        out,
         cfg,
         z_offset,
         cols,
@@ -1790,8 +1878,121 @@ pub fn prepend_upcoming_board_with_loft_2d(
         ship_ids,
         enemy_spawns,
         sprites,
+        tint_alpha,
+        None,
+    );
+}
+
+/// (warp rebuild 7/N — Bruce P4 stagger 2026-06-30) Variant of
+/// [`prepend_upcoming_board_with_loft_2d`] that supports the four-phase
+/// model's enemy stagger. `z_offset` is the GRID's current depth (already
+/// driven by [`preview_seam_lerp`] toward 0 by Settle, so the grid lands
+/// with the warp). `enemy_rest_z` is the ANCHOR for per-enemy descent —
+/// enemies HOLD at this depth through phases 1-3 (Bruce: "enemies do
+/// NOT move yet") then lerp `rest → 0` ONE AT A TIME inside their
+/// per-index Settle sub-window. `total_progress = Some(t)` enables
+/// the stagger; `None` keeps every enemy at the grid's `z_offset`
+/// (legacy lockstep — descends with the grid, used by the persistent
+/// Playing-state parallax preview where there's no Settle moment).
+#[allow(clippy::too_many_arguments)]
+pub fn prepend_upcoming_board_with_loft_2d_staggered(
+    out: &mut Vec<DrawCommand>,
+    cfg: &ProjectorConfig,
+    z_offset: f32,
+    cols: usize,
+    rows: usize,
+    ship_ids: &[String],
+    enemy_spawns: &[crate::grid::Pos],
+    sprites: &dyn SpriteRegistry,
+    tint_alpha: f32,
+    total_progress: Option<f32>,
+) {
+    // Default enemy_rest_z = the grid's current z_offset (legacy lockstep
+    // when the caller doesn't separately specify a rest anchor). The 4-phase
+    // model wants enemy_rest_z = the FULL preview depth (preview_z_offset())
+    // so enemies HOLD at depth while the grid lerps z→0. Use the dedicated
+    // 4-arg variant below to pass that anchor.
+    prepend_upcoming_board_with_loft_2d_staggered_with_rest(
+        out,
+        cfg,
+        z_offset,
+        z_offset,
+        cols,
+        rows,
+        ship_ids,
+        enemy_spawns,
+        sprites,
+        tint_alpha,
+        total_progress,
+    );
+}
+
+/// (warp rebuild 7/N) Full-arg variant — separates the GRID's `z_offset`
+/// (descending with the warp via [`preview_seam_lerp`]) from the
+/// `enemy_rest_z` anchor (the deep starting depth enemies HOLD at through
+/// phases 1-3, then lerp from in their staggered Settle windows). The
+/// 4-phase warp passes `enemy_rest_z = preview_z_offset()` (the boot
+/// const) so the enemies stay parked at the parallax depth while the grid
+/// approaches; only during Settle does each enemy descend from there to
+/// its playable cell at z=0.
+#[allow(clippy::too_many_arguments)]
+pub fn prepend_upcoming_board_with_loft_2d_staggered_with_rest(
+    out: &mut Vec<DrawCommand>,
+    cfg: &ProjectorConfig,
+    z_offset: f32,
+    enemy_rest_z: f32,
+    cols: usize,
+    rows: usize,
+    ship_ids: &[String],
+    enemy_spawns: &[crate::grid::Pos],
+    sprites: &dyn SpriteRegistry,
+    tint_alpha: f32,
+    total_progress: Option<f32>,
+) {
+    let mut preview: Vec<DrawCommand> = Vec::with_capacity(96);
+    push_upcoming_grid_2d(&mut preview, cfg, z_offset, cols, rows, tint_alpha);
+    push_upcoming_loft_ships_2d_staggered_with_rest(
+        &mut preview,
+        cfg,
+        z_offset,
+        enemy_rest_z,
+        cols,
+        rows,
+        ship_ids,
+        enemy_spawns,
+        sprites,
+        total_progress,
     );
     out.splice(0..0, preview);
+}
+
+/// (warp rebuild 7/N) Per-enemy stagger window. Bruce: "ONE AT A TIME,
+/// never all at once" — each enemy gets its own sub-window inside the
+/// Settle phase (t = `SETTLE_T_START`..1.0), staggered left-to-right by
+/// `idx`. Returns the enemy's descent factor: 0 = held at rest depth,
+/// 1 = settled into the playable plane.
+///
+/// `STAGGER_OVERLAP` (~0.4) lets adjacent enemies' windows OVERLAP
+/// slightly so the cascade reads as a flowing one-after-the-next
+/// motion rather than discrete pop-pop-pop (the latter felt too
+/// staccato at 3-4 enemies in the 150ms Settle window — overlap eases
+/// the visual). With overlap=0 the descents are fully sequential;
+/// overlap=1 puts them all in lockstep again.
+#[must_use]
+pub fn enemy_stagger_factor(total_progress: f32, idx: usize, count: usize) -> f32 {
+    const SETTLE_T_START: f32 = 0.85;
+    const STAGGER_OVERLAP: f32 = 0.4;
+    if count == 0 || total_progress <= SETTLE_T_START {
+        return 0.0;
+    }
+    let stagger_span = 1.0 - SETTLE_T_START; // 0.15 by default
+    // Per-enemy window WIDTH (with overlap stretching it past 1/count).
+    let raw_per_enemy = stagger_span / count as f32;
+    let window_w = raw_per_enemy * (1.0 + STAGGER_OVERLAP);
+    let window_start = SETTLE_T_START + raw_per_enemy * idx as f32;
+    let local = ((total_progress - window_start) / window_w).clamp(0.0, 1.0);
+    // Ease-out quad — soft landing for the hull.
+    1.0 - (1.0 - local) * (1.0 - local)
 }
 
 /// (#P7/#213) Render an UPCOMING board's grid wireframe at a world-space

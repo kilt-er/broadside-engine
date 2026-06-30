@@ -3712,16 +3712,37 @@ impl ApplicationHandler for App {
                         // since the source can now be Pending(Board) (which
                         // doesn't carry the encounter-level is_boss flag);
                         // boss visual distinction is a follow-up regardless.
-                        hud::prepend_upcoming_board_with_loft_2d(
+                        // (warp rebuild 7/N — Bruce P4 stagger 2026-06-30)
+                        // Thread the warp's 0..1 t into the at-depth emit so
+                        // each enemy holds at the parallax depth anchor
+                        // (rest_z_offset) through phases 1-3 then descends
+                        // one-at-a-time during Settle (Bruce: "ONLY AFTER
+                        // grid+player are settled ... ONE AT A TIME"). The
+                        // GRID still uses the already-lerped `z_offset`
+                        // (preview_seam_lerp driving it to 0 by Settle);
+                        // ENEMIES use `rest_z_offset` as their starting
+                        // anchor so they don't share the grid's descent.
+                        // Outside Transitioning (persistent Playing-state
+                        // parallax) pass None ⇒ enemy descends with grid
+                        // (the legacy "preview wave parked at depth" look).
+                        let warp_progress: Option<f32> = match demo_state {
+                            DemoState::Transitioning(phase) => {
+                                Some(phase.progress(std::time::Instant::now()))
+                            }
+                            _ => None,
+                        };
+                        hud::prepend_upcoming_board_with_loft_2d_staggered_with_rest(
                             &mut instances,
                             &scene_cfg,
                             z_offset,
+                            rest_z_offset,
                             cols,
                             rows,
                             &ship_ids,
                             &spawns,
                             &*gfx,
                             tint_alpha,
+                            warp_progress,
                         );
                     }
                 }
