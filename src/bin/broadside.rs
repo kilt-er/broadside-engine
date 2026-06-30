@@ -956,6 +956,22 @@ const WAYPOINT_WARP_MULT: f32 = 2.0;
 /// grid settles, which is what "fastest" reads as on-screen. Bruce-tunable.
 const PLAYER_WARP_FASTNESS: f32 = 0.5;
 
+/// (#316 rotate-first 2026-06-30) Leading-window length (fraction of total
+/// warp progress) reserved for the player's rotate-to-Bow tween, during
+/// which the player does NOT translate and the grid does NOT approach.
+/// Bruce: "if rotated, the player ship doesn't rotate back until after it
+/// moves forward — that's wrong; rotation must come FIRST, before any
+/// translation or grid movement." Implementation: this gate extends the
+/// "OLD-cfg, stationary scene" window in the bin's `render_dims` map (Path A
+/// foundation: was tied to `CinematicPhase::Fade` only; now to
+/// `t_total < PLAYER_ROTATE_GATE_T`), AND remaps the player position/z
+/// curves to start at `t_total = PLAYER_ROTATE_GATE_T` rather than 0. The
+/// rotation tween runs over `[0, PLAYER_ROTATE_GATE_T]` so it COMPLETES at
+/// the gate, before any position/z motion begins. 0.20 ≈ 242 ms of a 1.21 s
+/// default warp — long enough to read as a deliberate beat. Live-tunable
+/// dial candidate; defaulted high-end of "feels deliberate" range.
+const PLAYER_ROTATE_GATE_T: f32 = 0.20;
+
 /// (CINEMATIC REBUILD 2026-06-30) Default-OFF flag that re-enables the
 /// round-clear warp cinematic on top of the STABILIZE baseline (7398962).
 /// When `false`, `EncounterOutcome::Won` does the clean instant cut Bruce is
@@ -1046,10 +1062,13 @@ fn cinematic_player_cell_frac(
     let prior = prior?;
     let from_col = prior.col.min(dims.cols.saturating_sub(1));
     let from_row = prior.row.min(dims.rows.saturating_sub(1));
-    // Player arrives by t_total = PLAYER_WARP_FASTNESS; AFTER that, HOLD at
-    // current cell. So map t_total ∈ [0, FASTNESS] linearly to inner t ∈
-    // [0, 1] and saturate at 1 beyond.
-    let inner_t = (t_total / PLAYER_WARP_FASTNESS).clamp(0.0, 1.0);
+    // (#316 rotate-first) Position lerp window is `[PLAYER_ROTATE_GATE_T,
+    // PLAYER_ROTATE_GATE_T + PLAYER_WARP_FASTNESS]` (then saturate). During
+    // the rotation gate the player stays AT prior cell — rotation owns the
+    // beat. After the gate the player walks prior→current over the same
+    // FASTNESS window, arriving at t_total = GATE + FASTNESS.
+    let span = PLAYER_WARP_FASTNESS.max(1e-3);
+    let inner_t = ((t_total - PLAYER_ROTATE_GATE_T) / span).clamp(0.0, 1.0);
     let eased = 1.0 - (1.0 - inner_t) * (1.0 - inner_t);
     let col_f = from_col as f32 + (current.col as f32 - from_col as f32) * eased;
     let row_f = from_row as f32 + (current.row as f32 - from_row as f32) * eased;
@@ -1099,7 +1118,12 @@ fn cinematic_player_z_offset(
     // the rest of the descent with the grid (3-speed: player>grid until
     // intercept, then SAME speed = riding it down).
     const PLAYER_INTERCEPT_T: f32 = 0.55;
-    let player_progress = (t_total / PLAYER_INTERCEPT_T).clamp(0.0, 1.0);
+    // (#316 rotate-first) Like cell_frac, the z ride begins at the
+    // rotation gate. Remap t_total ∈ [GATE, INTERCEPT] to player_progress
+    // ∈ [0, 1]; saturate at 1 after INTERCEPT (player rides the grid).
+    // Pre-GATE returns 0 → z stays at 0 = no ride during rotation beat.
+    let span = (PLAYER_INTERCEPT_T - PLAYER_ROTATE_GATE_T).max(1e-3);
+    let player_progress = ((t_total - PLAYER_ROTATE_GATE_T) / span).clamp(0.0, 1.0);
     // Ease-out quad: fast departure (player rapidly climbs into depth),
     // soft arrival (matches grid's velocity at intercept).
     let eased = 1.0 - (1.0 - player_progress) * (1.0 - player_progress);
@@ -2271,8 +2295,20 @@ impl App {
                 // pending dims+pos when present so the player rides into the
                 // post-swap (col,row) on the post-swap grid; outside warp the
                 // pending_board is None and we fall back to the live board.
+                //
+                // (#316 rotate-first 2026-06-30) The clamp dims must match
+                // the render_dims for THIS frame: pre-GATE the renderer
+                // uses OLD dims (rotation beat, grid stationary), so the
+                // clamp must be OLD too — otherwise prior=(2,3) on OLD 5x4
+                // would clamp to (1,1) for NEW 2x2 and the player'd visibly
+                // pop a cell at warp start. Post-GATE use NEW dims so the
+                // arrival cell projects correctly on the NEW cfg.
                 let pending = self.pending_board.as_ref();
-                let dims = pending.map_or_else(|| self.board.dims(), Board::dims);
+                let dims = if t_total < PLAYER_ROTATE_GATE_T {
+                    self.board.dims()
+                } else {
+                    pending.map_or_else(|| self.board.dims(), Board::dims)
+                };
                 let new_player_pos = pending.and_then(|p| {
                     p.cells
                         .iter()
@@ -2285,12 +2321,22 @@ impl App {
                 // continuous across the atomic swap (the global lane_align flips
                 // from prior→to_align at the swap; the offset cancels the flip
                 // pre-swap so projected screen-x is identical the frame after).
-                let player_lane_align_offset: f32 = pending
-                    .and_then(|p| Self::compute_lane_align_for_swap(&self.board, p))
-                    .map_or(0.0, |to_align| {
-                        let prior = broadside_engine::gfx::unified_lane_align_x();
-                        to_align - prior
-                    });
+                //
+                // (#316 rotate-first 2026-06-30) Pre-GATE the player sits at
+                // prior cell on OLD cfg (render_dims = OLD until t > GATE);
+                // applying the offset would translate the player off the OLD
+                // grid before the cfg flip. Gate the offset on the same
+                // boundary so it activates IN LOCKSTEP with the cfg flip.
+                let player_lane_align_offset: f32 = if t_total < PLAYER_ROTATE_GATE_T {
+                    0.0
+                } else {
+                    pending
+                        .and_then(|p| Self::compute_lane_align_for_swap(&self.board, p))
+                        .map_or(0.0, |to_align| {
+                            let prior = broadside_engine::gfx::unified_lane_align_x();
+                            to_align - prior
+                        })
+                };
                 if let Some(player) = self
                     .board
                     .cells
@@ -2372,7 +2418,16 @@ impl App {
                             self.cinematic_prior_player_facing.unwrap_or(player.facing);
                         let to_facing =
                             broadside_engine::grid::Facing::Bow(broadside_engine::grid::Dir4::N);
-                        let rot_inner_t = (t_total / PLAYER_WARP_FASTNESS).clamp(0.0, 1.0);
+                        // (#316 rotate-first 2026-06-30) Rotation completes
+                        // OVER the leading PLAYER_ROTATE_GATE_T window — by
+                        // t_total = GATE, facing is at Bow(N) and stays.
+                        // Position + z ride only begin AFTER GATE (see
+                        // cinematic_player_cell_frac / _z_offset remaps),
+                        // so the player rotates in place during this beat
+                        // and the grid stays stationary (render_dims also
+                        // gated on GATE → cfg holds OLD dims).
+                        let rot_span = PLAYER_ROTATE_GATE_T.max(1e-3);
+                        let rot_inner_t = (t_total / rot_span).clamp(0.0, 1.0);
                         let rot_eased = 1.0 - (1.0 - rot_inner_t) * (1.0 - rot_inner_t);
                         let facing_yaw_deg =
                             hud::lerp_facing_yaw_deg(from_facing, to_facing, rot_eased);
@@ -3890,19 +3945,27 @@ impl ApplicationHandler for App {
                 // dims projected through OLD camera; now NEW + NEW) AND the
                 // vertical pop (z_center = front + cfg.rows * 0.5 stays at
                 // NEW from phase 2 forward, no change at the atomic swap).
-                // Phase 1 stays on OLD dims so the destructive fade-out
-                // geometry of the OLD plane is correct while it fades.
+                // (#316 rotate-first 2026-06-30) OLD dims while t_total <
+                // PLAYER_ROTATE_GATE_T so the grid stays stationary during
+                // the player's leading rotation beat (rotates in place, no
+                // translation, no grid approach). After the gate: switch to
+                // NEW dims so the at-depth preview + post-swap player+grid
+                // share one camera, same as Stage 3 / Path A foundation —
+                // just gated on `t > GATE` instead of "any non-Fade phase",
+                // which extends the OLD-cfg window from Fade-end (~0.12) to
+                // GATE (0.20). The OLD-plane destructive fade still occupies
+                // its native Fade window inside this extended OLD-cfg span.
                 let render_dims = if let DemoState::Transitioning(phase) = self.demo_state {
                     let t = phase.progress(now);
-                    let (cinematic_phase, _sub) = broadside_engine::gfx::phase_from_progress(t);
-                    if matches!(cinematic_phase, broadside_engine::gfx::CinematicPhase::Fade) {
-                        // Phase 1: OLD dims for the OLD-plane destructive fade.
+                    if t < PLAYER_ROTATE_GATE_T {
+                        // Rotation gate (incl. Fade): OLD dims, grid frozen
+                        // = stationary scene while player rotates in place.
                         self.board.dims()
                     } else {
-                        // Phases 2-5: project everything through NEW dims so the
-                        // preview hulls + grid + player land at their post-swap
-                        // positions. Falls back to live board dims if pending is
-                        // absent (Victorious-fanfare path has no pending_board).
+                        // Post-gate: project everything through NEW dims so
+                        // preview + grid + player land at post-swap. Falls
+                        // back to live board dims if pending is absent
+                        // (Victorious-fanfare path has no pending_board).
                         self.pending_board
                             .as_ref()
                             .map_or_else(|| self.board.dims(), Board::dims)

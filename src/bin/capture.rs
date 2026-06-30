@@ -758,9 +758,13 @@ fn main() {
                 Some(broadside_engine::grid::Dims::new(c, r))
             })
             .unwrap_or(board_dims);
+    // (#316 rotate-first 2026-06-30) Gate cfg flip on the same
+    // PLAYER_ROTATE_GATE_T boundary the bin uses so capture mirrors the live
+    // render path: pre-GATE = OLD dims (rotation beat, stationary grid),
+    // post-GATE = NEW dims (warp ride begins).
+    const ROTATE_GATE_T_CAP: f32 = 0.20;
     let render_dims = if let Some(t) = warp_t_for_cfg {
-        let (cinematic_phase, _sub) = broadside_engine::gfx::phase_from_progress(t);
-        if matches!(cinematic_phase, broadside_engine::gfx::CinematicPhase::Fade) {
+        if t < ROTATE_GATE_T_CAP {
             board_dims
         } else {
             pending_dims_for_cfg
@@ -953,8 +957,13 @@ fn main() {
             .ok()?
             .parse::<usize>()
             .ok()?;
-        // PLAYER_WARP_FASTNESS = 0.5 — matches bin/broadside.rs.
-        let inner_t = (t_total / 0.5).clamp(0.0, 1.0);
+        // PLAYER_WARP_FASTNESS = 0.5, gate = ROTATE_GATE_T_CAP (0.20) —
+        // matches bin/broadside.rs PLAYER_WARP_FASTNESS +
+        // PLAYER_ROTATE_GATE_T. The position lerp window starts at GATE
+        // (#316 rotate-first): pre-GATE player sits at prior cell;
+        // post-GATE it walks prior→target over the FASTNESS window.
+        const FASTNESS: f32 = 0.5;
+        let inner_t = ((t_total - ROTATE_GATE_T_CAP) / FASTNESS).clamp(0.0, 1.0);
         let eased = 1.0 - (1.0 - inner_t) * (1.0 - inner_t);
         // (#305 Path B Stage 4 2026-06-30) Source the TARGET cell from the
         // pending (n+1) board's player when a pending board exists, so the
@@ -1095,7 +1104,11 @@ fn main() {
                     }
                 };
                 const PLAYER_INTERCEPT_T: f32 = 0.55;
-                let player_progress = (t_total / PLAYER_INTERCEPT_T).clamp(0.0, 1.0);
+                // (#316 rotate-first) z ride begins at the rotation gate;
+                // pre-GATE z stays 0 so player sits on the OLD playable
+                // plane while rotating in place.
+                let z_span = (PLAYER_INTERCEPT_T - ROTATE_GATE_T_CAP).max(1e-3);
+                let player_progress = ((t_total - ROTATE_GATE_T_CAP) / z_span).clamp(0.0, 1.0);
                 let p_eased = 1.0 - (1.0 - player_progress) * (1.0 - player_progress);
                 grid_z * p_eased
             };
@@ -1120,33 +1133,41 @@ fn main() {
                     // compute_lane_align_for_swap(live, pending). On a non-
                     // parity-flip warp (pending dims == live dims) the offset
                     // is 0 and the render path is identical to pre-fix.
-                    lane_align_world_offset: pending_board
-                        .as_ref()
-                        .and_then(|pb| {
-                            let op = board
-                                .cells
-                                .iter()
-                                .flatten()
-                                .find(|s| s.faction == Faction::Player)?;
-                            let np = pb
-                                .cells
-                                .iter()
-                                .flatten()
-                                .find(|s| s.faction == Faction::Player)?;
-                            let s = broadside_engine::gfx::unified_grid_cell_scale();
-                            let old_world_x_raw = (board_dims.cols as f32 * 0.5
-                                - op.pos.col as f32
-                                - 0.5)
-                                * s;
-                            let new_world_x_raw = (pending_dims.cols as f32 * 0.5
-                                - np.pos.col as f32
-                                - 0.5)
-                                * s;
-                            let prior = broadside_engine::gfx::unified_lane_align_x();
-                            let to_align = prior + (new_world_x_raw - old_world_x_raw);
-                            Some(to_align - prior)
-                        })
-                        .unwrap_or(0.0),
+                    //
+                    // (#316 rotate-first) Pre-GATE the player sits at prior
+                    // cell on OLD cfg; offset must be 0 until cfg flips to
+                    // NEW at the gate. Mirrors the bin's gating (the gate
+                    // is `PLAYER_ROTATE_GATE_T = 0.20` in broadside.rs;
+                    // duplicated here as a literal — same value, this
+                    // struct literal is outside the player_tween closure's
+                    // scope).
+                    lane_align_world_offset: if warp_t_pre.is_some_and(|t| t < 0.20) {
+                        0.0
+                    } else {
+                        pending_board
+                            .as_ref()
+                            .and_then(|pb| {
+                                let op = board
+                                    .cells
+                                    .iter()
+                                    .flatten()
+                                    .find(|s| s.faction == Faction::Player)?;
+                                let np = pb
+                                    .cells
+                                    .iter()
+                                    .flatten()
+                                    .find(|s| s.faction == Faction::Player)?;
+                                let s = broadside_engine::gfx::unified_grid_cell_scale();
+                                let old_world_x_raw =
+                                    (board_dims.cols as f32 * 0.5 - op.pos.col as f32 - 0.5) * s;
+                                let new_world_x_raw =
+                                    (pending_dims.cols as f32 * 0.5 - np.pos.col as f32 - 0.5) * s;
+                                let prior = broadside_engine::gfx::unified_lane_align_x();
+                                let to_align = prior + (new_world_x_raw - old_world_x_raw);
+                                Some(to_align - prior)
+                            })
+                            .unwrap_or(0.0)
+                    },
                 },
             );
             log::info!(
