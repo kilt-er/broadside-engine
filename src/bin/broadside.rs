@@ -360,36 +360,6 @@ const fn demo_lane() -> LaneGeometry {
     DEFAULT_LANE
 }
 
-/// (warp rebuild 2026-06-30) Peek what `advance_after_win` WOULD return + which
-/// encounter the run would land on, WITHOUT mutating the real run. Clones the
-/// run, runs the advance, then resolves the post-advance current encounter on
-/// the clone — so a late-swap warp can pre-build the n+1 destination board at
-/// warp START while leaving `self.run.completed_encounters` at N until warp
-/// END. The bin's `pending_next_board` then carries the n+1 board across the
-/// Transitioning window; warp END consumes it AND applies the real advance.
-/// Returns `None` when there is no next encounter (run already over).
-#[allow(dead_code)] // wired in by the late-swap warp commit that follows
-fn peek_next_advance<'s>(
-    run: &broadside_engine::types::Run,
-    sectors: &'s [broadside_engine::types::Sector],
-) -> Option<(
-    broadside_engine::runs::AdvanceResult,
-    broadside_engine::types::Run,
-    &'s broadside_engine::types::EncounterDef,
-)> {
-    let mut probe = run.clone();
-    let result = broadside_engine::runs::advance_after_win(&mut probe, sectors);
-    match result {
-        broadside_engine::runs::AdvanceResult::NextEncounter
-        | broadside_engine::runs::AdvanceResult::NextSector => {
-            let enc = broadside_engine::runs::current_encounter(&probe, sectors)?;
-            Some((result, probe, enc))
-        }
-        broadside_engine::runs::AdvanceResult::Victorious
-        | broadside_engine::runs::AdvanceResult::AlreadyEnded => None,
-    }
-}
-
 /// (#213 / #P7) Look up the encounter that comes AFTER the current one in the
 /// run. Used by the persistent at-depth distance preview so the next grid +
 /// boss can be drawn behind the playable board through the shared unified
@@ -1380,6 +1350,15 @@ struct App {
     /// without breaking `DemoState`'s `Copy` derive — App-side option keeps
     /// the enum cheap to match on.
     pending_board: Option<Board>,
+    /// (warp rebuild 2/N revised — Option A 2026-06-30) Encounter index
+    /// pending_board was built from. Set at warp-start to
+    /// `run.completed_encounters` (the just-advanced cursor under Option
+    /// A's "advance at round-clear" rule). During Transitioning the
+    /// at-depth preview source reads this hint to render the encounter
+    /// WARPING IN (NOT `next_encounter_after_current`, which now returns
+    /// the encounter AFTER it = the persistent-parallax target for round
+    /// n+1). Cleared at warp END alongside `pending_board`.
+    pending_encounter_idx: Option<usize>,
     /// (CINEMATIC REBUILD phase a 2026-06-30) The player's cell on the
     /// CLEARED board, captured at the round-clear before the board swap.
     /// `Some` only during a `DemoState::Transitioning` window when the
@@ -1539,6 +1518,7 @@ impl App {
             tween_anchors: HashMap::new(),
             kickbacks: HashMap::new(),
             pending_board: None,
+            pending_encounter_idx: None,
             cinematic_prior_player_cell: None,
             sectors,
             run: Run::new(Self::fresh_player_ship()),
@@ -1635,26 +1615,6 @@ impl App {
     /// while `self.board`/`self.run` stay at the post-fight N state until
     /// warp END (when `advance_after_win` runs for real and the swap lands).
     ///
-    /// Returns the n+1 board plus the [`AdvanceResult`] that the real
-    /// `advance_after_win` will produce at warp END (so the bin knows whether
-    /// to schedule a Round or Waypoint cinematic without re-peeking).
-    #[allow(dead_code)] // wired in by the late-swap warp commit that follows
-    fn build_pending_board(
-        &self,
-    ) -> Option<(Board, broadside_engine::runs::AdvanceResult)> {
-        let (result, probe_run, enc) = peek_next_advance(&self.run, &self.sectors)?;
-        let patrol_tier = self
-            .sectors
-            .get(probe_run.current_sector_idx)
-            .map_or(1, |s| s.patrol_tier);
-        let player = Self::fresh_player_ship();
-        let catalog = self.catalog.as_ref();
-        let mut board = build_encounter_board(enc, player, |spawn| {
-            Some(synth_enemy_for_spawn(spawn, catalog, patrol_tier))
-        });
-        board.level = Self::run_cursor(&probe_run);
-        Some((board, result))
-    }
 
     /// (#210 P2) Linear "round number" across the whole campaign, used as the
     /// `Board.level` cursor that feeds [`Gfx::update_background`]'s focus-tween.
@@ -1717,6 +1677,7 @@ impl App {
         self.tween_anchors.clear();
         self.kickbacks.clear(); // (#209 hook 3) no stale recoil across encounters
         self.pending_board = None; // (#210 P4) abandon any in-flight warp on restart
+        self.pending_encounter_idx = None; // (warp rebuild 2/N) abandon the display hint too
         self.cinematic_prior_player_cell = None; // (phase a) clear cinematic player tween anchor
         self.kill_bursts.clear(); // (#90) no stale bursts into the fresh board
         self.particles.clear(); // (#119) no stale explosion particles into the fresh board
@@ -2872,93 +2833,62 @@ impl ApplicationHandler for App {
                             // Bruce's playtest stays on the clean cut. The
                             // `BROADSIDE_WARP_CINEMATIC=1` env override
                             // force-enables it for t-strip verification.
-                            // (warp rebuild 2/N 2026-06-30) Split the
-                            // round-clear handoff between OFF (STABILIZE
-                            // instant cut, today's live default) and ON
-                            // (LATE-SWAP cinematic) paths. OFF stays
-                            // BYTE-IDENTICAL — `advance_after_win` runs
-                            // here, the board swaps here, cleanups run
-                            // here, demo_state flips to Playing. ON peeks
-                            // the next encounter (without mutating
-                            // `self.run`), stashes the n+1 board into
-                            // `self.pending_board`, and enters
-                            // Transitioning while `self.run` /
-                            // `self.board` STAY at n. The warp-end tick
-                            // (RedrawRequested arm below) is the single
-                            // place where `advance_after_win` runs for
-                            // real, `self.board = pending` lands, and the
-                            // per-encounter cleanups fire. This is the
-                            // structural change that lets the n+1
-                            // enemies BE the at-depth preview (so they
-                            // can tween in) instead of being already
-                            // placed on the playable plane at warp start.
+                            // (warp rebuild 2/N revised — team-lead Option A
+                            // 2026-06-30) advance_after_win runs HERE
+                            // (round-clear) for BOTH paths — the warp is a
+                            // pure VISUAL layer and must not shift gameplay
+                            // timing. OFF path is byte-identical to today
+                            // (advance + build + swap + cleanups + Playing).
+                            // ON path defers ONLY the board SWAP — `self.run`
+                            // advances now, `self.pending_board` holds the
+                            // n+1 board, `self.pending_encounter_idx` flags
+                            // the encounter index pending_board was built
+                            // from (= the just-advanced
+                            // `run.completed_encounters` for NextEncounter /
+                            // = 0 of the new sector for NextSector); the
+                            // at-depth preview source reads this hint during
+                            // Transitioning so it shows the encounter
+                            // warping in (NOT the one AFTER it that
+                            // next_encounter_after_current would return now
+                            // that the cursor moved). Warp-end tick consumes
+                            // pending_board → self.board and runs the
+                            // deferred cleanups.
                             let cinematic = warp_cinematic_enabled();
-                            if cinematic {
-                                if let Some((pending, advance)) = self.build_pending_board() {
-                                    let kind = match advance {
-                                        AdvanceResult::NextEncounter => TransitionKind::Round,
-                                        AdvanceResult::NextSector => TransitionKind::Waypoint,
-                                        // peek_next_advance filters Victorious/
-                                        // AlreadyEnded to None, so build_pending_
-                                        // board's Some branch can only return
-                                        // NextEncounter | NextSector.
-                                        AdvanceResult::Victorious
-                                        | AdvanceResult::AlreadyEnded => TransitionKind::Round,
-                                    };
-                                    // Snapshot the player's TRUE round-end cell
-                                    // on the still-live n board. This is the
-                                    // continuity model's "where the player was
-                                    // when the round ended" — `self.board` is
-                                    // still n here, so this is the real cell.
-                                    let prior_player_cell: Option<Pos> = self
-                                        .board
-                                        .cells
-                                        .iter()
-                                        .flatten()
-                                        .find(|s| s.faction == Faction::Player)
-                                        .map(|s| s.pos);
-                                    self.pending_board = Some(pending);
-                                    self.cinematic_prior_player_cell = prior_player_cell;
-                                    self.plant_warp_in_anchors(kind, now, prior_player_cell);
-                                    self.demo_state =
-                                        DemoState::Transitioning(TransitionPhase {
-                                            kind,
-                                            started_at: now,
-                                        });
-                                } else {
-                                    // No next encounter — peek returned None
-                                    // (Victorious / AlreadyEnded). Either run a
-                                    // no-swap Waypoint fanfare or fall through
-                                    // to RunComplete. We still need to apply
-                                    // the REAL advance to flip
-                                    // `run.victorious` for the end-card path.
-                                    let real_advance =
-                                        advance_after_win(&mut self.run, &self.sectors);
-                                    if matches!(real_advance, AdvanceResult::Victorious) {
-                                        // (#210 P9) Final-victory warp — Waypoint
-                                        // beat before YOU WIN; no board swap.
+                            let advance = advance_after_win(&mut self.run, &self.sectors);
+                            let kind = match advance {
+                                AdvanceResult::NextEncounter => Some(TransitionKind::Round),
+                                AdvanceResult::NextSector => Some(TransitionKind::Waypoint),
+                                AdvanceResult::Victorious | AdvanceResult::AlreadyEnded => None,
+                            };
+                            if let Some(kind) = kind {
+                                if let Some(next) = self.build_current_board() {
+                                    if cinematic {
+                                        // ON: defer swap + cleanups. Snapshot
+                                        // the player's TRUE round-end cell on
+                                        // the still-live n board (self.board
+                                        // hasn't moved yet) — that's the
+                                        // continuity rule's "where the player
+                                        // was when the round ended".
+                                        let prior_player_cell: Option<Pos> = self
+                                            .board
+                                            .cells
+                                            .iter()
+                                            .flatten()
+                                            .find(|s| s.faction == Faction::Player)
+                                            .map(|s| s.pos);
+                                        self.pending_board = Some(next);
+                                        self.pending_encounter_idx =
+                                            Some(self.run.completed_encounters as usize);
+                                        self.cinematic_prior_player_cell = prior_player_cell;
+                                        self.plant_warp_in_anchors(kind, now, prior_player_cell);
                                         self.demo_state =
                                             DemoState::Transitioning(TransitionPhase {
-                                                kind: TransitionKind::Waypoint,
+                                                kind,
                                                 started_at: now,
                                             });
                                     } else {
-                                        self.demo_state = DemoState::RunComplete;
-                                    }
-                                }
-                            } else {
-                                // STABILIZE PATH (live default) — UNCHANGED
-                                // from pre-rebuild behavior: advance the run,
-                                // build + swap to the next board, run
-                                // per-encounter cleanups, flip to Playing.
-                                let advance = advance_after_win(&mut self.run, &self.sectors);
-                                let kind = match advance {
-                                    AdvanceResult::NextEncounter => Some(TransitionKind::Round),
-                                    AdvanceResult::NextSector => Some(TransitionKind::Waypoint),
-                                    AdvanceResult::Victorious | AdvanceResult::AlreadyEnded => None,
-                                };
-                                if kind.is_some() {
-                                    if let Some(next) = self.build_current_board() {
+                                        // OFF: eager swap, byte-identical to
+                                        // pre-rebuild behavior.
                                         self.board = next;
                                         self.tween_anchors.clear();
                                         self.kickbacks.clear();
@@ -2971,14 +2901,23 @@ impl ApplicationHandler for App {
                                         self.queue_blocked_flash = None;
                                         self.reinstall_audio();
                                         self.demo_state = DemoState::Playing;
-                                    } else {
-                                        self.demo_state = DemoState::RunComplete;
                                     }
-                                } else if matches!(advance, AdvanceResult::Victorious) {
+                                } else {
                                     self.demo_state = DemoState::RunComplete;
                                 }
-                                // AdvanceResult::AlreadyEnded: defensive no-op.
+                            } else if matches!(advance, AdvanceResult::Victorious) {
+                                if cinematic {
+                                    // (#210 P9) Final-victory warp — Waypoint
+                                    // beat before YOU WIN; no board swap.
+                                    self.demo_state = DemoState::Transitioning(TransitionPhase {
+                                        kind: TransitionKind::Waypoint,
+                                        started_at: now,
+                                    });
+                                } else {
+                                    self.demo_state = DemoState::RunComplete;
+                                }
                             }
+                            // AdvanceResult::AlreadyEnded: defensive no-op.
                         }
                         EncounterOutcome::Lost => {
                             mark_defeated(&mut self.run);
@@ -3017,20 +2956,19 @@ impl ApplicationHandler for App {
                 //   - else            -> Playing (normal round/waypoint)
                 if let DemoState::Transitioning(phase) = self.demo_state {
                     if phase.progress(now) >= 1.0 {
-                        // (warp rebuild 2/N 2026-06-30) LATE SWAP: if a
-                        // pending_board is held (cinematic late-swap path
-                        // from the round-clear handoff above), apply the
-                        // REAL advance_after_win NOW (so the cursor
-                        // bumps), swap self.board = pending, and run the
-                        // per-encounter cleanups that the old eager-swap
-                        // path ran at warp START. The persistent at-depth
-                        // preview (during Playing) now correctly points to
-                        // n+2 because the cursor finally moved here.
+                        // (warp rebuild 2/N revised — Option A 2026-06-30)
+                        // LATE SWAP: advance_after_win already ran at
+                        // round-clear (gameplay timing unchanged). Here we
+                        // consume the deferred BOARD swap + the
+                        // per-encounter cleanups that the OFF/eager path
+                        // ran at warp START. pending_encounter_idx clears
+                        // so the at-depth preview source falls back to
+                        // next_encounter_after_current (n+2 = the
+                        // persistent parallax for the now-current n+1).
                         // Victorious-fanfare path (no pending_board) is
-                        // unchanged — just drop the cinematic anchor +
-                        // flip to RunComplete.
+                        // unchanged — just drop the cinematic anchor + flip
+                        // to RunComplete.
                         if let Some(next) = self.pending_board.take() {
-                            let _ = advance_after_win(&mut self.run, &self.sectors);
                             self.board = next;
                             self.kickbacks.clear();
                             self.kill_bursts.clear();
@@ -3042,6 +2980,7 @@ impl ApplicationHandler for App {
                             self.queue_blocked_flash = None;
                             self.reinstall_audio();
                         }
+                        self.pending_encounter_idx = None;
                         // Tween anchors with `dur_ms_override` Some saturate
                         // at t=1 in `tween_2d` anyway, so explicit clear keeps
                         // the map small + #188 alignment exact post-warp.
@@ -3566,45 +3505,62 @@ impl ApplicationHandler for App {
                 let show_at_depth_preview =
                     warp_cinematic_enabled() && !matches!(demo_state, DemoState::Dying(_));
                 if show_at_depth_preview {
-                    // (warp rebuild 3/N 2026-06-30) During Transitioning the
-                    // at-depth preview must render the PENDING n+1 board
-                    // (the encounter the player is warping INTO) so its
-                    // enemies are visible at depth + can tween into their
-                    // cells during P4. `next_encounter_after_current` reads
-                    // `completed_encounters + 1` and was correct under the
-                    // EAGER-swap model (`completed_encounters` was bumped at
-                    // warp start) but wrong under the LATE-swap model
-                    // (cursor stays at n until warp end → it'd return n+2
-                    // = the encounter AFTER the one warping in, with no
-                    // registered poses → the empty-grid bug Bruce saw).
-                    // Source from pending_board's enemy ships directly when
-                    // a warp is in flight; fall back to the
-                    // next_encounter_after_current lookup for the
-                    // persistent Playing-state parallax preview (n+1 = the
-                    // next encounter, the live cursor's natural target).
-                    enum PreviewSource<'a> {
-                        Encounter(&'a broadside_engine::types::EncounterDef),
-                        Pending(&'a Board),
-                    }
-                    let pending_ref = self.pending_board.as_ref();
-                    let preview_source: Option<PreviewSource<'_>> = if let Some(pending) = pending_ref {
+                    // (warp rebuild 3/N revised — Option A 2026-06-30)
+                    // During Transitioning the at-depth preview must render
+                    // the encounter WARPING IN. Under Option A,
+                    // advance_after_win runs at round-clear so
+                    // `run.completed_encounters` already points AT the
+                    // warp's destination encounter. The display hint
+                    // `self.pending_encounter_idx` flags that encounter
+                    // index; we resolve its `EncounterDef` directly from
+                    // the sectors table. Outside Transitioning (and when
+                    // no warp is in flight) fall back to
+                    // `next_encounter_after_current` for the persistent
+                    // parallax preview (= the encounter AFTER the current
+                    // one, the player's NEXT-NEXT challenge — exactly
+                    // what's wanted during regular Playing).
+                    let preview_enc: Option<&broadside_engine::types::EncounterDef> =
                         if matches!(demo_state, DemoState::Transitioning(_)) {
-                            Some(PreviewSource::Pending(pending))
+                            self.pending_encounter_idx.and_then(|idx| {
+                                self.sectors
+                                    .get(self.run.current_sector_idx)
+                                    .and_then(|s| s.encounters.get(idx))
+                            })
                         } else {
-                            None
-                        }
-                    } else {
-                        next_encounter_after_current(&self.run, &self.sectors)
-                            .map(PreviewSource::Encounter)
-                    };
-                    if let Some(src) = preview_source {
-                        let (spawns, ship_ids, cols, rows): (
-                            Vec<Pos>,
-                            Vec<String>,
-                            usize,
-                            usize,
-                        ) = match src {
-                            PreviewSource::Encounter(next_enc) => {
+                            next_encounter_after_current(&self.run, &self.sectors)
+                        };
+                    if let Some(next_enc) = preview_enc {
+                        // Source from `pending_board` during Transitioning
+                        // so the at-depth IDs are byte-equivalent to the
+                        // boots-on-deck Ship.id format that
+                        // build_encounter_board generated; outside
+                        // Transitioning, synthesise the IDs from the def
+                        // (matches the runs::*_for_spawn convention so the
+                        // pose handoff at the swap is stable).
+                        let (spawns, ship_ids, cols, rows): (Vec<Pos>, Vec<String>, usize, usize) =
+                            if matches!(demo_state, DemoState::Transitioning(_)) {
+                                if let Some(pending) = self.pending_board.as_ref() {
+                                    let dims = pending.dims();
+                                    let mut spawns = Vec::new();
+                                    let mut ship_ids = Vec::new();
+                                    for ship in pending.cells.iter().flatten() {
+                                        if ship.faction == Faction::Enemy {
+                                            spawns.push(ship.pos);
+                                            ship_ids.push(ship.id.clone());
+                                        }
+                                    }
+                                    (spawns, ship_ids, dims.cols, dims.rows)
+                                } else {
+                                    let spawns: Vec<Pos> =
+                                        next_enc.enemy_ships.iter().map(|s| s.pos).collect();
+                                    let ship_ids: Vec<String> = next_enc
+                                        .enemy_ships
+                                        .iter()
+                                        .map(|s| format!("{}@{}", s.class_id, s.cell))
+                                        .collect();
+                                    (spawns, ship_ids, next_enc.dims.cols, next_enc.dims.rows)
+                                }
+                            } else {
                                 let spawns: Vec<Pos> =
                                     next_enc.enemy_ships.iter().map(|s| s.pos).collect();
                                 let ship_ids: Vec<String> = next_enc
@@ -3613,20 +3569,7 @@ impl ApplicationHandler for App {
                                     .map(|s| format!("{}@{}", s.class_id, s.cell))
                                     .collect();
                                 (spawns, ship_ids, next_enc.dims.cols, next_enc.dims.rows)
-                            }
-                            PreviewSource::Pending(pending) => {
-                                let dims = pending.dims();
-                                let mut spawns: Vec<Pos> = Vec::new();
-                                let mut ship_ids: Vec<String> = Vec::new();
-                                for ship in pending.cells.iter().flatten() {
-                                    if ship.faction == Faction::Enemy {
-                                        spawns.push(ship.pos);
-                                        ship_ids.push(ship.id.clone());
-                                    }
-                                }
-                                (spawns, ship_ids, dims.cols, dims.rows)
-                            }
-                        };
+                            };
                         // (#213) Live dials — `Z`/`X` adjust preview depth,
                         // `B`/`N` adjust preview tint alpha. Default 8.0 / 0.55
                         // matches the boot consts; Bruce dials by eye during
