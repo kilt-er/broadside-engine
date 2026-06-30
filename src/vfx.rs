@@ -1026,10 +1026,17 @@ fn emit_flash(
     )));
 }
 
-/// (#178 Bruce) A real-time EXPANDING explosion, composited from three eased flat
-/// quads (`SOLID_WHITE`) over the effect's wall-clock life `t` (0→1, driven by the
-/// pool's per-frame `advance(dt)` — NOT the turn beat). Bruce: "an explosion can
-/// run in real time", not a static pop.
+/// (#178 Bruce) A real-time EXPANDING explosion, composited from three eased
+/// ROUND quads over the effect's wall-clock life `t` (0→1, driven by the pool's
+/// per-frame `advance(dt)` — NOT the turn beat). Bruce: "an explosion can run in
+/// real time", not a static pop.
+///
+/// (#301 Bruce) Routes the three layers through the `PARTICLE_CIRCLE` atlas
+/// silhouette instead of `SOLID_WHITE`, so the bloom reads as a ROUND burst
+/// not an axis-aligned square. Bruce's "giant orange square" was this — the
+/// quad geometry is unchanged (still square sprite primitives, since wgpu draws
+/// rectangles), but the sampled silhouette is now a filled circle so the
+/// rasterised result is a disc.
 ///
 /// The three layers: an EXPANDING orange SHELL (the blast front — grows from a
 /// small disc toward `~peak` while fading, ease-out so it bursts then settles; the
@@ -1048,12 +1055,18 @@ fn emit_explosion(
 ) {
     let p = grid_cell_quad(pos, cfg_proj).center;
     let peak = cfg.peak_px;
+    // (#301) Round bloom — sample PARTICLE_CIRCLE (the filled-disc silhouette
+    // added in #217 atlas) instead of SOLID_WHITE so the multiplied tint
+    // renders as a round burst, not the axis-aligned square Bruce kept
+    // reading as "a square that lights up." Same per-layer alpha/size/curve
+    // math; only the UV cell changed.
+    let bloom_uvs = atlas::cell_uvs(atlas::PARTICLE_CIRCLE);
     let mut quad = |size: f32, rgba: [f32; 4]| {
         out.push(DrawCommand::Sprite(SpriteInstance::axis_aligned(
             p,
             [size * 0.5, size * 0.5],
             rgba,
-            atlas::cell_uvs(atlas::SOLID_WHITE),
+            bloom_uvs,
         )));
     };
     // ease-out (fast then settle) for growth; linear-ish fades per layer.
@@ -1764,6 +1777,54 @@ mod tests {
         board.cells[2] = None; // destroyed
         vfx.observe(&board);
         assert_eq!(vfx.effects.len(), 1, "one explosion");
+    }
+
+    #[test]
+    fn emit_explosion_uses_round_bloom_atlas_cell() {
+        // (#301 Bruce) The explosion's three bloom layers (shell + core +
+        // ignition flash) must sample the PARTICLE_CIRCLE atlas silhouette,
+        // not SOLID_WHITE, so the rasterised burst reads as a ROUND bloom
+        // instead of the axis-aligned square Bruce kept seeing. If a future
+        // edit flips the UVs back to SOLID_WHITE this test loud-fails
+        // immediately rather than waiting for an eyeball capture pass.
+        let cfg = crate::projector::ProjectorConfig::for_scene(480.0, 270.0);
+        let mut vfx = CombatVfx::new();
+        let mut board = empty_board(7);
+        board.cells[2] = Some(ship("doomed", Faction::Enemy, 2, 1));
+        vfx.observe(&board);
+        board.cells[2] = None;
+        vfx.observe(&board);
+        // Advance into the middle of the explosion life so all three layers
+        // (flash, core, shell) are visible.
+        vfx.advance(0.15);
+        let mut out = Vec::new();
+        vfx.emit(&mut out, &board, &cfg);
+        let circle_uv = atlas::cell_uvs(atlas::PARTICLE_CIRCLE);
+        let any_round = out.iter().any(|c| {
+            matches!(c, DrawCommand::Sprite(s) if s.uv_min == circle_uv.0 && s.uv_max == circle_uv.1)
+        });
+        assert!(
+            any_round,
+            "emit_explosion must sample PARTICLE_CIRCLE atlas cell so the bloom reads as ROUND"
+        );
+        // None of the explosion's three bloom layers should still sample
+        // SOLID_WHITE — that's the square Bruce kept seeing. The ready-glow
+        // pulse also uses SOLID_WHITE but spawns on QUEUED enemies (none
+        // here), so any SOLID_WHITE sprite AT the killed cell is a leak.
+        let square_uv = atlas::cell_uvs(atlas::SOLID_WHITE);
+        let kill_center =
+            crate::projector::grid_cell_quad(crate::grid::Pos::new(0, 0), &cfg).center;
+        let leaked = out.iter().any(|c| {
+            matches!(c, DrawCommand::Sprite(s)
+                if s.uv_min == square_uv.0
+                    && s.uv_max == square_uv.1
+                    && (s.pos[0] - kill_center[0]).abs() < 1.0
+                    && (s.pos[1] - kill_center[1]).abs() < 1.0)
+        });
+        assert!(
+            !leaked,
+            "no SOLID_WHITE square bloom layers should fire at the killed cell"
+        );
     }
 
     #[test]
