@@ -444,6 +444,16 @@ pub struct VisualShip2d {
     /// each shot. Zero at rest ⇒ no recoil. Restored to `[0.0, 0.0]` when the
     /// tween itself is rebuilt (turn boundary).
     pub kickback: [f32; 2],
+    /// (warp rebuild 9/N 2026-06-30) World-space Z offset for the ship's loft
+    /// hull. The unified ship pass projects through
+    /// [`crate::projector::cell_world_center_frac_offset`] when this is non-
+    /// zero, so the hull renders at the SAME world Z as the at-depth preview
+    /// grid. Used by the cinematic player tween: during a Transitioning
+    /// window the bin tracks the player along the n+1 grid's descending Z
+    /// with a FASTER curve than the grid (3-speed model — player intercepts
+    /// the descending grid mid-Warp then rides it down to z=0). Zero at
+    /// rest ⇒ hull renders on the playable plane, byte-identical to pre-9/N.
+    pub z_offset: f32,
 }
 
 /// (#79) Per-ship visual tween overrides for the 2-D live path, keyed by
@@ -1714,7 +1724,7 @@ pub fn push_upcoming_loft_ships_2d(
 /// lockstep). The 4-phase warp should call
 /// [`push_upcoming_loft_ships_2d_staggered_with_rest`] instead so the
 /// enemy rest anchor can be the full parallax depth while the grid's
-/// z_offset already descends to 0.
+/// `z_offset` already descends to 0.
 #[allow(clippy::too_many_arguments)]
 pub fn push_upcoming_loft_ships_2d_staggered(
     out: &mut Vec<DrawCommand>,
@@ -1774,17 +1784,14 @@ pub fn push_upcoming_loft_ships_2d_staggered_with_rest(
     let mut staggered: Vec<(usize, &crate::grid::Pos)> = enemy_spawns
         .iter()
         .enumerate()
-        .filter(|(idx, pos)| {
-            pos.col < cols && pos.row < rows && ship_ids.get(*idx).is_some()
-        })
+        .filter(|(idx, pos)| pos.col < cols && pos.row < rows && ship_ids.get(*idx).is_some())
         .collect();
     staggered.sort_by_key(|(_, p)| (p.col, p.row));
     let stagger_count = staggered.len();
     for (stagger_idx, (orig_idx, pos)) in staggered.iter().enumerate() {
         let pos = **pos;
-        let id = match ship_ids.get(*orig_idx) {
-            Some(s) => s,
-            None => continue,
+        let Some(id) = ship_ids.get(*orig_idx) else {
+            continue;
         };
         let Some(loft_kind) = sprites.loft_kind(id, false) else {
             // No enemy mesh installed (test/no-GPU registry) — skip; the
@@ -1974,7 +1981,7 @@ pub fn prepend_upcoming_board_with_loft_2d_staggered_with_rest(
 ///
 /// Reads the live cinematic phase from [`crate::gfx::phase_from_progress`]
 /// so the stagger window self-adjusts when the Settle dial is bumped —
-/// lead ruling: extend Settle to ~N × ENEMY_STAGGER_BEAT_MS so each
+/// lead ruling: extend Settle to ~N × `ENEMY_STAGGER_BEAT_MS` so each
 /// enemy's descent is legible (the pre-correction code crammed the
 /// cascade into a 150ms window, reading as "all at once"). Snap is
 /// included in the active window so the enemy cascade visibly overlaps
@@ -2364,8 +2371,17 @@ fn push_ship_2d(
                 cell: [ship.pos.col as u32, ship.pos.row as u32],
                 cell_frac,
                 unified_yaw_rad: unified_heading_yaw(ship.facing),
-                // Live unified ship: rendered on the playable plane at z=0.
-                z_offset: 0.0,
+                // (warp rebuild 9/N) Read the cinematic z_offset from the
+                // bin's VisualShip2d override when present; outside a
+                // Transitioning window vis is None / vis.z_offset == 0.0 →
+                // byte-identical to the pre-9/N live render. During warp
+                // the bin drives this for the PLAYER along its own faster
+                // 3-speed curve so the hull tracks the descending n+1
+                // (col,row) cell, intercepts grid mid-Warp, and rides it
+                // back to z=0 by Settle. Non-player ships pass through
+                // with z=0 (their tween anchors don't set z_offset; carry-
+                // forward + at-depth-enemy paths come through other code).
+                z_offset: vis.map_or(0.0, |v| v.z_offset),
             }));
             return;
         }
@@ -2436,8 +2452,14 @@ fn push_ship_2d(
                 cell: [ship.pos.col as u32, ship.pos.row as u32],
                 cell_frac,
                 unified_yaw_rad: unified_heading_yaw(ship.facing),
-                // Live player hero hull: on the playable plane at z=0.
-                z_offset: 0.0,
+                // (warp rebuild 9/N) Read the cinematic z_offset from the bin's
+                // VisualShip2d override when present; outside a Transitioning
+                // window vis is None (or vis.z_offset == 0.0) → byte-identical
+                // to the prior live-plane player render. During warp the bin
+                // drives this along its own faster curve so the player tracks
+                // the descending n+1 (2,3) cell, intercepts grid mid-Warp, and
+                // rides it back to z=0 by Settle (Bruce's 3-speed model).
+                z_offset: vis.map_or(0.0, |v| v.z_offset),
             }));
             // (#138) Shield pips removed — the per-face cyan squares read as mystery
             // clutter (Bruce); the total shield is in the bottom SHLD bar.

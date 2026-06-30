@@ -1038,6 +1038,56 @@ fn cinematic_player_cell_frac(
     Some([col_f, row_f])
 }
 
+/// (warp rebuild 9/N 2026-06-30) Bruce's 3-speed player warp Z trajectory.
+/// The cell-index lerp [`cinematic_player_cell_frac`] alone is a no-op when
+/// prior == current (under the 6/N carry-forward, the player's (col,row) IS
+/// the same before/after the swap), so the player rendered stationary on the
+/// playable plane — Bruce explicitly rejected that. The player must MOVE
+/// during the warp, because that cell's WORLD POSITION moves: it lives on
+/// the n+1 grid, which is descending from depth (`grid_z`) toward 0 across
+/// phases 1-4 via [`preview_seam_lerp`].
+///
+/// **Motion model**: out-and-back. The player departs the front (z=0, last
+/// playable position), accelerates BACK INTO the screen to intercept the
+/// descending n+1 (`col`,`row`) cell at depth, then rides that cell forward
+/// to z=0. Same start + end screen spot (front-center), but a real 3-speed
+/// journey — player faster than grid, intercepts mid-Warp.
+///
+/// **Formula**: `player_z(t) = grid_z(t) * ease(player_progress(t))` where
+/// `player_progress = clamp(t_total / PLAYER_INTERCEPT_T, 0, 1)` with the
+/// intercept tuned to land in late Warp (≈t=0.55). The product naturally
+/// peaks where ease's rise outruns `grid_z`'s fall, then both descend
+/// together to 0 (`player_progress` saturates at 1.0 ⇒ `player_z` ==
+/// `grid_z`, "riding the grid"). Returns 0 outside a Transitioning window
+/// or when no carry-forward anchor was set.
+///
+/// `t_total` is the 0..1 progress across the full warp; `grid_z` is the
+/// current preview-seam Z (from [`preview_seam_lerp`]); `prior` gates the
+/// whole tween (None ⇒ no warp-in needed).
+fn cinematic_player_z_offset(
+    t_total: f32,
+    grid_z: f32,
+    prior: Option<broadside_engine::grid::Pos>,
+) -> f32 {
+    // No carry-forward anchor ⇒ no cinematic player tween ⇒ z stays at 0
+    // (live playable plane), byte-identical to the pre-9/N render.
+    if prior.is_none() {
+        return 0.0;
+    }
+    // Intercept timing: player must reach the descending grid BEFORE it
+    // lands. PLAYER_INTERCEPT_T < 1.0 means player progress saturates at
+    // t_total = PLAYER_INTERCEPT_T (≈0.55, late Warp / early Snap); after
+    // that the formula collapses to player_z == grid_z so the player rides
+    // the rest of the descent with the grid (3-speed: player>grid until
+    // intercept, then SAME speed = riding it down).
+    const PLAYER_INTERCEPT_T: f32 = 0.55;
+    let player_progress = (t_total / PLAYER_INTERCEPT_T).clamp(0.0, 1.0);
+    // Ease-out quad: fast departure (player rapidly climbs into depth),
+    // soft arrival (matches grid's velocity at intercept).
+    let eased = 1.0 - (1.0 - player_progress) * (1.0 - player_progress);
+    grid_z * eased
+}
+
 /// (CINEMATIC REBUILD phase c 2026-06-30) Per-phase `(z_offset, tint_alpha)`
 /// for the AT-DEPTH preview during a Transitioning window. Drives the
 /// upcoming grid from its rest depth/tint toward EXACTLY `(0.0, 1.0)` by
@@ -1351,7 +1401,7 @@ struct App {
     /// the enum cheap to match on.
     pending_board: Option<Board>,
     /// (warp rebuild 2/N revised — Option A 2026-06-30) Encounter index
-    /// pending_board was built from. Set at warp-start to
+    /// `pending_board` was built from. Set at warp-start to
     /// `run.completed_encounters` (the just-advanced cursor under Option
     /// A's "advance at round-clear" rule). During Transitioning the
     /// at-depth preview source reads this hint to render the encounter
@@ -1609,9 +1659,9 @@ impl App {
     }
 
     /// (warp rebuild 6/N — Job 1, 2026-06-30) Override `next`'s player cell
-    /// + facing with the prior board's player position, clamped into the
+    /// and facing with the prior board's player position, clamped into the
     /// new dims. Bruce's continuity rule: the player KEEPS its exact
-    /// (col,row) + facing from the finished encounter; no respawn at
+    /// `(col,row)` and facing from the finished encounter; no respawn at
     /// `runs::player_start_pos`. Called on every encounter advance (both
     /// the cinematic late-swap path AND the STABILIZE eager-swap path) so
     /// the carry-forward is independent of the warp visual. If `prior` is
@@ -1633,11 +1683,8 @@ impl App {
         // Find the player on `next`, snapshot its current canonical spawn
         // cell + class/loadout, then mutate its pos/cell/facing to the
         // carried values + relocate it to the clamped index.
-        let player_idx_and_class: Option<(usize, _, _)> = next
-            .cells
-            .iter()
-            .enumerate()
-            .find_map(|(idx, slot)| {
+        let player_idx_and_class: Option<(usize, _, _)> =
+            next.cells.iter().enumerate().find_map(|(idx, slot)| {
                 slot.as_ref().and_then(|s| {
                     if s.faction == Faction::Player {
                         Some((idx, s.id.clone(), s.klass.clone()))
@@ -1666,9 +1713,8 @@ impl App {
         }
         // Take the player out of the canonical spawn slot, edit, place
         // it back at the carried cell.
-        let mut player = match next.cells.get_mut(spawn_idx).and_then(|s| s.take()) {
-            Some(p) => p,
-            None => return,
+        let Some(mut player) = next.cells.get_mut(spawn_idx).and_then(Option::take) else {
+            return;
         };
         player.pos = clamped;
         player.cell = new_idx;
@@ -2033,6 +2079,7 @@ impl App {
                     ),
                     cell_frac,
                     kickback,
+                    z_offset: 0.0,
                 },
             );
         }
@@ -2089,6 +2136,26 @@ impl App {
                             .get(&player.id)
                             .copied()
                             .unwrap_or([0.0_f32, 0.0_f32]);
+                        // (warp rebuild 9/N) Drive the player's world Z to
+                        // track the descending n+1 grid's cell at (col,row)
+                        // with a FASTER curve than the grid (3-speed). Uses
+                        // the SAME preview_seam_lerp the grid wireframe + at-
+                        // depth enemy markers use, so the player intercepts
+                        // the literal world-Z the grid is at, no parallax
+                        // mismatch. The unified ship pass projects through
+                        // cell_world_center_frac_offset when z_offset != 0,
+                        // so the player hull renders at the grid's depth.
+                        let rest_z = broadside_engine::gfx::preview_z_offset();
+                        let rest_a = broadside_engine::gfx::preview_tint_alpha().clamp(0.0, 1.0);
+                        let (phase_kind, phase_sub) =
+                            broadside_engine::gfx::phase_from_progress(t_total);
+                        let (grid_z, _grid_a) =
+                            preview_seam_lerp(phase_kind, phase_sub, rest_z, rest_a);
+                        let player_z = cinematic_player_z_offset(
+                            t_total,
+                            grid_z,
+                            self.cinematic_prior_player_cell,
+                        );
                         tw.visual.insert(
                             player.id.clone(),
                             hud::VisualShip2d {
@@ -2099,6 +2166,7 @@ impl App {
                                 facing_yaw_deg: hud::loft_facing_ground_yaw(player.facing),
                                 cell_frac,
                                 kickback,
+                                z_offset: player_z,
                             },
                         );
                     }
@@ -2132,6 +2200,7 @@ impl App {
                     facing_yaw_deg: hud::loft_facing_ground_yaw(ship.facing),
                     cell_frac,
                     kickback,
+                    z_offset: 0.0,
                 },
             );
         }
@@ -2939,14 +3008,16 @@ impl ApplicationHandler for App {
                                     // board. Used both for the late-swap
                                     // visual anchor AND for the
                                     // Job-1 carry-forward override below.
-                                    let prior_player: Option<(Pos, broadside_engine::grid::Facing)> =
-                                        self.board.cells.iter().flatten().find_map(|s| {
-                                            if s.faction == Faction::Player {
-                                                Some((s.pos, s.facing))
-                                            } else {
-                                                None
-                                            }
-                                        });
+                                    let prior_player: Option<(
+                                        Pos,
+                                        broadside_engine::grid::Facing,
+                                    )> = self.board.cells.iter().flatten().find_map(|s| {
+                                        if s.faction == Faction::Player {
+                                            Some((s.pos, s.facing))
+                                        } else {
+                                            None
+                                        }
+                                    });
                                     let prior_player_cell = prior_player.map(|(p, _)| p);
                                     // (warp rebuild 6/N — Job 1) Carry the
                                     // player's (col,row) + facing forward
@@ -3281,6 +3352,21 @@ impl ApplicationHandler for App {
                 // spawns on an actual state change.
                 self.vfx.observe(&self.board);
                 let vfx_active = self.vfx.advance(dt);
+                // (#291 live wire-up 2026-06-30) Push the brightest active
+                // explosion's per-frame point light to the loft shader so
+                // every hull lights per-surface-normal as a blast unfolds
+                // (real reflection, not the flat shadow-square placeholder).
+                // Reads what `vfx.advance` just stepped — newly-spawned
+                // explosions appear next frame, expired ones evaporate.
+                // None ⇒ clear the light (byte-identical to pre-#291 frame).
+                // Lives OUTSIDE the WARP_CINEMATIC_ENABLED gate: this is a
+                // normal live combat visual, always on (team-lead 2026-06-30
+                // bundle ruling — warp stays flag-gated, reflection is on).
+                if let Some(gfx) = self.gfx.as_mut() {
+                    let pcfg = scene_projector_for_board(&self.board);
+                    let light = self.vfx.brightest_explosion_light(&pcfg);
+                    gfx.set_loft_explosion_light(light);
+                }
                 // (#119) Advance the explosion particle pool at the same wall-clock dt;
                 // stays empty (cheap no-op) until a ship death seeds a burst.
                 let particles_active = self.particles.advance(dt);

@@ -721,7 +721,7 @@ fn main() {
         // covers the playable plane: only the player LoftShip survives
         // (LoftShip is fade-exempt by design, hero-hull rule). No
         // ghost enemy hulls.
-        for cell in board.cells.iter_mut() {
+        for cell in &mut board.cells {
             if let Some(s) = cell {
                 if s.faction == Faction::Enemy {
                     *cell = None;
@@ -853,6 +853,50 @@ fn main() {
             let from_q = grid_cell_quad(Pos::new(from_col, from_row), &cfg);
             let to_q = grid_cell_quad(player.pos, &cfg);
             let lerped_q = broadside_engine::hud::lerp_cell_quad(&from_q, &to_q, eased);
+            // (warp rebuild 9/N) Compute the player's world Z offset to track
+            // the descending n+1 grid (Bruce's 3-speed model). Mirrors the
+            // bin's cinematic_player_z_offset / preview_seam_lerp pair: the
+            // grid's live world Z is the same per-phase anchor lerp the
+            // grid wireframe uses below; the player rides it with a faster
+            // ease (PLAYER_INTERCEPT_T = 0.55, matching bin/broadside.rs).
+            let player_z = {
+                let t_total = warp_t_pre.unwrap_or(0.0);
+                let rest_z = broadside_engine::gfx::preview_z_offset();
+                let rest_a = broadside_engine::gfx::preview_tint_alpha();
+                let (phase, sub) = broadside_engine::gfx::phase_from_progress(t_total);
+                let approach_start_z = rest_z;
+                let approach_start_a = rest_a;
+                let warp_start_z = rest_z * 0.6;
+                let warp_start_a = rest_a + (1.0 - rest_a) * 0.30;
+                let snap_start_z = rest_z * 0.25;
+                let snap_start_a = rest_a + (1.0 - rest_a) * 0.65;
+                let settle_start_z = 0.0;
+                let settle_start_a = 1.0;
+                let eased_sub = sub * sub;
+                let lerp = |a: f32, b: f32, t: f32| a + (b - a) * t;
+                let (grid_z, _grid_a) = match phase {
+                    broadside_engine::gfx::CinematicPhase::Fade => (rest_z, rest_a),
+                    broadside_engine::gfx::CinematicPhase::Approach => (
+                        lerp(approach_start_z, warp_start_z, eased_sub),
+                        lerp(approach_start_a, warp_start_a, eased_sub).clamp(0.0, 1.0),
+                    ),
+                    broadside_engine::gfx::CinematicPhase::Warp => (
+                        lerp(warp_start_z, snap_start_z, eased_sub),
+                        lerp(warp_start_a, snap_start_a, eased_sub).clamp(0.0, 1.0),
+                    ),
+                    broadside_engine::gfx::CinematicPhase::Snap => (
+                        lerp(snap_start_z, settle_start_z, eased_sub),
+                        lerp(snap_start_a, settle_start_a, eased_sub).clamp(0.0, 1.0),
+                    ),
+                    broadside_engine::gfx::CinematicPhase::Settle => {
+                        (settle_start_z, settle_start_a)
+                    }
+                };
+                const PLAYER_INTERCEPT_T: f32 = 0.55;
+                let player_progress = (t_total / PLAYER_INTERCEPT_T).clamp(0.0, 1.0);
+                let p_eased = 1.0 - (1.0 - player_progress) * (1.0 - player_progress);
+                grid_z * p_eased
+            };
             tw.visual.insert(
                 player.id.clone(),
                 VisualShip2d {
@@ -863,10 +907,11 @@ fn main() {
                     facing_yaw_deg: broadside_engine::hud::loft_facing_ground_yaw(player.facing),
                     cell_frac: [col_f, row_f],
                     kickback: [0.0, 0.0],
+                    z_offset: player_z,
                 },
             );
             log::info!(
-                "capture: warp player tween cell_frac=[{col_f:.2}, {row_f:.2}] (prior=[{from_col},{from_row}] → current={:?})",
+                "capture: warp player tween cell_frac=[{col_f:.2}, {row_f:.2}] z_offset={player_z:.3} (prior=[{from_col},{from_row}] → current={:?})",
                 player.pos
             );
         }

@@ -610,7 +610,7 @@ pub const BOOT_PHASE4_SNAP_MS: u32 = 100;
 /// hosts the warp-rebuild 7/N enemy stagger (lead 8/N correction):
 /// each n+1 enemy descends from at-depth → its cell during this window,
 /// one-at-a-time, ease-out. Default 360 ms sizes for ~3-4 enemies at
-/// ~120 ms per-enemy beat (matching the [`crate::vfx`] ENEMY_BEAT_SECS
+/// ~120 ms per-enemy beat (matching the [`crate::vfx`] `ENEMY_BEAT_SECS`
 /// shot-stagger cadence so the warp+combat read at the same tempo).
 /// Bumpable via the live phase dial for boss/large encounters.
 pub const BOOT_PHASE5_SETTLE_MS: u32 = 360;
