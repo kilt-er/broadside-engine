@@ -579,6 +579,51 @@ pub fn set_unified_lateral_x_offset(x: f32) {
     );
 }
 
+/// (Bruce design law 2026-06-30, post-warp blink fix) PERSISTENT lateral
+/// grid-align offset (world units, signed). Bruce: "the n+1 grid must be
+/// LANE-ALIGNED to the n grid (shared lanes same screen-x) and NOT recentered
+/// at the swap." Each board is centred per its own dims by
+/// [`crate::projector::cell_world_corners`] (`left_x = (cols/2 - col) * s`),
+/// so a width-parity flip (e.g. 5x4 → 2x2) shifts every column's world-x by
+/// a half-cell — every ship pops laterally on the swap.
+///
+/// This offset is summed into [`crate::projector::unified_target`] alongside
+/// [`unified_lateral_x_offset`]. The bin computes it at every encounter swap
+/// as the world-x delta needed to keep the CARRIED player column at the same
+/// world-x it had on the previous grid: `delta = old_player_world_x -
+/// new_player_world_x`. Persists for the entire new encounter (every cell
+/// shifts in lockstep with the player, so #188 alignment holds; only the
+/// look-at translates — no rotation, no parity-of-cols re-centring).
+///
+/// Distinct from [`unified_lateral_x_offset`] which is the #207 in-encounter
+/// pan eased by the bin to keep an outside-lane ship in frame on the 5x4 board.
+/// That one is CLAMPED to 0 on non-5x4 boards; this one is NEVER clamped — it
+/// must persist across any dims, because the lane-align bug is a dims-change
+/// bug. The two sum, so the #207 pan stacks atop the lane-align baseline.
+///
+/// Default = 0.0 (legacy boot: every board centred on world x=0, byte-identical
+/// to the pre-fix renderer).
+static UNIFIED_LANE_ALIGN_X_MILLI: std::sync::atomic::AtomicI32 =
+    std::sync::atomic::AtomicI32::new(0);
+
+/// (Bruce design law 2026-06-30) Read the persistent lane-align offset (world
+/// units, signed). Never clamped — see [`UNIFIED_LANE_ALIGN_X_MILLI`].
+#[must_use]
+pub fn unified_lane_align_x() -> f32 {
+    UNIFIED_LANE_ALIGN_X_MILLI.load(std::sync::atomic::Ordering::Relaxed) as f32 / 1000.0
+}
+
+/// (Bruce design law 2026-06-30) Set the persistent lane-align offset (world
+/// units, signed). Called by the bin at every encounter swap with
+/// `old_player_world_x - new_player_world_x` so the carried player column
+/// renders at the same world-x across the swap.
+pub fn set_unified_lane_align_x(x: f32) {
+    UNIFIED_LANE_ALIGN_X_MILLI.store(
+        (x * 1000.0).round() as i32,
+        std::sync::atomic::Ordering::Relaxed,
+    );
+}
+
 /// (UNIFY) Vertical lift (world units) of the hull above the ground plane so it
 /// sits ON the grid rather than half-buried at its mesh origin. (#188 Bruce: enemies
 /// "float above their cells" — diagnosis: _03.glb Y-bbox is [-1.48, +1.32], so at

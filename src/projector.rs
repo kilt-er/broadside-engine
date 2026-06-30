@@ -951,8 +951,13 @@ fn unified_target_y_anchored(cfg: &ProjectorConfig) -> f32 {
 /// board gets pulled in-frame per #207).
 fn unified_target(cfg: &ProjectorConfig) -> [f32; 3] {
     let z_center = UNIFIED_Z_FRONT + cfg.rows as f32 * 0.5;
+    // (Bruce design law 2026-06-30 lane-align) Sum the #207 in-encounter pan
+    // (5x4-only) with the persistent lane-align offset (any dims). At boot
+    // both are 0 → byte-identical to pre-fix. The bin computes the lane-align
+    // at every encounter swap so the carried player column renders at the
+    // same world-x across the swap, killing the width-parity blink.
     [
-        crate::gfx::unified_lateral_x_offset(),
+        crate::gfx::unified_lateral_x_offset() + crate::gfx::unified_lane_align_x(),
         unified_target_y_anchored(cfg),
         z_center,
     ]

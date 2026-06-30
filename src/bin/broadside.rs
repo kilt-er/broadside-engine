@@ -1746,6 +1746,54 @@ impl App {
         }
     }
 
+    /// (Bruce design law 2026-06-30 lane-align) Update the global
+    /// `unified_lane_align_x` so the carried player column on `new_board`
+    /// renders at the same world-x as the carried player column did on
+    /// `old_board` — the post-warp "snap" Bruce playtested is the n+1 grid
+    /// re-centering per its own dims (width-parity flip → every cell's
+    /// screen-x shifts). Bruce's rule: lane-align, do NOT recenter.
+    ///
+    /// The grid centring formula in [`broadside_engine::projector::cell_world_corners`]
+    /// is `left_x = (cols * 0.5 - col) * s`, so a column's world-x center is
+    /// `(cols/2 - col - 0.5) * s`. We compute the world-x delta the new dims
+    /// would induce at the carried column and ADD it to the persistent
+    /// `lane_align` so the player's column world-x is preserved across the swap.
+    /// Every other cell on the new board shifts in lockstep (#188 alignment
+    /// holds — only the look-at translates).
+    ///
+    /// At boot (no prior board) and on identical-dims swaps the delta is 0 →
+    /// byte-identical to the pre-fix renderer.
+    fn relane_align_for_swap(old_board: &Board, new_board: &Board) {
+        // Find the player on both boards. If either is missing skip the
+        // realign (degenerate — leave the previous lane_align in place).
+        let old_player = old_board
+            .cells
+            .iter()
+            .flatten()
+            .find(|s| s.faction == Faction::Player);
+        let new_player = new_board
+            .cells
+            .iter()
+            .flatten()
+            .find(|s| s.faction == Faction::Player);
+        let (Some(op), Some(np)) = (old_player, new_player) else {
+            return;
+        };
+        let s = broadside_engine::gfx::unified_grid_cell_scale();
+        let old_dims = old_board.dims();
+        let new_dims = new_board.dims();
+        // World-x of the old player's column on the old grid (no lane-align,
+        // since we read the pre-shift cell math — the existing lane_align is
+        // added back below).
+        let old_world_x = (old_dims.cols as f32 * 0.5 - op.pos.col as f32 - 0.5) * s;
+        let new_world_x = (new_dims.cols as f32 * 0.5 - np.pos.col as f32 - 0.5) * s;
+        // Stack onto the existing lane_align so multiple encounters compose
+        // (each swap adds its own world-x delta on top of the prior baseline).
+        let prior = broadside_engine::gfx::unified_lane_align_x();
+        let next = prior + (old_world_x - new_world_x);
+        broadside_engine::gfx::set_unified_lane_align_x(next);
+    }
+
     /// (#210 P2) Linear "round number" across the whole campaign, used as the
     /// `Board.level` cursor that feeds [`Gfx::update_background`]'s focus-tween.
     /// Multiplier reads [`runs::ENCOUNTERS_PER_SECTOR`] directly so the
@@ -1817,6 +1865,12 @@ impl App {
         self.hull_flash.clear(); // (#101) no stale damage flashes into the fresh board
         self.beat_playback = None; // (#133) abort any in-flight volley playback on restart
         self.queue_blocked_flash = None; // (#136) clear any recharging cue on restart
+                                         // (Bruce design law 2026-06-30 lane-align) Reset the persistent lane-
+                                         // align world-x — a fresh run starts on the canonical first encounter
+                                         // with no carried column to preserve, so the grid centres on world
+                                         // x=0 again. Without this the offset from the previous run would
+                                         // persist into the new run's first frame.
+        broadside_engine::gfx::set_unified_lane_align_x(0.0);
         self.reinstall_audio();
     }
 
@@ -3052,6 +3106,18 @@ impl ApplicationHandler for App {
                                         prior_player_cell,
                                         prior_player.map(|(_, f)| f),
                                     );
+                                    // (Bruce design law 2026-06-30 lane-align)
+                                    // Update lane_align BEFORE the swap (both
+                                    // arms — cinematic defers the board swap
+                                    // to warp-end but the at-depth preview
+                                    // already projects with n+1 dims so the
+                                    // align must be in effect from warp-
+                                    // START; eager swaps the board now so
+                                    // the first Playing frame uses it). The
+                                    // cinematic phase-1 fade masks the small
+                                    // lateral snap on the OLD board's ships
+                                    // (alpha 1→0 across 150ms).
+                                    Self::relane_align_for_swap(&self.board, &next);
                                     if cinematic {
                                         // ON: defer swap + cleanups.
                                         self.pending_board = Some(next);
@@ -3067,7 +3133,9 @@ impl ApplicationHandler for App {
                                     } else {
                                         // OFF: eager swap, byte-identical to
                                         // pre-rebuild behavior (apart from
-                                        // the Job-1 carry-forward above).
+                                        // the Job-1 carry-forward above and
+                                        // the lane_align update hoisted
+                                        // above).
                                         self.board = next;
                                         self.tween_anchors.clear();
                                         self.kickbacks.clear();
@@ -3149,6 +3217,14 @@ impl ApplicationHandler for App {
                         // unchanged — just drop the cinematic anchor + flip
                         // to RunComplete.
                         if let Some(next) = self.pending_board.take() {
+                            // (Bruce design law 2026-06-30 lane-align) NOTE:
+                            // the lane_align was set at warp-START in the
+                            // round-clear path (paired with this Option-A
+                            // late swap). DO NOT call relane_align here —
+                            // doubling it would shift twice. The swap is
+                            // already a clean handoff: the at-depth grid +
+                            // ships rendered phases 1-5 with the new
+                            // lane_align; here we just commit the board.
                             self.board = next;
                             self.kickbacks.clear();
                             self.kickbacks_world.clear();
