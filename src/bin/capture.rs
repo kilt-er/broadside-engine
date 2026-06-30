@@ -345,6 +345,16 @@ fn main() {
             log::info!("capture: lateral pan offset -> {x:.2} world units");
         }
     }
+    // (#215 Bruce hittable-cells toggle) BROADSIDE_HITTABLE=0 forces the
+    // hittable-cells overlay OFF for a clean-board capture (default is ON to
+    // match the live bin). Useful for proving the toggle gates the overlay.
+    if std::env::var("BROADSIDE_HITTABLE").is_ok_and(|v| v == "0") {
+        // The atomic defaults to true; flip it off here.
+        if broadside_engine::gfx::hittable_cells_enabled() {
+            broadside_engine::gfx::toggle_hittable_cells();
+        }
+        log::info!("capture: hittable cells OFF (BROADSIDE_HITTABLE=0)");
+    }
     // (#140/#142/#151) Optional grid-mode env (mirrors the `T` cycle), so the pitch-arc
     // shots show each mode. BROADSIDE_GRID_CONTINUOUS=1 -> continuous-straight (mode 3);
     // BROADSIDE_GRID_STRAIGHT=1 -> stretch-straight stepped (mode 2);

@@ -858,21 +858,82 @@ fn emit_ready_glow(
     anim_clock: f32,
     cfg: &TelegraphFire,
 ) {
+    // (#215 Bruce) PER-MOUNT MARKERS — was a single cell-center red square the
+    // size of half the cell ("a red square floating above the enemy" / "a red
+    // square around the ship"). Bruce's design ask: "small red squares AROUND
+    // WHERE THE WEAPONS ARE ON THE SHIPS — not a massive red floating square."
+    // Draw one small marker per QUEUED mount, projected to a per-mount
+    // hull-relative offset by `Arc` (Forward = bow, Rear = stern, BroadsideArc
+    // = ports, Turret = stacked at the hull centre). Hull is in the lower half
+    // of the cell trapezoid (the loft seats the hull at the cell's near edge),
+    // so offsets are anchored to the cell's near-edge mid-point + a fraction
+    // of the cell's near width.
+    use crate::types::Arc as ShipArc;
+    if ship.queue.is_empty() || ship.mounts.is_empty() {
+        return;
+    }
     let q = grid_cell_quad(ship.pos, cfg_proj);
     let pulse = 0.55 + 0.45 * (anim_clock * std::f32::consts::TAU * READY_GLOW_HZ).sin();
-    // Use the cell-quad's wider (bottom = near) edge as the size baseline so
-    // the glow tracks live cell scale (#195) + camera zoom (#192) + perspective
-    // automatically. Corners are [top-left, top-right, bottom-right, bottom-left];
-    // bottom width = corners[2].x - corners[3].x.
+    // Cell-quad near edge (bottom on screen) — corners [top-left, top-right,
+    // bottom-right, bottom-left]. Hull seats here.
     let near_w = (q.corners[2][0] - q.corners[3][0]).abs();
-    let size = near_w * 0.55;
-    let alpha = cfg.color.0[3] * pulse * 0.6;
-    out.push(DrawCommand::Sprite(SpriteInstance::axis_aligned(
-        q.center,
-        [size, size],
-        [cfg.color.0[0], cfg.color.0[1], cfg.color.0[2], alpha],
-        atlas::cell_uvs(atlas::SOLID_WHITE),
-    )));
+    let near_l = q.corners[3];
+    let near_r = q.corners[2];
+    let near_mid_x = (near_l[0] + near_r[0]) * 0.5;
+    let near_mid_y = (near_l[1] + near_r[1]) * 0.5;
+    // Marker size: ~6% of the near edge, clamped tight so it reads as a DOT on
+    // the hull (not a slab). depth_scale already shrinks the near_w on far
+    // cells, so the marker auto-shrinks at depth. Floor at 2px so a back-row
+    // mount still draws something visible.
+    let marker_half = (near_w * 0.06).clamp(2.0, 8.0);
+    let alpha = cfg.color.0[3] * pulse;
+    let color = [cfg.color.0[0], cfg.color.0[1], cfg.color.0[2], alpha];
+    // Per-mount hull offset, expressed as (dx_frac, dy_frac) of the near-edge
+    // half-width, anchored at the near-edge midpoint. The hull occupies roughly
+    // the cell's lower-mid area; offsets push markers toward the hull's bow /
+    // stern / flanks.
+    //   Forward     = bow:   up-screen (negative y) toward the cell's far edge
+    //   Rear        = stern: at the near edge (where the hull seats)
+    //   BroadsideArc = flanks: split left + right around the hull centre
+    //   Turret      = no clear single mount; place near the hull centre
+    // y is in screen pixels; cell-quad's near-to-far span = near_l.y - top edge.
+    // Use a fraction of the near-edge width for y too so the offset shrinks
+    // with depth (q.depth_scale folds in via near_w).
+    let half_w = near_w * 0.5;
+    // Cycle BroadsideArc mounts between port/starboard so a ship with multiple
+    // broadside mounts shows distinct markers, not a stack.
+    let mut bs_idx = 0usize;
+    for (i, mount) in ship.mounts.iter().enumerate() {
+        // Only draw a marker if THIS mount has its action id in the queue
+        // (= the weapon Bruce is queueing-to-fire). A queued weapon that
+        // isn't a mount-action (synth move, vent etc.) doesn't get a marker.
+        let queued = ship.queue.iter().any(|a| a == &mount.weapon);
+        if !queued {
+            continue;
+        }
+        let (ox, oy) = match mount.arc {
+            ShipArc::Forward => (0.0, -half_w * 0.55), // bow
+            ShipArc::Rear => (0.0, half_w * 0.10),     // stern (near edge)
+            ShipArc::BroadsideArc => {
+                let side = if bs_idx.is_multiple_of(2) { -1.0 } else { 1.0 };
+                bs_idx += 1;
+                (side * half_w * 0.40, -half_w * 0.20)
+            }
+            ShipArc::Turret => {
+                // Stack offset so multiple turrets don't overplot.
+                let n = (i as f32) * 0.12;
+                (n - half_w * 0.10, -half_w * 0.25)
+            }
+        };
+        let cx = near_mid_x + ox;
+        let cy = near_mid_y + oy;
+        out.push(DrawCommand::Sprite(SpriteInstance::axis_aligned(
+            [cx, cy],
+            [marker_half, marker_half],
+            color,
+            atlas::cell_uvs(atlas::SOLID_WHITE),
+        )));
+    }
 }
 
 /// (#209 hook 1) Pulse rate for the READY-glow aura — 1.5 Hz feels "alive but

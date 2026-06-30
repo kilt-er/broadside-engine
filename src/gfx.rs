@@ -269,6 +269,32 @@ pub fn toggle_cell_numbers() -> bool {
     next
 }
 
+/// (#215 Bruce hittable-cells toggle) Combat-readability overlay: when ON, light
+/// up the grid cells a weapon CAN strike given each ship's facing (player cyan
+/// + enemy red, matching the existing `PLAYER_AIM` / `THREAT` colour convention).
+///
+/// Bruce: "grid squares that are hittable when a weapon fires, lit up, with a
+/// toggle on/off, depending on where the player and enemies are pointed." The
+/// data source is the resolver's `arc_bears` via the existing
+/// `push_weapon_arcs_2d` for the PLAYER; the enemy hittable cells share the
+/// same arc-bears geometry but use the threat colour to mirror the threat
+/// telegraph. ON by default (Bruce's design intent — see the cells while
+/// reasoning); `J` toggles it off for a clean view.
+static HITTABLE_CELLS_ON: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+/// Whether the hittable-cells highlight is currently shown
+/// (see [`HITTABLE_CELLS_ON`]).
+pub fn hittable_cells_enabled() -> bool {
+    HITTABLE_CELLS_ON.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Flip the hittable-cells overlay on/off (the `J` key); returns the new state.
+pub fn toggle_hittable_cells() -> bool {
+    let next = !hittable_cells_enabled();
+    HITTABLE_CELLS_ON.store(next, std::sync::atomic::Ordering::Relaxed);
+    next
+}
+
 /// Force the controls popup on/off (the capture bin sets it from its env so the
 /// headless shot can verify the popup geometry).
 pub fn set_controls_popup(on: bool) {

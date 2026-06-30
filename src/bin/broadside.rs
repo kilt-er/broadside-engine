@@ -2019,6 +2019,20 @@ impl ApplicationHandler for App {
                         }
                         return;
                     }
+                    // (#215 Bruce hittable-cells toggle) `J` flips the
+                    // combat-readability overlay that lights up the grid cells
+                    // each ship's weapons can strike per facing — player cyan
+                    // outlines + enemy red outlines. ON by default; flip OFF
+                    // for a clean board screenshot. (J verified free per the
+                    // keycode_to_key audit — A C D F I J P S Y are unmapped.)
+                    if code == KeyCode::KeyJ {
+                        let on = broadside_engine::gfx::toggle_hittable_cells();
+                        log::info!("hittable cells: {}", if on { "ON" } else { "OFF" });
+                        if let Some(win) = self.window.as_ref() {
+                            win.request_redraw();
+                        }
+                        return;
+                    }
                     // (UNIFY, Bruce order) `U` toggles the UNIFIED camera: grid + 3-D
                     // hulls render through ONE real-perspective camera, so ships LIVE
                     // in the grid (nose→VP + per-column outward lean). Renderer-owned

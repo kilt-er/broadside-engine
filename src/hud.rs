@@ -1494,15 +1494,10 @@ fn push_weapon_arcs_2d(out: &mut Vec<DrawCommand>, board: &Board, cfg: &Projecto
     use crate::geometry2d::arc_bears;
     use crate::grid::{all_positions_in, from_to};
 
-    let Some(player) = board
-        .cells
-        .iter()
-        .flatten()
-        .find(|s| s.faction == Faction::Player)
-    else {
-        return;
-    };
-    if player.mounts.is_empty() {
+    // (#215 Bruce combat-readability) Toggle gate. ON by default: Bruce wants
+    // to SEE the hittable cells while reasoning. `J` flips it off for a
+    // clean view / screenshots.
+    if !crate::gfx::hittable_cells_enabled() {
         return;
     }
     // (#215 Bruce live repro) Iterate the LIVE board dims, not the compile-time
@@ -1514,22 +1509,43 @@ fn push_weapon_arcs_2d(out: &mut Vec<DrawCommand>, board: &Board, cfg: &Projecto
     // cardinals shift with facing). The grid wireframe itself was already
     // dims-correct (push_grid_2d iterates cfg.cols/cfg.rows); only the arc
     // overlay leaked.
-    for cell in all_positions_in(board.dims()) {
-        if cell == player.pos {
+    //
+    // (#215 Bruce hittable-cells highlight) Iterate EVERY ship (player + enemy)
+    // and outline the cells they can strike per facing — Bruce: "depending on
+    // where the player and enemies are pointed." Player cells use the cyan
+    // WEAPON_ARC_OUTLINE; enemy cells use a subtle red derived from THREAT_FILL
+    // (matching the existing threat outline colour family without flooding the
+    // cell). Two ships bearing on the same cell stack their outlines (visible
+    // crossfire cue).
+    let cells: Vec<crate::grid::Pos> = all_positions_in(board.dims());
+    for ship in board.cells.iter().flatten() {
+        if ship.mounts.is_empty() {
             continue;
         }
-        // Direction player → cell (exact octant); arc_bears rejects diagonals for
-        // every non-turret arc, matching the cardinal-exact firing model.
-        let Some(dir) = from_to(player.pos, cell) else {
-            continue;
+        let color = if ship.faction == Faction::Player {
+            WEAPON_ARC_OUTLINE
+        } else {
+            // Subtle red outline = the enemy hittable-cell colour. Lower alpha
+            // than the player's cyan so the player's coverage reads as primary.
+            [THREAT_FILL[0], THREAT_FILL[1], THREAT_FILL[2], 0.40]
         };
-        let bears = player
-            .mounts
-            .iter()
-            .any(|m| arc_bears(player.facing, m.arc, dir));
-        if bears {
-            let q = grid_cell_quad(cell, cfg);
-            outline_cell_2d(out, &q, WEAPON_ARC_OUTLINE);
+        for &cell in &cells {
+            if cell == ship.pos {
+                continue;
+            }
+            // Direction ship → cell (exact octant); arc_bears rejects diagonals
+            // for every non-turret arc, matching the cardinal-exact firing model.
+            let Some(dir) = from_to(ship.pos, cell) else {
+                continue;
+            };
+            let bears = ship
+                .mounts
+                .iter()
+                .any(|m| arc_bears(ship.facing, m.arc, dir));
+            if bears {
+                let q = grid_cell_quad(cell, cfg);
+                outline_cell_2d(out, &q, color);
+            }
         }
     }
 }
@@ -4312,6 +4328,7 @@ pub fn push_controls_popup(out: &mut Vec<DrawCommand>) {
         "T            GRID MODE",
         "O            ANGLE OVERLAY",
         "H            CELL NUMBERS",
+        "J            HITTABLE CELLS",
         "U            UNIFIED CAM",
         "LBKT RBKT    SHIP SCALE",
         "MINUS PLUS   BOARD ZOOM",
