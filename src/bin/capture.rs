@@ -412,6 +412,10 @@ fn main() {
         })
         .unwrap_or_else(|| broadside_engine::grid::Dims::new(COLS, broadside_engine::grid::ROWS));
     let mut board = capture_board_with_dims(dims, player_col, player_row, player_facing);
+    // (#215) Publish the live dims to gfx's atomics so the GPU loft pass
+    // (render_unified_fleet) projects ships at the same dims the HUD grid
+    // uses. Mirrors the playable bin's scene_projector_for_board call.
+    broadside_engine::gfx::set_live_grid_dims(dims.cols, dims.rows);
     log::info!(
         "capture: player at col {player_col} row {player_row}, facing {player_facing:?}, dims {}x{}",
         dims.cols,

@@ -130,6 +130,14 @@ fn scene_projector() -> ProjectorConfig {
 /// math and the visible grid agree on the same dims.
 fn scene_projector_for_board(board: &broadside_engine::types::Board) -> ProjectorConfig {
     let dims = board.dims();
+    // (#215) ALSO publish the live dims to gfx's atomics so the GPU loft pass
+    // (render_unified_fleet, which builds its own cfg via
+    // gfx::scene_projector_cfg without Board access) projects ships at the
+    // SAME dims the HUD cfg uses. Without this, ships render at compile-time
+    // 5x4 cells while the HUD draws the live grid at its actual dims —
+    // visibly floats the ships off the grid on any non-5x4 board (Bruce's
+    // 2x4 / 2x2 / 3x3 reports).
+    broadside_engine::gfx::set_live_grid_dims(dims.cols, dims.rows);
     scene_projector().with_dims(dims.cols, dims.rows)
 }
 

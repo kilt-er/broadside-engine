@@ -439,6 +439,41 @@ pub fn unified_grid_cell_scale() -> f32 {
     GRID_CELL_SCALE_MILLI.load(std::sync::atomic::Ordering::Relaxed) as f32 / 1000.0
 }
 
+/// (#215 / #213-cluster) Live grid DIMS that the gfx loft-render pass uses
+/// when building its own `ProjectorConfig` (via [`scene_projector_cfg`]).
+/// The bin's HUD-side code calls [`crate::projector::ProjectorConfig::with_dims`]
+/// to pin the cfg to the live `Board.dims()`, but the GPU loft pass at
+/// `render_unified_fleet` builds its cfg from scratch (no Board access from
+/// the &self render path) — so without these atomics, ships project at the
+/// compile-time 5x4 default cells regardless of the live board. The bin
+/// sets these to `self.board.dims()` per frame before invoking the render.
+/// Default = compile-time `(grid::COLS, grid::ROWS) = (5, 4)` so any caller
+/// that hasn't called `set_live_grid_dims` (tests, headless paths) renders
+/// at the same default the prior path did — byte-identical at 5x4.
+static LIVE_GRID_COLS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(crate::grid::COLS);
+static LIVE_GRID_ROWS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(crate::grid::ROWS);
+
+/// Read the live grid dims the loft-render pass should use.
+#[must_use]
+pub fn live_grid_cols() -> usize {
+    LIVE_GRID_COLS.load(std::sync::atomic::Ordering::Relaxed)
+}
+/// Read the live grid dims the loft-render pass should use.
+#[must_use]
+pub fn live_grid_rows() -> usize {
+    LIVE_GRID_ROWS.load(std::sync::atomic::Ordering::Relaxed)
+}
+/// Set the live grid dims for the loft-render pass. Called by the bin once
+/// per frame against `self.board.dims()` so the loft pass + the HUD-side
+/// `scene_projector_for_board` cfg agree on the SAME dims for the SAME
+/// frame (otherwise ships project at the wrong cells).
+pub fn set_live_grid_dims(cols: usize, rows: usize) {
+    LIVE_GRID_COLS.store(cols.max(1), std::sync::atomic::Ordering::Relaxed);
+    LIVE_GRID_ROWS.store(rows.max(1), std::sync::atomic::Ordering::Relaxed);
+}
+
 /// (#195) Adjust the live grid cell-size multiplier by `delta` (positive grows
 /// the cells, negative shrinks them), clamping into
 /// `[UNIFIED_GRID_CELL_SCALE_MIN, UNIFIED_GRID_CELL_SCALE_MAX]`. Returns the new
@@ -686,7 +721,15 @@ pub fn cycle_phase_ms(idx: u8, step_ms: u32, max_ms: u32) -> u32 {
 /// the capture, and the loft render loop never drift. Unified takes precedence over
 /// the stretch/pitch fan modes (it IS the camera, not a fan tweak).
 pub fn scene_projector_cfg(frame_w: f32, frame_h: f32) -> crate::projector::ProjectorConfig {
-    let base = crate::projector::ProjectorConfig::for_scene(frame_w, frame_h);
+    // (#215 / #213-cluster) Chain `.with_dims(live cols, live rows)` so the
+    // GPU loft-render pass at `render_unified_fleet` builds a cfg that
+    // matches the live board's dims (otherwise ships project at compile-time
+    // 5x4 cells = visually floating off the grid for any non-5x4 board, the
+    // bug Bruce reported on the 2x4/3x3 captures). Default atomics = (5, 4)
+    // so any caller that hasn't set live dims renders at the prior 5x4
+    // baseline — byte-identical to the pre-fix path.
+    let base = crate::projector::ProjectorConfig::for_scene(frame_w, frame_h)
+        .with_dims(live_grid_cols(), live_grid_rows());
     let t = grid_pitch_t();
     if unified_enabled() {
         return base.with_unified(t);
