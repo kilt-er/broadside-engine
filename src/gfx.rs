@@ -1122,6 +1122,15 @@ pub struct LoftShipInstance {
     /// live render byte-identical; only the warp cinematic emits non-zero
     /// `z_offset`.
     pub z_offset: f32,
+    /// (#209 hook 3 loft fix 2026-06-30) World-units recoil along the hull's
+    /// LOCAL aft axis. Decoded in the unified ship pass from `unified_yaw_rad`
+    /// to a world-space `(dx, dz)` displacement and added to the projected
+    /// world `center`, so the loft hull visibly jolts backward on fire. The
+    /// legacy `kickback` field on [`crate::hud::VisualShip2d`] is in screen-
+    /// pixel space and only moved the 2D billboard composite — invisible on
+    /// the 3D hull. This field is the loft-aware companion. Zero at rest ⇒
+    /// no-op render, byte-identical to pre-fix frames.
+    pub kickback_aft_world: f32,
 }
 
 impl From<SpriteInstance> for DrawCommand {
@@ -2952,6 +2961,27 @@ impl Gfx {
                 };
                 // sit ON the plane, not half-buried.
                 center[1] += UNIFIED_SHIP_LIFT;
+                // (#209 hook 3 loft fix 2026-06-30) Apply per-fire recoil
+                // along the hull's LOCAL AFT direction in world space, so the
+                // 3D hull visibly jolts backward when it fires (regardless
+                // of camera angle). yaw=0 ⇒ bow points world +Z (N, up-lane),
+                // so aft = world -Z. After rotation by `unified_yaw_rad`
+                // (about +Y, matching unified_heading_yaw's atan2(-dz,dx)
+                // convention): aft = (-sin(yaw), 0, -cos(yaw)) … but that
+                // sign is dictated by the model col0/col2 in
+                // `unified_model_with_idle`. Local prow = +X rotates onto
+                // (cos yaw, 0, -sin yaw) — so prow_world = (cos yaw, 0,
+                // -sin yaw), and aft_world = -prow_world. We shift `center`
+                // by `kickback_aft_world * aft_world` so the recoil amount
+                // is in world-cell-units (≈ unified_grid_cell_scale).
+                if lq.kickback_aft_world.abs() > f32::EPSILON {
+                    let (s, c) = lq.unified_yaw_rad.sin_cos();
+                    let prow_x = c;
+                    let prow_z = -s;
+                    let k = lq.kickback_aft_world;
+                    center[0] -= prow_x * k;
+                    center[2] -= prow_z * k;
+                }
                 // (#208) Wire ShipPose's idle bob+roll into the unified pass —
                 // the legacy ortho path consumed these via yaw_deg() + idle_bob(),
                 // but the unified path was a fresh bypass (same class as the

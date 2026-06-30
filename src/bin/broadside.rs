@@ -1389,8 +1389,19 @@ struct App {
     /// when a `FireEvent` fires (vector OPPOSITE the shot direction, magnitude
     /// per-archetype), exponentially decayed every frame toward zero. Read by
     /// [`tween_2d`] into [`hud::VisualShip2d::kickback`]; cleared on encounter
-    /// restart alongside `tween_anchors`.
+    /// restart alongside `tween_anchors`. Note: this only moves the 2D
+    /// sprite billboard. See [`kickbacks_world`] for the loft hull companion.
     kickbacks: HashMap<String, [f32; 2]>,
+    /// (#209 hook 3 loft fix 2026-06-30) Per-ship recoil scalar in world-cell-
+    /// units, applied along the hull's local aft axis in the unified ship
+    /// pass (gfx.rs:~2970) so the LOFT HULL Bruce sees actually jolts on
+    /// fire. The legacy `kickbacks` `HashMap` is screen-px (2D billboard);
+    /// the loft hull pass ignores screen-px and projects from world coords,
+    /// so the original recoil was invisible. Pushed at the same `FireEvent`
+    /// site as `kickbacks`, decayed by the same exponential factor, cleared
+    /// at the same restart points. Always positive: direction is implicit
+    /// (aft in world space, computed from `unified_yaw_rad`).
+    kickbacks_world: HashMap<String, f32>,
     /// (#210 P4) Pre-built destination board for the in-flight warp transition.
     /// Set at transition START (so the destination is materialised the moment
     /// the player clears the round; Piece 5 will later pre-position enemies at
@@ -1567,6 +1578,7 @@ impl App {
             catalog,
             tween_anchors: HashMap::new(),
             kickbacks: HashMap::new(),
+            kickbacks_world: HashMap::new(),
             pending_board: None,
             pending_encounter_idx: None,
             cinematic_prior_player_cell: None,
@@ -1794,6 +1806,7 @@ impl App {
         self.demo_state = DemoState::Playing;
         self.tween_anchors.clear();
         self.kickbacks.clear(); // (#209 hook 3) no stale recoil across encounters
+        self.kickbacks_world.clear();
         self.pending_board = None; // (#210 P4) abandon any in-flight warp on restart
         self.pending_encounter_idx = None; // (warp rebuild 2/N) abandon the display hint too
         self.cinematic_prior_player_cell = None; // (phase a) clear cinematic player tween anchor
@@ -1845,6 +1858,7 @@ impl App {
                             self.demo_state = DemoState::Playing;
                             self.tween_anchors.clear();
                             self.kickbacks.clear();
+                            self.kickbacks_world.clear();
                             self.reinstall_audio();
                         } else {
                             // Shouldn't happen — advance_after_win
@@ -2063,6 +2077,7 @@ impl App {
                 .get(&ship.id)
                 .copied()
                 .unwrap_or([0.0_f32, 0.0_f32]);
+            let kickback_aft_world = self.kickbacks_world.get(&ship.id).copied().unwrap_or(0.0);
             tw.visual.insert(
                 ship.id.clone(),
                 hud::VisualShip2d {
@@ -2079,6 +2094,7 @@ impl App {
                     ),
                     cell_frac,
                     kickback,
+                    kickback_aft_world,
                     z_offset: 0.0,
                 },
             );
@@ -2156,6 +2172,8 @@ impl App {
                             grid_z,
                             self.cinematic_prior_player_cell,
                         );
+                        let kickback_aft_world =
+                            self.kickbacks_world.get(&player.id).copied().unwrap_or(0.0);
                         tw.visual.insert(
                             player.id.clone(),
                             hud::VisualShip2d {
@@ -2166,6 +2184,7 @@ impl App {
                                 facing_yaw_deg: hud::loft_facing_ground_yaw(player.facing),
                                 cell_frac,
                                 kickback,
+                                kickback_aft_world,
                                 z_offset: player_z,
                             },
                         );
@@ -2182,10 +2201,14 @@ impl App {
             if tw.visual.contains_key(&ship.id) {
                 continue;
             }
-            let Some(&kickback) = self.kickbacks.get(&ship.id) else {
-                continue;
-            };
-            if kickback[0] == 0.0 && kickback[1] == 0.0 {
+            let kickback = self
+                .kickbacks
+                .get(&ship.id)
+                .copied()
+                .unwrap_or([0.0_f32, 0.0_f32]);
+            let kickback_aft_world = self.kickbacks_world.get(&ship.id).copied().unwrap_or(0.0);
+            // Skip if neither recoil channel has anything to show.
+            if kickback[0] == 0.0 && kickback[1] == 0.0 && kickback_aft_world.abs() < f32::EPSILON {
                 continue;
             }
             let q = grid_cell_quad(ship.pos, cfg);
@@ -2200,6 +2223,7 @@ impl App {
                     facing_yaw_deg: hud::loft_facing_ground_yaw(ship.facing),
                     cell_frac,
                     kickback,
+                    kickback_aft_world,
                     z_offset: 0.0,
                 },
             );
@@ -3047,6 +3071,7 @@ impl ApplicationHandler for App {
                                         self.board = next;
                                         self.tween_anchors.clear();
                                         self.kickbacks.clear();
+                                        self.kickbacks_world.clear();
                                         self.kill_bursts.clear();
                                         self.particles.clear();
                                         self.proj_anchors.clear();
@@ -3126,6 +3151,7 @@ impl ApplicationHandler for App {
                         if let Some(next) = self.pending_board.take() {
                             self.board = next;
                             self.kickbacks.clear();
+                            self.kickbacks_world.clear();
                             self.kill_bursts.clear();
                             self.particles.clear();
                             self.proj_anchors.clear();
@@ -3214,10 +3240,27 @@ impl ApplicationHandler for App {
                                 // currently don't fire weaponized `FireEvent`s
                                 // but a non-zero default keeps the recoil
                                 // visible if any future archetype shoots.
-                                let mag = match fe.archetype {
-                                    broadside_engine::types::WeaponArchetype::Ordnance => 10.0,
-                                    broadside_engine::types::WeaponArchetype::Broadside => 8.0,
-                                    _ => 5.0,
+                                // (#209 hook 3 loft fix 2026-06-30) Two
+                                // companion magnitudes: legacy `mag` stays
+                                // in virtual-pixel space for the 2D sprite
+                                // billboard path (push_ship_2d at
+                                // hud.rs:2300); `world_mag` is in world-
+                                // cell-units for the loft hull (the unified
+                                // pass shifts world `center` along aft by
+                                // this scalar). Bumped both since the
+                                // pre-fix values were tuned for an invisible
+                                // 2D layer Bruce wasn't seeing. The world
+                                // recoil scales with `unified_grid_cell_scale`
+                                // implicitly (it shifts in world units;
+                                // larger cells project larger).
+                                let (mag, world_mag) = match fe.archetype {
+                                    broadside_engine::types::WeaponArchetype::Ordnance => {
+                                        (16.0, 0.45)
+                                    }
+                                    broadside_engine::types::WeaponArchetype::Broadside => {
+                                        (12.0, 0.35)
+                                    }
+                                    _ => (8.0, 0.22),
                                 };
                                 let existing = self
                                     .kickbacks
@@ -3225,9 +3268,15 @@ impl ApplicationHandler for App {
                                     .copied()
                                     .unwrap_or([0.0, 0.0]);
                                 self.kickbacks.insert(
-                                    firing_id,
+                                    firing_id.clone(),
                                     [existing[0] - nx * mag, existing[1] - ny * mag],
                                 );
+                                // World-units aft recoil, accumulated like
+                                // the 2D one so back-to-back shots compound.
+                                let existing_world =
+                                    self.kickbacks_world.get(&firing_id).copied().unwrap_or(0.0);
+                                self.kickbacks_world
+                                    .insert(firing_id, existing_world + world_mag);
                             }
                         }
                         // Re-push the beam so it draws + animates this frame.
@@ -3381,6 +3430,17 @@ impl ApplicationHandler for App {
                         k[0] *= decay;
                         k[1] *= decay;
                         k[0].abs() > 0.05 || k[1].abs() > 0.05
+                    });
+                }
+                // (#209 hook 3 loft fix) Same exponential decay on the world-
+                // units recoil so the 3D hull snaps back at the same tempo as
+                // the legacy 2D kickback. Drop below 0.005 world-units (~1 px
+                // at default cell scale) so the map doesn't accrete forever.
+                if !self.kickbacks_world.is_empty() {
+                    let decay = (-KICKBACK_DECAY_PER_SEC * dt).exp();
+                    self.kickbacks_world.retain(|_, k| {
+                        *k *= decay;
+                        k.abs() > 0.005
                     });
                 }
                 // (#178 step 3) EXHAUST TRAIL: for each torpedo still SLIDING (has a live

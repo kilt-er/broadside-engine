@@ -444,6 +444,19 @@ pub struct VisualShip2d {
     /// each shot. Zero at rest ⇒ no recoil. Restored to `[0.0, 0.0]` when the
     /// tween itself is rebuilt (turn boundary).
     pub kickback: [f32; 2],
+    /// (#209 hook 3 loft fix 2026-06-30) World-units recoil along the ship's
+    /// LOCAL aft axis. The legacy `kickback` field above is in virtual-pixel
+    /// space and ONLY moves the 2D billboard center (`push_ship_2d` at
+    /// hud.rs:2300) — the loft hull's unified ship pass projects from
+    /// `cell_frac` + `yaw` + `scale` and IGNORES that screen-px shift. So
+    /// every shot computed a recoil that moved a layer Bruce wasn't looking
+    /// at (the rendered 3D hulls didn't jolt). This scalar lives in world-
+    /// cell-units (≈ `unified_grid_cell_scale`) and is applied in the
+    /// unified pass by shifting world `center` along the ship's aft direction
+    /// derived from `unified_yaw_rad`. Geometrically meaningful: always
+    /// recoils opposite the bow, regardless of camera angle. Zero at rest ⇒
+    /// no-op render.
+    pub kickback_aft_world: f32,
     /// (warp rebuild 9/N 2026-06-30) World-space Z offset for the ship's loft
     /// hull. The unified ship pass projects through
     /// [`crate::projector::cell_world_center_frac_offset`] when this is non-
@@ -1854,6 +1867,7 @@ pub fn push_upcoming_loft_ships_2d_staggered_with_rest(
             // ship_id then continues into the live unified pass with
             // z_offset=0.0, so the swap is byte-equivalent.
             z_offset: staggered_z,
+            kickback_aft_world: 0.0,
         }));
     }
 }
@@ -2382,6 +2396,11 @@ fn push_ship_2d(
                 // with z=0 (their tween anchors don't set z_offset; carry-
                 // forward + at-depth-enemy paths come through other code).
                 z_offset: vis.map_or(0.0, |v| v.z_offset),
+                // (#209 hook 3 loft fix) Loft-aware recoil — applied along
+                // hull aft direction in the unified pass. The legacy
+                // VisualShip2d.kickback (above on `center`) only moves the
+                // 2D billboard, invisible on the 3D hull.
+                kickback_aft_world: vis.map_or(0.0, |v| v.kickback_aft_world),
             }));
             return;
         }
@@ -2460,6 +2479,8 @@ fn push_ship_2d(
                 // the descending n+1 (2,3) cell, intercepts grid mid-Warp, and
                 // rides it back to z=0 by Settle (Bruce's 3-speed model).
                 z_offset: vis.map_or(0.0, |v| v.z_offset),
+                // (#209 hook 3 loft fix) Loft-aware recoil along hull aft.
+                kickback_aft_world: vis.map_or(0.0, |v| v.kickback_aft_world),
             }));
             // (#138) Shield pips removed — the per-face cyan squares read as mystery
             // clutter (Bruce); the total shield is in the bottom SHLD bar.
@@ -2555,6 +2576,8 @@ fn push_ship_2d(
                 unified_yaw_rad: unified_heading_yaw(ship.facing),
                 // Live enemy hull: on the playable plane at z=0.
                 z_offset: 0.0,
+                // (#209 hook 3 loft fix) Enemies recoil too when they fire.
+                kickback_aft_world: vis.map_or(0.0, |v| v.kickback_aft_world),
             }));
             // (#112) NO per-enemy overlay (no arrow/pips/bars/telegraph) — the
             // decluttered hull + the separate threat-cell outline carry the read.
@@ -3102,6 +3125,8 @@ fn push_ship(
             unified_yaw_rad: 0.0,
             // Legacy 1-D path: on the playable plane at z=0.
             z_offset: 0.0,
+            // Legacy 1-D path never runs the unified pass — kickback unused.
+            kickback_aft_world: 0.0,
         }));
         return;
     }

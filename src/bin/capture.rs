@@ -907,6 +907,10 @@ fn main() {
                     facing_yaw_deg: broadside_engine::hud::loft_facing_ground_yaw(player.facing),
                     cell_frac: [col_f, row_f],
                     kickback: [0.0, 0.0],
+                    kickback_aft_world: std::env::var("BROADSIDE_KICKBACK_W")
+                        .ok()
+                        .and_then(|v| v.parse::<f32>().ok())
+                        .unwrap_or(0.0),
                     z_offset: player_z,
                 },
             );
