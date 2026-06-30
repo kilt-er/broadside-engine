@@ -763,6 +763,37 @@ fn main() {
             );
         }
     }
+    // (warp seam diagnostic — temp) Log the FIRST live enemy's screen-x via the
+    // same projector the renderer uses. Combined with the at-depth preview probe
+    // below, this lets a capture pair (pre-swap preview vs post-swap live) prove
+    // the n+1 enemy's screen-x is continuous across the atomic board swap.
+    if let Some(enemy) = board
+        .cells
+        .iter()
+        .flatten()
+        .find(|s| s.faction == Faction::Enemy)
+    {
+        let world = broadside_engine::projector::cell_world_center_frac(
+            enemy.pos.col as f32,
+            enemy.pos.row as f32,
+            &cfg,
+        );
+        let m = broadside_engine::projector::unified_view_proj(&cfg);
+        if let Some(p) = broadside_engine::projector::unified_project(&m, world, &cfg) {
+            log::info!(
+                "capture: live-enemy-probe {} col {} row {} on {}x{} | world_x={:+.3} lane_align={:+.3} | screen_x={:.2} screen_y={:.2}",
+                enemy.id,
+                enemy.pos.col,
+                enemy.pos.row,
+                board_dims.cols,
+                board_dims.rows,
+                world[0],
+                broadside_engine::gfx::unified_lane_align_x(),
+                p.x,
+                p.y,
+            );
+        }
+    }
     // (CINEMATIC REBUILD phase a 2026-06-30) Pre-read BROADSIDE_WARP_T so we
     // can build the right Tween2d below — the player warp tween needs the
     // (z_offset, tint_alpha) AND the player VisualShip2d override in lockstep.
