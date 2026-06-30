@@ -744,17 +744,49 @@ fn back_row_column_order() -> Vec<usize> {
 }
 
 /// Column order for fanning enemies across one back row on the runtime `dims`
-/// grid: centre-out from `dims.center_col()`. Deterministic and total over
-/// `0..dims.cols`. The dim-aware mirror of [`back_row_column_order`]; the two
-/// agree at the default size. An even-width grid centres on `cols / 2` (the
-/// `Dims::center_col` rule), so 4-wide is `2, 1, 3, 0` (slightly right-biased,
-/// consistent with the odd-width rule).
+/// grid. On deep boards (`rows >= 3`) this is centre-out from
+/// `dims.center_col()` so small encounters cluster in front of the player and
+/// larger ones fan to the edges. On **shallow boards (`rows == 2`)** it is
+/// **edge-out** — every column except `center_col()` first (fanned outward
+/// from immediately beside the centre), with the centre column appended last.
+///
+/// The shallow-board carve-out exists to keep the cell directly in front of
+/// the player (`(center_col, 0)`) empty whenever the per-shape cap leaves
+/// room. With `narrow_cap = cols - 1`, the centre column never gets filled
+/// on a `rows == 2` board, which means the player has at least one immediate
+/// forward THRUST. Without this carve-out, a 2-row board traps the player:
+/// the only forward cell is centre-occupied and reverse is OOB (Bruce
+/// playtest, #199 small-board regression).
+///
+/// Deterministic and total over `0..dims.cols` in both modes. The dim-aware
+/// mirror of [`back_row_column_order`]; the two agree at the default 5×4 size
+/// (rows >= 3 hits the centre-out arm).
 fn back_row_column_order_in(dims: crate::grid::Dims) -> Vec<usize> {
     let cols = dims.cols;
     if cols == 0 {
         return Vec::new();
     }
     let mid = dims.center_col();
+    // Shallow-board carve-out: rows==2 means reverse-OOB for the player, so
+    // forward must stay open. Skip `mid` in the primary fan and append it
+    // last; the per-shape cap (`max_enemies_in`) is <= cols-1 on every shape
+    // in the pool, so `mid` never gets picked when filling at cap.
+    if dims.rows == 2 {
+        let mut out: Vec<usize> = Vec::with_capacity(cols);
+        let mut k = 1usize;
+        while out.len() < cols.saturating_sub(1) {
+            if mid >= k {
+                out.push(mid - k);
+            }
+            if mid + k < cols && out.len() < cols.saturating_sub(1) {
+                out.push(mid + k);
+            }
+            k += 1;
+        }
+        out.push(mid); // centre column appended last (only reached past cap)
+        return out;
+    }
+    // Deep board: centre-out (legacy behaviour, preserves 5×4 baseline).
     let mut out = vec![mid];
     let mut k = 1usize;
     while out.len() < cols {
@@ -779,19 +811,31 @@ fn enemy_spawn_pos(i: usize) -> Option<crate::grid::Pos> {
 }
 
 /// The back-row [`crate::grid::Pos`] for the `i`-th enemy on the runtime `dims`
-/// grid: fill the topmost back row across the centre-out column order, then the
-/// next back row, … all the way down to (but excluding) the player's front row
-/// `dims.front_row()`. Returns `None` once the back rows are exhausted, or for a
-/// grid with `rows < 2` (no back rows at all — caller falls through to no
-/// enemies).
+/// grid: fill the topmost back row across the column order produced by
+/// [`back_row_column_order_in`], then the next back row, … all the way down to
+/// (but excluding) the player's front row `dims.front_row()`. Returns `None`
+/// once the back rows are exhausted, or for a grid with `rows < 2` (no back
+/// rows at all — caller falls through to no enemies).
 ///
 /// The depth gradient (decision #8): top-row enemies are Far/Near from the
 /// front-centre player, lower-row ones one band closer, so the player reads a
-/// wall with depth and dodges laterally between threatened columns. The
-/// centre-out fill (via [`back_row_column_order_in`]) means small encounters
-/// cluster directly in front of the player and larger ones fan to the edges,
-/// so a Far-band weapon can bear on the centre-of-mass on every shape.
-fn enemy_spawn_pos_in(i: usize, dims: crate::grid::Dims) -> Option<crate::grid::Pos> {
+/// wall with depth and dodges laterally between threatened columns. On deep
+/// (`rows >= 3`) boards the centre-out fill clusters small encounters directly
+/// in front of the player and fans larger ones to the edges, so a Far-band
+/// weapon can bear on the centre-of-mass on every shape.
+///
+/// On **shallow (`rows == 2`) boards** the column order is edge-out instead
+/// (see [`back_row_column_order_in`]'s shallow-board carve-out) so the cell
+/// directly in front of the player stays empty at cap — the player's only
+/// forward THRUST has somewhere to land (reverse is OOB on a 2-row grid).
+///
+/// `pub` (vs the legacy private `enemy_spawn_pos`) because the per-shape
+/// canary in `tests/combat_per_shape.rs` builds an encounter that mirrors the
+/// production placement — exposing this avoids duplicating the column-order
+/// logic in the test fixture and silently drifting away from the production
+/// fill that `sample_encounter_spawns_with_dims` uses internally.
+#[must_use]
+pub fn enemy_spawn_pos_in(i: usize, dims: crate::grid::Dims) -> Option<crate::grid::Pos> {
     if dims.rows < 2 || dims.cols == 0 {
         return None; // no back rows at all (rows<=1) or zero-width grid
     }

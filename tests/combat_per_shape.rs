@@ -48,11 +48,11 @@
 //! produces internally; the live path is exercised end-to-end via the
 //! builder closure + `resolve_round`.
 
-use broadside_engine::grid::{Dims, Dir4, Facing, Pos};
+use broadside_engine::grid::{Axis, Dims, Dir4, Facing, Pos};
 use broadside_engine::resolve::{resolve_round, Content};
 use broadside_engine::runs::{
-    build_encounter_board_with_dims, enemy_spawn_facing, max_enemies_in, player_spawn_facing,
-    player_start_pos_in,
+    build_encounter_board_with_dims, enemy_spawn_facing, enemy_spawn_pos_in, max_enemies_in,
+    player_spawn_facing, player_start_pos_in,
 };
 use broadside_engine::types::{
     Action, Arc, Board, EncounterDef, Faction, LaneEnd, Mount, Orientation, Projectile, ShieldFace,
@@ -60,10 +60,22 @@ use broadside_engine::types::{
 };
 use std::collections::HashMap;
 
-/// The four board shapes the spec requires: 2x2, 3x3, 4x4, and the default
-/// 5x4. Per-shape `max_enemies_in` outputs (canonical table on
-/// `max_enemies_in` in src/runs.rs): 1 / 2 / 3 / 4.
-const SHAPES: &[(usize, usize)] = &[(2, 2), (3, 3), (4, 4), (5, 4)];
+/// The board shapes the spec requires. Original set was 2x2 / 3x3 / 4x4 /
+/// 5x4; broadened (small-board spawn-trap fix) to include every 2-row shape
+/// in the campaign pool because shallow boards are where the player has no
+/// backward escape and the forward cell becoming centre-occupied is the
+/// trap. Per-shape `max_enemies_in` outputs (canonical table on
+/// `max_enemies_in` in src/runs.rs): 1 / 2 / 3 / 4 / 1 / 2 / 3 / 4.
+const SHAPES: &[(usize, usize)] = &[
+    (2, 2),
+    (3, 3),
+    (4, 4),
+    (5, 4),
+    (3, 2),
+    (4, 2),
+    (5, 2),
+    (2, 4),
+];
 
 /// A Content impl that resolves no actions — every queued action id misses
 /// and falls through. `resolve_round` still walks the cooldown tick + the
@@ -146,21 +158,19 @@ fn player_seed(dims: Dims) -> Ship {
     )
 }
 
-/// An [`EncounterDef`] with `cap` enemy spawns laid along the back row,
-/// left-to-right, starting at `(0, 0)`. This mirrors the placement
-/// `sample_encounter_spawns_with_dims` produces on the canonical back-row
-/// sweep — but authored directly (the sampler is `pub(crate)`, and the
-/// invariants we lock here are about the BUILDER's placement, not the
-/// sampler's centre-out fan order). Caps at `max_enemies_in(dims)` per the
-/// design table.
+/// An [`EncounterDef`] with `cap` enemy spawns laid out via
+/// [`enemy_spawn_pos_in`] — the *production* column-order helper that
+/// `sample_encounter_spawns_with_dims` uses internally. Mirroring the live
+/// fill order is what lets the per-shape canary catch a placement
+/// regression: a fixture that hand-authored left-to-right wouldn't notice
+/// a shallow-board carve-out flipping or being removed. Caps at
+/// `max_enemies_in(dims)` per the design table.
 fn cap_filled_encounter(dims: Dims) -> EncounterDef {
     let cap = max_enemies_in(dims);
     let mut spawns = Vec::with_capacity(cap);
     for i in 0..cap {
-        let col = i % dims.cols;
-        let row = i / dims.cols;
-        debug_assert!(row < dims.rows.saturating_sub(1).max(1));
-        let pos = Pos::new(col, row);
+        let pos = enemy_spawn_pos_in(i, dims)
+            .unwrap_or_else(|| panic!("slot {i} below cap {cap} returned None on {dims:?}"));
         spawns.push(ShipSpawn {
             class_id: "enemy".into(),
             cell: pos.to_index_in(dims),
@@ -373,5 +383,57 @@ const fn neighbour(pos: Pos, dir: Dir4, dims: Dims) -> Option<Pos> {
         Some(np)
     } else {
         None
+    }
+}
+
+/// The forward [`Dir4`] for `facing`. Mirrors `input::forward_dir4` (private
+/// to the crate); duplicated here because tests can't reach `pub(crate)`
+/// helpers. Broadside facings fall back to the axis's positive cardinal —
+/// safe total fallback the player never actually holds.
+const fn forward_of(facing: Facing) -> Dir4 {
+    match facing {
+        Facing::Bow(d) => d,
+        Facing::Broadside(Axis::NorthSouth) => Dir4::N,
+        Facing::Broadside(Axis::EastWest) => Dir4::E,
+    }
+}
+
+#[test]
+fn player_has_an_immediate_forward_or_reverse_thrust_on_every_pool_shape() {
+    // The Bruce-experience floor: on first turn, pressing Up (forward along
+    // facing) OR Down (reverse) must land the player on a DIFFERENT cell —
+    // no rotation prelude required. This is strictly stronger than the
+    // any-cardinal-neighbour-empty check above: it rules out "all empty
+    // neighbours require a rotate first" boards.
+    //
+    // The trap this catches: 2-row board, player at (center_col, 1) facing N,
+    // enemy spawned at (center_col, 0). Forward (1,0) = occupied; reverse
+    // (1,2) = OOB → press Up / Down both no-op; the player feels frozen
+    // even though a W-neighbour is free (requires rotate-then-forward, two
+    // turns of "nothing happens" from Bruce's pov).
+    //
+    // Shallow-board carve-out in `back_row_column_order_in` (rows==2 →
+    // edge-out fan, centre column appended last) guarantees this on every
+    // 2-row shape. Deeper boards (rows >= 3) have the forward cell on a
+    // back row that the cap never saturates, so they pass for free.
+    for &(c, r) in SHAPES {
+        let dims = Dims::new(c, r);
+        let enc = cap_filled_encounter(dims);
+        let board =
+            build_encounter_board_with_dims(&enc, player_seed(dims), dims, build_enemy_from_spawn);
+        let player_pos = player_start_pos_in(dims);
+        let facing = player_spawn_facing();
+        let forward = forward_of(facing);
+        let reverse = forward.opposite();
+        let fwd_cell = neighbour(player_pos, forward, dims);
+        let rev_cell = neighbour(player_pos, reverse, dims);
+        let fwd_free = fwd_cell.is_some_and(|n| board.ship_at(n).is_none());
+        let rev_free = rev_cell.is_some_and(|n| board.ship_at(n).is_none());
+        assert!(
+            fwd_free || rev_free,
+            "{c}x{r}: player at {player_pos:?} facing {facing:?} has NO position-changing \
+             thrust (forward={fwd_cell:?} free={fwd_free}; reverse={rev_cell:?} free={rev_free}). \
+             Bruce sees a frozen ship — rotate-then-forward isn't an answer.",
+        );
     }
 }
