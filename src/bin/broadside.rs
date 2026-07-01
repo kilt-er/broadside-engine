@@ -1668,6 +1668,26 @@ impl App {
             #[cfg(feature = "audio")]
             audio: None,
         };
+        // (#322 debug 2026-07-01) BROADSIDE_START_AT_BOSS=1 jumps the run
+        // cursor to the CURRENT sector's LAST encounter (the boss capital)
+        // BEFORE the first board build so Bruce can playtest #214 boss
+        // rendering without grinding sector-end. Off by default -- normal
+        // boot starts at encounter 0 exactly as pre-#322. When the flag is
+        // set the boss board carries all its authored geometry (pair
+        // footprint + capital synth) through the same
+        // synth_enemy_for_spawn / place_capital_pair machinery the natural
+        // sector-end path uses.
+        if std::env::var("BROADSIDE_START_AT_BOSS").is_ok_and(|v| v != "0") {
+            if let Some(sector) = app.sectors.get(app.run.current_sector_idx) {
+                let last_idx = sector.encounters.len().saturating_sub(1);
+                app.run.completed_encounters = last_idx as u32;
+                log::info!(
+                    "BROADSIDE_START_AT_BOSS: jumped to sector {} encounter {} (boss)",
+                    app.run.current_sector_idx,
+                    last_idx,
+                );
+            }
+        }
         // #83: boot into the campaign's FIRST generated encounter (player
         // mid-lane, pincered catalog enemies that bear + fire) instead of the
         // showcase demo board the struct literal seeded above. Mirrors
