@@ -1276,7 +1276,7 @@ pub fn resolve_targeting(a: &Action, board: &Board, ship_cell: usize) -> Vec<usi
  *
  * FIRING-DIRECTION CONTRACT (reviewer-confirmed, the V4/V5 authority): the
  * firing ray is **cardinal** (4-way) — `bearing_cardinals` yields cardinals,
- * `first_target_along` walks a cardinal, `arc_bears` gates a cardinal (decision
+ * `first_target_along_excluding` walks a cardinal, `arc_bears` gates a cardinal (decision
  * #9: 4-cardinal facing). For every DIRECT hit the target sits ON the cardinal
  * ray, so the damage-step `incoming_from` (an 8-way `direction_to`, R4) is the
  * exact opposite cardinal. The 8-way `direction_to` only ever yields a diagonal
@@ -1352,13 +1352,29 @@ fn cells_along(from: Pos, dir: Dir8, dims: crate::grid::Dims) -> Vec<Pos> {
     out
 }
 
-/// First occupied cell along the cardinal ray from `from` in `dir`, or `None`.
-/// 2-D replacement for the 1-D `first_target_toward` — RE-DERIVED as a clean
-/// ray-walk over [`Board::ship_at`] (no negative-index probe).
-fn first_target_along(board: &Board, from: Pos, dir: Dir8) -> Option<Pos> {
-    cells_along(from, dir, board.dims())
-        .into_iter()
-        .find(|p| board.ship_at(*p).is_some())
+/// First occupied cell along the cardinal ray from `from` in `dir`, skipping
+/// any cell whose occupant's id equals `skip_id`. Pass `None` for the
+/// single-cell fast-path (no skipping). 2-D replacement for the 1-D
+/// `first_target_toward` — RE-DERIVED as a clean ray-walk over
+/// [`Board::ship_at`] (no negative-index probe). `skip_id` is the #220
+/// self-blocking fix:
+/// self-blocking fix). A 1×2 boss occupies its own forward cell (the tail
+/// mirror) — without this skip the boss's BEAM walks south from its primary,
+/// hits its own tail, and the hostile-faction guard rejects it (tail is
+/// `Faction::Enemy`), so the shot resolves to empty and the boss never fires.
+/// Only called from `resolve_targeting_2d_raw` when the firing ship has a tail
+/// (`skip_id = Some(ship.id)`); single-cell ships take the `None` fast-path.
+fn first_target_along_excluding(
+    board: &Board,
+    from: Pos,
+    dir: Dir8,
+    skip_id: Option<&str>,
+) -> Option<Pos> {
+    cells_along(from, dir, board.dims()).into_iter().find(|p| {
+        board
+            .ship_at(*p)
+            .is_some_and(|s| skip_id.is_none_or(|id| s.id != id))
+    })
 }
 
 // NOTE: the 2-D `bears(ship, arc, target_pos)` convenience wrapper (the 1-D
@@ -1407,6 +1423,11 @@ fn resolve_targeting_2d_raw(a: &Action, board: &Board, ship_pos: Pos) -> Vec<Pos
     // one). `in_band` realises the over-extension deadzone (decision #7).
     let in_band = |target: Pos| crate::geometry2d::in_band(&t.range_band, ship_pos, target);
 
+    // #220 self-blocking fix: a 1×2 boss occupies its own tail cell — skip it
+    // on ray walks so the forward BEAM doesn't terminate on the boss's own
+    // mirror clone. `None` for single-cell ships (no cost path).
+    let self_id: Option<&str> = ship.tail.is_some().then_some(&ship.id);
+
     match t.pattern {
         TargetingPattern::SELF => vec![ship_pos],
 
@@ -1415,7 +1436,7 @@ fn resolve_targeting_2d_raw(a: &Action, board: &Board, ship_pos: Pos) -> Vec<Pos
             // taking the first in-band occupant on each ray.
             let mut out = Vec::new();
             for dir in bearing_cardinals(ship.facing, t.requires_arc) {
-                if let Some(p) = first_target_along(board, ship_pos, dir) {
+                if let Some(p) = first_target_along_excluding(board, ship_pos, dir, self_id) {
                     if in_band(p) {
                         out.push(p);
                     }
@@ -1430,7 +1451,7 @@ fn resolve_targeting_2d_raw(a: &Action, board: &Board, ship_pos: Pos) -> Vec<Pos
             // bearing cardinals in order, take the first ray that yields a
             // legal target).
             for dir in bearing_cardinals(ship.facing, t.requires_arc) {
-                if let Some(p) = first_target_along(board, ship_pos, dir) {
+                if let Some(p) = first_target_along_excluding(board, ship_pos, dir, self_id) {
                     if in_band(p) {
                         return vec![p];
                     }
@@ -1446,7 +1467,12 @@ fn resolve_targeting_2d_raw(a: &Action, board: &Board, ship_pos: Pos) -> Vec<Pos
             for dir in bearing_cardinals(ship.facing, t.requires_arc) {
                 let line: Vec<Pos> = cells_along(ship_pos, dir, board.dims())
                     .into_iter()
-                    .filter(|p| in_band(*p) && board.ship_at(*p).is_some())
+                    .filter(|p| {
+                        in_band(*p)
+                            && board
+                                .ship_at(*p)
+                                .is_some_and(|s| self_id.is_none_or(|id| s.id != id))
+                    })
                     .collect();
                 if line.is_empty() {
                     continue;
@@ -1469,7 +1495,7 @@ fn resolve_targeting_2d_raw(a: &Action, board: &Board, ship_pos: Pos) -> Vec<Pos
             // damage-step `incoming_from` may be diagonal — intended per the
             // firing-direction contract; `facing_zone` is total over 8.)
             for dir in bearing_cardinals(ship.facing, t.requires_arc) {
-                if let Some(center) = first_target_along(board, ship_pos, dir) {
+                if let Some(center) = first_target_along_excluding(board, ship_pos, dir, self_id) {
                     let mut out = vec![center];
                     out.extend(crate::grid::neighbors_in(center, board.dims()));
                     return out;

@@ -22,8 +22,9 @@
 //! live entry points (no shortcut into internal state) so a future refactor
 //! that breaks the contract surfaces in exactly the failing case.
 
+use broadside_engine::ai::decide_enemy_action;
 use broadside_engine::geometry::default_shield_profile;
-use broadside_engine::grid::{Dir4, Facing, Pos};
+use broadside_engine::grid::{Dir4, Facing, Pos, Range};
 use broadside_engine::resolve::{apply_damage_2d, apply_effect, resolve_targeting_2d, Content};
 use broadside_engine::types::{
     Action, ActionCost, Arc, Board, DisplaceMode, Effect, EventBus, Faction, LaneEnd, Mount,
@@ -656,5 +657,199 @@ fn primary_cell_lethal_hit_clears_both_slots() {
         board.find_pos_by_id("boss"),
         None,
         "destroyed boss yields no primary after primary-route kill",
+    );
+}
+
+/* =========================================================================
+ * (i) #220 self-blocking fix: Pair boss fires THROUGH its own tail.
+ *
+ *   Bug: `resolve_targeting_2d`'s BEAM ray walk stopped at the tail-mirror
+ *   clone (row 1) before reaching the player (row 3). The tail is
+ *   `Faction::Enemy`, so the `any_hostile` guard in `decide_enemy_action`
+ *   rejected it → boss queue stayed empty every turn.
+ *
+ *   Fix: `resolve_targeting_2d_raw` extracts the firing ship's id when
+ *   `tail.is_some()` and skips cells belonging to that id in every ray
+ *   walk. The BEAM now reaches the player.
+ *
+ *   Board layout (5×4, rows 0=back / 3=front):
+ *     row 0, col 2: boss PRIMARY  (Bow S, Forward beam_cannon)
+ *     row 1, col 2: boss TAIL MIRROR  ← pre-fix ray stopped here
+ *     row 3, col 2: player
+ * ====================================================================== */
+
+/// A minimal `Content` that serves exactly one action: `beam_cannon`, a
+/// Forward BEAM with `range_band = [Near, Far]` — fires at distance 3 (Far).
+struct BeamContent {
+    beam: Action,
+}
+
+impl BeamContent {
+    fn new() -> Self {
+        BeamContent {
+            beam: Action {
+                id: "beam_cannon".into(),
+                name: "Beam Cannon".into(),
+                archetype: WeaponArchetype::Beam,
+                cost: ActionCost {
+                    heat: 2,
+                    cooldown_max: 3,
+                    advances_turn: true,
+                },
+                targeting: Targeting {
+                    pattern: TargetingPattern::BEAM,
+                    band: vec![RangeBand::Mid],
+                    optimal_band: RangeBand::Mid,
+                    range_band: vec![Range::Near, Range::Far],
+                    optimal_range: Range::Near,
+                    requires_arc: Some(Arc::Forward),
+                    facing_relative: true,
+                    hits_all: false,
+                },
+                effects: vec![Effect::DAMAGE {
+                    amount: 4,
+                    band_falloff: Some(false),
+                }],
+                r#mod: None,
+                icon: None,
+            },
+        }
+    }
+}
+
+impl Content for BeamContent {
+    fn action(&self, id: &str) -> Option<&Action> {
+        (id == "beam_cannon").then_some(&self.beam)
+    }
+    fn spawn_projectile(&self, _kind: &str, _owner: &Ship) -> Projectile {
+        panic!("beam does not spawn projectiles");
+    }
+}
+
+/// Seat a Pair boss with a single `beam_cannon` mount so we can drive
+/// `decide_enemy_action` and assert the boss fires through its own tail.
+fn seat_boss_with_beam(boss_primary: Pos, boss_tail: Pos) -> Board {
+    let dims = broadside_engine::grid::Dims::default();
+    let n = dims.cell_count();
+    let mut cells: Vec<Option<Ship>> = (0..n).map(|_| None).collect();
+    let player_pos = Pos::new(2, 3);
+    cells[player_pos.to_index_in(dims)] = Some(player_at(player_pos));
+    let mut boss = pair_boss(boss_primary, boss_tail, 14);
+    boss.mounts = vec![Mount {
+        id: "m1".into(),
+        arc: Arc::Forward,
+        weapon: "beam_cannon".into(),
+    }];
+    // Sync the tail mirror with the updated mounts.
+    cells[boss_primary.to_index_in(dims)] = Some(boss.clone());
+    cells[boss_tail.to_index_in(dims)] = Some(boss);
+    Board {
+        size: n,
+        cols: dims.cols,
+        rows: dims.rows,
+        cells,
+        ordnance: Vec::new(),
+        hazards: (0..n).map(|_| Vec::new()).collect(),
+        patrol: 1,
+        level: 0,
+        threats: Vec::new(),
+        bus: EventBus::default(),
+        destroys_this_window: 0,
+        fire_events: Vec::new(),
+    }
+}
+
+#[test]
+fn pair_boss_beam_fires_through_own_tail_to_player() {
+    // Boss primary at (2,0), tail at (2,1) — both in column 2, same as the
+    // player at (2,3). The BEAM fires south (Bow S = Forward): without the
+    // fix the ray stops at (2,1) (the tail mirror, Enemy faction), and the
+    // hostile-faction guard rejects it → queue empty. With the fix the ray
+    // skips the tail and reaches the player.
+    let primary = Pos::new(2, 0);
+    let tail = Pos::new(2, 1);
+    let mut board = seat_boss_with_beam(primary, tail);
+    let content = BeamContent::new();
+
+    // Confirm targeting resolves to the player (not the tail).
+    let targets = resolve_targeting_2d(&content.beam, &board, primary);
+    assert_eq!(
+        targets,
+        vec![Pos::new(2, 3)],
+        "beam_cannon from Pair boss primary must skip the tail and resolve to the player",
+    );
+
+    // Drive the full AI decision — the boss must queue the shot.
+    let enemy_cell = primary.to_index();
+    decide_enemy_action(enemy_cell, &mut board, &content);
+
+    let boss_queue = board
+        .ship_at(primary)
+        .map(|s| s.queue.clone())
+        .unwrap_or_default();
+    assert_eq!(
+        boss_queue,
+        vec!["beam_cannon".to_string()],
+        "decide_enemy_action must queue beam_cannon for the Pair boss when the player is in range",
+    );
+}
+
+#[test]
+fn single_cell_enemy_beam_still_fires_normally() {
+    // A single-cell enemy (no tail) should be completely unaffected by the
+    // self-skip fix — the `skip_id = None` fast-path must not change behaviour.
+    let dims = broadside_engine::grid::Dims::default();
+    let n = dims.cell_count();
+    let mut cells: Vec<Option<Ship>> = (0..n).map(|_| None).collect();
+    let player_pos = Pos::new(2, 3);
+    cells[player_pos.to_index_in(dims)] = Some(player_at(player_pos));
+    let enemy_pos = Pos::new(2, 0);
+    let enemy = Ship {
+        id: "single_enemy".into(),
+        faction: Faction::Enemy,
+        cell: enemy_pos.to_index(),
+        pos: enemy_pos,
+        orientation: Orientation::BowOn { bow: LaneEnd::Aft },
+        facing: Facing::Bow(Dir4::S),
+        hull: 5,
+        max_hull: 5,
+        heat: 0,
+        heat_max: 8,
+        locked_out: false,
+        shield_profile: default_shield_profile(),
+        mounts: vec![Mount {
+            id: "m1".into(),
+            arc: Arc::Forward,
+            weapon: "beam_cannon".into(),
+        }],
+        queue: Vec::new(),
+        cooldowns: HashMap::new(),
+        statuses: Vec::new(),
+        traits: Vec::new(),
+        klass: None,
+        tail: None,
+    };
+    cells[enemy_pos.to_index_in(dims)] = Some(enemy);
+    let board = Board {
+        size: n,
+        cols: dims.cols,
+        rows: dims.rows,
+        cells,
+        ordnance: Vec::new(),
+        hazards: (0..n).map(|_| Vec::new()).collect(),
+        patrol: 1,
+        level: 0,
+        threats: Vec::new(),
+        bus: EventBus::default(),
+        destroys_this_window: 0,
+        fire_events: Vec::new(),
+    };
+    let content = BeamContent::new();
+
+    let targets = resolve_targeting_2d(&content.beam, &board, enemy_pos);
+    assert_eq!(
+        targets,
+        vec![Pos::new(2, 3)],
+        "single-cell enemy beam must resolve to the player (self-skip fix must not regress this)",
     );
 }
