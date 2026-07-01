@@ -272,11 +272,19 @@ fn a1_thrust_moves_exactly_one_cell_ignoring_distance() {
 }
 
 /* =========================================================================
- * A2 — THRUST blocked by an occupant: stay put + 1 collision damage.
+ * A2 — THRUST blocked by an occupant OR wall: stay put, NO collision damage.
+ *
+ * (#323 Bruce ruling 2026-07-01) A blocked forward move is a clean NO-OP:
+ * neither party takes damage. Pre-#323 both wall and occupant billed 1
+ * collision damage to the actor -- the ram-into-enemy loop that Bruce hit
+ * (player damaged every ram, enemy AI also ramming so enemy also bled,
+ * both dying with no explosion + false-win). Zero-damage on both cases
+ * makes basic THRUST-into-block a true no-op. BURN / SLIP / JUMP still
+ * bill their remaining-distance collision damage (skill-move cost intact).
  * ====================================================================== */
 
 #[test]
-fn a2_thrust_into_occupant_stays_and_takes_one_collision() {
+fn a2_thrust_into_occupant_stays_and_takes_no_damage() {
     let mut b = board(
         5,
         vec![
@@ -291,13 +299,18 @@ fn a2_thrust_into_occupant_stays_and_takes_one_collision() {
     assert_eq!(cell_of(&b, "p"), Some(1), "blocked THRUST stays in place");
     assert_eq!(
         hull_of(&b, "p"),
-        4,
-        "blocked THRUST takes exactly 1 collision (armour-0 => raw)"
+        5,
+        "blocked THRUST takes NO collision damage (#323 Bruce ruling)"
+    );
+    assert_eq!(
+        hull_of(&b, "x"),
+        5,
+        "blocked THRUST leaves the OCCUPANT untouched (#323 Bruce ruling)"
     );
 }
 
 #[test]
-fn a2_thrust_into_wall_stays_and_takes_one_collision() {
+fn a2_thrust_into_wall_stays_and_takes_no_damage() {
     let mut b = board(
         5,
         vec![None, None, None, None, Some(ship("p", 4, 5, LaneEnd::Fore))],
@@ -308,7 +321,66 @@ fn a2_thrust_into_wall_stays_and_takes_one_collision() {
         Some(4),
         "THRUST into the fore wall stays put"
     );
-    assert_eq!(hull_of(&b, "p"), 4, "wall collision is 1 damage");
+    assert_eq!(
+        hull_of(&b, "p"),
+        5,
+        "wall block takes NO collision damage (#323 Bruce ruling)"
+    );
+}
+
+/// (#323 Bruce repro 2026-07-01) Bruce's exact scenario: player MOVES
+/// FORWARD into an enemy-occupied cell repeatedly. Pre-#323 each ram billed
+/// 1 collision damage to the actor via `apply_damage(landing=ship_pos)`, so
+/// after N rams the actor bled N hull. Combined with the enemy AI also
+/// ramming the player (its world-phase drives the same THRUST path), both
+/// ships bled every turn until one hit 0 hull, vanished with no explosion,
+/// and the win-check tripped a false advance. New behavior: 5 forward-move
+/// commands into the same enemy → both hulls stay at max, enemy is still
+/// present, no destroys registered. Runs the resolver primitive directly
+/// (like the A-series does) so the assertion is on the movement math
+/// itself, independent of the bin's input pipeline.
+#[test]
+fn a2_repeated_ram_into_enemy_never_damages_either_ship() {
+    let mut b = board(
+        5,
+        vec![
+            None,
+            Some(ship("p", 1, 5, LaneEnd::Fore)),
+            Some(ship("x", 2, 5, LaneEnd::Fore)),
+            None,
+            None,
+        ],
+    );
+    let destroys_before = b.destroys_this_window;
+    // Five rams -- Bruce reports the false-win at 2. Five here proves it's
+    // not a delayed effect at higher hit-counts.
+    for _ in 0..5 {
+        self_move(&mut b, 1, MovementMode::THRUST, 1, None);
+    }
+    assert_eq!(
+        cell_of(&b, "p"),
+        Some(1),
+        "player never moves (enemy blocks every ram)"
+    );
+    assert_eq!(
+        hull_of(&b, "p"),
+        5,
+        "player hull FULL after 5 rams (was 0 pre-#323 with 1 damage/ram)"
+    );
+    assert_eq!(
+        cell_of(&b, "x"),
+        Some(2),
+        "enemy STILL PRESENT after 5 rams (was silently removed pre-#323 when its own AI's return-rams dropped it to 0 hull)"
+    );
+    assert_eq!(
+        hull_of(&b, "x"),
+        5,
+        "enemy hull FULL after 5 rams (never touched by the block)"
+    );
+    assert_eq!(
+        b.destroys_this_window, destroys_before,
+        "no destroys logged during the ram loop -- no false-win chain"
+    );
 }
 
 /* =========================================================================
@@ -695,28 +767,40 @@ fn a10_push_blocked_by_wall_bills_remaining_collision() {
 }
 
 /* =========================================================================
- * A11 — collision attribution: the displaced/blocked ship's hull drops by
- *       exactly remaining×1 (covered numerically by A2/A3/A10; this asserts
- *       the only-the-moving-ship-is-hurt invariant explicitly).
+ * A11 — collision attribution (BURN/SLIP/JUMP): the mover eats the
+ *       collision, the blocker is untouched. THRUST is a special case
+ *       under #323 -- it now takes NO damage at all (see A2 tests); the
+ *       "actor is the only ship damaged" invariant is now asserted through
+ *       BURN, whose remaining×1 collision still applies (skill-move cost
+ *       stays intact per Bruce's ruling scope: only basic THRUST is
+ *       de-fanged, BURN/SLIP/JUMP keep their existing collision math).
  * ====================================================================== */
 
 #[test]
-fn a11_collision_damages_only_the_moving_ship_not_the_blocker() {
+fn a11_burn_collision_damages_only_the_moving_ship_not_the_blocker() {
     let mut b = board(
-        5,
+        7,
         vec![
             None,
             Some(ship("p", 1, 5, LaneEnd::Fore)),
-            Some(ship("blocker", 2, 5, LaneEnd::Fore)),
+            None,
+            None,
+            Some(ship("blocker", 4, 5, LaneEnd::Fore)),
             None,
             None,
         ],
     );
-    self_move(&mut b, 1, MovementMode::THRUST, 1, None);
-    assert_eq!(hull_of(&b, "p"), 4, "the rammer eats the 1 collision");
+    // BURN 4 into blocker at cell 4: mover advances 1→2→3 (2 cells), blocked
+    // at 4. remaining = 4 - 2 = 2 collision damage attributed to the mover.
+    self_move(&mut b, 1, MovementMode::BURN, 4, None);
+    assert_eq!(
+        hull_of(&b, "p"),
+        3,
+        "the burning rammer eats the 2 collision"
+    );
     assert_eq!(
         hull_of(&b, "blocker"),
         5,
-        "the blocker is untouched by the rammer's collision"
+        "the blocker is untouched by the rammer's collision (still)"
     );
 }

@@ -2815,13 +2815,16 @@ fn resolve_self_move(
         MovementMode::THRUST => {
             // Always one step. Distance argument is ignored; THRUST is
             // canonically 1.
+            // (#323 Bruce ruling 2026-07-01) THRUST block (wall OR occupant)
+            // is a clean no-op: ship stays, NO collision damage. Mirrors the
+            // 2-D `resolve_self_move_2d` change -- see that arm for the ram-
+            // loop bug context. Was `(start, 1)` for BOTH wall + occupant;
+            // now both fall through to `(start, 0)`. The two block cases
+            // share their outcome, so a single `blocked` guard covers them.
             let next = start + step;
-            if next < 0 || next >= size {
-                // Wall blocks: stop in place, take 1 collision.
-                (start, 1)
-            } else if board.cells[next as usize].is_some() {
-                // Occupant blocks: stop in place, take 1 collision.
-                (start, 1)
+            let blocked = next < 0 || next >= size || board.cells[next as usize].is_some();
+            if blocked {
+                (start, 0)
             } else {
                 (next, 0)
             }
@@ -3092,9 +3095,22 @@ fn resolve_self_move_2d(
     let (landing, collision_dmg): (Pos, i32) = match mode {
         MovementMode::THRUST => {
             // Always one cardinal step; distance ignored (THRUST is 1).
+            // (#323 Bruce ruling 2026-07-01) A blocked forward move is a
+            // clean NO-OP: neither ship takes damage, target untouched.
+            // Pre-#323 both wall and occupant billed 1 collision damage to
+            // the actor via apply_damage_2d(ship_pos, ...), which produced
+            // the "ram into enemy = player takes damage every turn" bug
+            // Bruce reported (paired with the enemy AI also ramming the
+            // player each world-phase → both parties bled hull until one
+            // died with no explosion → false-win advance). Zero-damage on
+            // BOTH block cases makes THRUST-into-block a true no-op —
+            // ship stays, no damage on either side. BURN / SLIP / JUMP
+            // still bill their remaining-distance collision damage (their
+            // power-move cost stays intact; only the basic forward-move
+            // THRUST is de-fanged per Bruce's ruling).
             match crate::grid::offset_in(ship_pos, dir, 1, dims) {
-                None => (ship_pos, 1), // wall: stop, 1 collision
-                Some(next) if board.ship_at(next).is_some() => (ship_pos, 1), // occupant: stop, 1
+                None => (ship_pos, 0), // wall: stop, no damage
+                Some(next) if board.ship_at(next).is_some() => (ship_pos, 0), // occupant: stop, no damage
                 Some(next) => (next, 0),
             }
         }
@@ -4732,10 +4748,10 @@ mod tests {
         assert_eq!(board.cells[3].as_ref().map(|s| s.cell), Some(3));
     }
 
-    /// THRUST into an occupied cell stays in place and takes 1 collision
-    /// damage (`remaining_distance` × 1 = 1).
+    /// THRUST into an occupied cell stays in place and takes NO damage
+    /// (#323 Bruce ruling).
     #[test]
-    fn self_move_thrust_blocked_takes_one_collision() {
+    fn self_move_thrust_blocked_takes_no_damage() {
         let mut ship = make_ship("s", Faction::Player, 2, 5, LaneEnd::Fore);
         ship.shield_profile = no_armour_profile();
         let blocker = make_ship("b", Faction::Enemy, 3, 5, LaneEnd::Fore);
@@ -4746,19 +4762,21 @@ mod tests {
         super::resolve_self_move(2, MovementMode::THRUST, 1, None, &mut board, &NoContent);
         // Did not move.
         assert!(board.cells[2].is_some());
-        // Hull: 5 - 1 = 4 (collision damage routed through dummy_weapon, no
-        // falloff, no armour on the test profile).
-        assert_eq!(board.cells[2].as_ref().unwrap().hull, 4);
+        // (#323) blocked THRUST no longer bills collision damage.
+        assert_eq!(board.cells[2].as_ref().unwrap().hull, 5);
+        // (#323) blocker is untouched -- the actor's ram doesn't damage it.
+        assert_eq!(board.cells[3].as_ref().unwrap().hull, 5);
     }
 
-    /// THRUST into the wall stays in place and takes 1 collision damage.
+    /// THRUST into the wall stays in place and takes NO damage
+    /// (#323 Bruce ruling).
     #[test]
-    fn self_move_thrust_at_wall_takes_one_collision() {
+    fn self_move_thrust_at_wall_takes_no_damage() {
         let mut ship = make_ship("s", Faction::Player, 6, 5, LaneEnd::Fore);
         ship.shield_profile = no_armour_profile();
         let mut board = make_board(7, vec![None, None, None, None, None, None, Some(ship)]);
         super::resolve_self_move(6, MovementMode::THRUST, 1, None, &mut board, &NoContent);
-        assert_eq!(board.cells[6].as_ref().unwrap().hull, 4);
+        assert_eq!(board.cells[6].as_ref().unwrap().hull, 5);
     }
 
     /// BURN advances up to `distance` cells when clear.
@@ -7024,11 +7042,11 @@ mod tests {
     }
 
     #[test]
-    fn rsm2d_thrust_wall_blocks_stays_and_takes_collision() {
-        // Bow(N) at (2,0) (back row): N is off-grid -> stay, take 1 collision.
-        // Use a SHIELDLESS hull so the 1 collision reaches hull (the directional
-        // shield would otherwise mediate it — a bow-first wall hit lands on the
-        // strong bow armour, which is its own behavior, not what this asserts).
+    fn rsm2d_thrust_wall_blocks_stays_and_takes_no_damage() {
+        // Bow(N) at (2,0) (back row): N is off-grid -> stay, NO damage
+        // (#323 Bruce ruling). Shieldless profile kept from the pre-#323
+        // version so the assertion is on the DAMAGE MATH itself, not
+        // on which zone might have absorbed it.
         let zero = ShieldProfile {
             bow: crate::types::ShieldFace {
                 armour: 0,
@@ -7070,18 +7088,17 @@ mod tests {
         assert_ship_at(&board, "p", Pos::new(2, 0)); // didn't move
         assert_eq!(
             board.ship_at(Pos::new(2, 0)).unwrap().hull,
-            hull_before - 1,
-            "wall collision = 1 (shieldless)"
+            hull_before,
+            "wall block = NO damage (#323 Bruce ruling)"
         );
     }
 
     #[test]
-    fn rsm2d_thrust_occupant_blocks_stays_and_takes_collision() {
-        // Mover at (2,2) Bow(N); blocker at (2,1). Mover stays, takes 1.
-        // Shieldless mover so the collision reaches hull regardless of which
-        // zone absorbs it (the collision DIRECTION->zone is provisional until
-        // R4 migrates apply_damage to 2D; this asserts the collision happened +
-        // the block, not the zone).
+    fn rsm2d_thrust_occupant_blocks_stays_and_takes_no_damage() {
+        // Mover at (2,2) Bow(N); blocker at (2,1). Mover stays, NO damage
+        // to either party (#323 Bruce ruling). Shieldless mover preserved
+        // for continuity; would also pass with any shield profile since
+        // zero collision damage never reaches the shield.
         let zero = ShieldProfile {
             bow: crate::types::ShieldFace {
                 armour: 0,
@@ -7131,7 +7148,16 @@ mod tests {
         );
         assert_ship_at(&board, "p", Pos::new(2, 2)); // blocked
         assert_ship_at(&board, "b", Pos::new(2, 1)); // blocker unmoved
-        assert_eq!(board.ship_at(Pos::new(2, 2)).unwrap().hull, hull_before - 1);
+        assert_eq!(
+            board.ship_at(Pos::new(2, 2)).unwrap().hull,
+            hull_before,
+            "occupant block = NO damage to actor (#323 Bruce ruling)"
+        );
+        assert_eq!(
+            board.ship_at(Pos::new(2, 1)).unwrap().hull,
+            hull_before,
+            "occupant block = NO damage to blocker (#323 Bruce ruling)"
+        );
     }
 
     #[test]
