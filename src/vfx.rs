@@ -2236,10 +2236,16 @@ mod tests {
             12,
             "one live SpriteInstance per particle at birth"
         );
-        // All born at the burst centre.
+        // (#222) Born within the spawn-jitter radius of the burst centre — the
+        // birth-position jitter spreads particles so they read as N distinct
+        // sprites at frame 0 instead of a single stacked point.
         for c in &out {
             if let DrawCommand::Sprite(s) = c {
-                assert_eq!(s.pos, [100.0, 50.0], "particles spawn at the burst centre");
+                let dist = (s.pos[0] - 100.0).hypot(s.pos[1] - 50.0);
+                assert!(
+                    dist <= 8.0 + 1e-3,
+                    "particles spawn within the spawn-jitter radius of the burst centre (dist {dist})"
+                );
             }
         }
     }

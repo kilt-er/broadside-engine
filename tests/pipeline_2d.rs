@@ -570,8 +570,8 @@ fn ordnance_damage_lands_on_the_exact_world_phase_it_reaches_the_target() {
  *    must route through apply_damage_2d so shield soak applies.
  * ====================================================================== */
 
-/// HullBreach status damage (tick_statuses) must deplete the shield pool
-/// BEFORE reaching hull. A ship with 1 HullBreach and a full 3-charge bow
+/// `HullBreach` status damage (`tick_statuses`) must deplete the shield pool
+/// BEFORE reaching hull. A ship with 1 `HullBreach` and a full 3-charge bow
 /// pool takes no hull damage from one tick (the 1 point is absorbed entirely
 /// by the shield pool). Without the fix, the old direct `ship.hull -= breach_hits`
 /// would skip the shield and decrement hull directly.
@@ -616,7 +616,7 @@ fn hull_breach_tick_soaks_shield_before_hull() {
     );
 }
 
-/// When the shield pool is empty, HullBreach damage bleeds through to hull.
+/// When the shield pool is empty, `HullBreach` damage bleeds through to hull.
 /// This guards the post-soak hull-subtraction path: pool=0 → full overflow.
 #[test]
 fn hull_breach_tick_bleeds_to_hull_when_pool_empty() {
@@ -650,11 +650,11 @@ fn hull_breach_tick_bleeds_to_hull_when_pool_empty() {
     );
 }
 
-/// ReactorBreach splash on destroy must route through apply_damage_2d so the
+/// `ReactorBreach` splash on destroy must route through `apply_damage_2d` so the
 /// neighbour's shield pool soaks the 2-point splash before it reaches hull.
 /// A ship with a full 3-charge bow faces north; when the enemy to its south
-/// (bearing S from target's perspective = bow face via facing_zone) is
-/// destroyed with ReactorBreach, the 2-point splash lands on the bow face
+/// (bearing S from target's perspective = bow face via `facing_zone`) is
+/// destroyed with `ReactorBreach`, the 2-point splash lands on the bow face
 /// and is absorbed by the pool.
 #[test]
 fn reactor_breach_splash_soaks_shield_before_hull() {

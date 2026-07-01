@@ -686,7 +686,7 @@ struct BeamContent {
 
 impl BeamContent {
     fn new() -> Self {
-        BeamContent {
+        Self {
             beam: Action {
                 id: "beam_cannon".into(),
                 name: "Beam Cannon".into(),
