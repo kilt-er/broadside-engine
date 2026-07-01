@@ -1912,89 +1912,38 @@ impl App {
         }
     }
 
-    /// (Bruce design law 2026-06-30 lane-align) Update the global
-    /// `unified_lane_align_x` so the carried player column on `new_board`
-    /// renders at the same world-x as the carried player column did on
-    /// `old_board` — the post-warp "snap" Bruce playtested is the n+1 grid
-    /// re-centering per its own dims (width-parity flip → every cell's
-    /// screen-x shifts). Bruce's rule: lane-align, do NOT recenter.
+    /// (Bruce design law 2026-07-01 #329, SUPERSEDES the 2026-06-30
+    /// "player screen-x preservation" rule) Keep the board CENTERED — reset
+    /// the global `unified_lane_align_x` to 0 on every encounter swap so the
+    /// board's world-x anchor stays at the camera's centered look-at point.
     ///
-    /// The grid centring formula in [`broadside_engine::projector::cell_world_corners`]
-    /// is `left_x = (cols * 0.5 - col) * s`, so a column's world-x center is
-    /// `(cols/2 - col - 0.5) * s`. We compute the world-x delta the new dims
-    /// would induce at the carried column and ADD it to the persistent
-    /// `lane_align` so the player's column world-x is preserved across the swap.
-    /// Every other cell on the new board shifts in lockstep (#188 alignment
-    /// holds — only the look-at translates).
+    /// Prior rule (superseded): shift lane-align by `(new_raw - old_raw)` so
+    /// the CARRIED PLAYER's column preserved its screen-x across the swap.
+    /// That kept the player visually pinned but let `lane_align` accumulate
+    /// one direction across dim changes / column carries — after 6 rounds
+    /// Bruce's playtest tree showed the whole board jammed against the right
+    /// edge of the screen ~half a viewport off-center. Bruce's verbatim
+    /// ruling: "line function to line them up should not just move them out
+    /// to line them up but should alternate out and in to keep them centered
+    /// on the map. Rather than move the camera."
     ///
-    /// At boot (no prior board) and on identical-dims swaps the delta is 0 →
-    /// byte-identical to the pre-fix renderer.
-    fn relane_align_for_swap(old_board: &Board, new_board: &Board) {
-        if let Some(next) = Self::compute_lane_align_for_swap(old_board, new_board) {
-            broadside_engine::gfx::set_unified_lane_align_x(next);
-        }
-    }
-
-    /// (warp enemy-jump fix 2026-06-30) Pure sibling of
-    /// [`relane_align_for_swap`] — returns the `lane_align` value that, when
-    /// applied to the camera after the OLD→NEW board swap, preserves the
-    /// player's screen-x by construction (the formula in the original
-    /// setter's docs). Used by the at-depth preview to compute `to_align`
-    /// for the per-hull `lane_align_world_offset` override during the warp
-    /// (board not yet swapped; preview enemies need to render at their
-    /// POST-swap lane-aligned positions). Returns `None` for degenerate
-    /// inputs (no player on either board) — caller falls back to no
-    /// override = 0.
-    fn compute_lane_align_for_swap(old_board: &Board, new_board: &Board) -> Option<f32> {
-        let op = old_board
-            .cells
-            .iter()
-            .flatten()
-            .find(|s| s.faction == Faction::Player)?;
-        let np = new_board
-            .cells
-            .iter()
-            .flatten()
-            .find(|s| s.faction == Faction::Player)?;
-        let s = broadside_engine::gfx::unified_grid_cell_scale();
-        let old_dims = old_board.dims();
-        let new_dims = new_board.dims();
-        // World-x of each player's column on its own grid (no lane-align —
-        // we add the EXISTING prior offset back below). This is the "raw"
-        // centered position before any per-encounter shift.
-        let old_world_x_raw = (old_dims.cols as f32 * 0.5 - op.pos.col as f32 - 0.5) * s;
-        let new_world_x_raw = (new_dims.cols as f32 * 0.5 - np.pos.col as f32 - 0.5) * s;
-        // SCREEN-X-PRESERVING form (corrected via capture-verify 2026-06-30):
-        // The camera looks at world `target_x = lane_align_atomic`, so a cell
-        // at world_x_cell projects to a screen-x derived from (cell - target).
-        // To preserve screen-x across the swap, we need:
-        //   new_raw - next == old_raw - prior        (relative offset stable)
-        //   ⇒ next = prior + (new_raw - old_raw)
-        //   ⇒ next = prior - (old_raw - new_raw)    (sign matters!)
-        //
-        // The earlier `prior + (old - new)` form INVERTED the sign — it set
-        // the camera lateral OPPOSITE to the cell shift, doubling the snap
-        // instead of canceling it. Capture-verified the correct form: a 5x4
-        // col=2 (world_x=0, screen_x=320) → 2x2 col=1 (world_x=-0.950)
-        // needs lane_align = -0.950 so target_x = -0.950 and the player
-        // projects at the same screen-x as before.
-        let prior = broadside_engine::gfx::unified_lane_align_x();
-        let next = prior + (new_world_x_raw - old_world_x_raw);
-        log::info!(
-            "lane_align target: {}x{} col {} -> {}x{} col {} | raw {:+.3} -> {:+.3} | lane_align {:+.3} -> {:+.3} | rel_to_target stays {:+.3}",
-            old_dims.cols,
-            old_dims.rows,
-            op.pos.col,
-            new_dims.cols,
-            new_dims.rows,
-            np.pos.col,
-            old_world_x_raw,
-            new_world_x_raw,
-            prior,
-            next,
-            new_world_x_raw - next,
-        );
-        Some(next)
+    /// New rule: `set_unified_lane_align_x(0)` at every swap. Board is always
+    /// centered. Seam-continuity is now supplied by the existing player
+    /// cell-tween ([`cinematic_player_cell_frac`]) which already interpolates
+    /// the player's world-x from `old_raw` (on OLD dims) at t=GATE to
+    /// `new_raw` (on NEW dims) at t=1.0; both boards render centered on
+    /// world x=0 so no camera translation is needed. If the OLD-dims and
+    /// NEW-dims center-column don't project to the same screen-x (they
+    /// won't when the boards have different widths and the player's carried
+    /// col isn't the same center-relative offset), the cell-tween smoothly
+    /// carries the visual across that delta during the warp — no snap at
+    /// the swap instant.
+    ///
+    /// [`compute_lane_align_for_swap`] is retained (still used by the log
+    /// diagnostic + capture bin's target formula), but its output is no
+    /// longer applied to the global camera.
+    fn relane_align_for_swap(_old_board: &Board, _new_board: &Board) {
+        broadside_engine::gfx::set_unified_lane_align_x(0.0);
     }
 
     /// (#210 P2) Linear "round number" across the whole campaign, used as the
@@ -2404,27 +2353,21 @@ impl App {
                         .find(|s| s.faction == Faction::Player)
                         .map(|s| s.pos)
                 });
-                // Lane-align offset the player rides: shift the player's world-x
-                // by `to_align - prior` during the warp so its screen-x stays
-                // continuous across the atomic swap (the global lane_align flips
-                // from prior→to_align at the swap; the offset cancels the flip
-                // pre-swap so projected screen-x is identical the frame after).
+                // (#329 Bruce ruling 2026-07-01) Lane-align override is now
+                // permanently 0 during the warp: the global `lane_align`
+                // stays 0 across the swap (see `relane_align_for_swap`), so
+                // no compensating per-hull shift is needed. The player's
+                // cell-tween ([`cinematic_player_cell_frac`]) already
+                // interpolates world-x from `old_raw` → `new_raw` across the
+                // warp, and both boards render centered on world x=0, so
+                // no camera-side flip means no seam offset to cancel.
                 //
-                // (#316 rotate-first 2026-06-30) Pre-GATE the player sits at
-                // prior cell on OLD cfg (render_dims = OLD until t > GATE);
-                // applying the offset would translate the player off the OLD
-                // grid before the cfg flip. Gate the offset on the same
-                // boundary so it activates IN LOCKSTEP with the cfg flip.
-                let player_lane_align_offset: f32 = if t_total < PLAYER_ROTATE_GATE_T {
-                    0.0
-                } else {
-                    pending
-                        .and_then(|p| Self::compute_lane_align_for_swap(&self.board, p))
-                        .map_or(0.0, |to_align| {
-                            let prior = broadside_engine::gfx::unified_lane_align_x();
-                            to_align - prior
-                        })
-                };
+                // Prior (superseded 2026-06-30 logic): compute
+                // `to_align = prior + (new_raw - old_raw)` and shift the
+                // player by `to_align - prior` during the warp so its
+                // screen-x stayed continuous across a lane_align jump at
+                // the swap. That jump no longer happens (#329).
+                let player_lane_align_offset: f32 = 0.0;
                 if let Some(player) = self
                     .board
                     .cells
@@ -4403,18 +4346,16 @@ impl ApplicationHandler for App {
                         // parity-flip transitions. Outside Transitioning the
                         // offset is 0 and the persistent at-depth preview is
                         // byte-identical to pre-fix.
-                        let preview_lane_align_offset: f32 =
-                            if matches!(demo_state, DemoState::Transitioning(_)) {
-                                self.pending_board
-                                    .as_ref()
-                                    .and_then(|p| Self::compute_lane_align_for_swap(&self.board, p))
-                                    .map_or(0.0, |to_align| {
-                                        let prior = broadside_engine::gfx::unified_lane_align_x();
-                                        to_align - prior
-                                    })
-                            } else {
-                                0.0
-                            };
+                        // (#329 Bruce ruling 2026-07-01) At-depth preview
+                        // shift is also 0. The global `lane_align` stays 0
+                        // across the swap, so the preview's n+1 enemies
+                        // don't need a compensating per-hull offset — they
+                        // sit at their NEW-grid world-x, camera at 0, and
+                        // at t=1.0 the swap replaces the preview with the
+                        // live n+1 hulls at the same world-x. Seam is
+                        // enemy-continuous by construction (no camera
+                        // translation to cancel).
+                        let preview_lane_align_offset: f32 = 0.0;
                         hud::prepend_upcoming_board_with_loft_2d_staggered_with_rest(
                             &mut instances,
                             &scene_cfg,
