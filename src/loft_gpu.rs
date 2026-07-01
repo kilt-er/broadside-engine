@@ -373,7 +373,20 @@ fn vs_main(
     let world = scene.model * vec4<f32>(pos, 1.0);
     let wn = (scene.model * vec4<f32>(nrm, 0.0)).xyz;
     var o: VsOut;
-    o.clip = scene.view_proj * world;
+    var clip = scene.view_proj * world;
+    // (#227 defensive) Guard the hardware perspective divide against a
+    // near/behind-camera vertex whose clip.w collapses to ~0 or goes negative
+    // (the #73 near-row-wrap degeneracy). A raw w≈0 makes the GPU emit Inf/NaN
+    // NDC, which can surface latent driver bugs on malformed geometry. Clamp |w|
+    // to a small epsilon, PRESERVING sign so a genuinely-behind vertex still maps
+    // outside the near plane and gets clipped (rather than folding to the front).
+    // Well-formed on-screen geometry has |w| far above WMIN, so this branch is
+    // never taken for normal inputs → byte-identical render.
+    let WMIN: f32 = 1e-4;
+    if (abs(clip.w) < WMIN) {
+        clip.w = select(WMIN, -WMIN, clip.w < 0.0);
+    }
+    o.clip = clip;
     o.world_n = wn;
     o.color = col;
     o.emissive = emis;

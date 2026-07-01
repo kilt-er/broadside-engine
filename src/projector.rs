@@ -1542,6 +1542,66 @@ mod tests {
         );
     }
 
+    /// (#227 render-loop safety) A world point AT or BEHIND the camera must never
+    /// leak a NaN/Inf screen coord out of the projection helpers — they must
+    /// return `None` (behind-camera reject) and `unified_cell_quad`'s degenerate
+    /// fallback must stay finite. Mirrors the GPU hull-shader clip.w guard: on the
+    /// CPU we reject, on the GPU we clamp |w| to epsilon, so no non-finite clip
+    /// coord ever reaches vertex output even for the #73 near-wrap degeneracy.
+    #[test]
+    fn behind_and_at_camera_points_never_emit_nonfinite() {
+        let c = cfg();
+        let m = unified_view_proj(&c);
+        let eye = super::unified_eye(&c);
+        // Points straddling the camera: exactly at the eye (w≈0), just behind it
+        // (w<0), and far behind. None may produce a finite in-frame projection;
+        // all must be rejected by the w-epsilon guard.
+        let behind = [
+            eye,                                  // at the eye: w → 0
+            [eye[0], eye[1], eye[2] - 0.05],      // a hair behind
+            [eye[0], eye[1], eye[2] - 10.0],      // well behind
+            [eye[0] + 5.0, eye[1] + 5.0, eye[2]], // off-axis at eye depth
+        ];
+        for p in behind {
+            // The helper either rejects (None) or returns a FINITE point — it must
+            // never hand back NaN/Inf. (A near-tangent point could theoretically
+            // pass the w>epsilon gate; if it does, it must still be finite.)
+            if let Some(s) = unified_project(&m, p, &c) {
+                assert!(
+                    s.x.is_finite() && s.y.is_finite(),
+                    "projected behind-camera point must stay finite, got {},{}",
+                    s.x,
+                    s.y
+                );
+            }
+            if let Some(s) = project_point(&m, p) {
+                assert!(
+                    s.x.is_finite() && s.y.is_finite(),
+                    "project_point behind camera must stay finite, got {},{}",
+                    s.x,
+                    s.y
+                );
+            }
+        }
+        // The cell-quad path clamps depth_scale and falls back to frame-centre on
+        // a degenerate corner, so every emitted quad coord is finite even if a
+        // corner projects behind the camera.
+        for p in crate::grid::all_positions() {
+            let q = unified_cell_quad(p, &c);
+            for corner in q.corners {
+                assert!(
+                    corner[0].is_finite() && corner[1].is_finite(),
+                    "cell quad corner must be finite at {p:?}"
+                );
+            }
+            assert!(
+                q.depth_scale.is_finite() && q.depth_scale > 0.0,
+                "depth_scale finite + positive at {p:?}, got {}",
+                q.depth_scale
+            );
+        }
+    }
+
     /// The far row is drawn SMALLER (`depth_scale` shrinks with recession). The
     /// scale is normalized so the **near plane** (`d = 0`) is `1.0`; each cell's
     /// `depth_scale` is taken at its CENTER depth, so even the front row reads a
