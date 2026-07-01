@@ -548,8 +548,14 @@ fn ai_advances_forward_along_a_horizontal_approach_axis() {
 }
 
 #[test]
-fn ai_skips_action_on_cooldown_and_closes() {
-    // The bearing weapon is on cooldown → can't fire → close toward the player.
+fn ai_kites_away_when_priority_weapon_on_cooldown() {
+    // (#226) The PRIORITY weapon is on cooldown → the enemy can't fire back this
+    // turn, so it KITES: it backs AWAY from the player (north, on-axis reverse)
+    // rather than marching into range while defenceless. Enemy at (2,0) Bow(S),
+    // player at (2,3): the retreat cardinal is N (opposite the southward
+    // approach) and lies on the bow axis, so the kite is the on-axis step NORTH =
+    // `SYNTHETIC_MOVE_UP` (verified against the committed ladder).
+    use broadside_engine::input::SYNTHETIC_MOVE_UP;
     let player = ship_2d(
         "p",
         Faction::Player,
@@ -572,7 +578,104 @@ fn ai_skips_action_on_cooldown_and_closes() {
     let mut board = board_2d(vec![player, enemy]);
     let c = content(&[pulse_laser()]);
     decide_enemy_action(Pos::new(2, 0).to_index(), &mut board, &c);
+    let q = queue_of(&board, Pos::new(2, 0));
+    assert!(
+        !q.contains(&"pulse_laser".to_string()),
+        "enemy must NOT queue the on-cooldown weapon; got {q:?}",
+    );
+    assert_eq!(
+        q,
+        vec![SYNTHETIC_MOVE_UP.to_string()],
+        "#226: a can't-fire enemy whose PRIORITY weapon is on cooldown KITES away (north), not closes; got {q:?}",
+    );
+}
+
+#[test]
+fn ai_closes_to_range_when_priority_weapon_ready_but_out_of_range() {
+    // (#226) The other half of the loop: when the priority weapon is READY (not
+    // on cooldown) but the player is OUT of its firing range, the enemy CLOSES to
+    // get into range and then fire — it does NOT kite. Enemy at (2,0) Bow(S),
+    // player at (2,3): distance 3 = Far, pulse_laser fires Adjacent+Near only, so
+    // it's out of band but ARMED → close SOUTH toward the player. (Contrast with
+    // `ai_kites_away_when_priority_weapon_on_cooldown`, the identical geometry
+    // WITH the weapon on cooldown, which backs away instead.)
+    let player = ship_2d(
+        "p",
+        Faction::Player,
+        Pos::new(2, 3),
+        10,
+        Facing::Bow(Dir4::N),
+        Arc::Forward,
+        "pulse_laser",
+    );
+    let enemy = ship_2d(
+        "e",
+        Faction::Enemy,
+        Pos::new(2, 0),
+        5,
+        Facing::Bow(Dir4::S),
+        Arc::Forward,
+        "pulse_laser",
+    );
+    // No cooldown entry → the priority weapon is ready.
+    let mut board = board_2d(vec![player, enemy]);
+    let c = content(&[pulse_laser()]);
+    decide_enemy_action(Pos::new(2, 0).to_index(), &mut board, &c);
     assert_closes_toward_player(&queue_of(&board, Pos::new(2, 0)), "pulse_laser");
+}
+
+#[test]
+fn ai_kites_by_rotating_when_retreat_axis_is_perpendicular() {
+    // (#226 + #166 no-strafe) The priority weapon is on cooldown so the enemy
+    // wants to back away, but the retreat cardinal is PERPENDICULAR to its bow.
+    // Under the rotate-then-forward model it must ROTATE toward the retreat
+    // heading (no lateral slide), then reverse forward next phase. Enemy at (0,0)
+    // Bow(S), player mostly to the EAST at (4,0): the approach cardinal is E, so
+    // the RETREAT cardinal is W. Bow S -> W is a CW quarter-turn = __rotate_right.
+    use broadside_engine::input::{
+        SYNTHETIC_MOVE_DOWN, SYNTHETIC_MOVE_LEFT, SYNTHETIC_MOVE_RIGHT, SYNTHETIC_MOVE_UP,
+        SYNTHETIC_ROTATE_RIGHT,
+    };
+    let player = ship_2d(
+        "p",
+        Faction::Player,
+        Pos::new(4, 0),
+        10,
+        Facing::Bow(Dir4::W),
+        Arc::Forward,
+        "pulse_laser",
+    );
+    let mut enemy = ship_2d(
+        "e",
+        Faction::Enemy,
+        Pos::new(0, 0),
+        5,
+        Facing::Bow(Dir4::S),
+        Arc::Forward,
+        "pulse_laser",
+    );
+    enemy.cooldowns.insert("pulse_laser".into(), 2);
+    let mut board = board_2d(vec![player, enemy]);
+    let c = content(&[pulse_laser()]);
+    decide_enemy_action(Pos::new(0, 0).to_index(), &mut board, &c);
+    let q = queue_of(&board, Pos::new(0, 0));
+    assert_eq!(
+        q,
+        vec![SYNTHETIC_ROTATE_RIGHT.to_string()],
+        "#226: kiting a perpendicular retreat ROTATES the bow toward the retreat heading (no strafe); got {q:?}",
+    );
+    // Belt-and-braces: it must NOT have emitted ANY slide before turning.
+    for slide in [
+        SYNTHETIC_MOVE_LEFT,
+        SYNTHETIC_MOVE_RIGHT,
+        SYNTHETIC_MOVE_UP,
+        SYNTHETIC_MOVE_DOWN,
+    ] {
+        assert!(
+            !q.contains(&slide.to_string()),
+            "#226: rotate-then-reverse must not slide before turning; got {q:?}",
+        );
+    }
 }
 
 #[test]

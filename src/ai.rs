@@ -8,8 +8,9 @@
 //!
 //! ## The ladder (C1, `docs/design/C1_AI_LADDER_2D.md`)
 //!
-//! Per enemy, first match wins: **FIRE → CLOSE/HOLD-RANGE → REORIENT → VENT →
-//! empty**. The AI is a *decision layer that only builds the enemy's queue* —
+//! Per enemy, first match wins: **FIRE → EVADE-ON-COOLDOWN (kite) →
+//! CLOSE/HOLD-RANGE → REORIENT → VENT → empty**. The AI is a *decision layer
+//! that only builds the enemy's queue* —
 //! it never bypasses `execute_queue` / the damage pipeline (hard boundary). It
 //! queues actions (real mounts or the resolver-served synthetic moves) and lets
 //! the resolver run them next world phase.
@@ -183,6 +184,52 @@ pub fn decide_enemy_action(enemy_cell: usize, board: &mut Board, content: &dyn C
             s.queue.push(id);
         }
         return;
+    }
+
+    /* -- RUNG 1.5: EVADE ON COOLDOWN (the #226 kite) --------------------- */
+    // We couldn't FIRE. If the reason is that the enemy's PRIORITY weapon
+    // (its highest-raw-damage mount — the gun the whole behaviour loop is
+    // built around) is on COOLDOWN, the enemy has nothing to gain by marching
+    // into the player's guns this turn: it can't shoot back until the weapon
+    // reloads. So instead of closing (Rung 2/3.5) it KITES — backs off /
+    // evades to buy distance and stay alive until the priority gun re-arms,
+    // then re-enters and fires (#226: "when the priority weapon is on
+    // cooldown, move away / evasively — not sit still or march in").
+    //
+    // Only kites when there is a real reason to (the priority weapon is
+    // genuinely reloading, not merely off-arc/out-of-band) so that a READY
+    // priority gun still CLOSES to range via the normal rungs below. Skipped
+    // for locked-out (prefers VENT so it can fire at all) and anchored /
+    // multi-cell hulls (can't self-move — they hold + fight from where they
+    // are). Movement obeys the same rotate-then-forward, no-strafe discipline
+    // as Rung 2: reverse straight when the retreat cardinal is on the bow
+    // axis, else ROTATE toward it and back off next phase.
+    if !locked_out && !anchored {
+        if let Some(priority_id) = priority_weapon(&mount_weapons, content) {
+            let on_cooldown = cooldowns.get(&priority_id).copied().unwrap_or(0) > 0;
+            if on_cooldown {
+                if let Some(toward_card) = dominant_cardinal(enemy_pos, player_pos) {
+                    // Kite: the retreat cardinal is the OPPOSITE of the approach.
+                    let away = toward_card.opposite();
+                    let forward = crate::input::forward_dir4(facing);
+                    let synth_id = if away == forward || away == forward.opposite() {
+                        // Retreat cardinal on the bow axis: reverse / advance
+                        // straight away from the player.
+                        synthetic_move_for_dir(away.to_dir8())
+                    } else {
+                        // Perpendicular: turn toward the retreat heading first,
+                        // then back off forward next phase (no lateral slide).
+                        rotate_toward_cardinal(forward, away)
+                    };
+                    if let Some(synth_id) = synth_id {
+                        if let Some(s) = board.ship_at_mut(enemy_pos) {
+                            s.queue.push(synth_id.to_string());
+                            return;
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /* -- RUNG 2: CLOSE / HOLD-RANGE (the 2-D over-extension decision) ----- */
@@ -416,6 +463,33 @@ fn allies_threatened_cells(self_pos: Pos, board: &Board, content: &dyn Content) 
         }
     }
     out
+}
+
+/// (#226) The enemy's PRIORITY weapon id — the mount with the highest summed
+/// `DAMAGE` amount. This is the gun the behaviour loop revolves around: the AI
+/// wants to be in ITS firing range, and when IT is on cooldown the enemy kites
+/// (Rung 1.5) rather than closing. Ties resolve to the FIRST such mount in mount
+/// order (stable — `max_by_key` keeps the earliest on equal keys). Mirrors the
+/// "dominant weapon" selection [`choose_maneuver_dir`] and
+/// [`rotate_to_make_weapon_bear`] use, so "priority" == "dominant" across the
+/// ladder (one gun drives close-to-range, rotate-to-bear, AND evade-on-cooldown).
+/// `None` when the enemy has no weapon that deals damage (a mountless / support
+/// hull — nothing to prioritise, so no kite).
+fn priority_weapon(mount_weapons: &[String], content: &dyn Content) -> Option<String> {
+    mount_weapons
+        .iter()
+        .filter_map(|id| content.action(id).map(|a| (id, a)))
+        .filter(|(_, a)| a.effects.iter().any(|e| matches!(e, Effect::DAMAGE { .. })))
+        .max_by_key(|(_, a)| {
+            a.effects
+                .iter()
+                .filter_map(|e| match e {
+                    Effect::DAMAGE { amount, .. } => Some(*amount),
+                    _ => None,
+                })
+                .sum::<i32>()
+        })
+        .map(|(id, _)| id.clone())
 }
 
 /// Pick a one-step [`Dir8`] for the CLOSE/HOLD-RANGE rung, or `None` to hold.
