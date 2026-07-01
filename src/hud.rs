@@ -1468,23 +1468,73 @@ fn push_ordnance_2d(
             Dir8::NE => -std::f32::consts::FRAC_PI_4,
         };
         // Faction tint so a player torpedo reads cyan-ish and an enemy one red-ish
-        // (same palette as the fire beams). Size scales with depth, hard-capped so a
-        // near-row projectile doesn't slab the lane.
+        // (same palette as the fire beams).
         let t = crate::vfx::faction_beam_tint(
             &crate::vfx::default_vfx_config().shot_beam,
             proj.owner_faction,
         );
         let tint = [t[0], t[1], t[2], 1.0];
-        let half_w = (8.0 * scale).clamp(4.0, 10.0);
-        let half_h = (4.0 * scale).clamp(2.0, 6.0);
+        // (#torpedo-placeholder 2026-06-30) The old sprite-only path
+        // clamped to 4-10 × 2-6 pixels — the atlas art (`atlas::TORPEDO` at
+        // (1, 0)) reads as a couple of pixels on the projected grid at the
+        // default zoom, so Bruce couldn't SEE the torpedo mid-flight.
+        // CRUDE PLACEHOLDER (until real art): draw a chunky SOLID_WHITE
+        // capsule at the projectile's cell + a small chevron ahead of it
+        // showing the heading. The capsule is faction-tinted so the player
+        // reads whose torpedo it is; the chevron is a brighter core so the
+        // nose direction pops. Sized generously (~15px half-length near-
+        // row, ~7px far-row) so it's unmistakable at any depth.
+        let (torpedo_w, torpedo_h) = (
+            (15.0 * scale).clamp(9.0, 18.0),
+            (5.0 * scale).clamp(3.0, 7.0),
+        );
         // Float just above the (interpolated) centre so it reads as flying OVER the grid.
         let c = [base_center[0], base_center[1] - 6.0 * scale];
+        // Body: solid faction-tinted capsule pointing along the heading.
+        let solid_uvs = atlas::cell_uvs(atlas::SOLID_WHITE);
         push_sprite(
             out,
             SpriteInstance {
                 pos: c,
-                half_size: [half_w, half_h],
+                half_size: [torpedo_w, torpedo_h],
                 color: tint,
+                uv_min: solid_uvs.0,
+                uv_max: solid_uvs.1,
+                rotation_rad: rot,
+                _pad: [0.0; 3],
+            },
+        );
+        // Nose chevron: a bright white square at the front-tip of the
+        // capsule so the heading reads instantly. Offset along the heading
+        // by `torpedo_w * 0.85` in un-rotated local space; the shader
+        // rotates about `pos`, so we pre-rotate the offset to place the tip
+        // at the capsule's forward end.
+        let nose_offset = torpedo_w * 0.85;
+        let (s, cc) = rot.sin_cos();
+        let nose_c = [c[0] + nose_offset * cc, c[1] + nose_offset * s];
+        push_sprite(
+            out,
+            SpriteInstance {
+                pos: nose_c,
+                half_size: [torpedo_h * 1.2, torpedo_h * 1.2],
+                color: [1.0, 1.0, 1.0, 1.0], // bright white core = "here's the point"
+                uv_min: solid_uvs.0,
+                uv_max: solid_uvs.1,
+                rotation_rad: rot,
+                _pad: [0.0; 3],
+            },
+        );
+        // Keep the old atlas sprite ALSO (small, on top) as a subtle
+        // texture; it doesn't harm the read and preserves the pre-existing
+        // torpedo/missile shape for anyone looking closely.
+        let sprite_half_w = (torpedo_h * 0.9).clamp(3.0, 6.0);
+        let sprite_half_h = (torpedo_h * 0.6).clamp(2.0, 4.0);
+        push_sprite(
+            out,
+            SpriteInstance {
+                pos: c,
+                half_size: [sprite_half_w, sprite_half_h],
+                color: [1.0, 1.0, 1.0, 0.8],
                 uv_min: atlas::cell_uvs(cell_uv).0,
                 uv_max: atlas::cell_uvs(cell_uv).1,
                 rotation_rad: rot,

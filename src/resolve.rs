@@ -1006,27 +1006,56 @@ pub fn advance_projectile_2d(projectile_id: &str, board: &mut Board, content: &d
         };
         board.ordnance[idx].pos = new_pos;
         board.ordnance[idx].cell = new_pos.to_index_in(dims); // keep 1-D mirror in sync (invariant A)
+        let owner_faction = board.ordnance[idx].owner_faction;
 
         // Hit a non-owner occupant?
-        let owner_faction = board.ordnance[idx].owner_faction;
         let occ_faction = board.ship_at(new_pos).map(|s| s.faction);
-        if let Some(occ_faction) = occ_faction {
+        // (#torpedo-swap 2026-06-30) Head-on swap detection. If `new_pos` is
+        // empty at read-time BUT a hostile ship is now sitting at the
+        // projectile's PREVIOUS cell (`cur`, the cell the torpedo just left),
+        // they crossed on this step — a torpedo A→B while an enemy B→A. The
+        // standard `ship_at(new_pos)` check reads the CURRENT state, so a
+        // pre-vacated destination phase-throughs the ordnance. Mirroring the
+        // resolver's displacement-SWAP detection (see `resolve_target_move_2d`)
+        // we treat the torpedo as impacting the enemy at ITS new position
+        // (`cur` — the cell the torpedo abandoned to make the step). Bruce:
+        // "if a torpedo and an enemy exchange cells in one step, the torpedo
+        // HITS the enemy, same as if it had landed on the enemy's cell."
+        //
+        // PHASE-ORDER FLAG (per lead's audit): `run_world_phase` runs
+        // `advance_ordnance` BEFORE the per-enemy tick, so on the headless /
+        // resolve_round path the enemy hasn't moved yet when this check
+        // fires — the standard occ check catches the head-on already. This
+        // swap-detection covers (a) speed>=2 projectiles where an
+        // intermediate cell was empty but an enemy has since walked into
+        // one, (b) any bin / live-loop that drives ordnance advance after
+        // some ship movement, and (c) a future re-ordering of the phase
+        // seams. The intent per lead: they COLLIDE, not pass — same result
+        // either way.
+        let (impact_pos, impact_faction) = if let Some(f) = occ_faction {
+            (new_pos, Some(f))
+        } else if let Some(f) = board.ship_at(cur).map(|s| s.faction) {
+            (cur, Some(f))
+        } else {
+            (new_pos, None)
+        };
+        if let Some(occ_faction) = impact_faction {
             if occ_faction != owner_faction {
                 // Drop the payload through the 2-D damage pipeline / status apply.
                 // Cloned out because we mutate the board next. The shot arrives
                 // from behind along the heading -> phantom attacker one cell back
-                // (clamped to new_pos if that's off-grid).
+                // (clamped to impact_pos if that's off-grid).
                 let payload = board.ordnance[idx].payload.clone();
-                let from =
-                    crate::grid::offset_in(new_pos, heading.opposite(), 1, dims).unwrap_or(new_pos);
+                let from = crate::grid::offset_in(impact_pos, heading.opposite(), 1, dims)
+                    .unwrap_or(impact_pos);
                 let dummy = dummy_weapon();
                 for fx in &payload {
                     match fx {
                         Effect::DAMAGE { amount, .. } => {
-                            apply_damage_2d(new_pos, *amount, from, &dummy, board, content);
+                            apply_damage_2d(impact_pos, *amount, from, &dummy, board, content);
                         }
                         Effect::APPLY_STATUS { status, duration } => {
-                            add_status(new_pos.to_index_in(dims), *status, *duration, board);
+                            add_status(impact_pos.to_index_in(dims), *status, *duration, board);
                         }
                         _ => {} // TS only handles these two on impact.
                     }
