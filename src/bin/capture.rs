@@ -388,6 +388,17 @@ fn main() {
     // lane-align offset directly so multi-hop captures can replay the live
     // bin's accumulated offset at a given encounter. NOT clamped by dims —
     // works on any board.
+    // (#332 capture rig) BROADSIDE_PREVIEW_Z=F dials the live preview_z_offset
+    // to F world units so a capture can show the three parallax layers at
+    // a shallower base depth (e.g. 6.0) where the stack reads more clearly
+    // than at Bruce's boot default (12.5, which compresses the deeper
+    // multiplied layers near the vanishing point).
+    if let Ok(v) = std::env::var("BROADSIDE_PREVIEW_Z") {
+        if let Ok(z) = v.parse::<f32>() {
+            let cur = broadside_engine::gfx::preview_z_offset();
+            broadside_engine::gfx::step_preview_z(z - cur);
+        }
+    }
     if let Ok(v) = std::env::var("BROADSIDE_LANE_ALIGN_X") {
         if let Ok(x) = v.parse::<f32>() {
             broadside_engine::gfx::set_unified_lane_align_x(x);
@@ -1457,6 +1468,58 @@ fn main() {
                     warp_t,
                     preview_lane_align_offset,
                 );
+                // (#332 capture rig 2026-07-01) BROADSIDE_LAYERS=1 stacks
+                // synthetic N+2 (2× depth, 0.6× alpha, ships) and N+3 (3×
+                // depth, 0.35× alpha, grid-only) on top of the N+1 preview
+                // above — the same three-layer stack the live bin emits.
+                // The capture rig has no campaign state (no run / sectors)
+                // so we can't walk `nth_encounter_after_current` here;
+                // instead we synthesize dims + spawns matching the N+1
+                // preview's shape so all three layers show at the same
+                // conceptual encounter (Bruce's evidence: three grids
+                // receding, deepest one wireframe-only). This is
+                // capture-only scaffolding; the live bin uses the real
+                // campaign encounter list.
+                if std::env::var("BROADSIDE_LAYERS").is_ok_and(|v| v != "0") {
+                    let base_z = broadside_engine::gfx::preview_z_offset();
+                    let base_a = broadside_engine::gfx::preview_tint_alpha();
+                    // N+2: ships, 1.5× depth, 0.60× alpha (matches
+                    // PREVIEW_LAYER_Z_MULT + PREVIEW_LAYER_ALPHA_MULT in
+                    // broadside.rs).
+                    broadside_engine::hud::prepend_upcoming_board_with_loft_2d_staggered_with_rest(
+                        &mut commands,
+                        &cfg,
+                        base_z * 1.5,
+                        base_z * 1.5,
+                        p_cols,
+                        p_rows,
+                        &preview_ids,
+                        &preview_spawns,
+                        &gfx,
+                        base_a * 0.60,
+                        None,
+                        0.0,
+                    );
+                    // N+3: grid-only, 2× depth, 0.35× alpha
+                    broadside_engine::hud::push_upcoming_grid_2d(
+                        &mut commands,
+                        &cfg,
+                        base_z * 2.0,
+                        p_cols,
+                        p_rows,
+                        base_a * 0.35,
+                        0.0,
+                    );
+                    log::info!(
+                        "capture: 3-layer preview (BROADSIDE_LAYERS=1): N+1 z={:+.3} α={:.3} | N+2 z={:+.3} α={:.3} | N+3 grid-only z={:+.3} α={:.3}",
+                        z_offset,
+                        tint_alpha,
+                        base_z * 1.5,
+                        base_a * 0.60,
+                        base_z * 2.0,
+                        base_a * 0.35,
+                    );
+                }
                 // (cross-dim parity-flip enemy-continuity probe 2026-06-30)
                 // Mirror exactly what gfx::render_unified_fleet does for an
                 // at-depth preview hull: subtract `lane_align_world_offset`

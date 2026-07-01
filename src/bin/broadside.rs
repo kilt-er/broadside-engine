@@ -387,24 +387,47 @@ fn next_encounter_after_current<'s>(
     run: &broadside_engine::types::Run,
     sectors: &'s [broadside_engine::types::Sector],
 ) -> Option<&'s broadside_engine::types::EncounterDef> {
+    nth_encounter_after_current(run, sectors, 1)
+}
+
+/// (#332) Look up the encounter that is `offset` positions ahead of the
+/// current one in the run — walks past the sector boundary when the current
+/// sector runs out. `offset = 1` is [`next_encounter_after_current`];
+/// `offset = 2` / `3` are the deeper parallax preview layers (N+2 / N+3)
+/// that recede behind N+1.
+///
+/// Returns `None` if the run is already over OR the requested offset walks
+/// past the end of the campaign. `offset = 0` returns the CURRENT encounter
+/// (used only if a caller wants "encounter at this precise slot"; the
+/// preview path never asks for 0).
+fn nth_encounter_after_current<'s>(
+    run: &broadside_engine::types::Run,
+    sectors: &'s [broadside_engine::types::Sector],
+    offset: usize,
+) -> Option<&'s broadside_engine::types::EncounterDef> {
     if run.defeated || run.victorious {
         return None;
     }
-    // Next encounter within the current sector.
-    let next_in_sector = run.completed_encounters as usize + 1;
-    if let Some(enc) = sectors
-        .get(run.current_sector_idx)
-        .and_then(|s| s.encounters.get(next_in_sector))
-    {
-        return Some(enc);
+    // Walk position: start at the current sector's current encounter index,
+    // then advance `offset` positions total, spilling into subsequent
+    // sectors when the current one runs out.
+    let mut sector_idx = run.current_sector_idx;
+    let mut enc_idx = run.completed_encounters as usize;
+    for _ in 0..offset {
+        enc_idx += 1;
+        loop {
+            let sector = sectors.get(sector_idx)?;
+            if enc_idx < sector.encounters.len() {
+                break;
+            }
+            // Past this sector's end → advance to the next non-empty sector.
+            sector_idx = sector_idx.saturating_add(1);
+            enc_idx = 0;
+        }
     }
-    // Otherwise — first encounter of the next non-empty sector.
-    let start = run.current_sector_idx.saturating_add(1);
     sectors
-        .get(start..)
-        .into_iter()
-        .flatten()
-        .find_map(|s| s.encounters.first())
+        .get(sector_idx)
+        .and_then(|s| s.encounters.get(enc_idx))
 }
 
 /// Build the demo [`DemoContent`] with the player's Phase 2 loadout
@@ -934,6 +957,39 @@ const EXPLOSION_PARTICLE_COLOR: [f32; 4] = [1.0, 0.72, 0.32, 1.0];
 /// in-turn VISUAL playback pause — the turn-based model is preserved, input is
 /// just locked for the brief playback. Tunable (Bruce dials the feel).
 const BEAT_SECS: f32 = 0.5;
+
+/// (#332) Depth multipliers for the N+1 / N+2 / N+3 at-depth preview layers.
+/// The base rest depth comes from [`broadside_engine::gfx::preview_z_offset`]
+/// (Bruce-dialed, live-tunable via `Z`/`X`); each layer multiplies it so
+/// deeper encounters recede farther and read as further-away parallax.
+/// Sublinear stacking (1×, 1.5×, 2×) keeps the deeper layers inside the
+/// projector's near-horizon visible band — pure 1×/2×/3× compresses N+2 and
+/// N+3 into the same vanishing-point pixel strip at Bruce's default
+/// `preview_z_offset=12.5`. 1.5×/2× keeps them meaningfully deeper WHILE
+/// remaining spatially distinct on screen.
+/// **DESIGN FLAG (Bruce):** default falloff — dial live via the same
+/// `Z`/`X` steps that drive the base depth (the multipliers scale with it).
+/// If Bruce wants the deeper layers to sit further back, bump these.
+const PREVIEW_LAYER_Z_MULT: [f32; 3] = [1.0, 1.5, 2.0];
+
+/// (#332) Alpha multipliers matching [`PREVIEW_LAYER_Z_MULT`]. Alpha falls
+/// off FASTER than depth so the deeper layers blend into the background
+/// rather than competing with N+1. Base alpha comes from
+/// [`broadside_engine::gfx::preview_tint_alpha`] (Bruce-dialed via `B`/`N`).
+/// **DESIGN FLAG (Bruce):** default falloff — 0.60 × N+1 for N+2, 0.35 × N+1
+/// for N+3. Bruce can eyeball + adjust.
+const PREVIEW_LAYER_ALPHA_MULT: [f32; 3] = [1.0, 0.60, 0.35];
+
+/// (#332) Which layers draw ships. `true` = full hull emit (via
+/// `prepend_upcoming_board_with_loft_2d_staggered_with_rest`); `false` =
+/// grid wireframe only (via `push_upcoming_grid_2d`). N+3 defaults to
+/// grid-only because at 3× depth + 0.35× alpha the enemy hulls read as
+/// pixel-mush that competes with the N+2 hulls without communicating
+/// anything. The wireframe alone is enough to signal "another encounter
+/// is out there past the boss's next one." **DESIGN FLAG (Bruce):** if
+/// Bruce reads the empty N+3 as "no encounter there," flip this to
+/// `[true, true, true]` and we get ghost hulls on the deepest layer.
+const PREVIEW_LAYER_SHIPS: [bool; 3] = [true, true, false];
 
 /// (#327) After this many consecutive `SurfaceError`s (any variant that isn't
 /// caught by the Lost/Outdated reconfigure path) the `RedrawRequested` arm stops
@@ -4203,6 +4259,15 @@ impl ApplicationHandler for App {
                     // parallax preview (= the encounter AFTER the current
                     // one, the player's NEXT-NEXT challenge — exactly
                     // what's wanted during regular Playing).
+                    //
+                    // (#332 N+2/N+3 parallax 2026-07-01) `preview_enc` here
+                    // is the N+1 layer (the imminent-next encounter). The
+                    // N+2 / N+3 layers use `nth_encounter_after_current`
+                    // one and two steps further ahead of THIS layer — see
+                    // the trailing block below. During Transitioning
+                    // `pending_encounter_idx` already IS N+1 (the warp's
+                    // destination), so N+2 = pending_idx + 1 and N+3 =
+                    // pending_idx + 2 on the sectors table.
                     let preview_enc: Option<&broadside_engine::types::EncounterDef> =
                         if matches!(demo_state, DemoState::Transitioning(_)) {
                             self.pending_encounter_idx.and_then(|idx| {
@@ -4370,6 +4435,103 @@ impl ApplicationHandler for App {
                             warp_progress,
                             preview_lane_align_offset,
                         );
+                    }
+                    // (#332 N+2/N+3 parallax layers 2026-07-01) Two deeper
+                    // layers behind N+1: each at a linearly-deeper Z (2×, 3×
+                    // the base preview depth) with a faster alpha falloff so
+                    // they read as atmospheric rather than competing with
+                    // N+1. Each layer's dims + enemy spawns come from the
+                    // campaign's already-generated encounter list via
+                    // `nth_encounter_after_current` — during Transitioning
+                    // the reference is `pending_encounter_idx` (which IS
+                    // N+1), so N+2 / N+3 walk from THAT slot; during Playing
+                    // they walk from `run.completed_encounters + 1` (which
+                    // IS N+1 via `next_encounter_after_current`). No warp
+                    // animation on the deeper layers — they hold at rest
+                    // depth. On encounter advance, N+2 shifts into the N+1
+                    // slot instantly at the swap; the seamless handoff
+                    // depends on lane_align staying 0 across the swap
+                    // (guaranteed by #329). Layers with `PREVIEW_LAYER_SHIPS
+                    // = false` render grid-only via `push_upcoming_grid_2d`
+                    // — chosen for N+3 by default because at ~0.10 alpha
+                    // on 3× depth the ship hulls read as noise. Groundwork
+                    // for Bruce's "sector-boss always visible" idea — the
+                    // deepest layer here is where a future always-on boss
+                    // pane would sit, but that feature is not yet built.
+                    //
+                    // Note: layer 0 (N+1) is intentionally SKIPPED in this
+                    // loop because the block above already emitted it with
+                    // its full warp-animation state. Starting at index 1
+                    // (N+2) keeps the two paths orthogonal — the N+1 path
+                    // owns the warp lerp; the N+2/N+3 path owns the
+                    // persistent deep parallax.
+                    for layer_offset in 1..PREVIEW_LAYER_Z_MULT.len() {
+                        let n = 1 + layer_offset as u32; // N+2 or N+3
+                                                         // Same fork as the N+1 lookup: during Transitioning
+                                                         // walk from pending_encounter_idx; otherwise from
+                                                         // run.completed_encounters.
+                        let deeper_enc: Option<&broadside_engine::types::EncounterDef> =
+                            if matches!(demo_state, DemoState::Transitioning(_)) {
+                                self.pending_encounter_idx.and_then(|idx| {
+                                    let target = idx + layer_offset;
+                                    // Walk sectors table from
+                                    // current_sector_idx + `target`,
+                                    // spilling across sector boundaries.
+                                    let mut sector_idx = self.run.current_sector_idx;
+                                    let mut enc_idx = target;
+                                    loop {
+                                        let sector = self.sectors.get(sector_idx)?;
+                                        if enc_idx < sector.encounters.len() {
+                                            return sector.encounters.get(enc_idx);
+                                        }
+                                        enc_idx -= sector.encounters.len();
+                                        sector_idx = sector_idx.saturating_add(1);
+                                    }
+                                })
+                            } else {
+                                nth_encounter_after_current(&self.run, &self.sectors, n as usize)
+                            };
+                        let Some(enc) = deeper_enc else { continue };
+                        let cols = enc.dims.cols;
+                        let rows = enc.dims.rows;
+                        let base_rest_z = broadside_engine::gfx::preview_z_offset();
+                        let base_alpha = broadside_engine::gfx::preview_tint_alpha();
+                        let layer_z = base_rest_z * PREVIEW_LAYER_Z_MULT[layer_offset];
+                        let layer_alpha = base_alpha * PREVIEW_LAYER_ALPHA_MULT[layer_offset];
+                        if PREVIEW_LAYER_SHIPS[layer_offset] {
+                            let spawns: Vec<Pos> = enc.enemy_ships.iter().map(|s| s.pos).collect();
+                            let ship_ids: Vec<String> = enc
+                                .enemy_ships
+                                .iter()
+                                .map(|s| format!("{}@{}", s.class_id, s.cell))
+                                .collect();
+                            hud::prepend_upcoming_board_with_loft_2d_staggered_with_rest(
+                                &mut instances,
+                                &scene_cfg,
+                                layer_z,
+                                layer_z,
+                                cols,
+                                rows,
+                                &ship_ids,
+                                &spawns,
+                                &*gfx,
+                                layer_alpha,
+                                None, // No warp animation on deeper layers.
+                                0.0,  // Centered (lane_align = 0, #329).
+                            );
+                        } else {
+                            // Grid wireframe only — Bruce look-flag default
+                            // for N+3.
+                            hud::push_upcoming_grid_2d(
+                                &mut instances,
+                                &scene_cfg,
+                                layer_z,
+                                cols,
+                                rows,
+                                layer_alpha,
+                                0.0,
+                            );
+                        }
                     }
                 }
                 // In-game salvage counter (top-right) + controls legend
