@@ -307,6 +307,18 @@ impl CombatVfx {
         self.cfg = cfg;
     }
 
+    /// (#326) Drop every live effect + the diff snapshot. Called by the bin at
+    /// a per-encounter boundary (warp-end board swap) so a previous encounter's
+    /// residual `Explosion` / `HitFlash` / `ShotBeam` effects can't bleed into
+    /// the next board. Mirrors the other per-encounter pool clears in the bin
+    /// (`kill_bursts`, `particles`, `exhaust`). Resetting `prev` too means the
+    /// next `observe` on the fresh board seeds from scratch (no phantom
+    /// "everyone vanished" explosion cascade at swap time).
+    pub fn clear(&mut self) {
+        self.effects.clear();
+        self.prev = None;
+    }
+
     /// Diff `board` against the previous frame and spawn effects for the
     /// changes. Read-only over `board`. Call once per frame BEFORE [`advance`].
     pub fn observe(&mut self, board: &Board) {

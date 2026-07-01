@@ -1407,18 +1407,37 @@ enum DemoState {
 }
 
 impl DemoState {
-    /// (#318 2026-06-30) Whether the per-frame render path should emit the
-    /// board-space combat / destruction VFX pools (`kill_bursts`, particles,
-    /// exhaust, the #178 combat-vfx beam/explosion pool) THIS FRAME. True
-    /// during `Playing` AND `Dying` so the player's destruction explosion
-    /// plays on the board through the half-window before the death screen
-    /// fades in; false during the modal between-encounter / run-end /
-    /// transitioning frames (no new deaths there, pool already drained).
+    /// (#318 2026-06-30 / #326 2026-06-30) Whether the per-frame render path
+    /// should emit the board-space combat / destruction VFX pools
+    /// (`kill_bursts`, particles, exhaust, the #178 combat-vfx beam/explosion
+    /// pool) THIS FRAME.
+    ///
+    /// True during `Playing`, `Dying`, AND `Transitioning`:
+    ///
+    /// - `Playing`: normal in-encounter combat.
+    /// - `Dying` (#318): the player's destruction explosion plays on the board
+    ///   through the half-window before the death screen fades in.
+    /// - `Transitioning` (#326): the **encounter-clearing kill**'s explosion.
+    ///   `self.board` is still the OLD board (swap happens at warp-end), so
+    ///   the projector maps the dead enemy's `Pos` onto its original screen
+    ///   position; `kill_bursts` / `particles` are cleared at warp-end
+    ///   (line ~3536), and the `self.vfx` pool is now cleared there too
+    ///   (see the same block) so no residual pool effects can bleed into
+    ///   the next encounter. Without this arm the enemy-death VFX were
+    ///   silently invisible during the warp and then popped in on the NEXT
+    ///   encounter (the sibling of #318's Playing→Dying flip on player death).
+    ///
+    /// False during `EncounterComplete` / `RunComplete` / `RunDefeated` — the
+    /// modal overlays freeze the board with no active VFX pool.
+    ///
     /// Single source of truth for the render-arm gate so the predicate
     /// stays unit-testable. (#90/#119/#178/#201 history references stay in
     /// the renderer comments at the call site.)
     const fn emits_board_vfx(self) -> bool {
-        matches!(self, Self::Playing | Self::Dying(_))
+        matches!(
+            self,
+            Self::Playing | Self::Dying(_) | Self::Transitioning(_)
+        )
     }
 }
 
@@ -3583,6 +3602,24 @@ impl ApplicationHandler for App {
                             self.proj_anchors.clear();
                             self.exhaust.clear();
                             self.hull_flash.clear();
+                            // (#326 2026-06-30) Drop any Explosion / HitFlash /
+                            // ShotBeam pool residuals from the OLD encounter so
+                            // they can't bleed into the n+1 board. Pre-#326
+                            // the encounter-clearing kill's Explosion effect
+                            // was silently spawned during Transitioning
+                            // (self.vfx.observe runs unconditionally every
+                            // redraw) but never rendered (emits_board_vfx
+                            // was false for Transitioning), then the swap
+                            // fired here without clearing self.vfx — so the
+                            // leftover Explosion popped in on the FIRST
+                            // Playing frame of the n+1 encounter at the OLD
+                            // dead cell's coords. With emits_board_vfx now
+                            // including Transitioning, the explosion plays
+                            // during the warp on the OLD board's projector;
+                            // this clear guarantees nothing further leaks
+                            // through the swap. Matches the other per-
+                            // encounter pool clears above.
+                            self.vfx.clear();
                             self.beat_playback = None;
                             self.queue_blocked_flash = None;
                             self.reinstall_audio();
@@ -4539,21 +4576,32 @@ impl ApplicationHandler for App {
                     // actually queued, read live from the board). No-op between encounters.
                     hud::push_enemy_info_panel_2d(&mut instances, &self.board);
                 }
-                // (#318 2026-06-30) Player-death VFX pass — kill-bursts +
-                // explosion-particle pool + combat-vfx pool emit during BOTH
-                // Playing AND Dying so the player's destruction explosion is
-                // visible on the board BEFORE the death screen fades in at
-                // progress >= 0.5. Pre-#318 these were inside the Playing-only
-                // block above; the Playing→Dying same-frame flip on player
-                // death skipped them entirely and Bruce saw the residual
-                // sprites "register after the death screen" on restart. The
-                // ship hulls + grid still render normally during Dying (their
-                // pushes live in compose_scene_2d_tweened above, no state
-                // gate). EncounterComplete / RunComplete / Transitioning skip
-                // these because nothing newly died on those frames (no
-                // kill_bursts to draw, pool already drained from the
-                // round that won), so the matches guard reads as "emit
-                // combat/death VFX whenever the board is the live focus."
+                // (#318/#326 2026-06-30) Board-VFX pass — kill-bursts +
+                // explosion-particle pool + combat-vfx pool emit during
+                // `Playing`, `Dying`, AND `Transitioning`:
+                //
+                // - Playing: normal in-encounter combat.
+                // - Dying (#318): player's destruction explosion plays on the
+                //   board BEFORE the death screen fades in at progress >= 0.5.
+                //   Pre-#318 these were inside the Playing-only block above
+                //   and the Playing→Dying same-frame flip skipped them, so
+                //   Bruce saw residual sprites "register after the death
+                //   screen" on restart.
+                // - Transitioning (#326): the ENCOUNTER-CLEARING kill's
+                //   explosion. self.board is still the OLD board (swap fires
+                //   at warp-end), so scene_cfg / kill_cells project the dead
+                //   enemy onto its original screen position. Pre-#326 the
+                //   winning explosion was silently invisible during the warp
+                //   and popped in on the NEXT encounter (the sibling of the
+                //   #318 Dying bug on the Won-side). self.vfx is cleared at
+                //   warp-end (see the warp-swap block above) so no pool
+                //   residual can bleed past the transition.
+                //
+                // The ship hulls + grid still render normally during
+                // Dying/Transitioning (their pushes live in
+                // compose_scene_2d_tweened above, no state gate).
+                // EncounterComplete / RunComplete skip these — those modal
+                // overlays freeze the board with no active VFX pool.
                 if demo_state.emits_board_vfx() {
                     hud::push_destruction_at(&mut instances, &kill_cells, &scene_cfg);
                     self.particles.emit(&mut instances);
