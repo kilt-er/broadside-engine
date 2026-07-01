@@ -690,7 +690,16 @@ const fn default_reflection_life_secs() -> f32 {
     0.45
 }
 const fn default_reflection_peak_alpha() -> f32 {
-    0.35
+    // (#321 Bruce ruling 2026-07-01) Default OFF: Bruce ruled the
+    // ExplosionReflection cell-floor glow is the wrong mechanism -- the real
+    // reflection is the hull SURFACE tinting per-normal via the loft shader's
+    // ExplosionLight (#291), already wired live in the bin. `peak_alpha == 0`
+    // short-circuits both the auto-cascade spawn in `CombatVfx::observe` and
+    // the sprite emit in `emit_reflection_glow`, so no floor square renders
+    // anymore. Any editor catalog that authors `peak_alpha > 0` re-enables
+    // the old cell glow as an opt-in path -- the machinery stays but the
+    // default is quiet. Was 0.35 pre-#321.
+    0.0
 }
 const fn default_reflection_delay_per_cell() -> f32 {
     0.08

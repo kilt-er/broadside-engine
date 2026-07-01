@@ -551,22 +551,39 @@ impl CombatVfx {
                     // distance on a square grid (a diagonal-2 cell is "2 away",
                     // not √2). Skips the dying ship itself by construction
                     // (its id isn't in cur.ships).
-                    for (other_id, &(_, other_pos, _)) in &cur.ships {
-                        if other_id == id {
-                            continue;
+                    //
+                    // (#321 Bruce ruling 2026-07-01) Bruce: "the glow should be
+                    // on the surface of the ship... changing the color of the
+                    // surface in response to reflecting the light of the
+                    // explosion." The FLAT CELL glow this cascade drives via
+                    // `emit_reflection_glow` is the wrong mechanism — the real
+                    // reflection is the loft shader's per-normal point-light
+                    // driven by `brightest_explosion_light` (the hull surface
+                    // itself tints, cf. #291). Gate the cascade on
+                    // `peak_alpha > 0` so a zero-alpha default (the new
+                    // ExplosionReflection default) never allocates a pool slot
+                    // — spawn skipped by construction, no work, no wasted
+                    // capacity. Setting peak_alpha > 0 in a catalog or via the
+                    // editor re-enables the OLD cell-floor glow (kept as an
+                    // opt-in path for future editor experiments).
+                    if self.cfg.explosion_reflection.peak_alpha > 0.0 {
+                        for (other_id, &(_, other_pos, _)) in &cur.ships {
+                            if other_id == id {
+                                continue;
+                            }
+                            let dx = (prev_pos.col as i32 - other_pos.col as i32).unsigned_abs();
+                            let dy = (prev_pos.row as i32 - other_pos.row as i32).unsigned_abs();
+                            let d = dx.max(dy) as f32;
+                            let refl_delay =
+                                blast_delay + d * self.cfg.explosion_reflection.delay_per_cell;
+                            self.spawn_delayed(
+                                EffectKind::ExplosionReflection {
+                                    target_pos: other_pos,
+                                },
+                                self.cfg.explosion_reflection.life_secs,
+                                refl_delay,
+                            );
                         }
-                        let dx = (prev_pos.col as i32 - other_pos.col as i32).unsigned_abs();
-                        let dy = (prev_pos.row as i32 - other_pos.row as i32).unsigned_abs();
-                        let d = dx.max(dy) as f32;
-                        let refl_delay =
-                            blast_delay + d * self.cfg.explosion_reflection.delay_per_cell;
-                        self.spawn_delayed(
-                            EffectKind::ExplosionReflection {
-                                target_pos: other_pos,
-                            },
-                            self.cfg.explosion_reflection.life_secs,
-                            refl_delay,
-                        );
                     }
                 }
             }
