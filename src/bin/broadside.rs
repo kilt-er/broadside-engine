@@ -1983,6 +1983,7 @@ impl App {
         next: &mut Board,
         prior_pos: Option<Pos>,
         prior_facing: Option<broadside_engine::grid::Facing>,
+        prior_hull: Option<i32>,
     ) {
         let Some(prior) = prior_pos else { return };
         let dims = next.dims();
@@ -2038,6 +2039,11 @@ impl App {
                 Facing::Bow(Dir4::S) => Orientation::BowOn { bow: LaneEnd::Aft },
                 _ => Orientation::Broadside,
             };
+        }
+        // Hull is a conscious resource (design law #225): carry damage forward.
+        // max_hull stays at the new ship's value (loadout is unchanged).
+        if let Some(h) = prior_hull {
+            player.hull = h;
         }
         if let Some(slot) = next.cells.get_mut(new_idx) {
             *slot = Some(player);
@@ -3477,14 +3483,16 @@ impl ApplicationHandler for App {
                                     let prior_player: Option<(
                                         Pos,
                                         broadside_engine::grid::Facing,
+                                        i32,
                                     )> = self.board.cells.iter().flatten().find_map(|s| {
                                         if s.faction == Faction::Player {
-                                            Some((s.pos, s.facing))
+                                            Some((s.pos, s.facing, s.hull))
                                         } else {
                                             None
                                         }
                                     });
-                                    let prior_player_cell = prior_player.map(|(p, _)| p);
+                                    let prior_player_cell = prior_player.map(|(p, _, _)| p);
+                                    let prior_player_hull = prior_player.map(|(_, _, h)| h);
                                     // (warp rebuild 6/N — Job 1) Carry the
                                     // player's (col,row) + facing forward
                                     // into the new board. Bruce's rule: no
@@ -3502,7 +3510,7 @@ impl ApplicationHandler for App {
                                     // animates the rotation across the
                                     // PLAYER_WARP_FASTNESS window — pivot
                                     // first, fly second.
-                                    let carry_facing = prior_player.map(|(_, f)| {
+                                    let carry_facing = prior_player.map(|(_, f, _)| {
                                         use broadside_engine::grid::{Dir4, Facing};
                                         match f {
                                             Facing::Bow(Dir4::E | Dir4::W)
@@ -3514,6 +3522,7 @@ impl ApplicationHandler for App {
                                         &mut next,
                                         prior_player_cell,
                                         carry_facing,
+                                        prior_player_hull,
                                     );
                                     if cinematic {
                                         // ON: defer swap + cleanups + the
@@ -3542,7 +3551,7 @@ impl ApplicationHandler for App {
                                         // can lerp ground yaw → Bow(N) across the
                                         // warp (turn-forward, no rotation snap).
                                         self.cinematic_prior_player_facing =
-                                            prior_player.map(|(_, f)| f);
+                                            prior_player.map(|(_, f, _)| f);
                                         self.plant_warp_in_anchors(kind, now, prior_player_cell);
                                         self.demo_state =
                                             DemoState::Transitioning(TransitionPhase {
@@ -5922,6 +5931,114 @@ mod tests {
             tmp_app.tween_anchors.is_empty(),
             "plant_warp_in_anchors with None must plant nothing; found {:?}",
             tmp_app.tween_anchors.keys().collect::<Vec<_>>()
+        );
+    }
+
+    /// (#225 REGRESSION) Hull damage must persist across an encounter swap.
+    ///
+    /// Design law: hull is a conscious resource — it never passively resets
+    /// on a round transition. Only shield recharges. This test drives the
+    /// exact path the encounter-advance code exercises: build a fresh board,
+    /// deal hull damage to the player, build the NEXT board (which calls
+    /// `fresh_player_ship()` and produces a full-health ship), then apply
+    /// `carry_player_forward` with the damaged hull value and assert the
+    /// carried hull is the DAMAGED value, not `max_hull`.
+    #[test]
+    fn hull_damage_persists_across_encounter_swap() {
+        use broadside_engine::grid::{Dir4, Facing, Pos};
+        use broadside_engine::runs::build_encounter_board;
+        use broadside_engine::types::{EncounterDef, Faction};
+
+        // Build two identical minimal encounter boards (no enemies needed;
+        // we only need a player ship in each).
+        let enc = EncounterDef {
+            enemy_ships: vec![],
+            hazards: vec![],
+            ..Default::default()
+        };
+        let player_a = player_ship(Pos::new(2, 3), Facing::Bow(Dir4::N));
+        let max_hull = player_a.max_hull;
+        let mut board_a = build_encounter_board(&enc, player_a, |_| None);
+
+        // Simulate hull damage: the player takes 3 points of damage.
+        let damaged_hull = max_hull - 3;
+        let player_cell = board_a
+            .cells
+            .iter()
+            .flatten()
+            .find(|s| s.faction == Faction::Player)
+            .map(|s| s.cell)
+            .expect("player on board_a");
+        if let Some(Some(p)) = board_a.cells.get_mut(player_cell) {
+            p.hull = damaged_hull;
+        }
+
+        // Verify damage was applied.
+        let hull_before_swap = board_a
+            .cells
+            .iter()
+            .flatten()
+            .find(|s| s.faction == Faction::Player)
+            .map(|s| s.hull)
+            .unwrap();
+        assert_eq!(
+            hull_before_swap, damaged_hull,
+            "precondition: damage applied"
+        );
+
+        // Build the next board — fresh_player_ship() gives a full-health player.
+        let enc2 = EncounterDef {
+            enemy_ships: vec![],
+            hazards: vec![],
+            ..Default::default()
+        };
+        let player_b = player_ship(Pos::new(2, 3), Facing::Bow(Dir4::N));
+        let mut board_b = build_encounter_board(&enc2, player_b, |_| None);
+
+        // Confirm that without carry_player_forward, the new board has full hull.
+        let hull_new_board_raw = board_b
+            .cells
+            .iter()
+            .flatten()
+            .find(|s| s.faction == Faction::Player)
+            .map(|s| s.hull)
+            .unwrap();
+        assert_eq!(
+            hull_new_board_raw, max_hull,
+            "fresh board player starts at full hull (the bug)"
+        );
+
+        // Now apply the carry-forward (the fix).
+        App::carry_player_forward(
+            &mut board_b,
+            Some(Pos::new(2, 3)),
+            Some(Facing::Bow(Dir4::N)),
+            Some(damaged_hull),
+        );
+
+        let hull_after_carry = board_b
+            .cells
+            .iter()
+            .flatten()
+            .find(|s| s.faction == Faction::Player)
+            .map(|s| s.hull)
+            .unwrap();
+        assert_eq!(
+            hull_after_carry, damaged_hull,
+            "hull must carry forward to the next encounter (damage persists)"
+        );
+
+        // max_hull is unchanged (loadout invariant).
+        let max_hull_after = board_b
+            .cells
+            .iter()
+            .flatten()
+            .find(|s| s.faction == Faction::Player)
+            .map(|s| s.max_hull)
+            .unwrap();
+        assert_eq!(
+            max_hull_after, max_hull,
+            "max_hull stays at full capacity regardless of current damage"
         );
     }
 }
