@@ -417,6 +417,14 @@ pub struct ParticleBurst {
     /// unedited bursts are spin-free.
     #[serde(default = "default_burst_spin_rate")]
     pub spin_rate: f32,
+    /// (#222) Birth-position radial jitter in virtual pixels. Each particle is
+    /// displaced from the spawn center along its velocity angle by a random
+    /// `[0, spawn_jitter]` offset so the burst reads as a cloud even at frame 0
+    /// (without this, all particles overlap for the first ~4 frames). Defaults
+    /// to `8.0` so a fresh default burst is immediately legible; set to `0.0`
+    /// for a point-source effect (all particles erupt from one pixel).
+    #[serde(default = "default_burst_spawn_jitter")]
+    pub spawn_jitter: f32,
 }
 
 /// (#209 hook 4) Distance-delayed light bounce. When a ship explodes, every
@@ -824,6 +832,12 @@ const fn default_burst_rotation_max() -> f32 {
 const fn default_burst_spin_rate() -> f32 {
     0.0
 }
+const fn default_burst_spawn_jitter() -> f32 {
+    // (#222) 8 virtual px: larger than max particle radius (5 px) so particles
+    // are non-overlapping at birth; smaller than a cell so the burst reads as
+    // one hit point, not a scatter.
+    8.0
+}
 
 // -- ExplosionReflection (#209 hook 4) --
 const fn default_reflection_color() -> Rgb {
@@ -935,6 +949,7 @@ impl Default for ParticleBurst {
             rotation_min: default_burst_rotation_min(),
             rotation_max: default_burst_rotation_max(),
             spin_rate: default_burst_spin_rate(),
+            spawn_jitter: default_burst_spawn_jitter(),
         }
     }
 }

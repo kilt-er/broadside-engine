@@ -1493,6 +1493,7 @@ impl ParticlePool {
         let rot_span = cfg.rotation_max - cfg.rotation_min;
         let shape = cfg.shape;
         let spin = cfg.spin_rate;
+        let spawn_jitter = cfg.spawn_jitter;
         for i in 0..n {
             // FNV-1a fold of (seed, i) → independent-ish [0,1) values.
             let mut h: u64 = 1_469_598_103_934_665_603;
@@ -1509,14 +1510,24 @@ impl ParticlePool {
             // size/speed picks → unedited bursts (rotation_min == rotation_max
             // == 0.0) stay byte-identical to today's deterministic spread.
             let rot01 = fold(0xC3 ^ u64::from(i));
+            // (#222) Birth-position jitter: offset each particle along its own
+            // outward angle by [0, spawn_jitter] px so the burst is visually
+            // distinct at frame 0 (without this all n particles overlap for
+            // the first several frames — they look like 1 particle).
+            let jit01 = fold(0xD4 ^ u64::from(i));
             let angle = a01 * std::f32::consts::TAU;
             let speed = spd_min + spd01 * spd_span; // px/sec, radial
-                                                    // Particle lives for (dur * jitter) AFTER the silent lead-in,
-                                                    // so total pool-time = start_delay + dur*jitter (mirrors
-                                                    // Effect.dur on the combat-vfx side).
+            let birth_offset = jit01 * spawn_jitter;
+            let birth_pos = [
+                center[0] + angle.cos() * birth_offset,
+                center[1] + angle.sin() * birth_offset,
+            ];
+            // Particle lives for (dur * jitter) AFTER the silent lead-in,
+            // so total pool-time = start_delay + dur*jitter (mirrors
+            // Effect.dur on the combat-vfx side).
             let visible_life = dur * (jit_base + sz01 * jit_span);
             self.particles.push(Particle {
-                pos: center,
+                pos: birth_pos,
                 vel: [angle.cos() * speed, angle.sin() * speed],
                 age: 0.0,
                 dur: visible_life + start_delay,
