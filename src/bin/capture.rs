@@ -1929,6 +1929,58 @@ fn main() {
             log::info!("capture: shape-kit Star4 burst at {center:?}");
         }
     }
+    // (#218, 2026-07-01) BROADSIDE_SHAPE_STACKER=1: render a 3-layer stacked
+    // explosion (3 squares at 0°/45°/90° with decreasing alpha) to prove the
+    // shape-stacker pipeline: ExplosionShapeLayer + emit_explosion layer loop.
+    // The three overlapping rotated squares read as a rich 8-point-star-ish shape.
+    if std::env::var("BROADSIDE_SHAPE_STACKER").is_ok_and(|v| v == "1") {
+        use broadside_engine::effects::{Explosion, ExplosionShapeLayer, ShapeKind};
+        use broadside_engine::projector::grid_cell_quad;
+        use broadside_engine::vfx::emit_explosion_pub;
+        let player_center = {
+            let p = board
+                .cells
+                .iter()
+                .flatten()
+                .find(|s| s.faction == Faction::Player)
+                .map_or_else(|| Pos::new(2, 3), |s| s.pos);
+            grid_cell_quad(p, &cfg).center
+        };
+        // 3 squares at 0°/45°/90° with decreasing alpha — should read as 8-pt star.
+        let ex = Explosion {
+            shapes: vec![
+                ExplosionShapeLayer {
+                    shape: ShapeKind::Square,
+                    rotation_deg: 0.0,
+                    alpha: 1.0,
+                    scale_mul: 1.0,
+                },
+                ExplosionShapeLayer {
+                    shape: ShapeKind::Square,
+                    rotation_deg: 45.0,
+                    alpha: 0.7,
+                    scale_mul: 1.0,
+                },
+                ExplosionShapeLayer {
+                    shape: ShapeKind::Square,
+                    rotation_deg: 90.0,
+                    alpha: 0.5,
+                    scale_mul: 0.9,
+                },
+            ],
+            peak_px: 48.0,
+            ..Explosion::default()
+        };
+        let _ = player_center; // used via the Pos below
+        let player_pos = board
+            .cells
+            .iter()
+            .flatten()
+            .find(|s| s.faction == Faction::Player)
+            .map_or_else(|| Pos::new(2, 3), |s| s.pos);
+        emit_explosion_pub(&mut commands, &cfg, player_pos, 0.1, &ex);
+        log::info!("capture: shape-stacker 3-layer square burst at {player_pos:?}");
+    }
     // (#98/#100) With QUEUE_DEMO, append a representative ability-tile row so the
     // headless shot shows the layout (damage # top-left, key # bottom-right,
     // cooldown ticks) AND the #100 cues. The capture has no Content, so hand-build

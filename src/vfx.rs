@@ -1113,46 +1113,77 @@ fn emit_explosion(
 ) {
     let p = grid_cell_quad(pos, cfg_proj).center;
     let peak = cfg.peak_px;
-    // (#301, 2026-07-01) Bloom silhouette selected per-explosion via
-    // `cfg.shape` (defaults to Circle so pre-shape catalogs reproduce the
-    // #301 round bloom byte-for-byte). Same dispatch as `ParticlePool::emit`
-    // at vfx.rs — one function is the single source; if a new `ShapeKind`
-    // variant lands both sites pick it up.
-    let bloom_uvs = atlas::cell_uvs(shape_cell(cfg.shape));
-    let mut quad = |size: f32, rgba: [f32; 4]| {
-        out.push(DrawCommand::Sprite(SpriteInstance::axis_aligned(
-            p,
-            [size * 0.5, size * 0.5],
-            rgba,
-            bloom_uvs,
-        )));
-    };
     // ease-out (fast then settle) for growth; linear-ish fades per layer.
     let ease_out = 1.0 - (1.0 - t) * (1.0 - t);
 
-    // 2) Expanding orange shell — grows 0.25→1.1 of peak, fades over the whole life.
-    let shell = cfg.shell_color.0;
-    let shell_size = peak * (cfg.shell_grow_base + cfg.shell_grow_span * ease_out);
-    let shell_alpha = (1.0 - t) * cfg.shell_alpha;
-    if shell_alpha > 0.0 {
-        quad(shell_size, [shell[0], shell[1], shell[2], shell_alpha]);
+    // (#218, 2026-07-01) Loop over the effective shape layers. When `shapes` is
+    // empty, `effective_layers()` yields one Circle layer (backward-compat with
+    // the pre-#218 single-shape path). When `shapes` is non-empty, each layer
+    // contributes independent silhouette / rotation / alpha / scale_mul.
+    //
+    // Each layer draws the SAME shell/core/flash t-driven envelope using its
+    // own atlas cell + rotation. The per-layer `alpha` multiplies the
+    // t-driven alpha; `scale_mul` multiplies the computed size.
+    for layer in cfg.effective_layers() {
+        let bloom_uvs = atlas::cell_uvs(shape_cell(layer.shape));
+        let rot = layer.rotation_deg.to_radians();
+        let la = layer.alpha;
+        let ls = layer.scale_mul;
+
+        // Inline helper: emit one billboard quad with per-layer rotation.
+        let mut quad = |size: f32, rgba: [f32; 4]| {
+            let half = size * ls * 0.5;
+            let (uv_min, uv_max) = bloom_uvs;
+            out.push(DrawCommand::Sprite(SpriteInstance {
+                pos: p,
+                half_size: [half, half],
+                color: [rgba[0], rgba[1], rgba[2], rgba[3] * la],
+                uv_min,
+                uv_max,
+                rotation_rad: rot,
+                _pad: [0.0; 3],
+            }));
+        };
+
+        // 2) Expanding shell — grows 0.25→1.1 of peak, fades over the whole life.
+        let shell = cfg.shell_color.0;
+        let shell_size = peak * (cfg.shell_grow_base + cfg.shell_grow_span * ease_out);
+        let shell_alpha = (1.0 - t) * cfg.shell_alpha;
+        if shell_alpha > 0.0 {
+            quad(shell_size, [shell[0], shell[1], shell[2], shell_alpha]);
+        }
+        // 3) Hot core — smaller, fades by ~t=0.55.
+        let core = cfg.core_color.0;
+        let core_life = (t / cfg.core_life_frac).clamp(0.0, 1.0);
+        if core_life < 1.0 {
+            let core_size = peak * 0.5 * (0.5 + 0.5 * ease_out);
+            let core_alpha = (1.0 - core_life) * cfg.core_alpha;
+            quad(core_size, [core[0], core[1], core[2], core_alpha]);
+        }
+        // 1) Ignition flash — gone by ~t=0.25.
+        let fl = cfg.flash_color.0;
+        let flash_life = (t / cfg.flash_life_frac).clamp(0.0, 1.0);
+        if flash_life < 1.0 {
+            let flash_size = peak * (0.4 + 0.3 * flash_life);
+            let flash_alpha = (1.0 - flash_life) * cfg.flash_alpha;
+            quad(flash_size, [fl[0], fl[1], fl[2], flash_alpha]);
+        }
     }
-    // 3) Hot yellow core — smaller, shrinks + fades by ~t=0.55 (2x the shell's rate).
-    let core = cfg.core_color.0;
-    let core_life = (t / cfg.core_life_frac).clamp(0.0, 1.0);
-    if core_life < 1.0 {
-        let core_size = peak * 0.5 * (0.5 + 0.5 * ease_out);
-        let core_alpha = (1.0 - core_life) * cfg.core_alpha;
-        quad(core_size, [core[0], core[1], core[2], core_alpha]);
-    }
-    // 1) White ignition flash — over-bright spike, gone by ~t=0.25.
-    let fl = cfg.flash_color.0;
-    let flash_life = (t / cfg.flash_life_frac).clamp(0.0, 1.0);
-    if flash_life < 1.0 {
-        let flash_size = peak * (0.4 + 0.3 * flash_life);
-        let flash_alpha = (1.0 - flash_life) * cfg.flash_alpha;
-        quad(flash_size, [fl[0], fl[1], fl[2], flash_alpha]);
-    }
+}
+
+/// (#218) Public thin wrapper around the private `emit_explosion` — exposed
+/// exclusively for headless capture bins (e.g. `BROADSIDE_SHAPE_STACKER=1`).
+/// Production code must go through `CombatVfx`; this fn is not part of the
+/// stable API (breaking changes are fine).
+#[doc(hidden)]
+pub fn emit_explosion_pub(
+    out: &mut Vec<DrawCommand>,
+    cfg_proj: &crate::projector::ProjectorConfig,
+    pos: crate::grid::Pos,
+    t: f32,
+    cfg: &crate::effects::Explosion,
+) {
+    emit_explosion(out, cfg_proj, pos, t, cfg);
 }
 
 // (#215 Bruce) `emit_telegraph` (the steady per-queued-enemy red marker that
@@ -2237,5 +2268,129 @@ mod tests {
         pool.spawn_burst([0.0, 0.0], 5, [1.0; 4], 0.5);
         pool.clear();
         assert!(pool.is_empty(), "clear drops every particle");
+    }
+
+    // (#218) emit_explosion layer-count tests --------------------------------
+
+    /// Single-layer (legacy path): `emit_explosion` with empty `shapes` emits the
+    /// same sprite count as it always did — 3 quads at t=0 (shell + core + flash
+    /// are all live at t=0).
+    #[test]
+    fn emit_explosion_single_layer_emits_three_quads_at_t0() {
+        use crate::effects::Explosion;
+        let cfg_proj = crate::projector::ProjectorConfig::default();
+        let ex = Explosion::default(); // shapes: empty → falls back to single Circle
+        let mut out = Vec::new();
+        emit_explosion(&mut out, &cfg_proj, crate::grid::Pos::new(2, 2), 0.0, &ex);
+        assert_eq!(out.len(), 3, "shell + core + flash = 3 quads at t=0");
+    }
+
+    /// Three-layer stack: `emit_explosion` emits 3× the quads vs single-layer
+    /// (each of 3 layers draws shell+core+flash at t=0).
+    #[test]
+    fn emit_explosion_three_layers_emit_triple_quads() {
+        use crate::effects::{Explosion, ExplosionShapeLayer, ShapeKind};
+        let cfg_proj = crate::projector::ProjectorConfig::default();
+        let layers = vec![
+            ExplosionShapeLayer {
+                shape: ShapeKind::Square,
+                rotation_deg: 0.0,
+                alpha: 1.0,
+                scale_mul: 1.0,
+            },
+            ExplosionShapeLayer {
+                shape: ShapeKind::Square,
+                rotation_deg: 45.0,
+                alpha: 0.7,
+                scale_mul: 1.0,
+            },
+            ExplosionShapeLayer {
+                shape: ShapeKind::Square,
+                rotation_deg: 90.0,
+                alpha: 0.5,
+                scale_mul: 1.0,
+            },
+        ];
+        let ex = Explosion {
+            shapes: layers,
+            ..Explosion::default()
+        };
+        let mut out = Vec::new();
+        emit_explosion(&mut out, &cfg_proj, crate::grid::Pos::new(2, 2), 0.0, &ex);
+        // 3 layers × 3 quads each = 9
+        assert_eq!(
+            out.len(),
+            9,
+            "3 layers × (shell+core+flash) = 9 quads at t=0"
+        );
+    }
+
+    /// Per-layer rotation is applied: layer at 45° has `rotation_rad` ≈ π/4 on sprites.
+    #[test]
+    fn emit_explosion_layer_rotation_reaches_sprite() {
+        use crate::effects::{Explosion, ExplosionShapeLayer, ShapeKind};
+        let cfg_proj = crate::projector::ProjectorConfig::default();
+        let ex = Explosion {
+            shapes: vec![ExplosionShapeLayer {
+                shape: ShapeKind::Diamond,
+                rotation_deg: 45.0,
+                alpha: 1.0,
+                scale_mul: 1.0,
+            }],
+            ..Explosion::default()
+        };
+        let mut out = Vec::new();
+        emit_explosion(&mut out, &cfg_proj, crate::grid::Pos::new(2, 2), 0.0, &ex);
+        assert!(!out.is_empty());
+        for cmd in &out {
+            if let DrawCommand::Sprite(s) = cmd {
+                assert!(
+                    (s.rotation_rad - std::f32::consts::FRAC_PI_4).abs() < 1e-4,
+                    "expected π/4 rotation, got {}",
+                    s.rotation_rad
+                );
+            }
+        }
+    }
+
+    /// Per-layer alpha multiplier reduces the sprite alpha vs a full-alpha layer.
+    #[test]
+    fn emit_explosion_layer_alpha_multiplies_sprite_alpha() {
+        use crate::effects::{Explosion, ExplosionShapeLayer, ShapeKind};
+        let cfg_proj = crate::projector::ProjectorConfig::default();
+        let full_alpha_ex = Explosion {
+            shapes: vec![ExplosionShapeLayer {
+                shape: ShapeKind::Circle,
+                rotation_deg: 0.0,
+                alpha: 1.0,
+                scale_mul: 1.0,
+            }],
+            ..Explosion::default()
+        };
+        let half_alpha_ex = Explosion {
+            shapes: vec![ExplosionShapeLayer {
+                shape: ShapeKind::Circle,
+                rotation_deg: 0.0,
+                alpha: 0.5,
+                scale_mul: 1.0,
+            }],
+            ..Explosion::default()
+        };
+        let pos = crate::grid::Pos::new(2, 2);
+        let mut full_out = Vec::new();
+        let mut half_out = Vec::new();
+        emit_explosion(&mut full_out, &cfg_proj, pos, 0.0, &full_alpha_ex);
+        emit_explosion(&mut half_out, &cfg_proj, pos, 0.0, &half_alpha_ex);
+        // Compare first sprite's alpha channel (index 3).
+        if let (DrawCommand::Sprite(sf), DrawCommand::Sprite(sh)) = (&full_out[0], &half_out[0]) {
+            assert!(
+                sh.color[3] < sf.color[3],
+                "half-alpha layer must produce lower sprite alpha: full={:.3} half={:.3}",
+                sf.color[3],
+                sh.color[3]
+            );
+        } else {
+            panic!("expected Sprite commands");
+        }
     }
 }

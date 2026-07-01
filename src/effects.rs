@@ -284,8 +284,42 @@ pub struct Explosion {
     /// `PARTICLE_CIRCLE`). Editor can flip this to any of the extended
     /// shapes (square / diamond / ring / star4-5 / plus / x / crescent /
     /// hollow-square / hexagon / triangle / line) for authored effects.
+    ///
+    /// Legacy single-shape field: kept for backward-compat so old catalogs
+    /// that only set `"shape": "diamond"` still work. When [`shapes`] is
+    /// non-empty it takes precedence and this field is unused by the engine.
+    /// New catalog authors should prefer [`shapes`].
     #[serde(default = "default_explosion_shape")]
     pub shape: ShapeKind,
+    /// (#218, 2026-07-01) Multi-layer shape stack. When non-empty, the engine
+    /// draws each layer independently with its own silhouette / rotation /
+    /// alpha / `scale_mul` — producing compound shapes (e.g. three squares at
+    /// 0°/45°/90° → an 8-point star ish). When empty the engine falls back to
+    /// the legacy single [`shape`] field as a single axis-aligned layer.
+    ///
+    /// Wire format: `#[serde(default)]` so old catalogs with no `shapes` key
+    /// deserialise to an empty vec and take the single-shape fallback path.
+    #[serde(default)]
+    pub shapes: Vec<ExplosionShapeLayer>,
+}
+
+impl Explosion {
+    /// The effective layer list for rendering: returns `shapes` if non-empty,
+    /// otherwise synthesises a single default layer from the legacy `shape` field.
+    /// This is the ONLY place both paths collapse to the same type — callers
+    /// (`emit_explosion`) always iterate `effective_layers()` and never branch on
+    /// `shapes.is_empty()` themselves.
+    pub fn effective_layers(&self) -> impl Iterator<Item = ExplosionShapeLayer> + '_ {
+        let single: Option<ExplosionShapeLayer> = if self.shapes.is_empty() {
+            Some(ExplosionShapeLayer {
+                shape: self.shape,
+                ..ExplosionShapeLayer::default()
+            })
+        } else {
+            None
+        };
+        self.shapes.iter().copied().chain(single)
+    }
 }
 
 /// Ordnance-trail params (`vfx::TRAIL_COLOR` + `TRAIL_SECS` + `emit_beam`).
@@ -457,6 +491,57 @@ pub struct SequenceStep {
     /// existing delays are additive on top inside the spawned base effect.
     #[serde(default)]
     pub delay_secs: f32,
+}
+
+/// (#218, 2026-07-01) One layer in a multi-shape explosion stack. An
+/// [`Explosion`] can carry any number of these (via [`Explosion::shapes`]); the
+/// engine draws each layer independently, applying that layer's shape silhouette,
+/// rotation, alpha multiplier, and size multiplier on top of the shared t-driven
+/// shell/core/flash envelope.
+///
+/// Defaults produce a single axis-aligned Circle layer at full alpha and full
+/// scale — so an [`Explosion`] constructed with `shapes: vec![Default::default()]`
+/// is byte-identical to the pre-#218 single-shape path.
+///
+/// Wire format (JSON):
+/// ```json
+/// { "shape": "diamond", "rotation_deg": 45.0, "alpha": 0.8, "scale_mul": 1.0 }
+/// ```
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ExplosionShapeLayer {
+    /// Which atlas silhouette this layer uses.
+    #[serde(default = "default_explosion_shape")]
+    pub shape: ShapeKind,
+    /// Rotation of this layer's silhouette sprite in degrees (0 = axis-aligned).
+    /// Passed as `rotation_rad = rotation_deg.to_radians()` to the GPU.
+    #[serde(default)]
+    pub rotation_deg: f32,
+    /// Alpha multiplier in `[0, 1]` applied on top of the t-driven alpha of each
+    /// explosion sub-layer (shell/core/flash). `1.0` = full opacity.
+    #[serde(default = "default_layer_alpha")]
+    pub alpha: f32,
+    /// Size multiplier applied to the computed size of each explosion sub-layer.
+    /// `1.0` = normal size.
+    #[serde(default = "default_layer_scale_mul")]
+    pub scale_mul: f32,
+}
+
+const fn default_layer_alpha() -> f32 {
+    1.0
+}
+const fn default_layer_scale_mul() -> f32 {
+    1.0
+}
+
+impl Default for ExplosionShapeLayer {
+    fn default() -> Self {
+        Self {
+            shape: default_explosion_shape(),
+            rotation_deg: 0.0,
+            alpha: default_layer_alpha(),
+            scale_mul: default_layer_scale_mul(),
+        }
+    }
 }
 
 /// (#217) Per-particle silhouette for [`ParticleBurst`]. Was implicitly
@@ -795,6 +880,7 @@ impl Default for Explosion {
             flash_life_frac: default_ignition_life_frac(),
             flash_alpha: default_ignition_alpha(),
             shape: default_explosion_shape(),
+            shapes: Vec::new(),
         }
     }
 }
@@ -1093,5 +1179,120 @@ mod tests {
         assert!(cat.get("a").is_some());
         assert!(cat.get("b").is_some());
         assert!(cat.get("missing").is_none());
+    }
+
+    // (#218) Shape-stacker tests -------------------------------------------
+
+    /// `ExplosionShapeLayer::default()` is Circle, rotation 0, alpha 1, scale 1.
+    #[test]
+    fn explosion_shape_layer_default_values() {
+        let layer = ExplosionShapeLayer::default();
+        assert_eq!(layer.shape, ShapeKind::Circle);
+        assert!((layer.rotation_deg - 0.0).abs() < f32::EPSILON);
+        assert!((layer.alpha - 1.0).abs() < f32::EPSILON);
+        assert!((layer.scale_mul - 1.0).abs() < f32::EPSILON);
+    }
+
+    /// A 3-layer stack round-trips through JSON without loss.
+    #[test]
+    fn explosion_shape_layer_stack_round_trips() {
+        let layers = vec![
+            ExplosionShapeLayer {
+                shape: ShapeKind::Square,
+                rotation_deg: 0.0,
+                alpha: 1.0,
+                scale_mul: 1.0,
+            },
+            ExplosionShapeLayer {
+                shape: ShapeKind::Square,
+                rotation_deg: 45.0,
+                alpha: 0.7,
+                scale_mul: 1.0,
+            },
+            ExplosionShapeLayer {
+                shape: ShapeKind::Square,
+                rotation_deg: 90.0,
+                alpha: 0.5,
+                scale_mul: 0.9,
+            },
+        ];
+        let ex = Explosion {
+            shapes: layers,
+            ..Explosion::default()
+        };
+        let def = EffectDef {
+            id: "stacked".into(),
+            kind: EffectKind::Explosion(ex),
+        };
+        let json = serde_json::to_string(&def).unwrap();
+        let back: EffectDef = serde_json::from_str(&json).unwrap();
+        if let EffectKind::Explosion(ex_back) = back.kind {
+            assert_eq!(ex_back.shapes.len(), 3);
+            assert!((ex_back.shapes[1].rotation_deg - 45.0).abs() < f32::EPSILON);
+            assert!((ex_back.shapes[1].alpha - 0.7).abs() < f32::EPSILON);
+            assert!((ex_back.shapes[2].rotation_deg - 90.0).abs() < f32::EPSILON);
+            assert!((ex_back.shapes[2].scale_mul - 0.9).abs() < f32::EPSILON);
+        } else {
+            panic!("expected Explosion");
+        }
+    }
+
+    /// `effective_layers()` with empty `shapes` yields the single legacy `shape` layer.
+    #[test]
+    fn effective_layers_empty_shapes_uses_legacy_shape() {
+        let ex = Explosion {
+            shape: ShapeKind::Diamond,
+            shapes: vec![],
+            ..Explosion::default()
+        };
+        let layers: Vec<_> = ex.effective_layers().collect();
+        assert_eq!(layers.len(), 1);
+        assert_eq!(layers[0].shape, ShapeKind::Diamond);
+        assert!((layers[0].rotation_deg - 0.0).abs() < f32::EPSILON);
+        assert!((layers[0].alpha - 1.0).abs() < f32::EPSILON);
+    }
+
+    /// `effective_layers()` with a non-empty `shapes` yields exactly those layers.
+    #[test]
+    fn effective_layers_nonempty_shapes_ignores_legacy_field() {
+        let layers = vec![
+            ExplosionShapeLayer {
+                shape: ShapeKind::Ring,
+                rotation_deg: 10.0,
+                alpha: 0.8,
+                scale_mul: 1.0,
+            },
+            ExplosionShapeLayer {
+                shape: ShapeKind::Star4,
+                rotation_deg: 20.0,
+                alpha: 0.6,
+                scale_mul: 1.1,
+            },
+        ];
+        // Set legacy `shape` to something different to prove it's ignored.
+        let ex = Explosion {
+            shape: ShapeKind::Square,
+            shapes: layers,
+            ..Explosion::default()
+        };
+        let out: Vec<_> = ex.effective_layers().collect();
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].shape, ShapeKind::Ring);
+        assert_eq!(out[1].shape, ShapeKind::Star4);
+    }
+
+    /// Old catalog JSON with no `shapes` key round-trips as empty vec (backward compat).
+    #[test]
+    fn explosion_missing_shapes_key_deserialises_as_empty() {
+        let json = r#"{ "effects": [ { "id": "boom", "kind": "Explosion" } ] }"#;
+        let cat = EffectCatalog::from_json_str(json).unwrap();
+        if let EffectKind::Explosion(ex) = &cat.get("boom").unwrap().kind {
+            assert!(
+                ex.shapes.is_empty(),
+                "missing `shapes` key must yield empty vec"
+            );
+        } else {
+            panic!("expected Explosion");
+        }
     }
 }
