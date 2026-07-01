@@ -524,6 +524,17 @@ pub struct ExplosionShapeLayer {
     /// `1.0` = normal size.
     #[serde(default = "default_layer_scale_mul")]
     pub scale_mul: f32,
+    /// Angular velocity in RADIANS PER SECOND. `emit_explosion` advances the
+    /// layer orientation by `spin_rate * elapsed` on top of `rotation_deg`.
+    /// `0.0` (default) is a no-op — byte-identical to the pre-spin path.
+    #[serde(default)]
+    pub spin_rate: f32,
+    /// Seconds of silent lead-in before this layer begins drawing. Layers
+    /// with `start_delay > elapsed` are skipped entirely; once past the delay,
+    /// the layer's `t` is re-normalised over the remaining life so it still
+    /// runs the full shell/core/flash envelope. `0.0` = fires immediately.
+    #[serde(default)]
+    pub start_delay: f32,
 }
 
 const fn default_layer_alpha() -> f32 {
@@ -540,6 +551,8 @@ impl Default for ExplosionShapeLayer {
             rotation_deg: 0.0,
             alpha: default_layer_alpha(),
             scale_mul: default_layer_scale_mul(),
+            spin_rate: 0.0,
+            start_delay: 0.0,
         }
     }
 }
@@ -1183,7 +1196,8 @@ mod tests {
 
     // (#218) Shape-stacker tests -------------------------------------------
 
-    /// `ExplosionShapeLayer::default()` is Circle, rotation 0, alpha 1, scale 1.
+    /// `ExplosionShapeLayer::default()` is Circle, rotation 0, alpha 1, scale 1,
+    /// `spin_rate` 0, `start_delay` 0.
     #[test]
     fn explosion_shape_layer_default_values() {
         let layer = ExplosionShapeLayer::default();
@@ -1191,9 +1205,11 @@ mod tests {
         assert!((layer.rotation_deg - 0.0).abs() < f32::EPSILON);
         assert!((layer.alpha - 1.0).abs() < f32::EPSILON);
         assert!((layer.scale_mul - 1.0).abs() < f32::EPSILON);
+        assert!((layer.spin_rate - 0.0).abs() < f32::EPSILON);
+        assert!((layer.start_delay - 0.0).abs() < f32::EPSILON);
     }
 
-    /// A 3-layer stack round-trips through JSON without loss.
+    /// A 3-layer stack round-trips through JSON without loss, including motion fields.
     #[test]
     fn explosion_shape_layer_stack_round_trips() {
         let layers = vec![
@@ -1202,18 +1218,24 @@ mod tests {
                 rotation_deg: 0.0,
                 alpha: 1.0,
                 scale_mul: 1.0,
+                spin_rate: 0.0,
+                start_delay: 0.0,
             },
             ExplosionShapeLayer {
                 shape: ShapeKind::Square,
                 rotation_deg: 45.0,
                 alpha: 0.7,
                 scale_mul: 1.0,
+                spin_rate: 1.57,
+                start_delay: 0.1,
             },
             ExplosionShapeLayer {
                 shape: ShapeKind::Square,
                 rotation_deg: 90.0,
                 alpha: 0.5,
                 scale_mul: 0.9,
+                spin_rate: 0.0,
+                start_delay: 0.2,
             },
         ];
         let ex = Explosion {
@@ -1230,8 +1252,11 @@ mod tests {
             assert_eq!(ex_back.shapes.len(), 3);
             assert!((ex_back.shapes[1].rotation_deg - 45.0).abs() < f32::EPSILON);
             assert!((ex_back.shapes[1].alpha - 0.7).abs() < f32::EPSILON);
+            assert!((ex_back.shapes[1].spin_rate - 1.57).abs() < 1e-4);
+            assert!((ex_back.shapes[1].start_delay - 0.1).abs() < 1e-4);
             assert!((ex_back.shapes[2].rotation_deg - 90.0).abs() < f32::EPSILON);
             assert!((ex_back.shapes[2].scale_mul - 0.9).abs() < f32::EPSILON);
+            assert!((ex_back.shapes[2].start_delay - 0.2).abs() < 1e-4);
         } else {
             panic!("expected Explosion");
         }
@@ -1261,12 +1286,14 @@ mod tests {
                 rotation_deg: 10.0,
                 alpha: 0.8,
                 scale_mul: 1.0,
+                ..ExplosionShapeLayer::default()
             },
             ExplosionShapeLayer {
                 shape: ShapeKind::Star4,
                 rotation_deg: 20.0,
                 alpha: 0.6,
                 scale_mul: 1.1,
+                ..ExplosionShapeLayer::default()
             },
         ];
         // Set legacy `shape` to something different to prove it's ignored.
@@ -1290,6 +1317,33 @@ mod tests {
             assert!(
                 ex.shapes.is_empty(),
                 "missing `shapes` key must yield empty vec"
+            );
+        } else {
+            panic!("expected Explosion");
+        }
+    }
+
+    /// A layer with no motion fields in JSON deserialises with zero `spin_rate` +
+    /// zero `start_delay` (serde `#[serde(default)]` on both fields).
+    #[test]
+    fn explosion_layer_missing_motion_fields_deserialises_as_zero() {
+        let json = r#"{
+            "effects": [{
+                "id": "boom",
+                "kind": "Explosion",
+                "shapes": [{ "shape": "diamond", "rotation_deg": 45.0, "alpha": 0.8, "scale_mul": 1.0 }]
+            }]
+        }"#;
+        let cat = EffectCatalog::from_json_str(json).unwrap();
+        if let EffectKind::Explosion(ex) = &cat.get("boom").unwrap().kind {
+            let layer = &ex.shapes[0];
+            assert!(
+                (layer.spin_rate - 0.0).abs() < f32::EPSILON,
+                "spin_rate must default to 0"
+            );
+            assert!(
+                (layer.start_delay - 0.0).abs() < f32::EPSILON,
+                "start_delay must default to 0"
             );
         } else {
             panic!("expected Explosion");

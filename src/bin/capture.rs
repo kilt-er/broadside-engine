@@ -1954,18 +1954,21 @@ fn main() {
                     rotation_deg: 0.0,
                     alpha: 1.0,
                     scale_mul: 1.0,
+                    ..ExplosionShapeLayer::default()
                 },
                 ExplosionShapeLayer {
                     shape: ShapeKind::Square,
                     rotation_deg: 45.0,
                     alpha: 0.7,
                     scale_mul: 1.0,
+                    ..ExplosionShapeLayer::default()
                 },
                 ExplosionShapeLayer {
                     shape: ShapeKind::Square,
                     rotation_deg: 90.0,
                     alpha: 0.5,
                     scale_mul: 0.9,
+                    ..ExplosionShapeLayer::default()
                 },
             ],
             peak_px: 48.0,

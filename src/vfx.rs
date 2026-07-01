@@ -1113,20 +1113,30 @@ fn emit_explosion(
 ) {
     let p = grid_cell_quad(pos, cfg_proj).center;
     let peak = cfg.peak_px;
-    // ease-out (fast then settle) for growth; linear-ish fades per layer.
-    let ease_out = 1.0 - (1.0 - t) * (1.0 - t);
 
     // (#218, 2026-07-01) Loop over the effective shape layers. When `shapes` is
     // empty, `effective_layers()` yields one Circle layer (backward-compat with
     // the pre-#218 single-shape path). When `shapes` is non-empty, each layer
-    // contributes independent silhouette / rotation / alpha / scale_mul.
+    // contributes independent silhouette / rotation / alpha / scale_mul /
+    // spin_rate / start_delay.
     //
-    // Each layer draws the SAME shell/core/flash t-driven envelope using its
-    // own atlas cell + rotation. The per-layer `alpha` multiplies the
-    // t-driven alpha; `scale_mul` multiplies the computed size.
+    // `start_delay`: layers with `elapsed < start_delay` are skipped entirely;
+    // once past the delay the layer re-normalises its own t over the remaining
+    // life so it still runs the full shell/core/flash envelope.
+    // `spin_rate`: advances `rotation_deg` by `spin_rate * elapsed` (rad/sec).
+    // Both default to 0.0 → byte-identical to the pre-motion path.
+    let elapsed = t * cfg.life_secs;
     for layer in cfg.effective_layers() {
+        if elapsed < layer.start_delay {
+            continue;
+        }
+        // Re-normalise t over the window after start_delay.
+        let remaining = (cfg.life_secs - layer.start_delay).max(0.001);
+        let lt = ((elapsed - layer.start_delay) / remaining).clamp(0.0, 1.0);
+        let ease_lt = 1.0 - (1.0 - lt) * (1.0 - lt);
+
         let bloom_uvs = atlas::cell_uvs(shape_cell(layer.shape));
-        let rot = layer.rotation_deg.to_radians();
+        let rot = (layer.rotation_deg.to_radians()) + layer.spin_rate * elapsed;
         let la = layer.alpha;
         let ls = layer.scale_mul;
 
@@ -1147,22 +1157,22 @@ fn emit_explosion(
 
         // 2) Expanding shell — grows 0.25→1.1 of peak, fades over the whole life.
         let shell = cfg.shell_color.0;
-        let shell_size = peak * (cfg.shell_grow_base + cfg.shell_grow_span * ease_out);
-        let shell_alpha = (1.0 - t) * cfg.shell_alpha;
+        let shell_size = peak * (cfg.shell_grow_base + cfg.shell_grow_span * ease_lt);
+        let shell_alpha = (1.0 - lt) * cfg.shell_alpha;
         if shell_alpha > 0.0 {
             quad(shell_size, [shell[0], shell[1], shell[2], shell_alpha]);
         }
         // 3) Hot core — smaller, fades by ~t=0.55.
         let core = cfg.core_color.0;
-        let core_life = (t / cfg.core_life_frac).clamp(0.0, 1.0);
+        let core_life = (lt / cfg.core_life_frac).clamp(0.0, 1.0);
         if core_life < 1.0 {
-            let core_size = peak * 0.5 * (0.5 + 0.5 * ease_out);
+            let core_size = peak * 0.5 * (0.5 + 0.5 * ease_lt);
             let core_alpha = (1.0 - core_life) * cfg.core_alpha;
             quad(core_size, [core[0], core[1], core[2], core_alpha]);
         }
         // 1) Ignition flash — gone by ~t=0.25.
         let fl = cfg.flash_color.0;
-        let flash_life = (t / cfg.flash_life_frac).clamp(0.0, 1.0);
+        let flash_life = (lt / cfg.flash_life_frac).clamp(0.0, 1.0);
         if flash_life < 1.0 {
             let flash_size = peak * (0.4 + 0.3 * flash_life);
             let flash_alpha = (1.0 - flash_life) * cfg.flash_alpha;
@@ -2295,20 +2305,19 @@ mod tests {
             ExplosionShapeLayer {
                 shape: ShapeKind::Square,
                 rotation_deg: 0.0,
-                alpha: 1.0,
-                scale_mul: 1.0,
+                ..ExplosionShapeLayer::default()
             },
             ExplosionShapeLayer {
                 shape: ShapeKind::Square,
                 rotation_deg: 45.0,
                 alpha: 0.7,
-                scale_mul: 1.0,
+                ..ExplosionShapeLayer::default()
             },
             ExplosionShapeLayer {
                 shape: ShapeKind::Square,
                 rotation_deg: 90.0,
                 alpha: 0.5,
-                scale_mul: 1.0,
+                ..ExplosionShapeLayer::default()
             },
         ];
         let ex = Explosion {
@@ -2334,8 +2343,7 @@ mod tests {
             shapes: vec![ExplosionShapeLayer {
                 shape: ShapeKind::Diamond,
                 rotation_deg: 45.0,
-                alpha: 1.0,
-                scale_mul: 1.0,
+                ..ExplosionShapeLayer::default()
             }],
             ..Explosion::default()
         };
@@ -2361,18 +2369,16 @@ mod tests {
         let full_alpha_ex = Explosion {
             shapes: vec![ExplosionShapeLayer {
                 shape: ShapeKind::Circle,
-                rotation_deg: 0.0,
                 alpha: 1.0,
-                scale_mul: 1.0,
+                ..ExplosionShapeLayer::default()
             }],
             ..Explosion::default()
         };
         let half_alpha_ex = Explosion {
             shapes: vec![ExplosionShapeLayer {
                 shape: ShapeKind::Circle,
-                rotation_deg: 0.0,
                 alpha: 0.5,
-                scale_mul: 1.0,
+                ..ExplosionShapeLayer::default()
             }],
             ..Explosion::default()
         };
@@ -2391,6 +2397,61 @@ mod tests {
             );
         } else {
             panic!("expected Sprite commands");
+        }
+    }
+
+    /// A layer whose `start_delay` exceeds the elapsed time (t=0 → elapsed=0)
+    /// is completely skipped — zero quads emitted.
+    #[test]
+    fn emit_explosion_layer_start_delay_gates_drawing() {
+        use crate::effects::{Explosion, ExplosionShapeLayer, ShapeKind};
+        let cfg_proj = crate::projector::ProjectorConfig::default();
+        let ex = Explosion {
+            shapes: vec![ExplosionShapeLayer {
+                shape: ShapeKind::Circle,
+                start_delay: 9999.0, // longer than any explosion life
+                ..ExplosionShapeLayer::default()
+            }],
+            ..Explosion::default()
+        };
+        let mut out = Vec::new();
+        emit_explosion(&mut out, &cfg_proj, crate::grid::Pos::new(2, 2), 0.0, &ex);
+        assert_eq!(
+            out.len(),
+            0,
+            "layer with start_delay > elapsed must emit nothing"
+        );
+    }
+
+    /// A layer with `spin_rate > 0` at t > 0 has `rotation_rad` larger than
+    /// `rotation_deg.to_radians()` alone.
+    #[test]
+    fn emit_explosion_layer_spin_rate_advances_rotation() {
+        use crate::effects::{Explosion, ExplosionShapeLayer, ShapeKind};
+        let cfg_proj = crate::projector::ProjectorConfig::default();
+        let base_rotation_deg = 0.0_f32;
+        let spin = 1.0_f32; // 1 rad/sec
+        let ex = Explosion {
+            shapes: vec![ExplosionShapeLayer {
+                shape: ShapeKind::Circle,
+                rotation_deg: base_rotation_deg,
+                spin_rate: spin,
+                ..ExplosionShapeLayer::default()
+            }],
+            ..Explosion::default()
+        };
+        let mut out = Vec::new();
+        // t=0.5 → elapsed = 0.5 * life_secs; spin_rate * elapsed must shift rotation_rad
+        emit_explosion(&mut out, &cfg_proj, crate::grid::Pos::new(2, 2), 0.5, &ex);
+        assert!(!out.is_empty());
+        if let DrawCommand::Sprite(s) = &out[0] {
+            assert!(
+                s.rotation_rad > base_rotation_deg.to_radians(),
+                "spin_rate > 0 must advance rotation_rad beyond rotation_deg: got {}",
+                s.rotation_rad
+            );
+        } else {
+            panic!("expected Sprite command");
         }
     }
 }
