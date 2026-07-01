@@ -1133,7 +1133,8 @@
       "sector": "Drift Belt",
       "corrupt": true,
       "sP1": 2,
-      "sP7": 7
+      "sP7": 7,
+      "footprint": "pair"
     },
     {
       "id": "impaler",
@@ -1141,7 +1142,8 @@
       "sector": "Ion Reefs",
       "corrupt": true,
       "sP1": 3,
-      "sP7": 8
+      "sP7": 8,
+      "footprint": "pair"
     },
     {
       "id": "barricader",
@@ -1149,7 +1151,8 @@
       "sector": "Ashen Expanse",
       "corrupt": true,
       "sP1": 3,
-      "sP7": 8
+      "sP7": 8,
+      "footprint": "pair"
     },
     {
       "id": "twins",
@@ -1157,7 +1160,8 @@
       "sector": "Spindle Port",
       "corrupt": true,
       "sP1": 4,
-      "sP7": 8
+      "sP7": 8,
+      "footprint": "pair"
     },
     {
       "id": "statue",
@@ -1165,7 +1169,8 @@
       "sector": "Spirit Gate",
       "corrupt": true,
       "sP1": 4,
-      "sP7": 10
+      "sP7": 10,
+      "footprint": "pair"
     },
     {
       "id": "coward",
@@ -1173,7 +1178,8 @@
       "sector": "Hot Verge",
       "corrupt": true,
       "sP1": 4,
-      "sP7": 10
+      "sP7": 10,
+      "footprint": "pair"
     },
     {
       "id": "fallen",
@@ -1181,7 +1187,8 @@
       "sector": "Forsaken Drift",
       "corrupt": true,
       "sP1": 4,
-      "sP7": 10
+      "sP7": 10,
+      "footprint": "pair"
     },
     {
       "id": "stagemaster",
@@ -1189,7 +1196,8 @@
       "sector": "Mirror Theatre",
       "corrupt": true,
       "sP1": 4,
-      "sP7": 10
+      "sP7": 10,
+      "footprint": "pair"
     },
     {
       "id": "warlord",
@@ -1197,7 +1205,8 @@
       "sector": "Inner Keeps",
       "corrupt": true,
       "sP1": 5,
-      "sP7": 11
+      "sP7": 11,
+      "footprint": "pair"
     },
     {
       "id": "shogun",
@@ -1214,7 +1223,8 @@
       "sector": "Crimson Anomaly",
       "corrupt": false,
       "sP1": null,
-      "sP7": 11
+      "sP7": 11,
+      "footprint": "pair"
     }
   ],
   "classes": [
