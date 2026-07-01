@@ -1028,7 +1028,7 @@ const PREVIEW_LAYER_ALPHA_MULT: [f32; 3] = [1.0, 0.60, 0.35];
 /// is out there past the boss's next one." **DESIGN FLAG (Bruce):** if
 /// Bruce reads the empty N+3 as "no encounter there," flip this to
 /// `[true, true, true]` and we get ghost hulls on the deepest layer.
-const PREVIEW_LAYER_SHIPS: [bool; 3] = [true, true, false];
+const PREVIEW_LAYER_SHIPS: [bool; 3] = [true, true, true];
 
 /// (#336 looming boss 2026-07-01) The sector-boss "always visible" preview
 /// pane renders at a depth PAST the deepest N+3 layer. `BOSS_MAX_DEPTH_MULT`
@@ -4235,6 +4235,39 @@ impl ApplicationHandler for App {
                         }
                     }
                 }
+                // (#221) Register poses for N+2/N+3 parallax-preview ships BEFORE
+                // retain_loft_poses, otherwise their entries are pruned each frame
+                // and render_unified_fleet silently skips them (None pose → continue).
+                // Only needed for layers that actually draw ships.
+                for (layer_offset, &shows_ships) in PREVIEW_LAYER_SHIPS.iter().enumerate().skip(1) {
+                    if !shows_ships {
+                        continue;
+                    }
+                    let n = 1 + layer_offset as u32;
+                    let deeper_enc: Option<&broadside_engine::types::EncounterDef> =
+                        if matches!(self.demo_state, DemoState::Transitioning(_)) {
+                            self.pending_encounter_idx.and_then(|idx| {
+                                let target = idx + layer_offset;
+                                let mut sector_idx = self.run.current_sector_idx;
+                                let mut enc_idx = target;
+                                loop {
+                                    let sector = self.sectors.get(sector_idx)?;
+                                    if enc_idx < sector.encounters.len() {
+                                        return sector.encounters.get(enc_idx);
+                                    }
+                                    enc_idx -= sector.encounters.len();
+                                    sector_idx = sector_idx.saturating_add(1);
+                                }
+                            })
+                        } else {
+                            nth_encounter_after_current(&self.run, &self.sectors, n as usize)
+                        };
+                    if let Some(enc) = deeper_enc {
+                        for s in &enc.enemy_ships {
+                            loft_ships.push((format!("{}@{}", s.class_id, s.cell), s.orientation));
+                        }
+                    }
+                }
                 for (id, orient) in &loft_ships {
                     gfx.sync_loft_pose(id, *orient);
                 }
@@ -4541,6 +4574,9 @@ impl ApplicationHandler for App {
                     // (N+2) keeps the two paths orthogonal — the N+1 path
                     // owns the warp lerp; the N+2/N+3 path owns the
                     // persistent deep parallax.
+                    // layer_offset is used arithmetically (n = 1 + layer_offset,
+                    // target = idx + layer_offset), not only to index the slice.
+                    #[allow(clippy::needless_range_loop)]
                     for layer_offset in 1..PREVIEW_LAYER_Z_MULT.len() {
                         let n = 1 + layer_offset as u32; // N+2 or N+3
                                                          // Same fork as the N+1 lookup: during Transitioning
@@ -4595,6 +4631,20 @@ impl ApplicationHandler for App {
                                 None, // No warp animation on deeper layers.
                                 0.0,  // Centered (lane_align = 0, #329).
                             );
+                            // (#221) At N+2/N+3 depth the hulls are tiny due to
+                            // perspective foreshortening. Scale them up so they
+                            // read at approximately the same apparent size as
+                            // N+1 hulls at their shallower depth.
+                            let base_z = broadside_engine::gfx::preview_z_offset();
+                            let depth_scale = (layer_z / base_z).max(1.0);
+                            for cmd in &mut instances {
+                                if let broadside_engine::gfx::DrawCommand::LoftShip(lq) = cmd {
+                                    if ship_ids.iter().any(|id| lq.ship_id.as_str() == id.as_str())
+                                    {
+                                        lq.hull_scale_mul = depth_scale;
+                                    }
+                                }
+                            }
                         } else {
                             // Grid wireframe only — Bruce look-flag default
                             // for N+3.

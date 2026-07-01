@@ -1500,18 +1500,24 @@ fn main() {
                         None,
                         0.0,
                     );
-                    // N+3: grid-only, 2× depth, 0.35× alpha
-                    broadside_engine::hud::push_upcoming_grid_2d(
+                    // N+3: ships (PREVIEW_LAYER_SHIPS[2] now true), 2× depth, 0.35× alpha.
+                    // (#221) Scaled up so hulls are visible at 2× depth.
+                    broadside_engine::hud::prepend_upcoming_board_with_loft_2d_staggered_with_rest(
                         &mut commands,
                         &cfg,
                         base_z * 2.0,
+                        base_z * 2.0,
                         p_cols,
                         p_rows,
+                        &preview_ids,
+                        &preview_spawns,
+                        &gfx,
                         base_a * 0.35,
+                        None,
                         0.0,
                     );
                     log::info!(
-                        "capture: 3-layer preview (BROADSIDE_LAYERS=1): N+1 z={:+.3} α={:.3} | N+2 z={:+.3} α={:.3} | N+3 grid-only z={:+.3} α={:.3}",
+                        "capture: 3-layer preview (BROADSIDE_LAYERS=1): N+1 z={:+.3} α={:.3} | N+2 z={:+.3} α={:.3} | N+3 ships z={:+.3} α={:.3}",
                         z_offset,
                         tint_alpha,
                         base_z * 1.5,
