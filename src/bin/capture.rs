@@ -1574,6 +1574,66 @@ fn main() {
             }
         }
     }
+    // (#336 looming boss capture probe) BROADSIDE_BOSS_REMAINING=N renders the
+    // sector-boss pane at the depth matching `remaining` encounters left before
+    // the boss, using the same depth/alpha curve as the live bin. Requires
+    // BROADSIDE_LAYERS=1 (the parallax stack must be active for context).
+    // N=4 → max depth (far/faint), N=2 → handoff (bright, almost N+1),
+    // N=1 → skipped (boss is N+1 in the normal preview stack).
+    if let Some(boss_remaining) = std::env::var("BROADSIDE_BOSS_REMAINING")
+        .ok()
+        .and_then(|s| s.parse::<u32>().ok())
+    {
+        if boss_remaining >= 2 {
+            let base_rest_z = broadside_engine::gfx::preview_z_offset();
+            let base_alpha = broadside_engine::gfx::preview_tint_alpha();
+            const BOSS_MAX_DEPTH_MULT: f32 = 3.5;
+            const BOSS_HANDOFF_DEPTH_MULT: f32 = 2.2;
+            const BOSS_MAX_ALPHA_MULT: f32 = 0.40;
+            const BOSS_HANDOFF_ALPHA_MULT: f32 = 0.75;
+            let max_remaining = broadside_engine::runs::ENCOUNTERS_PER_SECTOR;
+            let span = (max_remaining - 2).max(1) as f32;
+            let far_frac = ((boss_remaining - 2) as f32 / span).clamp(0.0, 1.0);
+            let boss_z = base_rest_z
+                * (BOSS_HANDOFF_DEPTH_MULT
+                    + (BOSS_MAX_DEPTH_MULT - BOSS_HANDOFF_DEPTH_MULT) * far_frac);
+            let boss_alpha = base_alpha
+                * (BOSS_HANDOFF_ALPHA_MULT
+                    + (BOSS_MAX_ALPHA_MULT - BOSS_HANDOFF_ALPHA_MULT) * far_frac);
+            // Use the canonical boss encounter dims (5x4) and a stand-in Pair
+            // boss spawn (matches runs::generate_campaign boss layout).
+            let boss_cols = broadside_engine::grid::COLS;
+            let boss_rows = broadside_engine::grid::ROWS;
+            // Pair capital: head at (mid, 0), tail at (mid, 1) facing Bow(S)
+            let mid = boss_cols / 2;
+            let spawns = vec![Pos::new(mid, 0), Pos::new(mid, 1)];
+            let ship_ids: Vec<String> = spawns
+                .iter()
+                .map(|s| format!("boss@{}", s.to_index()))
+                .collect();
+            broadside_engine::hud::prepend_upcoming_board_with_loft_2d_staggered_with_rest(
+                &mut commands,
+                &cfg,
+                boss_z,
+                boss_z,
+                boss_cols,
+                boss_rows,
+                &ship_ids,
+                &spawns,
+                &gfx,
+                boss_alpha,
+                None,
+                0.0,
+            );
+            log::info!(
+                "capture: boss pane remaining={boss_remaining} far_frac={far_frac:.3} z={boss_z:.3} alpha={boss_alpha:.3}"
+            );
+        } else {
+            log::info!(
+                "capture: boss pane skipped (remaining={boss_remaining} < 2 — boss is N+1 or live)"
+            );
+        }
+    }
     // (team-lead 2026-06-29) READY-glow proof: when a queue is present (the
     // QUEUE_DEMO branch above queued the player + enemy mount weapons), run
     // one CombatVfx pass so emit_ready_glow paints its small per-mount red
