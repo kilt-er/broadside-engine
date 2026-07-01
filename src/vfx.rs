@@ -1226,9 +1226,15 @@ const READY_GLOW_HZ: f32 = 1.5;
 /// `local_t` is the post-delay 0→1 lifetime fraction (the caller subtracts
 /// `start_delay` from the effect age + divides by `life_secs`). Eased
 /// fade-in/fade-out: alpha = `peak_alpha · sin(π · t)`, so it ramps up then
-/// settles symmetrically over the life. Drawn as a single `SOLID_WHITE` quad at
-/// the cell centre, sized to the cell's near-edge width so the highlight tracks
-/// live cell scale (#195) + camera zoom (#192) automatically.
+/// settles symmetrically over the life. Drawn as a single `PARTICLE_CIRCLE`
+/// quad at the cell centre, sized to the cell's near-edge width so the
+/// highlight tracks live cell scale (#195) + camera zoom (#192) automatically.
+///
+/// (#321 render half 2026-06-30) Swap `SOLID_WHITE` → `PARTICLE_CIRCLE` to
+/// match [`emit_explosion`]'s #301 fix: the reflection was the sibling layer
+/// #301 missed, so surviving-ship cells still rendered a large axis-aligned
+/// square instead of a round bloom. Same per-layer alpha/size/curve math;
+/// only the atlas UV cell changed.
 fn emit_reflection_glow(
     out: &mut Vec<DrawCommand>,
     cfg_proj: &ProjectorConfig,
@@ -1248,7 +1254,7 @@ fn emit_reflection_glow(
         q.center,
         [size / 2.0, size / 2.0],
         [c[0], c[1], c[2], alpha],
-        atlas::cell_uvs(atlas::SOLID_WHITE),
+        atlas::cell_uvs(atlas::PARTICLE_CIRCLE),
     )));
 }
 
