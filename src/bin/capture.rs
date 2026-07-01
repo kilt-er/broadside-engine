@@ -1586,20 +1586,19 @@ fn main() {
     {
         if boss_remaining >= 2 {
             let base_rest_z = broadside_engine::gfx::preview_z_offset();
-            let base_alpha = broadside_engine::gfx::preview_tint_alpha();
-            const BOSS_MAX_DEPTH_MULT: f32 = 3.5;
-            const BOSS_HANDOFF_DEPTH_MULT: f32 = 2.2;
-            const BOSS_MAX_ALPHA_MULT: f32 = 0.40;
-            const BOSS_HANDOFF_ALPHA_MULT: f32 = 0.75;
+            const BOSS_MAX_DEPTH_MULT: f32 = 2.5;
+            const BOSS_HANDOFF_DEPTH_MULT: f32 = 2.1;
+            // Absolute alpha values — NOT multiplied by preview_tint_alpha()
+            // (double-dimming made the boss invisible at 0.12 effective alpha).
+            const BOSS_MAX_ALPHA: f32 = 0.55;
+            const BOSS_HANDOFF_ALPHA: f32 = 0.85;
             let max_remaining = broadside_engine::runs::ENCOUNTERS_PER_SECTOR;
             let span = (max_remaining - 2).max(1) as f32;
             let far_frac = ((boss_remaining - 2) as f32 / span).clamp(0.0, 1.0);
             let boss_z = base_rest_z
                 * (BOSS_HANDOFF_DEPTH_MULT
                     + (BOSS_MAX_DEPTH_MULT - BOSS_HANDOFF_DEPTH_MULT) * far_frac);
-            let boss_alpha = base_alpha
-                * (BOSS_HANDOFF_ALPHA_MULT
-                    + (BOSS_MAX_ALPHA_MULT - BOSS_HANDOFF_ALPHA_MULT) * far_frac);
+            let boss_alpha = BOSS_HANDOFF_ALPHA + (BOSS_MAX_ALPHA - BOSS_HANDOFF_ALPHA) * far_frac;
             // Use the canonical boss encounter dims (5x4) and a stand-in Pair
             // boss spawn (matches runs::generate_campaign boss layout).
             let boss_cols = broadside_engine::grid::COLS;

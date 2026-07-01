@@ -1045,32 +1045,32 @@ const PREVIEW_LAYER_SHIPS: [bool; 3] = [true, true, false];
 /// **DESIGN FLAG (Bruce):** default depth stack maxes at 3.5× the base
 /// `preview_z_offset` (deeper than N+3 at 2.0×). Dial via the same `Z`/`X`
 /// keys that drive the base — the multipliers scale.
-const BOSS_MAX_DEPTH_MULT: f32 = 3.5;
-const BOSS_HANDOFF_DEPTH_MULT: f32 = 2.2;
+/// (#336 fix 2026-07-01) Boss pane depth range. Must sit BEYOND N+3 (2.0×)
+/// so the layering reads far→near: N+3 < boss-far ≤ boss-near.
+/// 2.5× keeps it past N+3 while staying within the projector's visible
+/// horizon band (3.5× was sub-pixel at the vanishing point). 2.1× is the
+/// handoff (remaining=2), just one step past N+3, so the grid is clearly
+/// readable and the transition to N+1 at 1.0× is a noticeable loom.
+const BOSS_MAX_DEPTH_MULT: f32 = 2.5;
+const BOSS_HANDOFF_DEPTH_MULT: f32 = 2.1;
 
-/// (#336) Alpha multipliers matching the depth curve. Grows FASTER than the
-/// depth shrinks so the boss reads as "getting brighter as it looms closer"
-/// per Bruce's ruling. Alpha at max depth is dim (atmospheric horizon menace);
-/// alpha at handoff is close to N+2's brightness so the transition to N+1
-/// preview reads as continuous.
-///
-/// **DESIGN FLAG (Bruce):** default alpha stack — at max depth 0.40× base
-/// preview alpha (subtle horizon presence), at handoff 0.75× (nearly at
-/// N+1's brightness). Bruce can eyeball + dial.
-const BOSS_MAX_ALPHA_MULT: f32 = 0.40;
-const BOSS_HANDOFF_ALPHA_MULT: f32 = 0.75;
+/// (#336 fix 2026-07-01) Boss pane alpha — ABSOLUTE values, NOT multiplied
+/// by `preview_tint_alpha()`. The prior design multiplied by `base_alpha`
+/// (0.30 boot default) which double-dimmed to 0.12–0.23 and made the pane
+/// invisible. The wireframe IS alpha-controlled so these values land directly
+/// on the stroke colour channel: 0.55 (faint horizon menace at max depth) →
+/// 0.85 (clearly legible at handoff, about to become N+1).
+const BOSS_MAX_ALPHA: f32 = 0.55;
+const BOSS_HANDOFF_ALPHA: f32 = 0.85;
 
-/// (#336) Whether the boss pane shows the actual hull or just a grid
-/// wireframe. Grid-only would communicate "boss encounter is out there" via
-/// a scaled grid alone — which is what N+3 does at 2×. But the whole POINT
-/// of the looming boss is that Bruce sees the ACTUAL Pair capital brooding
-/// on the horizon, so default is ships-on. If the deepest render turns out
-/// too crowded (esp. once the future Pair-scale=2× is wired) Bruce can flip
-/// this to `false` for grid-only.
-///
-/// **DESIGN FLAG (Bruce):** ships-on default. Flip if the hull at max depth
-/// reads as noise.
-const BOSS_PANE_SHOWS_SHIPS: bool = true;
+/// (#336 fix 2026-07-01) Grid-wireframe-only — the loft hull path has no
+/// per-instance alpha: `LoftShipInstance` carries no tint field and
+/// `render_unified_ships` renders every hull at full opacity into the shared
+/// scene texture. Enabling ships-on caused the hull to overdraw at full
+/// brightness (uncontrolled), while the wireframe the alpha values tuned
+/// was invisible at 0.12. Grid-only lets the alpha curve drive legibility.
+/// Bruce can flip to `true` once a hull tint path is wired into `loft_gpu`.
+const BOSS_PANE_SHOWS_SHIPS: bool = false;
 
 /// (#327) After this many consecutive `SurfaceError`s (any variant that isn't
 /// caught by the Lost/Outdated reconfigure path) the `RedrawRequested` arm stops
@@ -4654,7 +4654,6 @@ impl ApplicationHandler for App {
                     {
                         if remaining >= 2 {
                             let base_rest_z = broadside_engine::gfx::preview_z_offset();
-                            let base_alpha = broadside_engine::gfx::preview_tint_alpha();
                             // Normalize `remaining` into [0, 1] where 0 = the
                             // handoff frame (remaining=2, boss about to
                             // become N+2 next round) and 1 = "just entered
@@ -4666,11 +4665,11 @@ impl ApplicationHandler for App {
                             let boss_z = base_rest_z
                                 * (BOSS_HANDOFF_DEPTH_MULT
                                     + (BOSS_MAX_DEPTH_MULT - BOSS_HANDOFF_DEPTH_MULT) * far_frac);
-                            // Alpha: bigger remaining → dimmer (brighter as
-                            // it looms).
-                            let boss_alpha = base_alpha
-                                * (BOSS_HANDOFF_ALPHA_MULT
-                                    + (BOSS_MAX_ALPHA_MULT - BOSS_HANDOFF_ALPHA_MULT) * far_frac);
+                            // Alpha: absolute value (NOT multiplied by
+                            // preview_tint_alpha — that double-dims to
+                            // invisible). Bigger remaining → dimmer.
+                            let boss_alpha = BOSS_HANDOFF_ALPHA
+                                + (BOSS_MAX_ALPHA - BOSS_HANDOFF_ALPHA) * far_frac;
                             let cols = boss_enc.dims.cols;
                             let rows = boss_enc.dims.rows;
                             if BOSS_PANE_SHOWS_SHIPS {
