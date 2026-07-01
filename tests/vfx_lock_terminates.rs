@@ -229,7 +229,19 @@ fn explosion_plus_reflections_drain_within_safety_cap() {
     // Maximal chebyshev distance on the 5×4 grid is 4, so max
     // reflection dur = 4×0.08 + 0.45 = 0.77 s — the analytic upper bound
     // the SAFETY_CAP_SECS envelope is sized for.
-    let mut vfx = CombatVfx::new();
+    //
+    // (#321 Bruce ruling 2026-07-01) Default `ExplosionReflection.peak_alpha`
+    // is now 0.0 (the cell-floor glow was ruled the wrong mechanism, hull-
+    // surface tinting via ExplosionLight is the real reflection). The
+    // auto-cascade gate in CombatVfx::observe skips the reflection spawn
+    // when peak_alpha == 0, which would collapse this test's analytic bound
+    // to just the explosion's 0.55 s. Reconfigure peak_alpha > 0 explicitly
+    // so this test STILL exercises the reflection drain path it's asserting
+    // — the invariant "auto-cascaded reflections drain in bounded time"
+    // stays under test whether the default is on or off.
+    let mut cfg = broadside_engine::vfx::VfxConfig::default();
+    cfg.explosion_reflection.peak_alpha = 0.35;
+    let mut vfx = CombatVfx::with_config(cfg);
     let mut board = empty_default_board();
     // Player at front-centre, doomed enemy at the OPPOSITE corner so
     // chebyshev(blast, player) = max possible on the default grid.
