@@ -1045,23 +1045,23 @@ const PREVIEW_LAYER_SHIPS: [bool; 3] = [true, true, true];
 /// **DESIGN FLAG (Bruce):** default depth stack maxes at 3.5× the base
 /// `preview_z_offset` (deeper than N+3 at 2.0×). Dial via the same `Z`/`X`
 /// keys that drive the base — the multipliers scale.
-/// (#336 fix 2026-07-01) Boss pane depth range. Must sit BEYOND N+3 (2.0×)
-/// so the layering reads far→near: N+3 < boss-far ≤ boss-near.
-/// 2.5× keeps it past N+3 while staying within the projector's visible
-/// horizon band (3.5× was sub-pixel at the vanishing point). 2.1× is the
-/// handoff (remaining=2), just one step past N+3, so the grid is clearly
-/// readable and the transition to N+1 at 1.0× is a noticeable loom.
-const BOSS_MAX_DEPTH_MULT: f32 = 2.5;
-const BOSS_HANDOFF_DEPTH_MULT: f32 = 2.1;
+/// (#336 exaggerated loom 2026-07-01) Boss pane depth range. Must sit BEYOND
+/// N+3 (2.0×). Wide range so the size change is clearly readable:
+///   `remaining=ENCOUNTERS_PER_SECTOR` → 4.0× (small distant menace on the horizon)
+///   `remaining=2`                     → 1.6× (clearly larger, about to become N+2)
+/// The 2.5× ratio between far and near means the hull nearly doubles in
+/// apparent height as Bruce clears each encounter — the loom is unmistakable.
+/// `hull_scale_mul` (`boss_z/base_z` × 1.4) compensates for perspective so
+/// the boss stays readable at max depth while growing visibly toward handoff.
+const BOSS_MAX_DEPTH_MULT: f32 = 4.0;
+const BOSS_HANDOFF_DEPTH_MULT: f32 = 1.6;
 
-/// (#336 fix 2026-07-01) Boss pane alpha — ABSOLUTE values, NOT multiplied
-/// by `preview_tint_alpha()`. The prior design multiplied by `base_alpha`
-/// (0.30 boot default) which double-dimmed to 0.12–0.23 and made the pane
-/// invisible. The wireframe IS alpha-controlled so these values land directly
-/// on the stroke colour channel: 0.55 (faint horizon menace at max depth) →
-/// 0.85 (clearly legible at handoff, about to become N+1).
-const BOSS_MAX_ALPHA: f32 = 0.55;
-const BOSS_HANDOFF_ALPHA: f32 = 0.85;
+/// (#336 exaggerated loom 2026-07-01) Boss pane alpha — ABSOLUTE values, NOT
+/// multiplied by `preview_tint_alpha()` (double-dimming made the pane
+/// invisible). Wide range mirrors the depth range: dim on the distant horizon
+/// (0.40, subtle threat) → bright at handoff (0.90, unmissable capital).
+const BOSS_MAX_ALPHA: f32 = 0.40;
+const BOSS_HANDOFF_ALPHA: f32 = 0.90;
 
 /// (#336) Render the real capital hull in the boss pane (full opacity is
 /// intentional — distance conveys "far"; the hull grows as encounters clear).
@@ -4746,11 +4746,11 @@ impl ApplicationHandler for App {
                                     0.0,
                                 );
                                 // (#336) Unified pass projects via 3-D perspective at
-                                // boss_z depth — tiny without a scale boost. Scale so
-                                // the capital looms ~40% larger than a warp-preview
-                                // enemy at the same depth.
+                                // boss_z depth — tiny without a scale boost. sqrt-based
+                                // sub-linear compensation: cancels ~half the depth ratio
+                                // so remaining=2 reads ~1.6× larger than remaining=4.
                                 let base_z = broadside_engine::gfx::preview_z_offset();
-                                let boss_hull_scale = (boss_z / base_z * 1.4).max(1.0);
+                                let boss_hull_scale = ((boss_z / base_z).sqrt() * 3.0).max(1.0);
                                 for cmd in &mut instances {
                                     if let broadside_engine::gfx::DrawCommand::LoftShip(lq) = cmd {
                                         if ship_ids

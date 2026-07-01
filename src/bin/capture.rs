@@ -1592,12 +1592,11 @@ fn main() {
     {
         if boss_remaining >= 2 {
             let base_rest_z = broadside_engine::gfx::preview_z_offset();
-            const BOSS_MAX_DEPTH_MULT: f32 = 2.5;
-            const BOSS_HANDOFF_DEPTH_MULT: f32 = 2.1;
-            // Absolute alpha values — NOT multiplied by preview_tint_alpha()
-            // (double-dimming made the boss invisible at 0.12 effective alpha).
-            const BOSS_MAX_ALPHA: f32 = 0.55;
-            const BOSS_HANDOFF_ALPHA: f32 = 0.85;
+            // Keep in sync with broadside.rs BOSS_MAX/HANDOFF constants.
+            const BOSS_MAX_DEPTH_MULT: f32 = 4.0;
+            const BOSS_HANDOFF_DEPTH_MULT: f32 = 1.6;
+            const BOSS_MAX_ALPHA: f32 = 0.40;
+            const BOSS_HANDOFF_ALPHA: f32 = 0.90;
             let max_remaining = broadside_engine::runs::ENCOUNTERS_PER_SECTOR;
             let span = (max_remaining - 2).max(1) as f32;
             let far_frac = ((boss_remaining - 2) as f32 / span).clamp(0.0, 1.0);
@@ -1638,12 +1637,11 @@ fn main() {
                 0.0,
             );
             // (#336) The unified pass projects the boss hull via 3-D perspective at
-            // boss_z depth (~26–31 world units), making it tiny (4–6 px). Scale it
-            // up so the looming capital appears visibly larger than the near-row
-            // enemies: scale_mul = boss_z / preview_z × 1.4 keeps it ~40% bigger
-            // than a warp-preview enemy at the same depth.
+            // boss_z depth. sqrt-based sub-linear compensation cancels ~half the
+            // depth ratio so remaining=2 reads ~1.6× larger apparent size than
+            // remaining=4 — the loom effect is clearly visible as encounters clear.
             let base_z = broadside_engine::gfx::preview_z_offset();
-            let boss_hull_scale = (boss_z / base_z * 1.4).max(1.0);
+            let boss_hull_scale = ((boss_z / base_z).sqrt() * 3.0).max(1.0);
             for cmd in &mut commands {
                 if let broadside_engine::gfx::DrawCommand::LoftShip(lq) = cmd {
                     if ship_ids.iter().any(|id| lq.ship_id.as_str() == id.as_str()) {
