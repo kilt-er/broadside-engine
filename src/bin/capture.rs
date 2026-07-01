@@ -1610,6 +1610,13 @@ fn main() {
                 .iter()
                 .map(|s| format!("boss@{}", s.to_index()))
                 .collect();
+            // (#336) Register loft poses so render_unified_fleet finds them (None
+            // pose → silent skip, hull stays invisible even with SHOWS_SHIPS=true).
+            // Boss faces S (BowOn Aft) — head (row 0) + tail (row 1) same facing.
+            let boss_orientation = Orientation::BowOn { bow: LaneEnd::Aft };
+            for id in &ship_ids {
+                gfx.sync_loft_pose(id, boss_orientation);
+            }
             broadside_engine::hud::prepend_upcoming_board_with_loft_2d_staggered_with_rest(
                 &mut commands,
                 &cfg,
@@ -1624,8 +1631,22 @@ fn main() {
                 None,
                 0.0,
             );
+            // (#336) The unified pass projects the boss hull via 3-D perspective at
+            // boss_z depth (~26–31 world units), making it tiny (4–6 px). Scale it
+            // up so the looming capital appears visibly larger than the near-row
+            // enemies: scale_mul = boss_z / preview_z × 1.4 keeps it ~40% bigger
+            // than a warp-preview enemy at the same depth.
+            let base_z = broadside_engine::gfx::preview_z_offset();
+            let boss_hull_scale = (boss_z / base_z * 1.4).max(1.0);
+            for cmd in &mut commands {
+                if let broadside_engine::gfx::DrawCommand::LoftShip(lq) = cmd {
+                    if ship_ids.iter().any(|id| lq.ship_id.as_str() == id.as_str()) {
+                        lq.hull_scale_mul = boss_hull_scale;
+                    }
+                }
+            }
             log::info!(
-                "capture: boss pane remaining={boss_remaining} far_frac={far_frac:.3} z={boss_z:.3} alpha={boss_alpha:.3}"
+                "capture: boss pane remaining={boss_remaining} far_frac={far_frac:.3} z={boss_z:.3} alpha={boss_alpha:.3} hull_scale_mul={boss_hull_scale:.2}"
             );
         } else {
             log::info!(

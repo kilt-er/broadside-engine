@@ -1063,14 +1063,9 @@ const BOSS_HANDOFF_DEPTH_MULT: f32 = 2.1;
 const BOSS_MAX_ALPHA: f32 = 0.55;
 const BOSS_HANDOFF_ALPHA: f32 = 0.85;
 
-/// (#336 fix 2026-07-01) Grid-wireframe-only — the loft hull path has no
-/// per-instance alpha: `LoftShipInstance` carries no tint field and
-/// `render_unified_ships` renders every hull at full opacity into the shared
-/// scene texture. Enabling ships-on caused the hull to overdraw at full
-/// brightness (uncontrolled), while the wireframe the alpha values tuned
-/// was invisible at 0.12. Grid-only lets the alpha curve drive legibility.
-/// Bruce can flip to `true` once a hull tint path is wired into `loft_gpu`.
-const BOSS_PANE_SHOWS_SHIPS: bool = false;
+/// (#336) Render the real capital hull in the boss pane (full opacity is
+/// intentional — distance conveys "far"; the hull grows as encounters clear).
+const BOSS_PANE_SHOWS_SHIPS: bool = true;
 
 /// (#327) After this many consecutive `SurfaceError`s (any variant that isn't
 /// caught by the Lost/Outdated reconfigure path) the `RedrawRequested` arm stops
@@ -4680,6 +4675,12 @@ impl ApplicationHandler for App {
                                     .iter()
                                     .map(|s| format!("{}@{}", s.class_id, s.cell))
                                     .collect();
+                                // (#336) Register a loft pose for each boss hull so
+                                // render_unified_fleet_to_output finds it (None pose →
+                                // silent skip, hull invisible).
+                                for (id, s) in ship_ids.iter().zip(&boss_enc.enemy_ships) {
+                                    gfx.sync_loft_pose(id, s.orientation);
+                                }
                                 hud::prepend_upcoming_board_with_loft_2d_staggered_with_rest(
                                     &mut instances,
                                     &scene_cfg,
@@ -4694,6 +4695,22 @@ impl ApplicationHandler for App {
                                     None,
                                     0.0,
                                 );
+                                // (#336) Unified pass projects via 3-D perspective at
+                                // boss_z depth — tiny without a scale boost. Scale so
+                                // the capital looms ~40% larger than a warp-preview
+                                // enemy at the same depth.
+                                let base_z = broadside_engine::gfx::preview_z_offset();
+                                let boss_hull_scale = (boss_z / base_z * 1.4).max(1.0);
+                                for cmd in &mut instances {
+                                    if let broadside_engine::gfx::DrawCommand::LoftShip(lq) = cmd {
+                                        if ship_ids
+                                            .iter()
+                                            .any(|id| lq.ship_id.as_str() == id.as_str())
+                                        {
+                                            lq.hull_scale_mul = boss_hull_scale;
+                                        }
+                                    }
+                                }
                             } else {
                                 hud::push_upcoming_grid_2d(
                                     &mut instances,
