@@ -2400,27 +2400,42 @@ pub fn add_status(cell: usize, kind: StatusKind, duration: i32, board: &mut Boar
 /// duration reaches 0. Mirrors `tickStatuses` in `resolve.ts`. Takes content
 /// because a hull-breach kill routes through [`destroy`].
 fn tick_statuses(cell: usize, board: &mut Board, content: &dyn Content) {
-    let mut hull_breach_destroyed = false;
+    // Snapshot what we need before any mutable operations (borrow discipline).
+    let (breach_hits, ship_pos) = if let Some(ship) = board.cells[cell].as_ref() {
+        let hits = ship
+            .statuses
+            .iter()
+            .filter(|s| s.kind == StatusKind::HullBreach)
+            .count() as i32;
+        (hits, ship.pos)
+    } else {
+        return;
+    };
+
+    // Pre-tick effects: hullBreach does 1 damage per turn before its
+    // duration decrements (matches TS order). Route through apply_damage_2d
+    // so the hit soaks the shield pool before reaching hull (#224 bypass fix).
+    // A dummy attacker at the ship's own pos gives a same-cell hit (no
+    // directional zone → Bow face, consistent with the original direct-hull
+    // subtract which had no shield zone at all).
+    if breach_hits > 0 {
+        apply_damage_2d(
+            ship_pos,
+            breach_hits,
+            ship_pos,
+            &dummy_weapon(),
+            board,
+            content,
+        );
+    }
+
+    // Expire statuses. The ship may now be gone (breach killed it via
+    // apply_damage_2d → destroy above) — guard the borrow.
     if let Some(ship) = board.cells[cell].as_mut() {
-        // Pre-tick effects: hullBreach does 1 damage per turn before its
-        // duration decrements (matches TS order).
-        let mut breach_hits = 0;
-        for s in &ship.statuses {
-            if s.kind == StatusKind::HullBreach {
-                breach_hits += 1;
-            }
-        }
-        ship.hull -= breach_hits;
-        if ship.hull <= 0 {
-            hull_breach_destroyed = true;
-        }
         for s in &mut ship.statuses {
             s.duration -= 1;
         }
         ship.statuses.retain(|s| s.duration > 0);
-    }
-    if hull_breach_destroyed {
-        destroy(cell, board, content);
     }
 }
 
@@ -2490,15 +2505,19 @@ pub fn destroy(cell: usize, board: &mut Board, content: &dyn Content) {
     board.destroys_this_window += 1;
 
     if has_reactor_breach {
+        // 2-D cardinal splash: walk all 4 cardinal neighbours from the primary
+        // pos and apply 2 damage to any occupied cell through apply_damage_2d
+        // so shield soak applies (#224 bypass fix — the old flat-index ±1 walk
+        // used the dead 1-D apply_damage path).
+        let owner_pos = Pos::from_index_in(owner_cell, dims).unwrap_or(Pos::new(0, 0));
         let dummy = dummy_weapon();
-        for delta in [-1i32, 1] {
-            let nc = owner_cell as i32 + delta;
-            if nc < 0 || (nc as usize) >= board.size {
+        use crate::grid::Dir8;
+        for dir in [Dir8::N, Dir8::S, Dir8::E, Dir8::W] {
+            let Some(nb_pos) = crate::grid::offset_in(owner_pos, dir, 1, dims) else {
                 continue;
-            }
-            let nc = nc as usize;
-            if board.cells[nc].is_some() {
-                apply_damage(nc, 2, owner_cell, &dummy, board, content);
+            };
+            if board.ship_at(nb_pos).is_some() {
+                apply_damage_2d(nb_pos, 2, owner_pos, &dummy, board, content);
             }
         }
     }
@@ -3574,7 +3593,7 @@ mod tests {
     // it lives in this test module — importing it at the top would be an
     // `unused_imports` warning in the non-test build (the resolver's only
     // former top-level use was the cell-0 arc allowlist removed in #96).
-    use crate::types::{ActionCost, Arc, EventBus, Mount, Orientation, ShieldProfile};
+    use crate::types::{ActionCost, Arc, EventBus, Mount, Orientation, ShieldFace, ShieldProfile};
     use std::collections::HashMap;
 
     /// Empty content for tests that don't invoke action lookups or spawns.
@@ -4538,6 +4557,29 @@ mod tests {
     #[test]
     fn hull_breach_status_ticks_damage_and_expires() {
         let mut scout = make_ship("scout", Faction::Enemy, 1, 5, LaneEnd::Fore);
+        // Naked shields (armour=0 on all faces) so that the EOT shield-regen pass
+        // adds no charge before tick_statuses runs. Without this, the regen would
+        // refill the bow pool by 1, the breach hit soaks into it, and hull stays
+        // untouched — which is correct gameplay behaviour but breaks a test that
+        // was written assuming the old shield-bypass path (#224 fix side-effect).
+        scout.shield_profile = ShieldProfile {
+            bow: ShieldFace {
+                armour: 0,
+                charge: 0,
+            },
+            stern: ShieldFace {
+                armour: 0,
+                charge: 0,
+            },
+            port: ShieldFace {
+                armour: 0,
+                charge: 0,
+            },
+            starboard: ShieldFace {
+                armour: 0,
+                charge: 0,
+            },
+        };
         scout.statuses.push(Status {
             kind: StatusKind::HullBreach,
             duration: 2,
@@ -4583,6 +4625,28 @@ mod tests {
 
         // Hull 1 + a hullBreach: the tick deals 1, hull -> 0, destroy fires.
         let mut scout = make_ship("scout", Faction::Enemy, 1, 1, LaneEnd::Fore);
+        // Naked shields so EOT regen adds no charge before tick_statuses runs
+        // (#224 fix: breach now routes through apply_damage_2d which soaks
+        // against the shield pool first; without this the regen'd bow charge
+        // absorbs the hit and hull never reaches 0).
+        scout.shield_profile = ShieldProfile {
+            bow: ShieldFace {
+                armour: 0,
+                charge: 0,
+            },
+            stern: ShieldFace {
+                armour: 0,
+                charge: 0,
+            },
+            port: ShieldFace {
+                armour: 0,
+                charge: 0,
+            },
+            starboard: ShieldFace {
+                armour: 0,
+                charge: 0,
+            },
+        };
         scout.statuses.push(Status {
             kind: StatusKind::HullBreach,
             duration: 3,

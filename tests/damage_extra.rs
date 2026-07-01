@@ -73,11 +73,11 @@ fn ship_with_armour(
         shield_profile: ShieldProfile {
             bow: ShieldFace {
                 armour: bow_armour,
-                charge: 0,
+                charge: bow_armour, // pool starts at capacity
             },
             stern: ShieldFace {
                 armour: stern_armour,
-                charge: 0,
+                charge: stern_armour,
             },
             port: ShieldFace {
                 armour: 0,
@@ -184,18 +184,25 @@ fn d1_plain_ship_death_does_not_splash_neighbours() {
 #[test]
 fn d3_reactor_breach_splash_is_reduced_by_neighbour_armour() {
     // v@2 has ReactorBreach. Splash deals 2 to each neighbour THROUGH the
-    // damage pipeline. The neighbours face bow=Fore, and the splash arrives
-    // from cell 2 — for the LEFT neighbour (cell 1) the hit comes from the
-    // Fore direction (2 > 1) => its BOW zone; for the RIGHT neighbour (cell 3)
-    // it comes from the Aft direction (2 < 3) => its STERN zone.
+    // 2-D damage pipeline (apply_damage_2d). The board is a single row so
+    // cell indices map to col positions: cell 1 = Pos(1,0), cell 2 = Pos(2,0),
+    // cell 3 = Pos(3,0). Splash radiates from Pos(2,0).
     //
-    // Give the left neighbour bow armour 1 (takes 2-1=1) and the right
-    // neighbour stern armour 0 (takes the full 2). If splash were a raw
-    // `hull -= 2`, the left neighbour would drop to 3 instead of 4 — so the
-    // 4 vs 3 distinction is exactly the "routes through absorb_shield" proof.
-    let left = ship_with_armour("l", 1, 5, /*bow*/ 1, /*stern*/ 0, vec![]);
+    // LEFT neighbour (cell 1): splash arrives from E (col 2 → col 1).
+    //   With Bow(E) facing, incoming E → Bow zone (rel=0). Bow armour 1
+    //   soaks 1; only 1 hull damage → 5-1=4.
+    // RIGHT neighbour (cell 3): splash arrives from W (col 2 → col 3).
+    //   With Bow(E) facing, incoming W → Stern zone (rel=4). Stern armour 0
+    //   → full 2 hull damage → 5-2=3.
+    //
+    // If splash were a raw `hull -= 2`, the left neighbour would drop to 3
+    // instead of 4 — the 4 vs 3 distinction is exactly the
+    // "routes through absorb_shield" proof.
+    let mut left = ship_with_armour("l", 1, 5, /*bow*/ 1, /*stern*/ 0, vec![]);
+    left.facing = broadside_engine::grid::Facing::Bow(broadside_engine::grid::Dir4::E);
     let victim = ship_with_armour("v", 2, 1, 0, 0, vec![Trait::ReactorBreach]);
-    let right = ship_with_armour("r", 3, 5, /*bow*/ 0, /*stern*/ 0, vec![]);
+    let mut right = ship_with_armour("r", 3, 5, /*bow*/ 0, /*stern*/ 0, vec![]);
+    right.facing = broadside_engine::grid::Facing::Bow(broadside_engine::grid::Dir4::E);
     let mut b = board(5, vec![None, Some(left), Some(victim), Some(right), None]);
 
     destroy(2, &mut b, &NoContent);

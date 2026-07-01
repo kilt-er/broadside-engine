@@ -564,3 +564,159 @@ fn ordnance_damage_lands_on_the_exact_world_phase_it_reaches_the_target() {
         "phase 3: the torpedo is consumed on impact"
     );
 }
+
+/* =========================================================================
+ * 7. SHIELD BYPASS GUARDS (#224): every non-direct-fire damage source
+ *    must route through apply_damage_2d so shield soak applies.
+ * ====================================================================== */
+
+/// HullBreach status damage (tick_statuses) must deplete the shield pool
+/// BEFORE reaching hull. A ship with 1 HullBreach and a full 3-charge bow
+/// pool takes no hull damage from one tick (the 1 point is absorbed entirely
+/// by the shield pool). Without the fix, the old direct `ship.hull -= breach_hits`
+/// would skip the shield and decrement hull directly.
+#[test]
+fn hull_breach_tick_soaks_shield_before_hull() {
+    use broadside_engine::grid::{Dir4, Facing, Pos};
+    use broadside_engine::resolve::end_of_turn;
+    use broadside_engine::types::{Status, StatusKind};
+
+    let mut target = ship_2d(
+        "tgt",
+        Faction::Enemy,
+        Pos::new(2, 1),
+        10,
+        Facing::Bow(Dir4::N),
+        Arc::Forward,
+        "noop",
+    );
+    // Full 3-charge bow pool; all other faces empty.
+    target.shield_profile = one_full_face("bow", 3);
+    // One HullBreach status — deals 1 damage per tick.
+    target.statuses.push(Status {
+        kind: StatusKind::HullBreach,
+        duration: 3,
+        face: None,
+    });
+    let mut board = board_2d(vec![target]);
+
+    end_of_turn(&mut board, &NoMod);
+
+    // Hull must be untouched: the 1-point breach hit soaked into the bow pool.
+    assert_eq!(
+        hull(&board, "tgt"),
+        10,
+        "1 breach hit is fully soaked by the bow shield pool (hull stays 10)"
+    );
+    // Bow pool depleted by exactly 1.
+    assert_eq!(
+        bow_charge(&board, "tgt"),
+        2,
+        "the bow pool absorbs the breach hit: 3 -> 2"
+    );
+}
+
+/// When the shield pool is empty, HullBreach damage bleeds through to hull.
+/// This guards the post-soak hull-subtraction path: pool=0 → full overflow.
+#[test]
+fn hull_breach_tick_bleeds_to_hull_when_pool_empty() {
+    use broadside_engine::grid::{Dir4, Facing, Pos};
+    use broadside_engine::resolve::end_of_turn;
+    use broadside_engine::types::{Status, StatusKind};
+
+    let mut target = ship_2d(
+        "tgt",
+        Faction::Enemy,
+        Pos::new(2, 1),
+        10,
+        Facing::Bow(Dir4::N),
+        Arc::Forward,
+        "noop",
+    );
+    target.shield_profile = naked_shields(); // all pools empty
+    target.statuses.push(Status {
+        kind: StatusKind::HullBreach,
+        duration: 3,
+        face: None,
+    });
+    let mut board = board_2d(vec![target]);
+
+    end_of_turn(&mut board, &NoMod);
+
+    assert_eq!(
+        hull(&board, "tgt"),
+        9,
+        "no pool to soak: 1 breach hit reaches hull directly (10 -> 9)"
+    );
+}
+
+/// ReactorBreach splash on destroy must route through apply_damage_2d so the
+/// neighbour's shield pool soaks the 2-point splash before it reaches hull.
+/// A ship with a full 3-charge bow faces north; when the enemy to its south
+/// (bearing S from target's perspective = bow face via facing_zone) is
+/// destroyed with ReactorBreach, the 2-point splash lands on the bow face
+/// and is absorbed by the pool.
+#[test]
+fn reactor_breach_splash_soaks_shield_before_hull() {
+    use broadside_engine::grid::{Dir4, Facing, Pos};
+    use broadside_engine::resolve::destroy;
+    use broadside_engine::types::Trait;
+
+    // Player at (2,1) Bow(N). Enemy at (2,2) directly to its south = the
+    // splash arrives from the south → lands on the player's STERN face.
+    // Use stern pool so we can tell exactly which face absorbed it.
+    let mut player = ship_2d(
+        "p",
+        Faction::Player,
+        Pos::new(2, 1),
+        20,
+        Facing::Bow(Dir4::N),
+        Arc::Forward,
+        "noop",
+    );
+    // Stern pool = 3 (the face a hit from the south lands on for a Bow(N) ship).
+    let mut shields = naked_shields();
+    shields.stern = broadside_engine::types::ShieldFace {
+        armour: 3,
+        charge: 3,
+    };
+    player.shield_profile = shields;
+
+    let mut enemy = ship_2d(
+        "e",
+        Faction::Enemy,
+        Pos::new(2, 2),
+        5,
+        Facing::Bow(Dir4::S),
+        Arc::Forward,
+        "noop",
+    );
+    enemy.traits.push(Trait::ReactorBreach);
+
+    let mut board = board_2d(vec![player, enemy]);
+
+    // Destroy the enemy — this triggers ReactorBreach splash.
+    let enemy_cell = Pos::new(2, 2).to_index();
+    destroy(enemy_cell, &mut board, &NoMod);
+
+    // Player hull must be untouched: the 2-point splash soaked into the stern pool.
+    assert_eq!(
+        hull(&board, "p"),
+        20,
+        "reactor splash (2pts) is fully soaked by the stern pool (hull stays 20)"
+    );
+    // Stern pool depleted from 3 to 1 (absorbed 2).
+    let stern_charge = board
+        .cells
+        .iter()
+        .flatten()
+        .find(|s| s.id == "p")
+        .unwrap()
+        .shield_profile
+        .stern
+        .charge;
+    assert_eq!(
+        stern_charge, 1,
+        "the stern pool absorbed 2 of the splash: 3 -> 1"
+    );
+}
