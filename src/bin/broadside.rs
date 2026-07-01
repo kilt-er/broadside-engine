@@ -935,6 +935,21 @@ const EXPLOSION_PARTICLE_COLOR: [f32; 4] = [1.0, 0.72, 0.32, 1.0];
 /// just locked for the brief playback. Tunable (Bruce dials the feel).
 const BEAT_SECS: f32 = 0.5;
 
+/// (#327) After this many consecutive `SurfaceError`s (any variant that isn't
+/// caught by the Lost/Outdated reconfigure path) the `RedrawRequested` arm stops
+/// re-requesting the next frame. Without this the #47 continuous-redraw loop
+/// spun at CPU speed on a persistently-broken surface (`SurfaceError::Other`
+/// every frame) and pegged Bruce's machine. Recovery: a resize / keypress /
+/// window event will reset the counter and resume the redraw cadence.
+const SURFACE_ERR_BACKOFF_THRESHOLD: u32 = 4;
+
+/// (#327) Minimum wall-clock gap between surface-error log lines. The catch-all
+/// arm previously logged every frame on a persistent error; that log-flood was
+/// itself part of the machine-halt. First error prints immediately; subsequent
+/// errors within this window are counted and summarised in the next line
+/// ("N errors suppressed").
+const SURFACE_ERR_LOG_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// (#209 hook 3) Per-second decay rate for the kickback recoil offset.
 /// `decay = exp(-rate * dt)`, so rate = 3.5 gives ~97% loss/sec — a fast
 /// snap-back, kickback fully settles in ~0.5 s. Tunable; if Bruce wants a
@@ -1583,6 +1598,21 @@ struct App {
     /// Restart so the fresh board's bus gets the same closures.
     #[cfg(feature = "audio")]
     audio: Option<Rc<RefCell<broadside_engine::audio::AudioState>>>,
+    /// (#327) Consecutive `SurfaceError` count since the last successful
+    /// present. Bruce hit a machine-halt when a persistent `SurfaceError::Other`
+    /// combined with the #47 unconditional per-frame `request_redraw` — the
+    /// loop spun at CPU speed and flooded the debug log. Once this passes
+    /// `SURFACE_ERR_BACKOFF_THRESHOLD` the redraw request is suppressed until
+    /// a resize / input kick, so a persistently-broken surface can't peg the
+    /// machine. Reset to 0 on `Ok(())`.
+    surface_err_count: u32,
+    /// (#327) When the surface-error log was last emitted, so the rate-limit
+    /// can print "N errors suppressed" every `SURFACE_ERR_LOG_INTERVAL`
+    /// rather than every frame. `None` = no error since boot.
+    surface_err_last_log: Option<Instant>,
+    /// (#327) Count of surface errors suppressed since the last log line,
+    /// summarised into the next log emission so nothing is silently lost.
+    surface_err_suppressed: u32,
 }
 
 impl App {
@@ -1667,6 +1697,9 @@ impl App {
             queue_blocked_flash: None,
             #[cfg(feature = "audio")]
             audio: None,
+            surface_err_count: 0,
+            surface_err_last_log: None,
+            surface_err_suppressed: 0,
         };
         // (#322 debug 2026-07-01) BROADSIDE_START_AT_BOSS=1 jumps the run
         // cursor to the CURRENT sector's LAST encounter (the boss capital)
@@ -2671,6 +2704,18 @@ impl ApplicationHandler for App {
             WindowEvent::Resized(size) => {
                 if let Some(gfx) = self.gfx.as_mut() {
                     gfx.resize(size);
+                }
+                // (#327) A resize gives the surface a clean slate. If the
+                // redraw was in backoff (e.g. minimize→restore), reset the
+                // streak and kick the loop back to life; the next render()
+                // is the fair test of whether the surface actually recovered.
+                if self.surface_err_count > 0 {
+                    self.surface_err_count = 0;
+                    self.surface_err_suppressed = 0;
+                    self.surface_err_last_log = None;
+                    if let Some(w) = self.window.as_ref() {
+                        w.request_redraw();
+                    }
                 }
             }
             WindowEvent::KeyboardInput { event, .. } => {
@@ -4590,21 +4635,70 @@ impl ApplicationHandler for App {
                     }
                 }
                 match gfx.render(&instances) {
-                    Ok(()) => {}
-                    Err(e @ (wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated)) => {
-                        // (#43-followup diag) If this fires EVERY frame, the
-                        // surface is going Outdated→reconfigure in a loop, which
-                        // presents black frames between reconfigures = the
-                        // "fade-to-black → snap-to-grey" pulse. A one-shot here
-                        // is normal (resize); a per-frame flood is the bug.
-                        log::warn!("surface {e:?} → reconfigure (per-frame flood = the pulse bug)");
-                        gfx.reconfigure();
+                    Ok(()) => {
+                        // (#327) A successful present clears the throttle so
+                        // the redraw cadence resumes at full vsync. If the
+                        // counter had ticked past the threshold, log the
+                        // recovery + drained suppressed-count once so the log
+                        // shows the surface healed.
+                        if self.surface_err_count > 0 {
+                            log::info!(
+                                "surface recovered after {} errors ({} log lines suppressed)",
+                                self.surface_err_count,
+                                self.surface_err_suppressed,
+                            );
+                            self.surface_err_count = 0;
+                            self.surface_err_suppressed = 0;
+                            self.surface_err_last_log = None;
+                        }
                     }
                     Err(wgpu::SurfaceError::OutOfMemory) => {
                         log::error!("wgpu surface OOM, exiting");
                         event_loop.exit();
                     }
-                    Err(e) => log::warn!("surface error: {e:?}"),
+                    Err(e) => {
+                        // (#327) EVERY non-OOM surface error self-heals through
+                        // the same reconfigure() path. Pre-#327 the catch-all
+                        // just logged + dropped the frame, and the #47
+                        // continuous redraw request below re-fired instantly
+                        // → on a persistent SurfaceError::Other the loop spun
+                        // at CPU speed AND flooded the debug log every frame,
+                        // pegging Bruce's machine. Now: reconfigure (Other /
+                        // Timeout is often a compositor blip that heals on a
+                        // fresh swapchain), rate-limit the log, and count
+                        // consecutive failures — once we cross the threshold
+                        // the redraw-request tail below stops re-arming, so
+                        // the loop cannot spin flat-out while the surface is
+                        // broken. Recovery unblocks on Ok(()) above OR any
+                        // input/resize event that naturally re-enters
+                        // RedrawRequested and gives the surface another shot.
+                        gfx.reconfigure();
+                        self.surface_err_count = self.surface_err_count.saturating_add(1);
+                        let should_log = self.surface_err_last_log.is_none_or(|last| {
+                            now.duration_since(last) >= SURFACE_ERR_LOG_INTERVAL
+                        });
+                        if should_log {
+                            if self.surface_err_suppressed > 0 {
+                                log::warn!(
+                                    "surface error: {:?} (streak={}, {} similar lines suppressed)",
+                                    e,
+                                    self.surface_err_count,
+                                    self.surface_err_suppressed,
+                                );
+                            } else {
+                                log::warn!(
+                                    "surface error: {:?} (streak={})",
+                                    e,
+                                    self.surface_err_count,
+                                );
+                            }
+                            self.surface_err_last_log = Some(now);
+                            self.surface_err_suppressed = 0;
+                        } else {
+                            self.surface_err_suppressed =
+                                self.surface_err_suppressed.saturating_add(1);
+                        }
+                    }
                 }
                 // (#43-followup) Re-request a redraw ONLY while something that is
                 // (#47) Drive a CONTINUOUS render loop: re-request a redraw every
@@ -4636,8 +4730,22 @@ impl ApplicationHandler for App {
                 // per-frame world tick. RedrawRequested just keeps the swapchain live
                 // (the continuous-redraw fix above) and re-presents the latched VFX
                 // fade; the board state is unchanged between turns.
-                if let Some(w) = self.window.as_ref() {
-                    w.request_redraw();
+                //
+                // (#327) THROTTLE: if the surface has failed to present
+                // `SURFACE_ERR_BACKOFF_THRESHOLD` frames in a row, stop
+                // re-arming the redraw. The #47 continuous-redraw loop is
+                // vsync-throttled at ~60 fps on a WORKING surface, but on a
+                // persistently-broken surface the render() call returns
+                // immediately (Err) with no vsync wait, so re-requesting a
+                // redraw every frame becomes an uncapped spin — that pegged
+                // Bruce's machine. Once the streak breaks (any subsequent
+                // Ok(()) inside a naturally-triggered RedrawRequested, or a
+                // resize/input event that pushes us back through this arm)
+                // the redraw cadence resumes.
+                if self.surface_err_count < SURFACE_ERR_BACKOFF_THRESHOLD {
+                    if let Some(w) = self.window.as_ref() {
+                        w.request_redraw();
+                    }
                 }
             }
             _ => {}
