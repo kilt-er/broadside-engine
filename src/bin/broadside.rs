@@ -430,6 +430,45 @@ fn nth_encounter_after_current<'s>(
         .and_then(|s| s.encounters.get(enc_idx))
 }
 
+/// (#336 looming boss 2026-07-01) Locate the CURRENT sector's boss encounter
+/// and return `(encounter_def, remaining)` — where `remaining` is the number
+/// of encounters between the player's current position and the boss (0 = the
+/// player IS on the boss encounter now; 1 = boss is N+1 / next).
+///
+/// The boss is the sector-final encounter with `is_boss: true` (added by the
+/// campaign generator at [`broadside_engine::runs::generate_campaign`] as the
+/// last entry in each sector's `encounters` list). Returns `None` if:
+///   * the run is over (defeated / victorious), or
+///   * the current sector has no boss (defensive — every generated sector
+///     should have one, but hand-authored placeholder fixtures without a
+///     capital would trip this).
+///
+/// Used by the always-visible looming-boss preview: at `remaining >= 2` the
+/// boss renders at max parallax depth behind the N+1/N+2/N+3 layer stack,
+/// growing closer/larger/brighter as `remaining` shrinks; at `remaining < 2`
+/// the boss is already N+1 (rendered by the normal preview path) or the
+/// current live encounter, so the looming pane is skipped to avoid a
+/// double-render.
+fn boss_encounter_in_current_sector<'s>(
+    run: &broadside_engine::types::Run,
+    sectors: &'s [broadside_engine::types::Sector],
+) -> Option<(&'s broadside_engine::types::EncounterDef, u32)> {
+    if run.defeated || run.victorious {
+        return None;
+    }
+    let sector = sectors.get(run.current_sector_idx)?;
+    // Find the boss — every generated sector adds it as the LAST entry with
+    // `is_boss: true`. Walk the vec looking for it explicitly rather than
+    // trusting `.last()` alone, so a future no-boss placeholder sector (or
+    // an in-flight partial sector during development) doesn't render an
+    // arbitrary encounter as "the boss".
+    let boss_idx = sector.encounters.iter().position(|e| e.is_boss)?;
+    let boss = sector.encounters.get(boss_idx)?;
+    let completed = run.completed_encounters as usize;
+    let remaining = boss_idx.saturating_sub(completed) as u32;
+    Some((boss, remaining))
+}
+
 /// Build the demo [`DemoContent`] with the player's Phase 2 loadout
 /// pre-installed: `HeatSink` + Point-Blank Doctrine subsystems and one
 /// charge of each placeholder field-kit card (`mass_lock` / `mass_breach` /
@@ -990,6 +1029,48 @@ const PREVIEW_LAYER_ALPHA_MULT: [f32; 3] = [1.0, 0.60, 0.35];
 /// Bruce reads the empty N+3 as "no encounter there," flip this to
 /// `[true, true, true]` and we get ghost hulls on the deepest layer.
 const PREVIEW_LAYER_SHIPS: [bool; 3] = [true, true, false];
+
+/// (#336 looming boss 2026-07-01) The sector-boss "always visible" preview
+/// pane renders at a depth PAST the deepest N+3 layer. `BOSS_MAX_DEPTH_MULT`
+/// is the depth at maximum remaining-encounters (the freshly-entered sector
+/// state, `remaining = ENCOUNTERS_PER_SECTOR = 4`); `BOSS_HANDOFF_DEPTH_MULT`
+/// is the depth right BEFORE the boss becomes N+1 (i.e. at `remaining = 2`,
+/// where the boss is still shown by this pane and N+2 by the #332 stack).
+///
+/// The pane is skipped when `remaining < 2` — at `remaining = 1` the boss IS
+/// N+1 (rendered by the normal preview) and rendering it here too would be a
+/// double-draw with a visible pop as the pane vanishes into the N+1 layer.
+/// At `remaining = 0` the player is fighting the boss right now.
+///
+/// **DESIGN FLAG (Bruce):** default depth stack maxes at 3.5× the base
+/// `preview_z_offset` (deeper than N+3 at 2.0×). Dial via the same `Z`/`X`
+/// keys that drive the base — the multipliers scale.
+const BOSS_MAX_DEPTH_MULT: f32 = 3.5;
+const BOSS_HANDOFF_DEPTH_MULT: f32 = 2.2;
+
+/// (#336) Alpha multipliers matching the depth curve. Grows FASTER than the
+/// depth shrinks so the boss reads as "getting brighter as it looms closer"
+/// per Bruce's ruling. Alpha at max depth is dim (atmospheric horizon menace);
+/// alpha at handoff is close to N+2's brightness so the transition to N+1
+/// preview reads as continuous.
+///
+/// **DESIGN FLAG (Bruce):** default alpha stack — at max depth 0.40× base
+/// preview alpha (subtle horizon presence), at handoff 0.75× (nearly at
+/// N+1's brightness). Bruce can eyeball + dial.
+const BOSS_MAX_ALPHA_MULT: f32 = 0.40;
+const BOSS_HANDOFF_ALPHA_MULT: f32 = 0.75;
+
+/// (#336) Whether the boss pane shows the actual hull or just a grid
+/// wireframe. Grid-only would communicate "boss encounter is out there" via
+/// a scaled grid alone — which is what N+3 does at 2×. But the whole POINT
+/// of the looming boss is that Bruce sees the ACTUAL Pair capital brooding
+/// on the horizon, so default is ships-on. If the deepest render turns out
+/// too crowded (esp. once the future Pair-scale=2× is wired) Bruce can flip
+/// this to `false` for grid-only.
+///
+/// **DESIGN FLAG (Bruce):** ships-on default. Flip if the hull at max depth
+/// reads as noise.
+const BOSS_PANE_SHOWS_SHIPS: bool = true;
 
 /// (#327) After this many consecutive `SurfaceError`s (any variant that isn't
 /// caught by the Lost/Outdated reconfigure path) the `RedrawRequested` arm stops
@@ -4531,6 +4612,100 @@ impl ApplicationHandler for App {
                                 layer_alpha,
                                 0.0,
                             );
+                        }
+                    }
+                    // (#336 looming sector boss 2026-07-01) The always-visible
+                    // boss pane at MAX PARALLAX DEPTH behind the N+1/N+2/N+3
+                    // stack. Grows closer/larger/brighter as the player clears
+                    // encounters toward the sector-final boss encounter.
+                    //
+                    // Skipped when `remaining < 2`:
+                    //  - remaining=1 → boss IS N+1, rendered by the #332
+                    //    layer stack above at layer[0] (or the eager N+1
+                    //    emit block if that path fires). Double-rendering
+                    //    here would create a visible seam as this pane
+                    //    disappears the frame the boss becomes N+1.
+                    //  - remaining=0 → the boss IS the currently-playable
+                    //    board.
+                    //
+                    // Depth curve (linear interpolation, Bruce look-flag):
+                    //   remaining >= ENCOUNTERS_PER_SECTOR → BOSS_MAX_DEPTH_MULT
+                    //   remaining == 2                     → BOSS_HANDOFF_DEPTH_MULT
+                    //   linear between.
+                    // Alpha curve mirrors the same shape but INVERTED (dim at
+                    // max depth, brightening as the boss looms).
+                    //
+                    // Renders the boss's REAL encounter data — dims + spawn
+                    // positions come from the campaign's generated
+                    // `EncounterDef`, so the horizon silhouette IS the
+                    // capital that will spawn when Bruce reaches the sector
+                    // end (including whatever dims the boss board rolled).
+                    //
+                    // FOLLOW-UP FLAG: `prepend_upcoming_board_with_loft_2d_
+                    // staggered_with_rest` currently sets
+                    // `LoftShipInstance.hull_scale_mul = 1.0` for every
+                    // preview hull, so the Pair boss renders 1× wide in the
+                    // preview even though its live hull is 2× (#214).
+                    // Threading a per-hull scale mul through the preview
+                    // signature is additive; deferring to a follow-up so
+                    // this slice stays surgical.
+                    if let Some((boss_enc, remaining)) =
+                        boss_encounter_in_current_sector(&self.run, &self.sectors)
+                    {
+                        if remaining >= 2 {
+                            let base_rest_z = broadside_engine::gfx::preview_z_offset();
+                            let base_alpha = broadside_engine::gfx::preview_tint_alpha();
+                            // Normalize `remaining` into [0, 1] where 0 = the
+                            // handoff frame (remaining=2, boss about to
+                            // become N+2 next round) and 1 = "just entered
+                            // sector" (remaining = ENCOUNTERS_PER_SECTOR).
+                            let max_remaining = broadside_engine::runs::ENCOUNTERS_PER_SECTOR;
+                            let span = (max_remaining - 2).max(1) as f32;
+                            let far_frac = ((remaining - 2) as f32 / span).clamp(0.0, 1.0);
+                            // Depth: bigger remaining → deeper.
+                            let boss_z = base_rest_z
+                                * (BOSS_HANDOFF_DEPTH_MULT
+                                    + (BOSS_MAX_DEPTH_MULT - BOSS_HANDOFF_DEPTH_MULT) * far_frac);
+                            // Alpha: bigger remaining → dimmer (brighter as
+                            // it looms).
+                            let boss_alpha = base_alpha
+                                * (BOSS_HANDOFF_ALPHA_MULT
+                                    + (BOSS_MAX_ALPHA_MULT - BOSS_HANDOFF_ALPHA_MULT) * far_frac);
+                            let cols = boss_enc.dims.cols;
+                            let rows = boss_enc.dims.rows;
+                            if BOSS_PANE_SHOWS_SHIPS {
+                                let spawns: Vec<Pos> =
+                                    boss_enc.enemy_ships.iter().map(|s| s.pos).collect();
+                                let ship_ids: Vec<String> = boss_enc
+                                    .enemy_ships
+                                    .iter()
+                                    .map(|s| format!("{}@{}", s.class_id, s.cell))
+                                    .collect();
+                                hud::prepend_upcoming_board_with_loft_2d_staggered_with_rest(
+                                    &mut instances,
+                                    &scene_cfg,
+                                    boss_z,
+                                    boss_z,
+                                    cols,
+                                    rows,
+                                    &ship_ids,
+                                    &spawns,
+                                    &*gfx,
+                                    boss_alpha,
+                                    None,
+                                    0.0,
+                                );
+                            } else {
+                                hud::push_upcoming_grid_2d(
+                                    &mut instances,
+                                    &scene_cfg,
+                                    boss_z,
+                                    cols,
+                                    rows,
+                                    boss_alpha,
+                                    0.0,
+                                );
+                            }
                         }
                     }
                 }
