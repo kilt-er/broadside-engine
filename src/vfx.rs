@@ -1075,6 +1075,35 @@ fn emit_flash(
 /// instant). `t` advances on real seconds, so the whole thing plays out over
 /// `EXPLOSION_SECS` regardless of how the turn resolves — the `ParticlePool` burst
 /// the bin seeds on the same kill layers debris on top.
+/// (2026-07-01) Single-source `ShapeKind` → atlas-cell dispatch used by
+/// both `emit_explosion` (the bloom silhouette) and `ParticlePool::emit`
+/// (per-particle silhouette). Keeping ONE function guarantees the editor's
+/// shape dropdown reads the same way regardless of where the shape is
+/// consumed — an explosion with `shape: star5` and a burst particle with
+/// `shape: star5` sample the identical atlas cell.
+///
+/// Square re-uses `SOLID_WHITE` (no extra atlas cost). Every other variant
+/// resolves to a procedurally-drawn `PARTICLE_*` silhouette (see
+/// `atlas.rs`).
+const fn shape_cell(shape: crate::effects::ShapeKind) -> (u32, u32) {
+    use crate::effects::ShapeKind as S;
+    match shape {
+        S::Square => atlas::SOLID_WHITE,
+        S::Circle => atlas::PARTICLE_CIRCLE,
+        S::Triangle => atlas::PARTICLE_TRIANGLE,
+        S::Line => atlas::PARTICLE_LINE,
+        S::Ring => atlas::PARTICLE_RING,
+        S::HollowSquare => atlas::PARTICLE_HOLLOW_SQUARE,
+        S::Diamond => atlas::PARTICLE_DIAMOND,
+        S::Hexagon => atlas::PARTICLE_HEXAGON,
+        S::Star4 => atlas::PARTICLE_STAR4,
+        S::Star5 => atlas::PARTICLE_STAR5,
+        S::Plus => atlas::PARTICLE_PLUS,
+        S::X => atlas::PARTICLE_X,
+        S::Crescent => atlas::PARTICLE_CRESCENT,
+    }
+}
+
 fn emit_explosion(
     out: &mut Vec<DrawCommand>,
     cfg_proj: &ProjectorConfig,
@@ -1084,12 +1113,12 @@ fn emit_explosion(
 ) {
     let p = grid_cell_quad(pos, cfg_proj).center;
     let peak = cfg.peak_px;
-    // (#301) Round bloom — sample PARTICLE_CIRCLE (the filled-disc silhouette
-    // added in #217 atlas) instead of SOLID_WHITE so the multiplied tint
-    // renders as a round burst, not the axis-aligned square Bruce kept
-    // reading as "a square that lights up." Same per-layer alpha/size/curve
-    // math; only the UV cell changed.
-    let bloom_uvs = atlas::cell_uvs(atlas::PARTICLE_CIRCLE);
+    // (#301, 2026-07-01) Bloom silhouette selected per-explosion via
+    // `cfg.shape` (defaults to Circle so pre-shape catalogs reproduce the
+    // #301 round bloom byte-for-byte). Same dispatch as `ParticlePool::emit`
+    // at vfx.rs — one function is the single source; if a new `ShapeKind`
+    // variant lands both sites pick it up.
+    let bloom_uvs = atlas::cell_uvs(shape_cell(cfg.shape));
     let mut quad = |size: f32, rgba: [f32; 4]| {
         out.push(DrawCommand::Sprite(SpriteInstance::axis_aligned(
             p,
@@ -1506,15 +1535,17 @@ impl ParticlePool {
                 continue;
             }
             let hs = (p.size * (1.0 - 0.6 * t)).max(0.5);
-            // (#217) Line shape draws as a long thin bar (uses the cell's
-            // built-in 6/32 aspect ratio) so a horizontal-rotation Line reads
-            // distinct from a Square; everything else is square-aspect on the
-            // half_size. Scale Y to match the 6/32 = ~0.1875 cell ratio.
-            let (cell, half_size) = match p.shape {
-                crate::effects::ShapeKind::Square => (atlas::SOLID_WHITE, [hs, hs]),
-                crate::effects::ShapeKind::Circle => (atlas::PARTICLE_CIRCLE, [hs, hs]),
-                crate::effects::ShapeKind::Triangle => (atlas::PARTICLE_TRIANGLE, [hs, hs]),
-                crate::effects::ShapeKind::Line => (atlas::PARTICLE_LINE, [hs, hs * 0.20]),
+            // (#217, 2026-07-01) Route ShapeKind through the single-source
+            // `shape_cell` dispatch shared with `emit_explosion`, so a new
+            // ShapeKind variant works both places from one match arm.
+            // Line is the only aspect-non-square shape — its 6/32 cell
+            // aspect wants Y scaled by ~0.20 so a horizontal-rotation Line
+            // reads distinct; everything else is square-aspect at `hs`.
+            let cell = shape_cell(p.shape);
+            let half_size = if matches!(p.shape, crate::effects::ShapeKind::Line) {
+                [hs, hs * 0.20]
+            } else {
+                [hs, hs]
             };
             let (uv_min, uv_max) = atlas::cell_uvs(cell);
             out.push(DrawCommand::Sprite(SpriteInstance {

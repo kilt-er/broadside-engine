@@ -86,6 +86,35 @@ pub const PARTICLE_TRIANGLE: (u32, u32) = (1, 5);
 /// length (line is ~6 px tall, full cell wide so its aspect reads as a line).
 pub const PARTICLE_LINE: (u32, u32) = (2, 5);
 
+/* ---- extended shape kit (2026-07-01) -----------------------------------
+ *
+ * A broader palette of silhouettes for authored explosions + particle
+ * bursts. Each is drawn procedurally in `generate_atlas`, matches its
+ * `ShapeKind` variant, and works for BOTH `ParticleBurst.emit` AND the
+ * explosion bloom (`emit_explosion` dispatches on `Explosion.shape`).
+ * ------------------------------------------------------------------------ */
+
+/// Hollow ring (~cell-radius, ~4 px stroke). For `ShapeKind::Ring`.
+pub const PARTICLE_RING: (u32, u32) = (3, 5);
+/// Hollow axis-aligned box outline (~4 px stroke). For `ShapeKind::HollowSquare`.
+pub const PARTICLE_HOLLOW_SQUARE: (u32, u32) = (4, 5);
+/// Filled square rotated 45° (diamond silhouette). For `ShapeKind::Diamond`.
+pub const PARTICLE_DIAMOND: (u32, u32) = (5, 5);
+/// Filled flat-top hexagon silhouette. For `ShapeKind::Hexagon`.
+pub const PARTICLE_HEXAGON: (u32, u32) = (6, 5);
+/// 4-pointed burst / cardinal star silhouette. For `ShapeKind::Star4`.
+pub const PARTICLE_STAR4: (u32, u32) = (7, 5);
+/// Classic 5-pointed star silhouette. For `ShapeKind::Star5`.
+pub const PARTICLE_STAR5: (u32, u32) = (0, 6);
+/// Cardinal cross / plus silhouette (horizontal + vertical bar). For
+/// `ShapeKind::Plus`.
+pub const PARTICLE_PLUS: (u32, u32) = (1, 6);
+/// Diagonal cross / X silhouette. For `ShapeKind::X`.
+pub const PARTICLE_X: (u32, u32) = (2, 6);
+/// Crescent moon silhouette (filled disc minus an offset disc). For
+/// `ShapeKind::Crescent`.
+pub const PARTICLE_CRESCENT: (u32, u32) = (3, 6);
+
 /// Convert (col, row) cell coordinates to a `(uv_min, uv_max)` tuple, each
 /// in normalized [0, 1] texture space.
 pub fn cell_uvs(cell: (u32, u32)) -> ([f32; 2], [f32; 2]) {
@@ -141,6 +170,18 @@ pub fn generate_atlas() -> Vec<u8> {
     draw_particle_circle(&mut buf, PARTICLE_CIRCLE);
     draw_particle_triangle(&mut buf, PARTICLE_TRIANGLE);
     draw_particle_line(&mut buf, PARTICLE_LINE);
+
+    // (2026-07-01) Extended shape kit — hollow / geometric / star / cross /
+    // crescent silhouettes for authored explosions + particle bursts.
+    draw_particle_ring(&mut buf, PARTICLE_RING);
+    draw_particle_hollow_square(&mut buf, PARTICLE_HOLLOW_SQUARE);
+    draw_particle_diamond(&mut buf, PARTICLE_DIAMOND);
+    draw_particle_hexagon(&mut buf, PARTICLE_HEXAGON);
+    draw_particle_star4(&mut buf, PARTICLE_STAR4);
+    draw_particle_star5(&mut buf, PARTICLE_STAR5);
+    draw_particle_plus(&mut buf, PARTICLE_PLUS);
+    draw_particle_x(&mut buf, PARTICLE_X);
+    draw_particle_crescent(&mut buf, PARTICLE_CRESCENT);
 
     buf
 }
@@ -838,6 +879,248 @@ fn draw_particle_line(buf: &mut [u8], cell: (u32, u32)) {
     );
 }
 
+/* ---- extended shape kit (2026-07-01) -----------------------------------
+ *
+ * Each drawer paints a white silhouette in a 32×32 cell — the per-instance
+ * `color` tint on the GPU side multiplies it to any hue, matching the
+ * pre-existing PARTICLE_* drawers. All shapes stay 1 px inside the cell
+ * edge so nearest-neighbour sampling doesn't bleed adjacent atlas cells.
+ * ------------------------------------------------------------------------ */
+
+/// Filled disc minus an inner disc → hollow ring (~4 px stroke).
+fn draw_particle_ring(buf: &mut [u8], cell: (u32, u32)) {
+    let (cx_origin, cy_origin) = cell_origin(cell);
+    let half = CELL_SIZE / 2;
+    let cx = cx_origin + half;
+    let cy = cy_origin + half;
+    let r_outer = (half - 1) as i32;
+    let r_inner = r_outer - 4; // ~4 px stroke
+    let ink = [255, 255, 255, 255];
+    for dy in -r_outer..=r_outer {
+        for dx in -r_outer..=r_outer {
+            let d2 = dx * dx + dy * dy;
+            if d2 <= r_outer * r_outer && d2 >= r_inner * r_inner {
+                put_pixel(buf, (cx as i32 + dx) as u32, (cy as i32 + dy) as u32, ink);
+            }
+        }
+    }
+}
+
+/// Axis-aligned hollow box outline (~4 px stroke).
+fn draw_particle_hollow_square(buf: &mut [u8], cell: (u32, u32)) {
+    let (cx_origin, cy_origin) = cell_origin(cell);
+    let ink = [255, 255, 255, 255];
+    let inset: u32 = 2;
+    let stroke: u32 = 4;
+    let side = CELL_SIZE - 2 * inset;
+    let x = cx_origin + inset;
+    let y = cy_origin + inset;
+    // Four bars around the perimeter.
+    fill_rect(buf, x, y, side, stroke, ink); // top
+    fill_rect(buf, x, y + side - stroke, side, stroke, ink); // bottom
+    fill_rect(buf, x, y, stroke, side, ink); // left
+    fill_rect(buf, x + side - stroke, y, stroke, side, ink); // right
+}
+
+/// Filled square rotated 45° — silhouette is a solid diamond.
+fn draw_particle_diamond(buf: &mut [u8], cell: (u32, u32)) {
+    let (cx_origin, cy_origin) = cell_origin(cell);
+    let ink = [255, 255, 255, 255];
+    let cx = (CELL_SIZE / 2) as i32;
+    let cy = (CELL_SIZE / 2) as i32;
+    let r = (CELL_SIZE / 2 - 1) as i32;
+    for py in 0..CELL_SIZE as i32 {
+        for px in 0..CELL_SIZE as i32 {
+            let dx = (px - cx).abs();
+            let dy = (py - cy).abs();
+            if dx + dy <= r {
+                put_pixel(buf, cx_origin + px as u32, cy_origin + py as u32, ink);
+            }
+        }
+    }
+}
+
+/// Filled flat-top hexagon (6 sides): two rows at the flat top/bottom, tapered
+/// through the middle. Approximated in the pixel grid by keeping |x/cx|+|y/cy|
+/// with clamped slopes — cheap + reads unmistakably hexagonal.
+fn draw_particle_hexagon(buf: &mut [u8], cell: (u32, u32)) {
+    let (cx_origin, cy_origin) = cell_origin(cell);
+    let ink = [255, 255, 255, 255];
+    let cx = (CELL_SIZE / 2) as i32;
+    let cy = (CELL_SIZE / 2) as i32;
+    // Half-width at the widest row (cy), tapering linearly to 1/2 width at the
+    // top+bottom rows (y = 0 and y = CELL-1). Flat-top style.
+    let half_w_center: i32 = 14;
+    let half_h: i32 = 13;
+    for py in 0..CELL_SIZE as i32 {
+        let dy = (py - cy).abs();
+        if dy > half_h {
+            continue;
+        }
+        // Half-width shrinks linearly from `half_w_center` (dy=0) to
+        // `half_w_center/2` (dy=half_h). Keeps flat top/bottom edges.
+        let taper = dy - half_h / 2;
+        let half_w = if taper <= 0 {
+            half_w_center
+        } else {
+            half_w_center - taper
+        };
+        for px in 0..CELL_SIZE as i32 {
+            if (px - cx).abs() <= half_w {
+                put_pixel(buf, cx_origin + px as u32, cy_origin + py as u32, ink);
+            }
+        }
+    }
+}
+
+/// 4-pointed cardinal star (union of a wide horizontal bar + a wide vertical
+/// bar, both tapered toward their tips → sharp points on N/S/E/W).
+fn draw_particle_star4(buf: &mut [u8], cell: (u32, u32)) {
+    let (cx_origin, cy_origin) = cell_origin(cell);
+    let ink = [255, 255, 255, 255];
+    let cx = (CELL_SIZE / 2) as i32;
+    let cy = (CELL_SIZE / 2) as i32;
+    let arm: i32 = 14; // half-length of each arm from centre
+    let base: i32 = 5; // half-thickness at centre; tapers to 1 at the tip
+    for py in 0..CELL_SIZE as i32 {
+        for px in 0..CELL_SIZE as i32 {
+            let dx = (px - cx).abs();
+            let dy = (py - cy).abs();
+            // Horizontal arm: taper thickness with dx.
+            let h_ok = dx <= arm && dy <= (base - dx * base / arm).max(1);
+            // Vertical arm: taper thickness with dy.
+            let v_ok = dy <= arm && dx <= (base - dy * base / arm).max(1);
+            if h_ok || v_ok {
+                put_pixel(buf, cx_origin + px as u32, cy_origin + py as u32, ink);
+            }
+        }
+    }
+}
+
+/// 5-pointed star. Uses a signed-distance test against 5 half-planes rotated
+/// 72° apart from a central point-out ray — cheap approximation on a 32×32
+/// grid. Filled interior.
+fn draw_particle_star5(buf: &mut [u8], cell: (u32, u32)) {
+    let (cx_origin, cy_origin) = cell_origin(cell);
+    let ink = [255, 255, 255, 255];
+    let cx = CELL_SIZE as f32 / 2.0;
+    let cy = CELL_SIZE as f32 / 2.0;
+    let r_outer: f32 = 14.5;
+    let r_inner: f32 = 6.5;
+    // Star polygon: 10 vertices alternating outer/inner, walking around the
+    // centre. Top point (angle -90°) is vertex 0.
+    let mut verts: [(f32, f32); 10] = [(0.0, 0.0); 10];
+    for (i, v) in verts.iter_mut().enumerate() {
+        let angle = -std::f32::consts::FRAC_PI_2 + (i as f32) * (std::f32::consts::PI * 2.0 / 10.0);
+        let r = if i % 2 == 0 { r_outer } else { r_inner };
+        *v = (cx + angle.cos() * r, cy + angle.sin() * r);
+    }
+    // Even-odd fill via ray-casting parity for each pixel.
+    for py in 0..CELL_SIZE as i32 {
+        for px in 0..CELL_SIZE as i32 {
+            let x = px as f32 + 0.5;
+            let y = py as f32 + 0.5;
+            let mut inside = false;
+            let n = verts.len();
+            let mut j = n - 1;
+            for i in 0..n {
+                let (xi, yi) = verts[i];
+                let (xj, yj) = verts[j];
+                let cond = (yi > y) != (yj > y)
+                    && x < (xj - xi) * (y - yi) / (yj - yi + f32::EPSILON) + xi;
+                if cond {
+                    inside = !inside;
+                }
+                j = i;
+            }
+            if inside {
+                put_pixel(buf, cx_origin + px as u32, cy_origin + py as u32, ink);
+            }
+        }
+    }
+}
+
+/// Cardinal cross / plus: horizontal + vertical bar of uniform 6 px width.
+fn draw_particle_plus(buf: &mut [u8], cell: (u32, u32)) {
+    let (cx_origin, cy_origin) = cell_origin(cell);
+    let ink = [255, 255, 255, 255];
+    let bar: u32 = 6;
+    let inset: u32 = 2;
+    let side = CELL_SIZE - 2 * inset;
+    let cx = CELL_SIZE / 2;
+    let cy = CELL_SIZE / 2;
+    // Horizontal.
+    fill_rect(
+        buf,
+        cx_origin + inset,
+        cy_origin + cy - bar / 2,
+        side,
+        bar,
+        ink,
+    );
+    // Vertical.
+    fill_rect(
+        buf,
+        cx_origin + cx - bar / 2,
+        cy_origin + inset,
+        bar,
+        side,
+        ink,
+    );
+}
+
+/// Diagonal cross / X: two rotated 6-px bars, 45°/135°. Painted by scanning
+/// along the diagonals from -14..14 and inking a small perpendicular thickness.
+fn draw_particle_x(buf: &mut [u8], cell: (u32, u32)) {
+    let (cx_origin, cy_origin) = cell_origin(cell);
+    let ink = [255, 255, 255, 255];
+    let cx = (CELL_SIZE / 2) as i32;
+    let cy = (CELL_SIZE / 2) as i32;
+    let arm: i32 = 14;
+    let stroke: i32 = 3; // half-thickness (line reads ~6 px wide across the diag)
+    for py in 0..CELL_SIZE as i32 {
+        for px in 0..CELL_SIZE as i32 {
+            let dx = px - cx;
+            let dy = py - cy;
+            if dx.abs() > arm || dy.abs() > arm {
+                continue;
+            }
+            // Diagonal 1: y=x → distance = |dy - dx| / sqrt(2). We
+            // approximate with |dy - dx| < stroke*2 (cheap + reads clean at
+            // this size).
+            let on_diag_a = (dy - dx).abs() < stroke * 2;
+            let on_diag_b = (dy + dx).abs() < stroke * 2;
+            if on_diag_a || on_diag_b {
+                put_pixel(buf, cx_origin + px as u32, cy_origin + py as u32, ink);
+            }
+        }
+    }
+}
+
+/// Crescent moon: filled disc MINUS an offset disc, so the silhouette is a
+/// waxing crescent (opening to the right in the canonical pose).
+fn draw_particle_crescent(buf: &mut [u8], cell: (u32, u32)) {
+    let (cx_origin, cy_origin) = cell_origin(cell);
+    let ink = [255, 255, 255, 255];
+    let cx = (CELL_SIZE / 2) as i32;
+    let cy = (CELL_SIZE / 2) as i32;
+    let r_main = (CELL_SIZE / 2 - 1) as i32;
+    let r_cut = r_main;
+    let cut_dx: i32 = 8; // offset the "eaten" disc to the right → crescent opens right
+    for py in 0..CELL_SIZE as i32 {
+        for px in 0..CELL_SIZE as i32 {
+            let dx = px - cx;
+            let dy = py - cy;
+            let in_main = dx * dx + dy * dy <= r_main * r_main;
+            let dx2 = px - (cx + cut_dx);
+            let in_cut = dx2 * dx2 + dy * dy <= r_cut * r_cut;
+            if in_main && !in_cut {
+                put_pixel(buf, cx_origin + px as u32, cy_origin + py as u32, ink);
+            }
+        }
+    }
+}
+
 /* ---- tests --------------------------------------------------------------- */
 
 #[cfg(test)]
@@ -904,6 +1187,16 @@ mod tests {
             PARALLAX_MID_STARS,
             PARALLAX_FOREGROUND_DUST,
             SOLID_WHITE,
+            // (2026-07-01) Extended shape kit.
+            PARTICLE_RING,
+            PARTICLE_HOLLOW_SQUARE,
+            PARTICLE_DIAMOND,
+            PARTICLE_HEXAGON,
+            PARTICLE_STAR4,
+            PARTICLE_STAR5,
+            PARTICLE_PLUS,
+            PARTICLE_X,
+            PARTICLE_CRESCENT,
         ];
         for (c, r) in cells {
             assert!(*c < CELLS_PER_ROW, "col {c} out of bounds");
@@ -941,6 +1234,16 @@ mod tests {
             PARALLAX_MID_STARS,
             PARALLAX_FOREGROUND_DUST,
             SOLID_WHITE,
+            // (2026-07-01) Extended shape kit.
+            PARTICLE_RING,
+            PARTICLE_HOLLOW_SQUARE,
+            PARTICLE_DIAMOND,
+            PARTICLE_HEXAGON,
+            PARTICLE_STAR4,
+            PARTICLE_STAR5,
+            PARTICLE_PLUS,
+            PARTICLE_X,
+            PARTICLE_CRESCENT,
         ];
         for (i, a) in cells.iter().enumerate() {
             for b in &cells[i + 1..] {
@@ -981,6 +1284,16 @@ mod tests {
             (PARALLAX_MID_STARS, "PARALLAX_MID_STARS"),
             (PARALLAX_FOREGROUND_DUST, "PARALLAX_FOREGROUND_DUST"),
             (SOLID_WHITE, "SOLID_WHITE"),
+            // (2026-07-01) Extended shape kit.
+            (PARTICLE_RING, "PARTICLE_RING"),
+            (PARTICLE_HOLLOW_SQUARE, "PARTICLE_HOLLOW_SQUARE"),
+            (PARTICLE_DIAMOND, "PARTICLE_DIAMOND"),
+            (PARTICLE_HEXAGON, "PARTICLE_HEXAGON"),
+            (PARTICLE_STAR4, "PARTICLE_STAR4"),
+            (PARTICLE_STAR5, "PARTICLE_STAR5"),
+            (PARTICLE_PLUS, "PARTICLE_PLUS"),
+            (PARTICLE_X, "PARTICLE_X"),
+            (PARTICLE_CRESCENT, "PARTICLE_CRESCENT"),
         ];
         for ((c, r), name) in cells {
             let cx = c * CELL_SIZE;
@@ -996,6 +1309,69 @@ mod tests {
                 }
             }
             assert!(found, "cell {} ({:?}) has no opaque pixels", name, (c, r));
+        }
+    }
+
+    /// (2026-07-01) Every extended-shape cell pixel-differs from every other
+    /// (catches copy-paste where the same draw_* call lands on two consts).
+    #[test]
+    fn extended_shape_cells_are_visually_distinct() {
+        let buf = generate_atlas();
+        let cells: &[(u32, u32)] = &[
+            PARTICLE_RING,
+            PARTICLE_HOLLOW_SQUARE,
+            PARTICLE_DIAMOND,
+            PARTICLE_HEXAGON,
+            PARTICLE_STAR4,
+            PARTICLE_STAR5,
+            PARTICLE_PLUS,
+            PARTICLE_X,
+            PARTICLE_CRESCENT,
+        ];
+        // Collect the alpha channel of each cell as a fingerprint.
+        let fingerprint = |cell: (u32, u32)| -> Vec<u8> {
+            let (c, r) = cell;
+            let cx = c * CELL_SIZE;
+            let cy = r * CELL_SIZE;
+            let mut out = Vec::with_capacity((CELL_SIZE * CELL_SIZE) as usize);
+            for dy in 0..CELL_SIZE {
+                for dx in 0..CELL_SIZE {
+                    let i = (((cy + dy) * ATLAS_SIZE + cx + dx) * 4 + 3) as usize;
+                    out.push(buf[i]);
+                }
+            }
+            out
+        };
+        let prints: Vec<_> = cells.iter().map(|&c| (c, fingerprint(c))).collect();
+        for (i, (ca, fa)) in prints.iter().enumerate() {
+            for (cb, fb) in &prints[i + 1..] {
+                assert_ne!(
+                    fa, fb,
+                    "extended shape cells {ca:?} and {cb:?} have identical pixel content"
+                );
+            }
+        }
+    }
+
+    /// (2026-07-01) Ring and `HollowSquare` have transparent centres but opaque
+    /// edges — verify a pixel near the cell edge is non-transparent.
+    #[test]
+    fn hollow_shapes_have_opaque_edges() {
+        let buf = generate_atlas();
+        // Check a pixel on the top edge of each hollow shape's cell.
+        for (cell, name) in [
+            (PARTICLE_RING, "PARTICLE_RING"),
+            (PARTICLE_HOLLOW_SQUARE, "PARTICLE_HOLLOW_SQUARE"),
+        ] {
+            let (c, r) = cell;
+            // Sample a few pixels on the top stroke (2 px from the top edge).
+            let cx = c * CELL_SIZE + CELL_SIZE / 2;
+            let cy = r * CELL_SIZE + 3; // just inside the top stroke
+            let i = ((cy * ATLAS_SIZE + cx) * 4 + 3) as usize;
+            assert!(
+                buf[i] > 0,
+                "hollow shape {name} has no opaque pixel at edge (col={cx}, row={cy})"
+            );
         }
     }
 }

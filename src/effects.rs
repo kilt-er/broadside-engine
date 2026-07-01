@@ -278,6 +278,14 @@ pub struct Explosion {
     /// Ignition-flash peak alpha (`0.95`).
     #[serde(default = "default_ignition_alpha")]
     pub flash_alpha: f32,
+    /// (2026-07-01) Per-explosion silhouette. Defaults to
+    /// [`ShapeKind::Circle`] so unedited catalogs reproduce the pre-fix
+    /// round bloom byte-for-byte (`emit_explosion` used to hardcode
+    /// `PARTICLE_CIRCLE`). Editor can flip this to any of the extended
+    /// shapes (square / diamond / ring / star4-5 / plus / x / crescent /
+    /// hollow-square / hexagon / triangle / line) for authored effects.
+    #[serde(default = "default_explosion_shape")]
+    pub shape: ShapeKind,
 }
 
 /// Ordnance-trail params (`vfx::TRAIL_COLOR` + `TRAIL_SECS` + `emit_beam`).
@@ -473,6 +481,38 @@ pub enum ShapeKind {
     /// Thin line segment (uses the burst's `size` for thickness and a
     /// fixed-ratio length; `rotation_rad` orients the line).
     Line,
+    /* ---- extended shape kit (2026-07-01) --------------------------------
+     * Broader palette for authored explosions + particle bursts. Each new
+     * variant has a matching `PARTICLE_*` atlas cell drawn procedurally in
+     * `atlas.rs` and is dispatched in BOTH `emit_explosion` (the bloom) AND
+     * `ParticlePool::emit` (per-particle silhouette).
+     * ------------------------------------------------------------------- */
+    /// Hollow circle outline (~4 px stroke). Reads as a shockwave rim /
+    /// blast expanding ring.
+    Ring,
+    /// Hollow axis-aligned box outline (~4 px stroke). Reads as a scanline
+    /// / holo pip.
+    HollowSquare,
+    /// Filled square rotated 45° (a solid diamond silhouette). Reads as a
+    /// crystal shard / lozenge.
+    Diamond,
+    /// Filled flat-top hexagon silhouette. Reads as a shielded / systems
+    /// pip.
+    Hexagon,
+    /// 4-pointed cardinal star silhouette (a sharp `+` with tapered arms).
+    /// Reads as a lens flare / cardinal burst.
+    Star4,
+    /// Classic 5-pointed star silhouette. Reads as a hero / capital
+    /// destruction mark.
+    Star5,
+    /// Cardinal `+` cross silhouette (horizontal + vertical bar). Reads as
+    /// a med / repair pip.
+    Plus,
+    /// Diagonal `X` cross silhouette. Reads as a hit mark / negation.
+    X,
+    /// Crescent silhouette (waxing crescent, opens to the right in the
+    /// canonical pose; `rotation_rad` reorients).
+    Crescent,
 }
 
 /* ---- defaults: the EXACT constants currently in vfx.rs ---------------------
@@ -570,6 +610,12 @@ const fn default_flash_alpha() -> f32 {
 }
 
 // -- Explosion --
+/// (2026-07-01) Serde default for `Explosion.shape`: [`ShapeKind::Circle`]
+/// so an unedited catalog reproduces the round bloom `emit_explosion` used
+/// to hardcode via `PARTICLE_CIRCLE` — byte-identical to pre-fix output.
+const fn default_explosion_shape() -> ShapeKind {
+    ShapeKind::Circle
+}
 const fn default_explosion_secs() -> f32 {
     0.55
 }
@@ -748,6 +794,7 @@ impl Default for Explosion {
             flash_color: default_flash_color(),
             flash_life_frac: default_ignition_life_frac(),
             flash_alpha: default_ignition_alpha(),
+            shape: default_explosion_shape(),
         }
     }
 }
@@ -953,15 +1000,79 @@ mod tests {
     fn shape_kind_wire_format_is_snake_case() {
         // (#217) Editor will read/write JSON values "square" / "circle" /
         // "triangle" / "line" — keep the wire format stable for round-trip.
+        // (2026-07-01) Extended shape kit variants also use snake_case tags.
         for (variant, expected) in [
             (ShapeKind::Square, "\"square\""),
             (ShapeKind::Circle, "\"circle\""),
             (ShapeKind::Triangle, "\"triangle\""),
             (ShapeKind::Line, "\"line\""),
+            (ShapeKind::Ring, "\"ring\""),
+            (ShapeKind::HollowSquare, "\"hollow_square\""),
+            (ShapeKind::Diamond, "\"diamond\""),
+            (ShapeKind::Hexagon, "\"hexagon\""),
+            (ShapeKind::Star4, "\"star4\""),
+            (ShapeKind::Star5, "\"star5\""),
+            (ShapeKind::Plus, "\"plus\""),
+            (ShapeKind::X, "\"x\""),
+            (ShapeKind::Crescent, "\"crescent\""),
         ] {
             assert_eq!(serde_json::to_string(&variant).unwrap(), expected);
             let back: ShapeKind = serde_json::from_str(expected).unwrap();
             assert_eq!(back, variant);
+        }
+    }
+
+    /// (2026-07-01) `Explosion.shape` defaults to Circle so an unedited
+    /// catalog reproduces the round bloom `emit_explosion` hardcoded before
+    /// the shape-kit landed.
+    #[test]
+    fn explosion_shape_defaults_to_circle() {
+        assert_eq!(Explosion::default().shape, ShapeKind::Circle);
+        // A catalog entry without an explicit `shape` field round-trips as
+        // Circle (not Square, the ParticleBurst default).
+        let json = r#"{ "effects": [ { "id": "e", "kind": "Explosion" } ] }"#;
+        let cat = EffectCatalog::from_json_str(json).unwrap();
+        if let EffectKind::Explosion(ex) = &cat.get("e").unwrap().kind {
+            assert_eq!(ex.shape, ShapeKind::Circle);
+        } else {
+            panic!("expected Explosion");
+        }
+    }
+
+    /// (2026-07-01) Every extended `ShapeKind` variant round-trips through an
+    /// `Explosion` catalog entry (JSON serialize + deserialize).
+    #[test]
+    fn explosion_shape_extended_round_trips() {
+        let shapes = [
+            ShapeKind::Ring,
+            ShapeKind::HollowSquare,
+            ShapeKind::Diamond,
+            ShapeKind::Hexagon,
+            ShapeKind::Star4,
+            ShapeKind::Star5,
+            ShapeKind::Plus,
+            ShapeKind::X,
+            ShapeKind::Crescent,
+        ];
+        for shape in shapes {
+            let ex = Explosion {
+                shape,
+                ..Explosion::default()
+            };
+            let def = EffectDef {
+                id: "test".into(),
+                kind: EffectKind::Explosion(ex),
+            };
+            let json = serde_json::to_string(&def).unwrap();
+            let back: EffectDef = serde_json::from_str(&json).unwrap();
+            if let EffectKind::Explosion(ex_back) = back.kind {
+                assert_eq!(
+                    ex_back.shape, shape,
+                    "round-trip failed for ShapeKind::{shape:?}"
+                );
+            } else {
+                panic!("expected Explosion for {shape:?}");
+            }
         }
     }
 

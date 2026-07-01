@@ -1866,6 +1866,69 @@ fn main() {
             );
         }
     }
+    // (shape-kit, 2026-07-01) BROADSIDE_SHAPE_DEMO=1: render two particle bursts
+    // side-by-side in the new extended shapes to prove emit + atlas round-trip.
+    // Square burst (left, amber) + Star4 burst (right, cyan) — both spawned at
+    // world-space positions near the player cell so they show up in the capture.
+    if std::env::var("BROADSIDE_SHAPE_DEMO").is_ok_and(|v| v == "1") {
+        use broadside_engine::effects::{ParticleBurst, Rgba, ShapeKind};
+        use broadside_engine::projector::grid_cell_quad;
+        use broadside_engine::vfx::ParticlePool;
+        // Anchor both bursts at the player cell (centre-bottom).
+        let player_center = {
+            let p = board
+                .cells
+                .iter()
+                .flatten()
+                .find(|s| s.faction == Faction::Player)
+                .map_or_else(|| Pos::new(2, 3), |s| s.pos);
+            grid_cell_quad(p, &cfg).center
+        };
+        // Left burst: Square (amber) offset 40 px left.
+        {
+            let center = [player_center[0] - 40.0, player_center[1]];
+            let burst_cfg = ParticleBurst {
+                count: 20,
+                color: Rgba([1.0, 0.72, 0.2, 1.0]),
+                life_secs: 0.6,
+                speed_min: 25.0,
+                speed_max: 80.0,
+                size_min: 5.0,
+                size_max: 10.0,
+                shape: ShapeKind::Square,
+                ..ParticleBurst::default()
+            };
+            let mut pool = ParticlePool::new();
+            pool.spawn_burst_with(&burst_cfg, center, 0.0);
+            for _ in 0..6 {
+                pool.advance(1.0 / 60.0);
+            }
+            pool.emit(&mut commands);
+            log::info!("capture: shape-kit Square burst at {center:?}");
+        }
+        // Right burst: Star4 (cyan) offset 40 px right.
+        {
+            let center = [player_center[0] + 40.0, player_center[1]];
+            let burst_cfg = ParticleBurst {
+                count: 20,
+                color: Rgba([0.3, 1.0, 0.9, 1.0]),
+                life_secs: 0.6,
+                speed_min: 25.0,
+                speed_max: 80.0,
+                size_min: 5.0,
+                size_max: 10.0,
+                shape: ShapeKind::Star4,
+                ..ParticleBurst::default()
+            };
+            let mut pool = ParticlePool::new();
+            pool.spawn_burst_with(&burst_cfg, center, 0.0);
+            for _ in 0..6 {
+                pool.advance(1.0 / 60.0);
+            }
+            pool.emit(&mut commands);
+            log::info!("capture: shape-kit Star4 burst at {center:?}");
+        }
+    }
     // (#98/#100) With QUEUE_DEMO, append a representative ability-tile row so the
     // headless shot shows the layout (damage # top-left, key # bottom-right,
     // cooldown ticks) AND the #100 cues. The capture has no Content, so hand-build
