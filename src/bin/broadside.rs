@@ -1067,6 +1067,11 @@ const BOSS_HANDOFF_ALPHA: f32 = 0.90;
 /// intentional — distance conveys "far"; the hull grows as encounters clear).
 const BOSS_PANE_SHOWS_SHIPS: bool = true;
 
+/// (#336 ROLLED BACK 2026-07-02, Bruce) The always-visible looming-boss pane
+/// broke the small-grid view — the distant capital read as "every ship is a
+/// boss ship." Gated OFF pending a clean redo; flip to `true` to re-enable.
+const BOSS_LOOMING_PANE_ENABLED: bool = false;
+
 /// (#327) After this many consecutive `SurfaceError`s (any variant that isn't
 /// caught by the Lost/Outdated reconfigure path) the `RedrawRequested` arm stops
 /// re-requesting the next frame. Without this the #47 continuous-redraw loop
@@ -4706,7 +4711,7 @@ impl ApplicationHandler for App {
                     if let Some((boss_enc, remaining)) =
                         boss_encounter_in_current_sector(&self.run, &self.sectors)
                     {
-                        if remaining >= 2 {
+                        if BOSS_LOOMING_PANE_ENABLED && remaining >= 2 {
                             let base_rest_z = broadside_engine::gfx::preview_z_offset();
                             // Normalize `remaining` into [0, 1] where 0 = the
                             // handoff frame (remaining=2, boss about to
