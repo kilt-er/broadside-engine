@@ -1502,19 +1502,26 @@ impl ParticlePool {
                 h = h.wrapping_mul(1_099_511_628_211);
                 ((h >> 11) & 0xFFFF) as f32 / 65535.0
             };
-            let a01 = fold(self.seed ^ u64::from(i));
-            let spd01 = fold(0xA1 ^ u64::from(i));
-            let sz01 = fold(0xB2 ^ u64::from(i));
+            // (#223) Spread the per-particle index across all 64 bits with a
+            // golden-ratio (Fibonacci) hash BEFORE folding. `i` (0..n) is tiny,
+            // so `seed ^ i` only perturbs the LOW bits of the FNV input; the
+            // multiply pushes that entropy into HIGH bits the (h >> 11) & 0xFFFF
+            // window discards — leaving every particle with a near-identical
+            // `a01`, i.e. the SAME direction. Multiplying `i` by the golden
+            // constant diffuses distinct `i` across the whole word.
+            let ii = u64::from(i).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+            let a01 = fold(self.seed ^ ii);
+            let spd01 = fold(0xA1 ^ ii);
+            let sz01 = fold(0xB2 ^ ii);
             // (#217) Separate FNV fold for the per-particle rotation pick so
             // a non-zero rotation range doesn't perturb the existing
-            // size/speed picks → unedited bursts (rotation_min == rotation_max
-            // == 0.0) stay byte-identical to today's deterministic spread.
-            let rot01 = fold(0xC3 ^ u64::from(i));
+            // size/speed picks.
+            let rot01 = fold(0xC3 ^ ii);
             // (#222) Birth-position jitter: offset each particle along its own
             // outward angle by [0, spawn_jitter] px so the burst is visually
             // distinct at frame 0 (without this all n particles overlap for
             // the first several frames — they look like 1 particle).
-            let jit01 = fold(0xD4 ^ u64::from(i));
+            let jit01 = fold(0xD4 ^ ii);
             let angle = a01 * std::f32::consts::TAU;
             let speed = spd_min + spd01 * spd_span; // px/sec, radial
             let birth_offset = jit01 * spawn_jitter;
