@@ -399,6 +399,22 @@ pub fn adjust_ship_scale(delta: f32) -> f32 {
     next
 }
 
+/// (#228 Bruce) Dims-aware ship-scale multiplier so hulls read at the same
+/// cell-fill ratio across board shapes. The rest of the render pipeline
+/// (`unified_ship_scale`, `unified_grid_cell_scale`, `unified_cam_dist`) is
+/// dims-independent — cell world size is fixed, so on a small board the same
+/// hull fills its cell + reads as boss-sized ("every ship looks boss-sized,
+/// two squares, occludes player on 2x2"). Baseline is the canonical 5x4 (`min_dim
+/// = 4`) which maps to `1.0` (no change). Smaller boards shrink linearly with the
+/// smaller of `cols`/`rows`, so 3x3 → 0.75, 2x2 → 0.5, 2x4 → 0.5. Non-square
+/// boards use the smaller side so hulls comfortably fit their tightest axis.
+/// Boards wider than 5x4 (e.g. 7x4) clamp at `1.0` — hulls never grow beyond
+/// their canonical scale.
+#[must_use]
+pub fn ship_scale_dims_factor(cols: usize, rows: usize) -> f32 {
+    let min_dim = cols.min(rows).max(1) as f32;
+    (min_dim / 4.0).min(1.0)
+}
 /// (#192 Bruce) Minimum allowed unified-camera orbit distance for the live `-`
 /// adjuster. At 3.5 the board nearly fills the frame (no menu clearance) — the
 /// pre-#191 framing. Floor named so the band widens via a one-liner.
@@ -3294,10 +3310,17 @@ impl Gfx {
                 // boss renders 2× wide / long. Single-cell ships pass 1.0 here
                 // (rest-state default in `LoftShipInstance`) — byte-identical
                 // to the pre-#214 frame.
+                // (#228 2026-07-02) Also multiply by the dims-aware factor so
+                // hulls shrink on small boards (2x2 / 3x3) instead of filling
+                // their cells + occluding the player. Bruce's screenshot on
+                // Drift Belt encounter 0 (2x2) shows the canonical-5x4 scale
+                // reading as "boss-sized" on the smaller grid. Factor is 1.0
+                // at 5x4 → byte-identical; smaller boards linearly shrink.
+                let dims_factor = ship_scale_dims_factor(cfg.cols, cfg.rows);
                 let model = crate::loft_gpu::unified_model_with_idle(
                     center,
                     lq.unified_yaw_rad,
-                    unified_ship_scale() * lq.hull_scale_mul,
+                    unified_ship_scale() * dims_factor * lq.hull_scale_mul,
                     pose.idle_roll_rad(),
                     pose.idle_bob_world(),
                 );
