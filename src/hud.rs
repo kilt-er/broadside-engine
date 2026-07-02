@@ -4383,12 +4383,26 @@ pub fn push_player_queue_panel_2d(out: &mut Vec<DrawCommand>, tiles: &[AbilityTi
 /// Bruce ("for now") — contiguous 1..N; it renumbers if an enemy dies, which is
 /// acceptable for the placeholder identifier.
 pub fn enemy_badge_number(board: &Board, id: &str) -> u32 {
+    // (#228 2026-07-02) Skip Pair-boss tail-mirror slots so a 1×2 boss counts
+    // as ONE enemy — same primary-vs-tail dedup pattern as
+    // `compose_scene_2d_tweened` (hud.rs:596-608). The mirror clone sits at
+    // the tail cell but carries the primary's `pos`, so `i != pos.to_index_in
+    // (dims)` uniquely identifies the mirror.
+    let dims = board.dims();
     let mut ids: Vec<&str> = board
         .cells
         .iter()
-        .flatten()
-        .filter(|s| s.faction == Faction::Enemy)
-        .map(|s| s.id.as_str())
+        .enumerate()
+        .filter_map(|(i, slot)| {
+            let s = slot.as_ref()?;
+            if s.faction != Faction::Enemy {
+                return None;
+            }
+            if s.tail.is_some() && i != s.pos.to_index_in(dims) {
+                return None;
+            }
+            Some(s.id.as_str())
+        })
         .collect();
     ids.sort_unstable();
     ids.iter()
@@ -4475,11 +4489,26 @@ pub fn push_enemy_info_panel_2d(out: &mut Vec<DrawCommand>, board: &Board) {
     // swap sides their columns swap too. Their IDENTITY number (enemy_badge_number)
     // stays glued to the ship through the swap — the reliable link; position is the
     // bonus reinforcement.
+    // (#228 2026-07-02) Skip Pair-boss tail-mirror slots so a 1×2 boss shows
+    // ONE column, not two. Same primary-vs-tail dedup pattern as
+    // `compose_scene_2d_tweened` (hud.rs:596-608) — the mirror clone sits at
+    // the tail cell but carries the primary's `pos`, so `i != pos.to_index_in
+    // (dims)` uniquely identifies the mirror.
+    let dims = board.dims();
     let mut enemies: Vec<&Ship> = board
         .cells
         .iter()
-        .flatten()
-        .filter(|s| s.faction == Faction::Enemy)
+        .enumerate()
+        .filter_map(|(i, slot)| {
+            let s = slot.as_ref()?;
+            if s.faction != Faction::Enemy {
+                return None;
+            }
+            if s.tail.is_some() && i != s.pos.to_index_in(dims) {
+                return None;
+            }
+            Some(s)
+        })
         .collect();
     if enemies.is_empty() {
         return;
