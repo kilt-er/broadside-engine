@@ -1127,12 +1127,18 @@ fn emit_explosion(
     // Both default to 0.0 → byte-identical to the pre-motion path.
     let elapsed = t * cfg.life_secs;
     for layer in cfg.effective_layers() {
-        if elapsed < layer.start_delay {
+        // (#229) Clamp start_delay defensively so a stale author value >=
+        // life_secs doesn't silently drop the layer for its whole life. The
+        // editor caps the slider at life*0.95, but catalogs saved before that
+        // fix can still carry a bad value; this keeps >=5% of life as a bloom
+        // window. No behavior change for any well-authored layer.
+        let start_delay = layer.start_delay.min(cfg.life_secs * 0.95);
+        if elapsed < start_delay {
             continue;
         }
         // Re-normalise t over the window after start_delay.
-        let remaining = (cfg.life_secs - layer.start_delay).max(0.001);
-        let lt = ((elapsed - layer.start_delay) / remaining).clamp(0.0, 1.0);
+        let remaining = (cfg.life_secs - start_delay).max(0.001);
+        let lt = ((elapsed - start_delay) / remaining).clamp(0.0, 1.0);
         let ease_lt = 1.0 - (1.0 - lt) * (1.0 - lt);
 
         let bloom_uvs = atlas::cell_uvs(shape_cell(layer.shape));
