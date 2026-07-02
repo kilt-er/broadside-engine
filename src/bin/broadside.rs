@@ -1951,7 +1951,11 @@ impl App {
         // degenerate grid where neither tail candidate fits, the helper
         // degrades to a 1×1 placement and returns false — the fight is still
         // playable, just single-cell.
-        if let Some(cat) = catalog {
+        // (#214 ROLLED BACK 2026-07-02, Bruce) Multi-cell (1×2) boss spawns
+        // disabled — they were making ships spawn as 1×2 pairs. All ships stay
+        // single-cell; flip to `true` to re-enable the multi-cell boss.
+        const MULTI_CELL_BOSS_ENABLED: bool = false;
+        if let Some(cat) = catalog.filter(|_| MULTI_CELL_BOSS_ENABLED) {
             use broadside_engine::types::Footprint;
             // Snapshot the spawn list so we don't borrow the board while we
             // mutate it. Each spawn's `pos` is authoritative for the slot the
